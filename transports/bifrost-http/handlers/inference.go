@@ -23,24 +23,17 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/tidwall/gjson"
 
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
-
-// forwardProviderHeaders forwards provider response headers to the HTTP response.
-func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
-	for key, value := range headers {
-		ctx.Response.Header.Set(key, value)
-	}
-}
 
 // forwardProviderHeadersFromContext extracts provider response headers from the bifrost context
 // and forwards them to the HTTP response. This ensures error responses also include provider headers.
 func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 }
 
@@ -226,6 +219,21 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var decisionParamsKnownFields = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
+	// The deprecated map form's input. Next to "input" it is dropped, not
+	// forwarded as a provider extension that could override the real state.
+	"state": true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
+}
+
+// Known fields for DecisionMapFormRequest, the deprecated /v1/decisions body.
+var decisionMapFormKnownFields = map[string]bool{
 	"model":     true,
 	"state":     true,
 	"questions": true,
@@ -380,6 +388,8 @@ var transcriptionParamsKnownFields = map[string]bool{
 	"prompt":          true,
 	"response_format": true,
 	"file_format":     true,
+
+	"timestamp_granularities[]": true,
 }
 
 var batchCreateParamsKnownFields = map[string]bool{
@@ -651,8 +661,24 @@ type RerankRequest struct {
 
 // DecisionHandlerRequest is a bifrost decision request
 type DecisionHandlerRequest struct {
-	State     interface{}                         `json:"state"`
-	Questions map[string]schemas.DecisionQuestion `json:"questions"`
+	Input            schemas.DecisionInput      `json:"input"`
+	Questions        []schemas.DecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
+	BifrostParams
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
+}
+
+// DecisionMapFormRequest is a /v1/decisions request in the deprecated map
+// form: a state plus questions keyed by name, answered by answers keyed by the
+// same names. Its questions are Typesafe's System One questions (written with
+// "kind" for "type"), so it is decoded and converted through the Typesafe
+// package. It stays served for callers written against it; new callers send
+// DecisionHandlerRequest.
+type DecisionMapFormRequest struct {
+	State     interface{}                          `json:"state"`
+	Questions map[string]typesafe.TypesafeQuestion `json:"questions"`
 	BifrostParams
 }
 
@@ -1014,7 +1040,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichListModelsResponse(resp, h.config.ModelCatalog)
+	h.config.ModelCatalog.EnrichListModelsResponse(resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1047,7 +1073,7 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichModelRetrieveResponse(resp, h.config.ModelCatalog)
+	h.config.ModelCatalog.EnrichModelRetrieveResponse(resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1080,43 +1106,6 @@ func modelRetrieveTarget(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, strin
 		return "", "", errors.New("provider is required: prefix the model with it or pass ?provider=")
 	}
 	return provider, model, nil
-}
-
-// enrichModelRetrieveResponse applies the same catalog metadata list models applies,
-// so one model reads the same either way.
-func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || catalog == nil {
-		return
-	}
-
-	provider, modelName := schemas.ParseModelString(resp.ID, "")
-	pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-	if pricingEntry == nil && resp.Alias != nil {
-		pricingEntry = catalog.GetPricingEntryForModel(*resp.Alias, provider)
-	}
-	modelcatalog.ApplyModelInfo(&resp.Model, pricingEntry)
-}
-
-func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || len(resp.Data) == 0 {
-		return
-	}
-
-	if catalog == nil {
-		return
-	}
-
-	for i := range resp.Data {
-		modelEntry := resp.Data[i]
-		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-		if pricingEntry == nil && modelEntry.Alias != nil {
-			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
-		}
-		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
-		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
-		resp.Data[i] = modelEntry
-	}
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
@@ -1178,7 +1167,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 }
 
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
@@ -1257,7 +1246,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	mt, mh := startTransportSpan(ctx, "response-marshal")
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 	if mt != nil {
 		mt.EndSpan(mh, schemas.SpanStatusOk, "")
 	}
@@ -1457,33 +1446,136 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP request body
-func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*DecisionHandlerRequest, *schemas.BifrostDecisionRequest, error) {
-	req, base, err := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP
+// request body. The body is read as the normalized request first; one that does
+// not decode as it is read as the deprecated map form, whose questions are an
+// object keyed by name rather than a list. mapForm reports which, so the
+// response is rendered in the same form.
+func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *schemas.BifrostDecisionRequest, mapForm bool, err error) {
+	files, err := readDecisionMultipart(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
+	}
+	handlerReq, base, decodeErr := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+	if decodeErr != nil {
+		if files != nil {
+			return nil, true, fmt.Errorf("a multipart decision request needs the input form in its request part")
+		}
+		req, err := prepareDecisionMapFormRequest(ctx, config)
+		return req, true, err
+	}
+	// Decoding reads an absent input and an explicit null the same way. A null
+	// input is forwarded as a null state, so only an absent key is rejected.
+	if !gjson.GetBytes(ctx.PostBody(), "input").Exists() {
+		return nil, false, fmt.Errorf("input is required for decision")
+	}
+	if len(handlerReq.Questions) == 0 {
+		return nil, false, fmt.Errorf("questions are required for decision")
+	}
+	if err := attachDecisionFiles(&handlerReq.Input, files); err != nil {
+		return nil, false, err
+	}
+	return &schemas.BifrostDecisionRequest{
+		Provider:         base.Provider,
+		Model:            base.ModelName,
+		Input:            handlerReq.Input,
+		Questions:        handlerReq.Questions,
+		SafetyIdentifier: handlerReq.SafetyIdentifier,
+		Fallbacks:        base.Fallbacks,
+		ExtraParams:      base.ExtraParams,
+
+		PromptCacheKey:     handlerReq.PromptCacheKey,
+		PromptCacheOptions: handlerReq.PromptCacheOptions,
+	}, false, nil
+}
+
+// readDecisionMultipart reads a multipart decision request: the JSON in its "request"
+// part replaces the body, so it decodes exactly as a JSON request does, and the file
+// parts are returned for attachDecisionFiles. A JSON request returns no files.
+func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) {
+	boundary := ctx.Request.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	request, files, err := lib.ReadMultipartRequest(ctx.Request.Body(), string(boundary))
+	if err != nil {
+		return nil, err
+	}
+	ctx.Request.SetBody(request)
+	ctx.Request.Header.SetContentType("application/json")
+	return files, nil
+}
+
+// attachDecisionFiles gives each image part sent by reference the bytes of the file
+// part its name points at. files is nil for a JSON request, where no part can name a
+// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
+// own multipart rules also give: a name with no file part, two parts naming one file,
+// and a file part no image part names. A file part takes precedence over data.
+func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
+	used := make(map[string]string, len(files))
+	for m := range input.Messages {
+		parts := input.Messages[m].Content.Parts
+		for i := range parts {
+			part := &parts[i]
+			if !part.IsAsset() || part.Name == nil {
+				continue
+			}
+			if files == nil {
+				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+			}
+			data, ok := files[*part.Name]
+			if !ok {
+				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+			}
+			if other, taken := used[*part.Name]; taken {
+				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+			}
+			used[*part.Name] = *part.ID
+			part.Data.File = data
+		}
+	}
+	for name := range files {
+		if _, ok := used[name]; !ok {
+			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+		}
+	}
+	return nil
+}
+
+// prepareDecisionMapFormRequest prepares a BifrostDecisionRequest from a
+// map-form body: the state becomes the input and the questions are normalized
+// through the Typesafe converter.
+func prepareDecisionMapFormRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostDecisionRequest, error) {
+	req, base, err := prepareRequest[DecisionMapFormRequest](ctx, config, decisionMapFormKnownFields)
+	if err != nil {
+		return nil, err
 	}
 	// An explicit null state is SDK-valid and forwarded; only an absent key is
 	// rejected here.
 	if req.State == nil && !gjson.GetBytes(ctx.PostBody(), "state").Exists() {
-		return nil, nil, fmt.Errorf("state is required for decision")
+		return nil, fmt.Errorf("state is required for decision")
 	}
 	if len(req.Questions) == 0 {
-		return nil, nil, fmt.Errorf("questions are required for decision")
+		return nil, fmt.Errorf("questions are required for decision")
 	}
-	return req, &schemas.BifrostDecisionRequest{
+	questions, err := typesafe.ToBifrostDecisionQuestions(req.Questions)
+	if err != nil {
+		return nil, err
+	}
+	return &schemas.BifrostDecisionRequest{
 		Provider:    base.Provider,
 		Model:       base.ModelName,
-		State:       req.State,
-		Questions:   req.Questions,
+		Input:       typesafe.ToBifrostDecisionInput(req.State),
+		Questions:   questions,
 		Fallbacks:   base.Fallbacks,
 		ExtraParams: base.ExtraParams,
 	}, nil
 }
 
-// evaluation handles POST /v1/decisions - Process decision requests
+// evaluation handles POST /v1/decisions - Process decision requests. A
+// deprecated map-form request is answered in the map form.
 func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
-	_, bifrostDecisionReq, err := prepareDecisionRequest(ctx, h.config)
+	bifrostDecisionReq, mapForm, err := prepareDecisionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1512,7 +1604,83 @@ func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	if mapForm {
+		SendJSON(ctx, toDecisionMapFormResponse(resp))
+		return
+	}
 	SendJSON(ctx, resp)
+}
+
+// DecisionMapFormResponse is the response to a map-form request: answers keyed
+// by question name.
+type DecisionMapFormResponse struct {
+	ID          string                             `json:"id,omitempty"`
+	Model       string                             `json:"model"`
+	Answers     map[string]DecisionMapAnswer       `json:"answers"`
+	Usage       *schemas.BifrostLLMUsage           `json:"usage,omitempty"`
+	ExtraFields schemas.BifrostResponseExtraFields `json:"extra_fields"`
+
+	// Laya-specific fields
+	Routing json.RawMessage `json:"routing,omitempty"`
+}
+
+// DecisionMapAnswer is one answer of a map-form response. Value is the noul
+// probability, the chosen option, or the score; a refusal has no value.
+type DecisionMapAnswer struct {
+	Kind          string             `json:"kind"`
+	Value         interface{}        `json:"value"`
+	Confidence    *float64           `json:"confidence,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"`
+
+	// Laya-specific fields
+	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
+	Action              json.RawMessage `json:"action,omitempty"`
+	Abstention          *string         `json:"abstention,omitempty"`
+	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
+	LowConfidence       *bool           `json:"low_confidence,omitempty"`
+}
+
+// toDecisionMapFormResponse renders a normalized response in the map form,
+// through Typesafe's answer shape: each answer's noul, choice, or score
+// becomes its value.
+func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionMapFormResponse {
+	if resp == nil {
+		return nil
+	}
+	answers := make(map[string]DecisionMapAnswer, len(resp.Answers))
+	for name, native := range typesafe.ToTypesafeAnswers(resp.Answers) {
+		answer := DecisionMapAnswer{
+			Kind:                native.Type,
+			Confidence:          native.Confidence,
+			Probabilities:       native.Probabilities,
+			Legend:              native.Legend,
+			AnswerConfidence:    native.AnswerConfidence,
+			Action:              native.Action,
+			Abstention:          native.Abstention,
+			AbstentionThreshold: native.AbstentionThreshold,
+			LowConfidence:       native.LowConfidence,
+		}
+		switch {
+		case native.Noul != nil:
+			answer.Value = *native.Noul
+		case native.Choice != nil:
+			answer.Value = *native.Choice
+		case native.Score != nil:
+			answer.Value = *native.Score
+		case native.Box != nil:
+			answer.Value = *native.Box
+		}
+		answers[name] = answer
+	}
+	return &DecisionMapFormResponse{
+		ID:          resp.ID,
+		Model:       resp.Model,
+		Answers:     answers,
+		Usage:       resp.Usage,
+		ExtraFields: resp.ExtraFields,
+		Routing:     resp.Routing,
+	}
 }
 
 // prepareOCRRequest prepares a BifrostOCRRequest from the HTTP request body
@@ -1753,6 +1921,10 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	}
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		transcriptionParams.ResponseFormat = &responseFormatValues[0]
+	}
+	// Repeated "timestamp_granularities[]" fields, matching the OpenAI SDK's encoding and the /openai route.
+	if granularityValues := form.Value["timestamp_granularities[]"]; len(granularityValues) > 0 {
+		transcriptionParams.TimestampGranularities = granularityValues
 	}
 	if transcriptionParams.ExtraParams == nil {
 		transcriptionParams.ExtraParams = make(map[string]interface{})
@@ -2199,12 +2371,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once
 	// the stream channel is returned, before any chunk arrives.
 	lib.ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, requestType)
+	// Read once on the handler goroutine: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
 
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -2313,7 +2487,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
-			runCompleter(false)
+			lib.RunRecovered("stream transport post-hook completer", func() { runCompleter(false) })
 			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
 			// other goroutine can be mid-send on eventCh when this closes it. Closing it
 			// while a send was still in flight would panic ("send on closed channel").
@@ -2321,9 +2495,20 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
 			if traceCompleter != nil {
-				traceCompleter(transportLogs)
+				lib.RunRecovered("stream trace completer", func() { traceCompleter(transportLogs) })
 			}
 		}()
+		// Registered after the teardown above so it runs first: a panic while converting a
+		// chunk is logged, an error frame goes to the client, upstream is cancelled and
+		// drained, then the teardown closes the stream.
+		defer lib.RecoverStreamProducer(cancel, stream, func() {
+			if errorJSON, err := sonic.Marshal(lib.SanitizeBifrostErrorForClient(lib.StreamProducerPanicError())); err == nil {
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
+				reader.SendError(errorJSON)
+			}
+		})
 
 		var includeEventType bool
 		var skipDoneMarker bool
@@ -2371,6 +2556,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 							}
 							return
 						}
+						if stripExtraFields {
+							errorJSON = lib.StripExtraFields(errorJSON)
+						}
 						// Return error event and stop streaming
 						reader.SendError(errorJSON)
 						cancel()
@@ -2390,6 +2578,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Convert response to JSON (transport-goroutine CPU).
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			if err == nil && stripExtraFields {
+				chunkJSON = lib.StripExtraFields(chunkJSON)
+			}
 			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
@@ -3637,6 +3828,14 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
 	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
 		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id, input_blob, or requests is required")
+		return
+	}
+	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
+	// and Bedrock submit the file and drop them, Gemini and Vertex refuse the mix. Refusing it here
+	// keeps a client from losing its inline requests, and keeps the file batch rule in governance
+	// from being judged on items that would never run.
+	if (req.InputFileID != "" || hasInputBlob) && len(req.Requests) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both")
 		return
 	}
 

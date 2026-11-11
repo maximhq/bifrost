@@ -2,6 +2,8 @@ package vectorstore
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -608,4 +610,152 @@ func TestVectorStoreFactory_Pinecone(t *testing.T) {
 	pineconeStore, ok := store.(*PineconeStore)
 	assert.True(t, ok)
 	assert.NotNil(t, pineconeStore)
+}
+
+// TestPineconeStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares. A
+// Pinecone index has one dimension for all its namespaces, so a namespace asked for at any other
+// size can never hold its vectors and is refused when it is opened.
+func TestPineconeStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, PineconeTestDimension, nil))
+
+	err := setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, 1, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
+	assert.Contains(t, err.Error(), fmt.Sprintf("already exists with dimension %d but config requires 1", PineconeTestDimension))
+
+	// The store is shared, so a refused size must leave it as it was: GetAll queries with a zero
+	// vector of the stored dimension, which the index refuses at any other size.
+	_, _, err = setup.Store.GetAll(setup.ctx, PineconeTestNamespace, nil, nil, nil, 10)
+	assert.NoError(t, err, "a refused CreateNamespace must not change the store's dimension")
+}
+
+// TestPineconeStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to
+// cosine similarity, the scale every store uses. The index has one dimension, so the vectors are
+// padded to it with zeros.
+func TestPineconeStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := PineconeTestNamespace + "-cosine"
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, PineconeTestDimension, nil))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(PineconeTestDimension, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(PineconeTestDimension, 0.7), map[string]interface{}{"label": "far"}))
+
+	// Pinecone reads are eventually consistent, so wait until both writes are visible.
+	query := unitVectorAtCosine(PineconeTestDimension, 1)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		all, err := setup.Store.GetNearest(setup.ctx, namespace, query, nil, []string{"label"}, 0, 10)
+		require.NoError(c, err)
+		assert.Len(c, all, 2)
+	}, 15*time.Second, 250*time.Millisecond)
+
+	results, err := setup.Store.GetNearest(setup.ctx, namespace, query, nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
+}
+
+// TestPineconeStore_DeleteMissingIDSucceeds pins deleting an id that was never written as a no-op,
+// the contract every store shares so clearing an unknown cache entry is not a server error.
+func TestPineconeStore_DeleteMissingIDSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, PineconeTestDimension, nil))
+	assert.NoError(t, setup.Store.Delete(setup.ctx, PineconeTestNamespace, generateUUID()))
+}
+
+// laggingPineconeIndex answers deleteMatchingRounds the way a serverless index
+// can: the first query after a delete still sees the entries it removed.
+type laggingPineconeIndex struct {
+	live     map[string]bool
+	pageSize int
+	stale    []SearchResult
+}
+
+func newLaggingPineconeIndex(count, pageSize int) *laggingPineconeIndex {
+	index := &laggingPineconeIndex{live: map[string]bool{}, pageSize: pageSize}
+	for i := range count {
+		index.live[fmt.Sprintf("id-%03d", i)] = true
+	}
+	return index
+}
+
+func (l *laggingPineconeIndex) page() []SearchResult {
+	ids := make([]string, 0, len(l.live))
+	for id := range l.live {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	page := []SearchResult{}
+	for _, id := range ids[:min(len(ids), l.pageSize)] {
+		page = append(page, SearchResult{ID: id})
+	}
+	return page
+}
+
+func (l *laggingPineconeIndex) find() ([]SearchResult, error) {
+	if l.stale != nil {
+		stale := l.stale
+		l.stale = nil
+		return stale, nil
+	}
+	return l.page(), nil
+}
+
+func (l *laggingPineconeIndex) remove(ids []string) error {
+	l.stale = l.page()
+	for _, id := range ids {
+		delete(l.live, id)
+	}
+	return nil
+}
+
+// A query that runs behind the delete hands the same full page back. That is
+// not proof the filter is cleared: more matches can sit behind the page, so the
+// loop waits and asks again rather than reporting success.
+func TestPineconeDeleteMatchingOutlastsAStaleRead(t *testing.T) {
+	index := newLaggingPineconeIndex(25, 10)
+	results, err := deleteMatchingRounds(context.Background(), index.find, index.remove, 10, time.Millisecond)
+	require.NoError(t, err)
+	assert.Len(t, results, 25)
+	assert.Empty(t, index.live, "every match is deleted, not only the first page")
+}
+
+// A page with room to spare held every match there was, so a short page of
+// ids already deleted still ends the loop successfully.
+func TestPineconeDeleteMatchingStopsOnAShortStalePage(t *testing.T) {
+	index := newLaggingPineconeIndex(7, 10)
+	results, err := deleteMatchingRounds(context.Background(), index.find, index.remove, 10, time.Hour)
+	require.NoError(t, err)
+	assert.Len(t, results, 7)
+	assert.Empty(t, index.live)
+}
+
+// Running out of rounds while matches keep coming is not success: some may
+// remain, and the caller has to hear it.
+func TestPineconeDeleteMatchingReportsAnExhaustedBound(t *testing.T) {
+	index := newLaggingPineconeIndex(pineconeDeleteRounds*10+5, 10)
+	_, err := deleteMatchingRounds(context.Background(), func() ([]SearchResult, error) { return index.page(), nil }, index.remove, 10, time.Millisecond)
+	require.Error(t, err)
+	assert.NotEmpty(t, index.live)
 }

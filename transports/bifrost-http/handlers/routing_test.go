@@ -242,7 +242,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond, MinConfidence: 0.7}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -255,6 +255,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	require.NotNil(t, stored.Decision.PreviousMessageCount)
 	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
 	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 0.7, stored.Decision.MinConfidence)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 
@@ -294,6 +295,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 
 	for _, tt := range tests {
@@ -636,6 +638,81 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rules, "a rejected create must not store a rule")
 	require.Empty(t, manager.reloaded)
+}
+
+// TestRoutingRuleDuplicatePriorityIsAConflict pins that a create or update colliding with another
+// rule's priority in the same scope answers 409 naming the priority, not a 500, and changes nothing.
+func TestRoutingRuleDuplicatePriorityIsAConflict(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	create := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	ruleID := func(t *testing.T, ctx *fasthttp.RequestCtx) string {
+		t.Helper()
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		require.NotEmpty(t, resp.Rule.ID)
+		return resp.Rule.ID
+	}
+
+	first := create(t, "first", 3)
+	require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode(), string(first.Response.Body()))
+
+	dup := create(t, "duplicate", 3)
+	require.Equal(t, fasthttp.StatusConflict, dup.Response.StatusCode(), string(dup.Response.Body()))
+	require.Contains(t, string(dup.Response.Body()), "priority 3 already exists")
+
+	other := create(t, "other", 4)
+	require.Equal(t, fasthttp.StatusOK, other.Response.StatusCode(), string(other.Response.Body()))
+	otherID := ruleID(t, other)
+
+	put := newTestRequestCtx(`{"priority":3}`)
+	put.SetUserValue("rule_id", otherID)
+	handler.updateRoutingRule(put)
+	require.Equal(t, fasthttp.StatusConflict, put.Response.StatusCode(), string(put.Response.Body()))
+	require.Contains(t, string(put.Response.Body()), "priority 3 already exists")
+
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rules, 2, "a conflicting create must not store a rule")
+	for _, r := range rules {
+		if r.ID == otherID {
+			require.Equal(t, 4, r.Priority, "a conflicting update must not change the stored priority")
+		}
+	}
+	require.Equal(t, []string{ruleID(t, first), otherID}, manager.reloaded, "only accepted writes reload the rule")
+
+	// A scoped rule reusing another's name in the same scope conflicts on the name, not the
+	// priority: still a 409, but advice to change the priority could not resolve it.
+	require.NoError(t, store.CreateTeam(context.Background(), &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+	scoped := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d,"scope":"team","scope_id":"team-1"}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	named := scoped(t, "team rule", 10)
+	require.Equal(t, fasthttp.StatusOK, named.Response.StatusCode(), string(named.Response.Body()))
+	sameName := scoped(t, "team rule", 11)
+	require.Equal(t, fasthttp.StatusConflict, sameName.Response.StatusCode(), string(sameName.Response.Body()))
+	require.NotContains(t, string(sameName.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
+
+	renamed := scoped(t, "another team rule", 12)
+	require.Equal(t, fasthttp.StatusOK, renamed.Response.StatusCode(), string(renamed.Response.Body()))
+	rename := newTestRequestCtx(`{"name":"team rule"}`)
+	rename.SetUserValue("rule_id", ruleID(t, renamed))
+	handler.updateRoutingRule(rename)
+	require.Equal(t, fasthttp.StatusConflict, rename.Response.StatusCode(), string(rename.Response.Body()))
+	require.NotContains(t, string(rename.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
 }
 
 // TestRoutingTargetTTFTTimeoutValidation pins a target's ttft_timeout_ms on

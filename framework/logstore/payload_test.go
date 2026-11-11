@@ -8,6 +8,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,6 +113,21 @@ func TestExtractPayload_NilOrEmptyMetadataOmittedFromSnapshot(t *testing.T) {
 	assert.NotContains(t, payload, "metadata", "empty Metadata must not appear in snapshot")
 }
 
+// TestExtractPayload_CarriesCallerIdentity pins that the object-store snapshot carries user_email and client_ip.
+func TestExtractPayload_CarriesCallerIdentity(t *testing.T) {
+	email, ip := "ada@example.com", "10.0.0.5"
+	payload := ExtractPayload(&Log{ID: "who", UserEmail: &email, ClientIP: &ip})
+	assert.Equal(t, email, payload["user_email"])
+	assert.Equal(t, ip, payload["client_ip"])
+	assert.NotContains(t, payload, "forwarded_for")
+
+	bare := ExtractPayload(&Log{ID: "anon"})
+	for _, key := range []string{"user_email", "client_ip"} {
+		assert.NotContains(t, bare, key, "absent values stay out of the snapshot")
+	}
+	assert.True(t, isPayloadEmpty(ExtractPayload(&Log{ID: "identity-only", UserEmail: &email, ClientIP: &ip})), "identity alone does not trigger an upload")
+}
+
 func TestClearPayload_DoesNotTouchIndexFields(t *testing.T) {
 	log := &Log{
 		ID:           "test-1",
@@ -183,6 +199,36 @@ func TestObjectKey(t *testing.T) {
 	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
 	key := ObjectKey("bifrost", ts, "req_abc123")
 	assert.Equal(t, "bifrost/logs/2026/04/03/14/req_abc123.json.gz", key)
+}
+
+func TestHybridObjectKeysFollowFormat(t *testing.T) {
+	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
+	h := &HybridLogStore{prefix: "bifrost"}
+
+	h.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionGzip)
+	jsonKey := ObjectKey("bifrost", ts, "req_1")
+	parquetKey := "bifrost/logs/2026/04/03/14/req_1.parquet"
+	assert.Equal(t, jsonKey, h.logKey(ts, "req_1"), "json keeps the existing keys")
+	assert.Equal(t, MCPToolObjectKey("bifrost", ts, "mcp_1"), h.mcpToolKey(ts, "mcp_1"))
+	assert.Equal(t, AgentLogObjectKey("bifrost", ts, "a2a_1"), h.agentLogKey(ts, "a2a_1"))
+	assert.Equal(t, parquetKey, h.alternateKey(jsonKey), "json keys fall back to parquet after a switch back")
+	assert.Equal(t, []string{jsonKey, parquetKey}, h.withAlternateKeys(jsonKey))
+
+	h.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionSnappy)
+	assert.Equal(t, parquetKey, h.logKey(ts, "req_1"))
+	assert.Equal(t, "bifrost/mcp-logs/2026/04/03/14/mcp_1.parquet", h.mcpToolKey(ts, "mcp_1"))
+	assert.Equal(t, "bifrost/agent-logs/2026/04/03/14/a2a_1.parquet", h.agentLogKey(ts, "a2a_1"))
+	assert.Equal(t, jsonKey, h.alternateKey(parquetKey))
+	assert.Equal(t, []string{parquetKey, jsonKey}, h.withAlternateKeys(parquetKey))
+	assert.Empty(t, h.alternateKey("bifrost/skills/abc"), "keys outside the payload formats have no alternate")
+
+	gcs := &HybridLogStore{prefix: "bifrost", singleFormat: true}
+	gcs.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionGzip)
+	assert.Empty(t, gcs.alternateKey(jsonKey), "a json-only backend never probes parquet keys")
+	assert.Equal(t, []string{jsonKey}, gcs.withAlternateKeys(jsonKey))
+
+	h.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionSnappy)
+	assert.Equal(t, objectstore.CompressionSnappy, h.parquetCompression)
 }
 
 func TestMCPToolObjectKey(t *testing.T) {
@@ -552,4 +598,18 @@ func strPtr(s string) *string {
 func TestIsPayloadEmpty_PluginLogsOnly(t *testing.T) {
 	assert.True(t, isPayloadEmpty(ExtractPayload(&Log{ID: "empty"})))
 	assert.False(t, isPayloadEmpty(ExtractPayload(&Log{ID: "plugin-only", PluginLogs: `{"guardrails":[{"message":"pii detected"}]}`})))
+}
+
+// TestAgentRawOnlyPayloadOffload verifies raw-only failures are payloads and hidden bytes never stay in the DB row.
+func TestAgentRawOnlyPayloadOffload(t *testing.T) {
+	raw := "/wA="
+	entry := &AgentLog{RawResponse: &raw, ContentHidden: true}
+	require.True(t, AgentLogHasPayload(entry))
+	data, err := MarshalAgentLogPayload(entry)
+	require.NoError(t, err)
+	PrepareAgentLogDBEntry(entry, "raw-object")
+	require.Nil(t, entry.RawResponse)
+	var hydrated AgentLog
+	require.NoError(t, MergeAgentLogPayloadFromJSON(&hydrated, data))
+	require.Equal(t, raw, *hydrated.RawResponse)
 }

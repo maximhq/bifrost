@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"strings"
-	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
@@ -75,13 +74,21 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, newRealtimeWireBifrostError(400, "invalid_request_error", "session.model is required"))
 		return
 	}
+	clientEvents, bifrostErr := liveWebRTCClientEvents(body)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
 
-	auth := captureAuthHeaders(ctx)
-	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.gateway.handlerStore, auth)
+	setupHeaders := captureSessionHeaders(ctx)
+	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.gateway.handlerStore, setupHeaders)
 	defer preReqCancel()
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	if integrations.IsAzureSDKRequest(ctx) {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 	}
 	if authErr := h.gateway.refuseAnonymous(preReqCtx); authErr != nil {
 		SendBifrostError(ctx, authErr)
@@ -96,7 +103,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	sessionID := uuid.NewString()
-	admission, bifrostErr := h.gateway.admit(auth, preReqCtx, middlewareValues, path, target, sessionID)
+	admission, bifrostErr := h.gateway.admit(setupHeaders, preReqCtx, middlewareValues, path, target, sessionID)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -111,7 +118,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	messages := &liveWebRTCMessages{}
+	messages := &liveWebRTCMessages{clientEvents: clientEvents}
 	messages.liveSessionController = admission.controller(h.gateway, messages)
 	var created *schemas.LiveCreateResponse
 	browserAnswer, bifrostErr := establishWebRTCRelay(webrtcRelaySetup{
@@ -121,7 +128,7 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 		browserOffer:     create.Transport.SDP,
 		handshakeCtx:     admission.ctx,
 		exchangeSDP: func(upstreamOffer string) (string, *schemas.BifrostError) {
-			created, bifrostErr = createLiveWebRTCSession(admission, body, upstreamOffer)
+			created, messages.serverEvents, bifrostErr = createLiveWebRTCSession(admission, body, upstreamOffer)
 			if bifrostErr != nil {
 				return "", bifrostErr
 			}
@@ -158,30 +165,45 @@ func (h *WebRTCLiveHandler) handleCreate(ctx *fasthttp.RequestCtx) {
 }
 
 // createLiveWebRTCSession creates the session at the provider with Bifrost's own SDP offer, since
-// Bifrost, not the browser, is the provider's WebRTC peer.
-func createLiveWebRTCSession(admission *liveAdmission, body []byte, upstreamOffer string) (*schemas.LiveCreateResponse, *schemas.BifrostError) {
+// Bifrost, not the browser, is the provider's WebRTC peer. The returned filter preserves the
+// browser's permissions after the controller has processed the gateway's required events.
+func createLiveWebRTCSession(admission *liveAdmission, body []byte, upstreamOffer string) (*schemas.LiveCreateResponse, *liveWebRTCEventFilter, *schemas.BifrostError) {
+	upstreamBody, filter, bifrostErr := prepareLiveWebRTCEvents(body)
+	if bifrostErr != nil {
+		return nil, nil, bifrostErr
+	}
 	offer, err := schemas.Marshal(upstreamOffer)
 	if err != nil {
-		return nil, newRealtimeWireBifrostError(500, "server_error", "failed to encode the SDP offer")
+		return nil, nil, newRealtimeWireBifrostError(500, "server_error", "failed to encode the SDP offer")
 	}
-	upstreamBody, err := providerUtils.SetRawJSONField(body, "transport.sdp", offer)
+	upstreamBody, err = providerUtils.SetRawJSONField(upstreamBody, "transport.sdp", offer)
 	if err != nil {
-		return nil, newRealtimeWireBifrostError(500, "server_error", "failed to prepare the session: "+err.Error())
+		return nil, nil, newRealtimeWireBifrostError(500, "server_error", "failed to prepare the session: "+err.Error())
 	}
 	created, bifrostErr := admission.provider.CreateLiveWebRTCSession(admission.ctx, admission.key, upstreamBody)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, nil, bifrostErr
 	}
 	admission.meter.setMinimumSeconds(liveWebRTCMinimumSeconds)
-	admission.meter.setProviderSessionID(created.Session.ID)
-	return created, nil
+	if err := admission.meter.setProviderSessionID(created.Session.ID); err != nil {
+		// The session exists at the provider and has incurred its minimum, but its id is never
+		// answered: without an owner on record it would be reachable to every key on the provider.
+		return nil, nil, liveSessionBindError(err)
+	}
+	// The session exists and has incurred its minimum even when its answer is unusable.
+	if created.Transport == nil || created.Transport.SDP == "" {
+		return nil, nil, newRealtimeWireBifrostError(502, "upstream_connection_error", "live session create response has no SDP answer")
+	}
+	return created, filter, nil
 }
 
 // liveWebRTCMessages carries a live session's data channel through the session controller. Audio
 // travels on the media tracks and never reaches it.
 type liveWebRTCMessages struct {
 	*liveSessionController
-	relay *webrtcRelay
+	relay        *webrtcRelay
+	serverEvents *liveWebRTCEventFilter
+	clientEvents *liveClientEventFilter
 }
 
 func (m *liveWebRTCMessages) sendUpstream(message []byte) error {
@@ -190,6 +212,10 @@ func (m *liveWebRTCMessages) sendUpstream(message []byte) error {
 }
 
 func (m *liveWebRTCMessages) sendClient(message []byte) error {
+	message, err := m.serverEvents.clientMessage(message)
+	if err != nil || message == nil {
+		return err
+	}
 	m.relay.sendDownstream(message, true)
 	return nil
 }
@@ -199,6 +225,10 @@ func (m *liveWebRTCMessages) abandonUpstream() {
 }
 
 func (m *liveWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChannelMessage) {
+	if refusal := m.clientEvents.refusal(msg.Data); refusal != nil {
+		m.forwardToClient(refusal)
+		return
+	}
 	if forward, ok := m.fromClient(msg.Data); ok {
 		r.sendUpstream(forward, msg.IsString)
 	}
@@ -208,11 +238,8 @@ func (m *liveWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataChannel
 	sessionClosed := m.fromUpstream(msg.Data)
 	m.forwardToClient(msg.Data)
 	if sessionClosed {
-		// Let session.closed reach the browser before the relay goes.
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			r.close()
-		}()
+		// The relay drains browser output before closing the data channel.
+		go r.close()
 	}
 }
 
@@ -229,5 +256,5 @@ func (m *liveWebRTCMessages) closed() {
 	if m.relay.closedDuringSetup() {
 		return
 	}
-	m.upstreamEnded()
+	m.upstreamEndedEarly()
 }

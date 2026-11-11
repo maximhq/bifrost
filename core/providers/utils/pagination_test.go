@@ -247,3 +247,21 @@ func TestHasMoreKeys(t *testing.T) {
 		t.Fatal("expected HasMoreKeys=false when on last key")
 	}
 }
+
+// TestBuildNextCursorWithinKey pins that a listing under one object never moves to another key.
+func TestBuildNextCursorWithinKey(t *testing.T) {
+	if cursor, more := BuildNextCursorWithinKey(2, false, "x"); cursor != "" || more {
+		t.Fatalf("exhausted listing returned cursor %q more=%v", cursor, more)
+	}
+	cursor, more := BuildNextCursorWithinKey(2, true, "file-9")
+	if !more {
+		t.Fatal("listing with more pages reported none")
+	}
+	decoded, err := schemas.DecodeSerialCursor(cursor)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.KeyIndex != 2 || decoded.Cursor != "file-9" {
+		t.Fatalf("cursor = %+v, want key 2 after file-9", decoded)
+	}
+}

@@ -603,3 +603,86 @@ func TestDimensionRankings_NoVisibleRowsSkipsPreviousGroupBy(t *testing.T) {
 	assert.True(t, res.Rankings[0].Trend.HasPreviousPeriod, "Other still compares against its own previous total")
 	assert.Len(t, grouped, 1, "only the current-period ranking groups; got %v", grouped)
 }
+
+// assertFilterMatchesFanoutRankings pins that a team, customer or business-unit
+// ranking row and the logs its id filters to agree. The rankings fan out over
+// the JSON-array columns on every backend that has them, but the filter checked
+// only the scalar column outside Postgres, so a row credited to an array-only
+// owner linked to an empty Logs page - Warp showed 23 requests for a team and
+// its link returned none.
+func assertFilterMatchesFanoutRankings(t *testing.T, s *RDBLogStore, insert func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string), now time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	cases := []struct {
+		dimension RankingDimension
+		idCol     string
+		filter    func(*SearchFilters, []string)
+	}{
+		{RankingDimensionTeam, "team_id", func(f *SearchFilters, ids []string) { f.TeamIDs = ids }},
+		{RankingDimensionCustomer, "customer_id", func(f *SearchFilters, ids []string) { f.CustomerIDs = ids }},
+		{RankingDimensionBusinessUnit, "business_unit_id", func(f *SearchFilters, ids []string) { f.BusinessUnitIDs = ids }},
+	}
+	for _, c := range cases {
+		prefix := c.idCol + "-"
+		insert(c.idCol, prefix+"array", "", "", `["x-a","x-b"]`, `["A","B"]`)
+		insert(c.idCol, prefix+"scalar", "x-a", "A", "", "")
+		insert(c.idCol, prefix+"malformed", "x-c", "C", "not json", "")
+		insert(c.idCol, prefix+"none", "", "", "", "")
+		// Both columns set: the fan-out reads the valid array and ignores the
+		// scalar, so the scalar id must not match a filter either.
+		insert(c.idCol, prefix+"both", "x-d", "D", `["x-b"]`, `["B"]`)
+
+		res, err := s.GetDimensionRankings(ctx, fanoutWindow(now), c.dimension)
+		require.NoError(t, err, c.idCol)
+		checked := 0
+		for _, row := range res.Rankings {
+			if row.ID == unassignedDimensionID {
+				continue
+			}
+			filters := fanoutWindow(now)
+			c.filter(&filters, []string{row.ID})
+			found, err := s.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
+			require.NoError(t, err, "%s %s", c.idCol, row.ID)
+			assert.Equal(t, row.TotalRequests, int64(len(found.Logs)), "%s %s: requests the ranking counts vs logs its filter returns", c.idCol, row.ID)
+			checked++
+		}
+		// Rows of the other dimensions leave this column empty and rank as
+		// Unassigned, so the cases share one table without clearing it.
+		require.Equal(t, 3, checked, "%s: x-a, x-b and x-c each ranked, x-d never", c.idCol)
+
+		shadowed := fanoutWindow(now)
+		c.filter(&shadowed, []string{"x-d"})
+		found, err := s.SearchLogs(ctx, shadowed, PaginationOptions{Limit: 50})
+		require.NoError(t, err, "%s x-d", c.idCol)
+		assert.Empty(t, found.Logs, "%s: a scalar beside a valid array is not ranked, so its filter matches nothing", c.idCol)
+
+		// Several ids at once: x-b only in the array column, x-c only on the
+		// scalar. ClickHouse bound the list inside hasAny's brackets as one
+		// tuple, so any filter with two ids failed there.
+		filters := fanoutWindow(now)
+		c.filter(&filters, []string{"x-b", "x-c"})
+		found, err = s.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
+		require.NoError(t, err, "%s two ids", c.idCol)
+		var got []string
+		for _, entry := range found.Logs {
+			got = append(got, entry.ID)
+		}
+		assert.ElementsMatch(t, []string{prefix + "array", prefix + "malformed", prefix + "both"}, got, "%s: two ids match the array rows and the scalar row", c.idCol)
+	}
+}
+
+func TestDimensionFilters_PostgresMatchFanoutRankings(t *testing.T) {
+	s, db := setupPerfTestDB(t)
+	now := time.Now().UTC()
+	assertFilterMatchesFanoutRankings(t, s, func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string) {
+		insertDimensionLog(t, db, idCol, id, now, scalarID, scalarName, arrayIDs, arrayNames)
+	}, now)
+}
+
+func TestDimensionFilters_SQLiteMatchFanoutRankings(t *testing.T) {
+	s, db := newFanoutTestStore(t)
+	now := time.Now().UTC()
+	assertFilterMatchesFanoutRankings(t, s, func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string) {
+		insertDimensionLog(t, db, idCol, id, now, scalarID, scalarName, arrayIDs, arrayNames)
+	}, now)
+}

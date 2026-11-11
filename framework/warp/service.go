@@ -24,6 +24,10 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrTopicsAlreadyBuilt refuses a seed run for an embedding model that
+	// already has topics: from there they are kept up to date as requests
+	// are indexed, and a run would only replace them.
+	ErrTopicsAlreadyBuilt = errors.New("warp: topics are already built for this embedding model")
 	// ErrNoVectorStore means Warp's required semantic index has no backend.
 	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
@@ -78,14 +82,62 @@ type Service struct {
 	cleanupOnce     sync.Once
 	cleanupStopOnce sync.Once
 	stopCleanup     chan struct{}
+	// upkeepOnce/stopUpkeep/upkeepStopOnce own the topic upkeep loop the
+	// same way, and topicJobs is what it starts discovery through.
+	upkeepOnce     sync.Once
+	upkeepStopOnce sync.Once
+	stopUpkeep     chan struct{}
+	topicJobs      TopicJobQueue
+	// topicsAdmitMu admits jobs to TopicsJobPartition one at a time (see
+	// LockTopicsJobAdmission).
+	topicsAdmitMu sync.Mutex
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog      *modelcatalog.ModelCatalog
-	vectorStore  vectorstore.VectorStore
+	catalog     *modelcatalog.ModelCatalog
+	vectorStore vectorstore.VectorStore
+	// logRetention reports the logs' retention in days, for the vector sweep.
+	logRetention func() int
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
+	topics       *TopicReader
 	backfillJobs BackfillJobStore
+	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
+	// them so a run crosses its thresholds on a handful of requests.
+	topicLimits topicLimits
+}
+
+// topicLister returns the topic reader as the tool interface, or a nil
+// interface when there is none - a typed nil would pass the tool's nil check.
+// ListTopics answers a topic query from the current reader, so a caller that
+// holds the service - the logs filter dimension does - follows the reader
+// through a log store rebind rather than keeping a stale one.
+func (s *Service) ListTopics(ctx context.Context, query TopicQuery) (*TopicList, error) {
+	lister := s.topicLister()
+	if lister == nil {
+		return nil, ErrUnavailable
+	}
+	return lister.ListTopics(ctx, query)
+}
+
+func (s *Service) topicLister() TopicLister {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.topics == nil {
+		return nil
+	}
+	return s.topics
+}
+
+// buildTopicReader returns a reader over the log store's topic tables, or
+// nil when the reader Warp has cannot reach them. Callers must hold s.mu, or
+// be the constructor.
+func (s *Service) buildTopicReader() *TopicReader {
+	topics := topicStoreOf(s.logs)
+	if s.store == nil || topics == nil {
+		return nil
+	}
+	return NewTopicReader(s.store, topics)
 }
 
 // Option configures a Service.
@@ -196,8 +248,10 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(service)
 	}
+	service.topics = service.buildTopicReader()
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		service.indexer.SetTopicStore(topicStoreOf(service.logs))
 		if service.logs != nil {
 			// Only when the reader can hydrate. A reader that cannot is still a
 			// perfectly good LogReader for every other Warp tool, so semantic
@@ -267,14 +321,15 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 		return nil
 	}
 	return func(usage *schemas.BifrostLLMUsage) float64 {
-		// ResponsesRequest, because that is what the agent calls. The catalog
+		// ResponsesStreamRequest, because that is what the agent calls (see
+		// StreamedResponses); it prices on the responses rate card. The catalog
 		// keeps separate chat and responses rates and only falls back when the
 		// requested mode is absent, so naming the wrong one silently prices the
 		// turn off the other rate card.
 		// costProviderFor, not config.Provider: a provider-qualified model routes
 		// by its own prefix, and pricing must follow routing or the turn is
 		// priced off the wrong rate card.
-		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesRequest, nil)
+		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesStreamRequest, nil)
 	}
 }
 
@@ -285,6 +340,7 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	// Takes no lock of its own, so it is safe inside this one.
 	s.stopHistoryCleanup()
+	s.stopTopicUpkeep()
 	if s.indexer != nil {
 		s.indexer.Close()
 	}
@@ -310,7 +366,13 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// rebuilding it left semantic search hydrating through the reader this
 	// service no longer uses - or absent entirely on a deployment that enabled
 	// logging after startup, which is exactly the case SetLogReader exists for.
+	// The topic reader reads through the same reader's store, so it follows.
 	s.semantic = s.buildSemanticSearcher()
+	s.topics = s.buildTopicReader()
+	// Live assignment files through the same store, so it follows too.
+	if s.indexer != nil {
+		s.indexer.SetTopicStore(topicStoreOf(logs))
+	}
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil

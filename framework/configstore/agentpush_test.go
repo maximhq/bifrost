@@ -26,6 +26,7 @@ func TestAgentPushConfigCRUD(t *testing.T) {
 		AgentName:        "fixture",
 		TaskID:           "task-1",
 		ConfigID:         "cfg-1",
+		Tenant:           "downstream-tenant",
 		URL:              "https://client.example/callback",
 		Token:            &schemas.SecretVar{Val: "client-token", SecretType: schemas.SecretTypePlainText},
 		AuthScheme:       "Bearer",
@@ -41,6 +42,7 @@ func TestAgentPushConfigCRUD(t *testing.T) {
 	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
+	require.Equal(t, "downstream-tenant", got.Tenant)
 	require.Equal(t, "https://client.example/callback", got.URL)
 	require.Equal(t, "client-token", got.Token.GetValue())
 	require.Equal(t, "client-credential", got.AuthCredentials.GetValue())

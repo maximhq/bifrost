@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	starlarkjson "github.com/canonical/starlark/lib/json"
+	starlarkmath "github.com/canonical/starlark/lib/math"
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/starlarkstruct"
 	"github.com/canonical/starlark/syntax"
@@ -18,6 +20,14 @@ import (
 // sandboxLimitsKey holds an execution's resolved limits as a thread local, so
 // conversions and tool-result checks deep in a call use the same budget.
 const sandboxLimitsKey = "bifrost.codemode.limits"
+
+// sandboxModules are predeclared in every execution: json lets a script parse a result that
+// arrives as a string, math covers arithmetic the builtins lack. Every function in both is
+// declared CPU-, memory- and time-safe, so the thread's safety requirement admits them.
+var sandboxModules = starlark.StringDict{
+	"json": starlarkjson.Module,
+	"math": starlarkmath.Module,
+}
 
 // sandboxLimits returns the limits of the execution running on thread, or the
 // defaults for a thread that was not started by runSandbox.
@@ -150,6 +160,12 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 		predeclared[client] = starlarkstruct.FromStringDict(starlark.String(client), members)
 		servers = append(servers, client)
 	}
+	// A server bound under a module's name keeps it, so scripts already calling it still work.
+	for name, module := range sandboxModules {
+		if _, taken := predeclared[name]; !taken {
+			predeclared[name] = module
+		}
+	}
 	sort.Strings(servers)
 	opts := &syntax.FileOptions{TopLevelControl: true, While: true, Set: true, GlobalReassign: true, Recursion: true}
 	// Globals never leave this invocation. Avoid ExecFile's unconditional,
@@ -181,11 +197,53 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 			kind = ExecutionErrorTypeSyntax
 		}
 		result.Result = nil
-		hints := generatePythonErrorHints(err.Error(), servers)
+		var hints []string
 		if unsupportedStatement(code, err) != "" {
-			hints = append(exceptionHandlingHints(), hints...)
+			// The parse error only names an illegal token, so generic hints would bury this one.
+			hints = exceptionHandlingHints()
+		} else {
+			hints = generatePythonErrorHints(err.Error(), servers)
 		}
-		result.Errors = &ExecutionError{Kind: kind, Message: err.Error(), Hints: hints}
+		result.Errors = &ExecutionError{Kind: kind, Message: withTraceback(err), Hints: hints}
 	}
 	return result
+}
+
+// maxTracebackFrames bounds the traceback of a runtime error. Recursion is allowed, so the
+// outermost frame (the script line that started the chain) and the innermost ones are kept.
+const maxTracebackFrames = 6
+
+// withTraceback renders a runtime error with the script lines that led to it, in the Python
+// traceback layout models know. The last line is the error's own message, unchanged, so hints
+// keyed on it still apply. Errors raised before the script runs (syntax errors, undefined
+// names) already carry their position and come back as they are.
+func withTraceback(err error) string {
+	var evalErr *starlark.EvalError
+	if !errors.As(err, &evalErr) {
+		return err.Error()
+	}
+	frames := evalErr.CallStack
+	// A builtin on top (fail, a tool call) has no script position, and the message names it.
+	if n := len(frames); n > 0 && frames[n-1].Pos.Filename() == "<builtin>" {
+		frames = frames[:n-1]
+	}
+	if len(frames) == 0 {
+		return err.Error()
+	}
+	var sb strings.Builder
+	sb.WriteString("Traceback (most recent call last):\n")
+	writeFrame := func(frame starlark.CallFrame) {
+		fmt.Fprintf(&sb, "  %s: in %s\n", frame.Pos, frame.Name)
+	}
+	if len(frames) > maxTracebackFrames {
+		writeFrame(frames[0])
+		fmt.Fprintf(&sb, "  ... %d more frames ...\n", len(frames)-maxTracebackFrames)
+		frames = frames[len(frames)-(maxTracebackFrames-1):]
+	}
+	for _, frame := range frames {
+		writeFrame(frame)
+	}
+	sb.WriteString("Error: ")
+	sb.WriteString(err.Error())
+	return sb.String()
 }

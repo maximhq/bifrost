@@ -9,8 +9,23 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrRoutingRulePriorityTaken is returned when a routing rule's priority is already used by another
+// rule in the same scope and scope ID. It wraps ErrAlreadyExists and reads the same, so callers that
+// only ask whether something already exists are unaffected; callers that advise changing the
+// priority check for it, since a duplicate name surfaces as ErrAlreadyExists too.
+var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
+
+// ErrDatasheetPricingClaimTaken is returned when a datasheet override's pricing
+// patch targets a pricing row another override already patches (for example
+// bedrock and bedrock_mantle, which share pricing rows). It wraps
+// ErrAlreadyExists.
+var ErrDatasheetPricingClaimTaken = fmt.Errorf("pricing for this datasheet row is already set by another override: %w", ErrAlreadyExists)
+
 // ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
 var ErrInvalidAgentGrant = errors.New("invalid agent grant")
+
+// ErrInvalidRelayGrant reports a virtual-key grant naming an empty, duplicate or unknown endpoint.
+var ErrInvalidRelayGrant = errors.New("invalid relay grant")
 
 // ErrMCPEndpointSlugExists is returned when a create resolves an endpoint slug already used by a
 // Virtual MCP or an MCP client. Both serve at /mcp/<slug>, so the slug namespace is shared; callers
@@ -46,3 +61,6 @@ type ErrUnresolvedKeys struct {
 func (e *ErrUnresolvedKeys) Error() string {
 	return fmt.Sprintf("could not resolve keys: %s", strings.Join(e.Identifiers, ", "))
 }
+
+// ErrOAuthConfigChanged is returned when an oauth config was rebound by another caller first.
+var ErrOAuthConfigChanged = errors.New("oauth config was changed concurrently")

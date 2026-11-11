@@ -202,10 +202,13 @@ func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []s
 func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
 	where := buildWeaviateFilter(queries)
 
+	additional := []graphql.Field{{Name: "id"}}
+	includeVectors := IncludeVectorsRequested(ctx)
+	if includeVectors {
+		additional = append(additional, graphql.Field{Name: "vector"})
+	}
 	fields := []graphql.Field{
-		{Name: "_additional", Fields: []graphql.Field{
-			{Name: "id"},
-		}},
+		{Name: "_additional", Fields: additional},
 	}
 	for _, field := range selectFields {
 		fields = append(fields, graphql.Field{Name: field})
@@ -216,10 +219,20 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 		WithLimit(int(limit)).
 		WithFields(fields...)
 
+	// Weaviate's cursor walks a whole class and refuses a filter beside it, so
+	// a filtered read pages by offset instead and its cursor says so. An offset
+	// read cannot go past QUERY_MAXIMUM_RESULTS, 10,000 by default: a filter
+	// that selects more than that has to be narrowed by the caller.
+	offset := 0
 	if where != nil {
 		search = search.WithWhere(where)
-	}
-	if cursor != nil {
+		if cursor != nil && *cursor != "" {
+			if _, err := fmt.Sscanf(*cursor, weaviateOffsetCursorPrefix+"%d", &offset); err != nil || offset < 0 {
+				return nil, nil, fmt.Errorf("%w: invalid cursor %q for a filtered read", ErrQuerySyntax, *cursor)
+			}
+			search = search.WithOffset(offset)
+		}
+	} else if cursor != nil {
 		search = search.WithAfter(*cursor)
 	}
 
@@ -273,13 +286,31 @@ func (s *WeaviateStore) GetAll(ctx context.Context, className string, queries []
 				searchResult.ID = id
 				nextCursor = &id
 			}
+			if includeVectors {
+				searchResult.Vector = VectorFromAdditional(additional["vector"])
+			}
 		}
 
 		results = append(results, searchResult)
 	}
 
+	if where != nil {
+		nextCursor = nil
+		if limit > 0 && int64(len(results)) >= limit {
+			next := fmt.Sprintf("%s%d", weaviateOffsetCursorPrefix, offset+len(results))
+			nextCursor = &next
+		}
+	}
 	return results, nextCursor, nil
 }
+
+// weaviateOffsetCursorPrefix marks the cursor of a filtered read, which is an
+// offset, so it is never mistaken for the object id an unfiltered one carries.
+const weaviateOffsetCursorPrefix = "offset:"
+
+// FiltersVectorReadsOnServer reports that a filtered read is served by the
+// class's own indexes.
+func (s *WeaviateStore) FiltersVectorReadsOnServer() bool { return true }
 
 // GetNearest with explicit filters only
 func (s *WeaviateStore) GetNearest(
@@ -296,7 +327,7 @@ func (s *WeaviateStore) GetNearest(
 	fields := []graphql.Field{
 		{Name: "_additional", Fields: []graphql.Field{
 			{Name: "id"},
-			{Name: "certainty"},
+			{Name: "distance"},
 		}},
 	}
 
@@ -304,9 +335,12 @@ func (s *WeaviateStore) GetNearest(
 		fields = append(fields, graphql.Field{Name: field})
 	}
 
+	// threshold and the returned score are cosine similarity, the scale every store uses. Classes
+	// use Weaviate's default cosine distance, which is 1 - cosine similarity. Its certainty is
+	// (1 + cosine) / 2, so filtering by certainty would admit cosine 0.6 under a 0.8 threshold.
 	nearVector := s.client.GraphQL().NearVectorArgBuilder().
 		WithVector(vector).
-		WithCertainty(float32(threshold))
+		WithDistance(float32(1 - threshold))
 
 	search := s.client.GraphQL().Get().
 		WithClassName(className).
@@ -372,20 +406,18 @@ func (s *WeaviateStore) GetNearest(
 			continue
 		}
 
-		// Safely extract certainty/score with default value
+		// Score is cosine similarity, 1 - cosine distance; 0 if the distance is missing or unreadable.
 		var score float64
-		if certaintyRaw, exists := additional["certainty"]; exists && certaintyRaw != nil {
-			switch v := certaintyRaw.(type) {
+		if distanceRaw, exists := additional["distance"]; exists && distanceRaw != nil {
+			switch v := distanceRaw.(type) {
 			case float64:
-				score = v
+				score = 1 - v
 			case float32:
-				score = float64(v)
+				score = 1 - float64(v)
 			case int:
-				score = float64(v)
+				score = 1 - float64(v)
 			case int64:
-				score = float64(v)
-			default:
-				score = 0.0 // Default score if type conversion fails
+				score = 1 - float64(v)
 			}
 		}
 
@@ -400,11 +432,18 @@ func (s *WeaviateStore) GetNearest(
 }
 
 // Delete removes multiple objects by ID
+// Delete removes one object. Deleting one that is not there is not an error,
+// as on the other backends: Weaviate answers 404, and a caller clearing out
+// an id it may never have written has nothing to act on.
 func (s *WeaviateStore) Delete(ctx context.Context, className string, id string) error {
-	return s.client.Data().Deleter().
+	err := s.client.Data().Deleter().
 		WithClassName(className).
 		WithID(id).
 		Do(ctx)
+	if isWeaviateNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries []Query) ([]DeleteResult, error) {
@@ -533,6 +572,33 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 	return store, nil
 }
 
+// checkStoredVectorDimension refuses to reopen a class at a dimension other than the one its
+// vectors already have, as every store does. Weaviate keeps no dimension on the class itself (the
+// HNSW config ignores a vectorDimensions key), so one stored vector is sampled instead. An empty
+// class has nothing to compare and passes. A failed sample is logged and the check skipped, as
+// Qdrant does when it cannot inspect a collection, so a transient read error never blocks startup.
+func (s *WeaviateStore) checkStoredVectorDimension(ctx context.Context, className string, dimension int) error {
+	if dimension <= 0 {
+		return nil
+	}
+	objects, err := s.client.Data().ObjectsGetter().
+		WithClassName(className).
+		WithLimit(1).
+		WithVector().
+		Do(ctx)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("could not sample class %q for dimension validation (check skipped): %v", className, err))
+		return nil
+	}
+	if len(objects) == 0 || objects[0] == nil || len(objects[0].Vector) == 0 {
+		return nil
+	}
+	if existing := len(objects[0].Vector); existing != dimension {
+		return dimensionMismatchError(className, existing, dimension, "class")
+	}
+	return nil
+}
+
 func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, dimension int, properties map[string]VectorStoreProperties) error {
 	// Reject names Weaviate would silently auto-capitalize: writes via REST
 	// route fine, but the GraphQL read path is case-strict and breaks.
@@ -549,7 +615,7 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 	}
 
 	if exists {
-		return nil
+		return s.checkStoredVectorDimension(ctx, className, dimension)
 	}
 
 	// Create properties

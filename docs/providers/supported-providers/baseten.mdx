@@ -1,0 +1,307 @@
+---
+title: "Baseten"
+description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning and the Responses API, plus dedicated deployments for chat, embeddings, transcription and image generation"
+icon: "b"
+---
+
+## Overview
+
+Baseten serves open models two ways, and the Bifrost `baseten` provider covers both:
+
+- **Model APIs.** A shared, OpenAI-compatible endpoint at `https://inference.baseten.co/v1` for models such as `zai-org/GLM-5.3`, `deepseek-ai/DeepSeek-V4-Pro-0813` and `openai/gpt-oss-120b`. Bifrost uses it by default.
+- **Dedicated deployments.** A model you deployed yourself, with its own URL such as `https://model-<id>.api.baseten.co/environments/production/sync/v1`. You point a model alias at it with `deployment_url`.
+
+Both take your Baseten API key as a bearer token.
+
+### Supported operations
+
+| Operation | Model APIs | Dedicated deployment | Endpoint |
+|-----------|------------|----------------------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Chat Completions (stream) | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
+| Responses API (stream) | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
+| Embeddings | ❌ | ✅ | `/embeddings` |
+| Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
+| Image Generation | ❌ | ✅ | `/images/generations` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
+| Files, Batch, Count Tokens, Rerank | ❌ | ❌ | - |
+
+Model APIs has no embeddings, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, rerank and classification deployments, and image models packaged as a custom Truss, use their own `/predict` request shapes, which Bifrost doesn't translate. Baseten has no video generation models.
+
+## Setup and configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. If **Baseten** isn't under **Configured Providers**, click **Add New Provider** and select **Baseten**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your Baseten API key directly or use an environment variable (for example, `env.BASETEN_API_KEY`).
+5. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Baseten:
+    return []schemas.Key{{
+        Name:   "baseten-key-1",
+        Value:  *schemas.NewSecretVar("env.BASETEN_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+`network_config.base_url` changes the Model APIs host. Leave it empty to use `https://inference.baseten.co/v1`.
+
+## Dedicated deployments
+
+Add an alias to the key and set its `deployment_url` to the deployment's OpenAI-compatible base URL. Find it on the deployment's page in the Baseten dashboard: it ends in `/sync/v1`. Requests for that alias go to the deployment instead of Model APIs, using the same API key.
+
+The alias `model_id` is what Bifrost sends as `model`:
+
+- **Engine-Builder (TensorRT-LLM) and BEI deployments** ignore `model`, so any value works. Baseten's examples use `not-required`.
+- **vLLM and custom servers** need the name the server was started with (`--served-model-name`). Any other value returns a 404.
+
+Set `model_name` to the model the deployment runs, so pricing and logs show a real model name instead of `not-required`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Edit the Baseten key and open **Deployments**.
+2. Add a deployment. The name is what clients send, for example `my-glm`, and the model ID is the served model name or `not-required`.
+3. Expand the row and fill **Deployment URL** with the `/sync/v1` URL, or an env reference such as `env.BASETEN_GLM_DEPLOYMENT_URL`.
+4. Save the key.
+
+The form rejects a literal URL that isn't `https`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "my-glm": {
+              "model_id": "not-required",
+              "model_name": "zai-org/GLM-5.3",
+              "deployment_url": "https://model-abc123.api.baseten.co/environments/production/sync/v1"
+            },
+            "my-embedder": {
+              "model_id": "not-required",
+              "model_name": "Qwen/Qwen3-Embedding-0.6B",
+              "deployment_url": "env.BASETEN_EMBEDDINGS_DEPLOYMENT_URL"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Clients then call the alias like any other model:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-glm",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+A literal `deployment_url` must be an absolute `https` URL. Bifrost checks env and vault references when they resolve. If one resolves to an empty value, the request fails rather than falling back to Model APIs. `deployment_url` is a host Bifrost sends the key to, so it gets the same endpoint-change protection as Azure's per-alias `endpoint`.
+
+To target a named environment or a specific deployment instead of production, use that deployment's own `/sync/v1` URL from the dashboard.
+
+---
+
+# 1. Chat Completions
+
+## Request parameters
+
+Baseten accepts the usual OpenAI chat parameters, including `tools`, `tool_choice`, `parallel_tool_calls`, `response_format` (`json_object` and `json_schema`), `logprobs`, `top_logprobs`, `seed`, `stop`, `temperature`, `top_p` and the penalties. For the full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Baseten's chat schema rejects fields it doesn't define, so Bifrost adjusts the request before sending it:
+
+| Bifrost parameter | Sent to Baseten |
+|-------------------|-----------------|
+| `max_completion_tokens` | `max_tokens` |
+| `service_tier`, `store`, `prompt_cache_key`, `verbosity` | dropped |
+| `metadata`, `safety_identifier`, `audio`, `modalities`, `prediction`, `web_search_options` | dropped |
+| Anthropic-only fields (`speed`, `inference_geo`, `mcp_servers`, `container`, `cache_control`, `task_budget`, `context_management`) | dropped |
+| `developer` role | `system` role |
+
+`n` and `best_of` only accept 1. Larger values come back as Baseten's own 400.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/zai-org/GLM-5.3",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_completion_tokens": 512
+  }'
+```
+
+### Reasoning
+
+`reasoning_effort` passes through with every level Baseten accepts: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Models without reasoning ignore it. Baseten returns the thinking as `reasoning_content`, which Bifrost exposes as the message's `reasoning`, and keeps it on assistant turns you send back. Reflection's Beam returns a 400 when earlier assistant turns lack it.
+
+GLM 5.2 and Nemotron Ultra turn thinking on through the chat template instead of `reasoning_effort`. Send it as an extra param:
+
+```json
+{
+  "model": "baseten/zai-org/GLM-5.2",
+  "messages": [{"role": "user", "content": "Plan a three-day trip to Kyoto."}],
+  "chat_template_args": {"enable_thinking": true}
+}
+```
+
+### Extra parameters
+
+Extra parameters pass through unchanged, so Baseten-only sampling fields such as `top_k`, `min_p`, `repetition_penalty`, `min_tokens` and `chat_template_args` reach the API. Baseten's documented name is `chat_template_args`, not `chat_template_kwargs`.
+
+### Streaming
+
+Baseten sends usage on every streamed chunk by default. Bifrost reports it once, on the final chunk, with the cumulative totals.
+
+### Prompt caching
+
+Baseten caches prompt prefixes automatically. Sending the same `x-session-affinity` value on related requests improves hit rates. A client forwards it as `x-bf-eh-x-session-affinity`, or you can set it for every request in `network_config.extra_headers`.
+
+---
+
+# 2. Responses API
+
+On Model APIs, Responses requests go to Baseten's native `/responses`, streamed or not. It is stateless: `previous_response_id`, `conversation`, `background` and `prompt` return 501, so send the full input on every turn.
+
+Baseten's `/responses` accepts `reasoning.effort` from `minimal` to `high`, a narrower range than chat. Bifrost sends `none` as `minimal`, and `xhigh` or `max` as `high`.
+
+Dedicated deployments have no `/responses` route. For an alias with `deployment_url`, Bifrost converts the request to chat completions and converts the reply back.
+
+---
+
+# 3. Embeddings
+
+Embeddings run on dedicated BEI deployments, which serve the OpenAI embeddings shape.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-embedder",
+    "input": ["first document", "second document"]
+  }'
+```
+
+`my-embedder` must be an alias with a `deployment_url`. A request for a model without one, including any Model APIs model, fails before reaching Baseten.
+
+---
+
+# 4. Transcriptions
+
+Dedicated speech-recognition deployments (for example Qwen3 ASR) serve OpenAI's multipart `/audio/transcriptions`, so `/v1/audio/transcriptions` works against an alias with `deployment_url`. Streaming transcription isn't supported, because Baseten's real-time transcription uses its own WebSocket protocol.
+
+---
+
+# 5. Image Generation
+
+Baseten's image recipes, such as FLUX.2, Krea 2 Turbo and Qwen-Image, run on the SGLang diffusion stack and serve OpenAI's `/images/generations`, so `/v1/images/generations` works against an alias with `deployment_url`.
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "my-flux": {
+              "model_id": "black-forest-labs/FLUX.2-dev",
+              "model_name": "black-forest-labs/FLUX.2-dev",
+              "deployment_url": "https://model-def456.api.baseten.co/environments/production/sync/v1"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-flux",
+    "prompt": "A lighthouse at dusk",
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+```
+
+Images come back as base64 in `data[].b64_json`. Streaming, edits and variations aren't supported, because the deployments don't serve those routes. A request for a model without a `deployment_url`, including any Model APIs model, fails before reaching Baseten.
+
+---
+
+# 6. List Models
+
+Bifrost lists models from Model APIs' `/models` for each key, plus the aliases configured on the key. Dedicated deployments appear through their aliases.
+
+---
+
+# 7. Errors and retries
+
+Baseten returns 529 when a model is overloaded. Bifrost treats it as transient, so it is retried with the provider's backoff settings when `network_config.max_retries` is above 0. `max_retries` defaults to 0, so set it before relying on retries; see [Retries and fallbacks](/features/retries-and-fallbacks). Other errors keep their status code and message.
+
+---
+
+## Baseten through Hugging Face
+
+Hugging Face's inference router also reaches Baseten-hosted models, as `huggingface/baseten/<model>`. That path uses your Hugging Face token and Hugging Face's model IDs. The `baseten` provider calls Baseten directly with a Baseten API key, and it is the only way to reach your dedicated deployments.
+
+If you set up Baseten earlier as a custom provider named `baseten`, that name now belongs to this provider. The dashboard offers to rename the custom one so both can exist side by side.

@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,18 +16,82 @@ import (
 )
 
 // sanitizeJSONForJSONB removes JSON escape sequences that PostgreSQL's jsonb
-// type cannot represent. Specifically, jsonb rejects the NUL unicode escape
-// (\u0000) with errcode 22P05 even though plain TEXT and the json type can
-// store it. Stripping the escape from the marshaled JSON keeps subsequent
-// TEXT->jsonb casts in list queries safe. The replacement is case-insensitive
-// since JSON allows \u0000 or \U0000.
+// type cannot represent, though plain TEXT and the json type (and so IS JSON)
+// accept them: the NUL escape \u0000 (22P05) is dropped, and an unpaired
+// surrogate escape (22P02) becomes \ufffd. It walks the string escape by
+// escape, so an escaped backslash followed by the text "u0000" is left intact.
+// A string without \u is returned as-is without allocating.
 func sanitizeJSONForJSONB(s string) string {
-	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\U`) {
+	if !strings.Contains(s, `\u`) {
 		return s
 	}
-	s = strings.ReplaceAll(s, `\u0000`, "")
-	s = strings.ReplaceAll(s, `\U0000`, "")
-	return s
+	var b strings.Builder
+	last := 0
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] != '\\' {
+			continue
+		}
+		if s[i+1] != 'u' {
+			i++ // skip the escaped character, including a second backslash
+			continue
+		}
+		cp, ok := jsonHex4(s, i+2)
+		if !ok {
+			i++
+			continue
+		}
+		end := i + 6
+		var repl string
+		switch {
+		case cp == 0:
+			repl = ""
+		case cp >= 0xD800 && cp <= 0xDBFF:
+			if low, ok := jsonHex4(s, end+2); ok && end+1 < len(s) && s[end] == '\\' && s[end+1] == 'u' && low >= 0xDC00 && low <= 0xDFFF {
+				i = end + 5 // a valid pair is kept as written
+				continue
+			}
+			repl = "\\ufffd"
+		case cp >= 0xDC00 && cp <= 0xDFFF:
+			repl = "\\ufffd"
+		default:
+			i = end - 1
+			continue
+		}
+		if b.Cap() == 0 {
+			b.Grow(len(s))
+		}
+		b.WriteString(s[last:i])
+		b.WriteString(repl)
+		last = end
+		i = end - 1
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// jsonHex4 parses the four hex digits of a \u escape starting at s[at].
+func jsonHex4(s string, at int) (rune, bool) {
+	if at < 0 || at+4 > len(s) {
+		return 0, false
+	}
+	var cp rune
+	for _, c := range []byte(s[at : at+4]) {
+		cp <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			cp |= rune(c - '0')
+		case c >= 'a' && c <= 'f':
+			cp |= rune(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			cp |= rune(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return cp, true
 }
 
 type SortBy string
@@ -47,6 +112,8 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
+	// RealtimeInputItemID is an internal lookup of an item in a saved turn's metadata.
+	RealtimeInputItemID  string     `json:"-"`
 	Providers            []string   `json:"providers,omitempty"`
 	Models               []string   `json:"models,omitempty"`
 	Aliases              []string   `json:"aliases,omitempty"`
@@ -71,6 +138,7 @@ type SearchFilters struct {
 	UserIDs              []string   `json:"user_ids,omitempty"`
 	BusinessUnitIDs      []string   `json:"business_unit_ids,omitempty"`
 	ProjectIDs           []string   `json:"project_ids,omitempty"`
+	TopicIDs             []string   `json:"topic_ids,omitempty"`           // Warp topics the request was filed under; a topic merged into one of these counts as it (see applyTopicFilter)
 	RoutingEngineUsed    []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	Apps                 []string   `json:"apps,omitempty"`                // Backend-detected client apps
 	UserAgents           []string   `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
@@ -95,14 +163,60 @@ type SearchFilters struct {
 	// (error_details.status_code). It is the error field every provider
 	// populates: error.code is empty for most of them, so "what kind of 400s are
 	// these" is usually a question about the status, not the code.
-	StatusCodes     []int             `json:"status_codes,omitempty"`
-	ContentSearch   string            `json:"content_search,omitempty"`
-	MetadataFilters map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	StatusCodes []int `json:"status_codes,omitempty"`
+	// GuardrailOutcomes keeps requests a guardrail acted on: "blocked" matches
+	// a guardrail_intervention error or a recorded intervention, "detected" a
+	// detect-only match in guardrail_debug. Several values are OR-ed together.
+	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	MetadataFilters   MetadataFilterMap `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
 	// "return every ranked entity", which is what the dashboard export uses.
 	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// MaxMetadataFilterValuesPerKey caps the accepted values for one metadata key. Each value is one
+// OR term in the search, and SQLite fails a query whose expression tree is deeper than 1000.
+const MaxMetadataFilterValuesPerKey = 100
+
+// MetadataFilterMap maps a metadata key to the values a row may hold for it.
+type MetadataFilterMap map[string][]string
+
+// UnmarshalJSON reads each key as an array of strings or as one bare string. The bare form is how
+// metadata filters were written before a key could hold several values, and cost-recalc jobs queued
+// back then still carry it. Empty strings are dropped, and so is a key left with no values.
+func (m *MetadataFilterMap) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == nil {
+		*m = nil
+		return nil
+	}
+	out := make(MetadataFilterMap, len(raw))
+	for key, value := range raw {
+		var values []string
+		var single string
+		if err := json.Unmarshal(value, &single); err == nil {
+			values = []string{single}
+		} else if err := json.Unmarshal(value, &values); err != nil {
+			return fmt.Errorf("metadata filter %q must be a string or an array of strings", key)
+		}
+		kept := values[:0]
+		for _, v := range values {
+			if v != "" {
+				kept = append(kept, v)
+			}
+		}
+		if len(kept) > 0 {
+			out[key] = kept
+		}
+	}
+	*m = out
+	return nil
 }
 
 // SessionGroupingActive reports whether this query should collapse each
@@ -242,6 +356,7 @@ type Log struct {
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	IsPassthrough           bool      `gorm:"not null;default:false" json:"is_passthrough,omitempty"`            // Row came from a passthrough route; Object is its inferred type, or passthrough when none is known
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
@@ -270,6 +385,7 @@ type Log struct {
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_ts,priority:1" json:"user_id"` // (user_id, timestamp) composite; replaces the single-column idx_logs_user_id
 	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
+	UserEmail               *string   `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_ts,priority:1" json:"team_id"` // (team_id, timestamp) composite; replaces the single-column idx_logs_team_id
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_ts,priority:1" json:"customer_id"` // (customer_id, timestamp) composite; replaces idx_logs_customer_id
@@ -286,6 +402,7 @@ type Log struct {
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
 	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP                *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                             // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
@@ -320,7 +437,7 @@ type Log struct {
 	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
 	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
 	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time for this row's call (with its retries), ms; nil = unmeasured
 	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
 	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
@@ -368,9 +485,16 @@ type Log struct {
 	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
-	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
-	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
-	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
+	DeferredGuardrail       *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
+	RealtimeInputCorrection *RealtimeInputCorrection         `gorm:"-" json:"-"` // Transient: merge one late transcript into the latest offloaded payload
+
+	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RawResponseFormat        schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed RawResponse's frames, so redaction can match text split across them
+	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
+	PassthroughStreamFormat  schemas.RawResponseFormat     `gorm:"-" json:"-"`                           // Transient: declared format of a streamed passthrough response body's events, so redaction can match text split across them
+	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
+	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping   *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
@@ -1100,7 +1224,10 @@ func (l *Log) DeserializeFields() error {
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -1406,6 +1533,12 @@ func (l *Log) assembleCostBreakdown() {
 	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
 		inputCost = total
 	}
+	// A provider-reported opaque total (no split) is not an input cost; leave the
+	// split empty so the UI shows only the total.
+	if l.TokenUsageParsed != nil && isOpaqueTotalCost(l.TokenUsageParsed.Cost) &&
+		l.OutputCost == 0 && l.AdditionalCost == 0 && costsReconcile(l.TokenUsageParsed.Cost.TotalCost, total) {
+		inputCost = 0
+	}
 	cb := &schemas.BifrostCost{
 		InputCost:      inputCost,
 		OutputCost:     l.OutputCost,
@@ -1425,6 +1558,11 @@ func (l *Log) assembleCostBreakdown() {
 		}
 	}
 	l.CostBreakdown = cb
+}
+
+// isOpaqueTotalCost reports whether a cost carries only a total with no input/output/additional split.
+func isOpaqueTotalCost(c *schemas.BifrostCost) bool {
+	return c != nil && c.TotalCost > 0 && c.InputCost == 0 && c.OutputCost == 0 && c.AdditionalCost == 0
 }
 
 // costsReconcile reports whether two cost figures match within float noise, used
@@ -1452,6 +1590,7 @@ const AgentLogHistoryMaxLimit = 1000
 // The slice fields match any of their values (OR); every populated filter must
 // match (AND).
 type AgentLogHistoryFilter struct {
+	GroupSessions  bool
 	AgentName      []string
 	StartTime      *time.Time
 	EndTime        *time.Time
@@ -1480,6 +1619,13 @@ type AgentLogHistoryFilter struct {
 	Search string
 }
 
+// SessionGroupingActive reports whether context grouping may collapse this search.
+// Explicit identifier searches keep every matching operation visible.
+func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
+	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
+}
+
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
 // there are deliberately no token or cost fields here.
 type AgentLogStats struct {
@@ -1488,6 +1634,19 @@ type AgentLogStats struct {
 	ErrorCount     int64   `json:"error_count"`
 	SuccessRate    float64 `json:"success_rate"`    // Percentage of terminal entries that succeeded
 	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentResult is one Agent's operation totals in a top-Agents ranking.
+type AgentTopAgentResult struct {
+	AgentName      string  `json:"agent_name"`
+	Count          int64   `json:"count"`
+	ErrorCount     int64   `json:"error_count"`
+	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentsResult ranks Agents by operation count.
+type AgentTopAgentsResult struct {
+	Agents []AgentTopAgentResult `json:"agents"`
 }
 
 // AgentHistogramBucket is one time bucket of the A2A volume chart.
@@ -1520,6 +1679,7 @@ type AgentFilterData struct {
 
 // AgentLogSummary is the compact metadata contract returned by list searches.
 type AgentLogSummary struct {
+	SessionChildCount       int64            `gorm:"-" json:"session_child_count,omitempty"`
 	ID                      string           `json:"id"`
 	Timestamp               time.Time        `json:"timestamp"`
 	RecordKind              string           `json:"record_kind"`
@@ -1582,6 +1742,8 @@ type AgentLogSummary struct {
 // AgentLogDetail is the rich public contract. Persistence and object-storage
 // bookkeeping never leave the log store through this type.
 type AgentLogDetail struct {
+	RawRequest  *string `json:"raw_request,omitempty"` // Base64-encoded upstream body bytes.
+	RawResponse *string `json:"raw_response,omitempty"`
 	AgentLogSummary
 	RequestBody      *string               `json:"request_body,omitempty"`
 	ResponseBody     *string               `json:"response_body,omitempty"`
@@ -1616,6 +1778,7 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
 		ContentType:       entry.ContentType, Input: entry.RequestBody,
+		RawRequest: entry.RawRequest, RawResponse: entry.RawResponse,
 		RequestBody: entry.RequestBody, ResponseBody: entry.ResponseBody, EventBody: entry.EventBody,
 		PluginLogs: entry.PluginLogs, ErrorDetails: entry.ErrorDetailsParsed,
 		hasObject: entry.HasObject, contentHidden: entry.ContentHidden, payloadReference: entry.PayloadReference,
@@ -1693,6 +1856,8 @@ type AgentLog struct {
 	OverheadLatency   *float64 `json:"overhead_latency,omitempty"`
 	OverheadBreakdown string   `gorm:"type:text" json:"-"` // Name-keyed JSON object, mirroring Log.OverheadBreakdown
 	ContentType       *string  `gorm:"type:varchar(255)" json:"content_type,omitempty"`
+	RawRequest        *string  `gorm:"type:text" json:"raw_request,omitempty"` // Base64 preserves binary transport bytes.
+	RawResponse       *string  `gorm:"type:text" json:"raw_response,omitempty"`
 	RequestBody       *string  `gorm:"type:text" json:"request_body,omitempty"`
 	ResponseBody      *string  `gorm:"type:text" json:"response_body,omitempty"`
 	EventBody         *string  `gorm:"type:text" json:"event_body,omitempty"`
@@ -1810,6 +1975,7 @@ type MCPToolLog struct {
 	// way the logs table records them. They are what the entity was called when
 	// the call was made, so a later rename or deletion leaves the row readable.
 	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	UserEmail        *string `gorm:"type:varchar(255)" json:"user_email,omitempty"`
 	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
 	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
 	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
@@ -1833,6 +1999,7 @@ type MCPToolLog struct {
 	LLMRequestID       *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	SessionID          *string   `gorm:"type:varchar(255);index:idx_mcp_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`
 	AgentCorrelationID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`
+	RoundTripID        *string   `gorm:"type:varchar(64);index:idx_mcp_logs_round_trip_id,where:round_trip_id IS NOT NULL" json:"round_trip_id,omitempty"` // Shared by every round of one gateway tool call that asked its caller for input
 	Timestamp          time.Time `gorm:"index;index:idx_mcp_logs_vk_ts,priority:2;index:idx_mcp_logs_user_ts,priority:2;index:idx_mcp_logs_team_ts,priority:2;not null" json:"timestamp"`
 	ToolName           string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
 	ServerLabel        string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
@@ -1846,6 +2013,7 @@ type MCPToolLog struct {
 	ProjectName        *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent          *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App                *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	ClientIP           *string   `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                 // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	Arguments          string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
 	Result             string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
 	ErrorDetails       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
@@ -1869,6 +2037,10 @@ type MCPToolLog struct {
 	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
 	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
+
+	// Method is the MCP method for a prompt or resource read ("prompts/get", "resources/read"),
+	// whose prompt name or resource URI is in ToolName; nil for a tool call.
+	Method *string `gorm:"type:varchar(32)" json:"method,omitempty"`
 
 	// Virtual fields for JSON output - populated when needed
 	TeamIDsParsed           []string                `gorm:"-" json:"team_ids,omitempty"`
@@ -2131,12 +2303,16 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			}
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			var result schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.EmbeddingRequest:
@@ -2301,6 +2477,7 @@ type MCPToolLogSearchFilters struct {
 	AgentNames         []string   `json:"agent_names,omitempty"`
 	SessionID          string     `json:"session_id,omitempty"`
 	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
+	RoundTripID        string     `json:"round_trip_id,omitempty"`
 	Apps               []string   `json:"apps,omitempty"`        // Backend-detected client apps
 	UserAgents         []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime          *time.Time `json:"start_time,omitempty"`
@@ -2320,9 +2497,12 @@ type MCPToolLogSearchResult struct {
 // MCPToolLogStats represents statistics for MCP tool log searches
 type MCPToolLogStats struct {
 	TotalExecutions int64   `json:"total_executions"`
-	SuccessRate     float64 `json:"success_rate"`
-	AverageLatency  float64 `json:"average_latency"`
-	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
+	SuccessCount    int64   `json:"success_count"`
+	ErrorCount      int64   `json:"error_count"`
+	CancelledCount  int64   `json:"cancelled_count"`
+	SuccessRate     float64 `json:"success_rate"`    // percentage of finished calls that succeeded, cancelled ones counted, as on the LLM logs stats
+	AverageLatency  float64 `json:"average_latency"` // milliseconds, over finished calls
+	TotalCost       float64 `json:"total_cost"`      // Total cost in dollars
 }
 
 // BuildContentSummary creates a searchable text summary
@@ -2783,6 +2963,7 @@ type MCPHistogramBucket struct {
 	Count     int64     `json:"count"`
 	Success   int64     `json:"success"`
 	Error     int64     `json:"error"`
+	Cancelled int64     `json:"cancelled"` // calls the caller hung up on, as in the LLM logs histogram
 }
 
 // MCPHistogramResult represents the MCP tool call volume histogram query result
@@ -3104,6 +3285,14 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	// These have no legacy column, so they stay on tool_usage for repricing. OpenAI sends zero image counts on every response.
+	if len(u.ToolUsage.ContainerSessions) > 0 || u.ToolUsage.ImageGen.HasTokens() {
+		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+		if u.ToolUsage.ImageGen.HasTokens() {
+			stored.ToolUsage.ImageGen = u.ToolUsage.ImageGen
+			stored.ToolUsage.ImageGenModel = u.ToolUsage.ImageGenModel
+		}
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {
@@ -3114,4 +3303,23 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 		stored.CompletionTokensDetails = &details
 	}
 	return &stored
+}
+
+// PassthroughObjectType returns the object type a row had before passthrough typing: passthrough
+// or passthrough_stream for a passthrough row stored under its inferred type, Object otherwise.
+// Settings keyed by request type (object-storage exclusions) use it so an exclusion of passthrough
+// keeps covering every passthrough call.
+func (l *Log) PassthroughObjectType() string {
+	if !l.IsPassthrough {
+		return l.Object
+	}
+	if l.Stream {
+		return "passthrough_stream"
+	}
+	return "passthrough"
+}
+
+// IsPassthroughObjectType reports whether objectType names a passthrough call.
+func IsPassthroughObjectType(objectType string) bool {
+	return objectType == "passthrough" || objectType == "passthrough_stream"
 }

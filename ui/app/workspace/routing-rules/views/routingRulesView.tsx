@@ -3,11 +3,13 @@
  * Main orchestrator component for routing rules management
  */
 
+import { LoadErrorView } from "@/components/loadErrorView";
 import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { GitBranch, Plus } from "lucide-react";
@@ -16,11 +18,14 @@ import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
+import { useTranslation } from "react-i18next";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export function RoutingRulesView() {
+	const { t } = useTranslation("models");
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
 	const [infoSheetOpen, setInfoSheetOpen] = useState(false);
@@ -42,7 +47,12 @@ export function RoutingRulesView() {
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 
 	// API
-	const { data: rulesData, isLoading } = useGetRoutingRulesQuery(
+	const {
+		data: rulesData,
+		isLoading,
+		error,
+		refetch,
+	} = useGetRoutingRulesQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
@@ -66,6 +76,7 @@ export function RoutingRulesView() {
 		setEditingRule(null);
 		setDialogOpen(true);
 	};
+	useActionParam("create", handleCreateNew, { isOpen: dialogOpen, enabled: canCreate });
 
 	const handleEdit = (rule: RoutingRule) => {
 		setEditingRule(rule);
@@ -103,6 +114,10 @@ export function RoutingRulesView() {
 
 	const hasActiveFilters = debouncedSearch;
 
+	if (showLoadError(error, rulesData)) {
+		return <LoadErrorView entity="routing rules" error={error} onRetry={() => void refetch()} testId="routing-rules-load-error" />;
+	}
+
 	// True empty state: no rules at all (not just filtered to zero)
 	if (!isLoading && totalCount === 0 && !hasActiveFilters) {
 		return (
@@ -115,7 +130,7 @@ export function RoutingRulesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			<PageTitle>Manage CEL-based routing rules for intelligent request routing across providers</PageTitle>
+			<PageTitle>{t("routing.rulesSubtitle")}</PageTitle>
 
 			<RoutingRulesTable
 				rules={rules}
@@ -135,9 +150,9 @@ export function RoutingRulesView() {
 						{/* The labels are hidden below sm, leaving an icon with no
 						    accessible name, so the name is carried on the control itself. */}
 						<Button variant="outline" size="sm" asChild className="gap-2">
-							<Link to="/workspace/routing-rules/tree" aria-label="View routing rules tree">
+							<Link to="/workspace/routing-rules/tree" aria-label={t("routing.viewTreeAria")}>
 								<GitBranch className="h-4 w-4" />
-								<span className="hidden sm:inline">View Tree</span>
+								<span className="hidden sm:inline">{t("routing.viewTree")}</span>
 							</Link>
 						</Button>
 						{canCreate && (
@@ -146,10 +161,10 @@ export function RoutingRulesView() {
 								onClick={handleCreateNew}
 								disabled={isLoading}
 								className="gap-2"
-								aria-label="Add routing rule"
+								aria-label={t("routing.newRuleAria")}
 							>
 								<Plus className="h-4 w-4" />
-								<span className="hidden sm:inline">Add Rule</span>
+								<span className="hidden sm:inline">{t("routing.addRule")}</span>
 							</Button>
 						)}
 					</>

@@ -177,7 +177,9 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		return out, nil
 	}
 	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
-		if err := req.UsageReporter.ReportUsage(ctx, usageReportFor(req.Provider, entry, out)); err != nil {
+		report := usageReportFor(req.Provider, entry, out)
+		report.SkipRequestCount = settlement.SkipRequestCount
+		if err := req.UsageReporter.ReportUsage(ctx, report); err != nil {
 			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}

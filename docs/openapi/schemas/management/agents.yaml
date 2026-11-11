@@ -1,0 +1,1806 @@
+AgentCreateRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      pattern: ^[a-z0-9]+(?:-[a-z0-9]+)*$
+      maxLength: 255
+    agent_card_url:
+      type: string
+      description: Absolute HTTP(S) Agent Card URL without URL user information.
+    enabled:
+      type: boolean
+      default: true
+    allow_by_default:
+      type: boolean
+      description: Allow any valid virtual key to access this agent without an explicit grant.
+    forward_accepted_credential:
+      type: boolean
+      description: Forward the credential accepted by Bifrost to the upstream agent.
+    forward_accepted_credential_overrides_auth:
+      type: boolean
+      description: Allow the forwarded credential to override configured upstream authentication.
+    discovery_auth:
+      $ref: '#/AgentUpstreamAuth'
+    runtime_auth:
+      $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional HTTP(S) origins permitted for runtime requests, including
+        configured credentials, caller-provided upstream headers, forwarded
+        Bifrost credentials, and TLS client certificates. Every runtime endpoint
+        must pass this policy. The card origin is permitted automatically. Include scheme
+        and optional port; paths, userinfo, queries, and fragments are forbidden.
+        Private destinations also need permission in a2a_private_allowlist.
+        Nonempty values require dashboard authentication.
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+      description: Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected.
+  required:
+  - name
+  - agent_card_url
+AgentUpstreamAuth:
+  type: object
+  properties:
+    type:
+      type: string
+      enum:
+      - none
+      - headers
+      - oauth
+    headers:
+      type: object
+      additionalProperties:
+        $ref: ./common.yaml#/EnvVar
+    oauth:
+      $ref: '#/AgentUpstreamOAuthConfig'
+    security_schemes:
+      type: array
+      items:
+        type: string
+    advanced:
+      type: boolean
+    tls:
+      $ref: '#/AgentUpstreamTLSConfig'
+  required:
+  - type
+  description: Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client
+    credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive
+    OAuth is not supported. Using environment or vault secret references requires
+    dashboard authentication for card inspection, creation, and updates. Operator
+    declarations in config.json may use these references. Preserving stored secrets
+    through masked placeholders on an update also requires dashboard authentication.
+AgentUpstreamOAuthConfig:
+  type: object
+  properties:
+    provider_url:
+      type: string
+    discovery_url:
+      type: string
+    token_url:
+      type: string
+    client_id:
+      $ref: ./common.yaml#/EnvVar
+    client_secret:
+      $ref: ./common.yaml#/EnvVar
+    scopes:
+      type: array
+      items:
+        type: string
+    resource:
+      type: string
+  required:
+  - client_id
+  - client_secret
+AgentUpstreamTLSConfig:
+  type: object
+  properties:
+    insecure_skip_verify:
+      type: boolean
+    ca_cert_pem:
+      $ref: ./common.yaml#/EnvVar
+    client_cert_pem:
+      $ref: ./common.yaml#/EnvVar
+    client_key_pem:
+      $ref: ./common.yaml#/EnvVar
+AgentUpdateRequest:
+  type: object
+  properties:
+    agent_card_url:
+      type: string
+      description: Absolute HTTP(S) Agent Card URL without URL user information.
+    enabled:
+      type: boolean
+    allow_by_default:
+      type: boolean
+      description: Allow any valid virtual key to access this agent without an explicit grant.
+    forward_accepted_credential:
+      type: boolean
+      description: Forward the credential accepted by Bifrost to the upstream agent.
+    forward_accepted_credential_overrides_auth:
+      type: boolean
+      description: Allow the forwarded credential to override configured upstream authentication.
+    discovery_auth:
+      $ref: '#/AgentUpstreamAuth'
+    runtime_auth:
+      $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional HTTP(S) origins permitted for runtime requests, including
+        configured credentials, caller-provided upstream headers, forwarded
+        Bifrost credentials, and TLS client certificates. Every runtime endpoint
+        must pass this policy. The card origin is permitted automatically. Include scheme
+        and optional port; paths, userinfo, queries, and fragments are forbidden.
+        Private destinations also need permission in a2a_private_allowlist.
+        Nonempty values require dashboard authentication. Omit or send [] to clear.
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+      description: Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected.
+  required:
+  - agent_card_url
+  - enabled
+  description: Full replacement. Omitted optional fields are cleared. Masked credential placeholders preserve
+    stored secrets.
+AgentInspectRequest:
+  type: object
+  properties:
+    agent_card_url:
+      type: string
+    discovery_auth:
+      $ref: '#/AgentUpstreamAuth'
+  required:
+  - agent_card_url
+AgentInspectResponse:
+  type: object
+  properties:
+    card:
+      $ref: '#/A2AAgentCard'
+    name:
+      type: string
+    description:
+      type: string
+    version:
+      type: string
+    provider:
+      type: string
+    provider_url:
+      type: string
+    documentation_url:
+      type: string
+    icon_url:
+      type: string
+    interfaces:
+      type: array
+      items:
+        $ref: '#/AgentInspectedAgentInterface'
+    capabilities:
+      type: object
+      additionalProperties:
+        type: boolean
+    default_input_modes:
+      type: array
+      items:
+        type: string
+    default_output_modes:
+      type: array
+      items:
+        type: string
+    skills:
+      type: array
+      items:
+        $ref: '#/AgentInspectedAgentSkill'
+    extensions:
+      type: array
+      items:
+        $ref: '#/AgentInspectedAgentExtension'
+    signature_count:
+      type: integer
+    security_schemes:
+      type: array
+      items:
+        $ref: '#/AgentInspectedSecurityScheme'
+    security_requirements:
+      type: array
+      items:
+        type: array
+        items:
+          type: string
+    warnings:
+      type: array
+      items:
+        type: string
+  required:
+  - capabilities
+  - signature_count
+  - security_schemes
+  - security_requirements
+A2AAgentCard:
+  type: object
+  properties:
+    supportedInterfaces:
+      type: array
+      items:
+        $ref: '#/A2AAgentInterface'
+    capabilities:
+      $ref: '#/A2AAgentCapabilities'
+    defaultInputModes:
+      type: array
+      items:
+        type: string
+    defaultOutputModes:
+      type: array
+      items:
+        type: string
+    description:
+      type: string
+    documentationUrl:
+      type: string
+    iconUrl:
+      type: string
+    name:
+      type: string
+    provider:
+      $ref: '#/A2AAgentProvider'
+    securityRequirements:
+      type: array
+      items:
+        type: object
+        required:
+        - schemes
+        properties:
+          schemes:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                type: string
+    securitySchemes:
+      type: object
+      additionalProperties:
+        type: object
+        description: A2A v1 security scheme with one of apiKeySecurityScheme, httpAuthSecurityScheme,
+          mtlsSecurityScheme, oauth2SecurityScheme, or openIdConnectSecurityScheme.
+        additionalProperties: true
+    signatures:
+      type: array
+      items:
+        $ref: '#/A2AAgentCardSignature'
+    skills:
+      type: array
+      items:
+        $ref: '#/A2AAgentSkill'
+    version:
+      type: string
+  required:
+  - supportedInterfaces
+  - capabilities
+  - defaultInputModes
+  - defaultOutputModes
+  - description
+  - name
+  - skills
+  - version
+A2AAgentInterface:
+  type: object
+  properties:
+    url:
+      type: string
+    protocolBinding:
+      type: string
+    tenant:
+      type: string
+    protocolVersion:
+      type: string
+  required:
+  - url
+  - protocolBinding
+  - protocolVersion
+A2AAgentCapabilities:
+  type: object
+  properties:
+    extensions:
+      type: array
+      items:
+        $ref: '#/A2AAgentExtension'
+    pushNotifications:
+      type: boolean
+    streaming:
+      type: boolean
+    extendedAgentCard:
+      type: boolean
+A2AAgentExtension:
+  type: object
+  properties:
+    description:
+      type: string
+    params:
+      type: object
+      additionalProperties: {}
+    required:
+      type: boolean
+    uri:
+      type: string
+A2AAgentProvider:
+  type: object
+  properties:
+    organization:
+      type: string
+    url:
+      type: string
+  required:
+  - organization
+  - url
+A2AAgentCardSignature:
+  type: object
+  properties:
+    header:
+      type: object
+      additionalProperties: {}
+    protected:
+      type: string
+    signature:
+      type: string
+  required:
+  - protected
+  - signature
+A2AAgentSkill:
+  type: object
+  properties:
+    description:
+      type: string
+    examples:
+      type: array
+      items:
+        type: string
+    id:
+      type: string
+    inputModes:
+      type: array
+      items:
+        type: string
+    name:
+      type: string
+    outputModes:
+      type: array
+      items:
+        type: string
+    securityRequirements:
+      type: array
+      items:
+        type: object
+        required:
+        - schemes
+        properties:
+          schemes:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                type: string
+    tags:
+      type: array
+      items:
+        type: string
+  required:
+  - description
+  - id
+  - name
+  - tags
+AgentInspectedAgentInterface:
+  type: object
+  properties:
+    url:
+      type: string
+    protocol_binding:
+      type: string
+    protocol_version:
+      type: string
+    tenant:
+      type: string
+  required:
+  - url
+  - protocol_binding
+  - protocol_version
+AgentInspectedAgentSkill:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    description:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    examples:
+      type: array
+      items:
+        type: string
+    input_modes:
+      type: array
+      items:
+        type: string
+    output_modes:
+      type: array
+      items:
+        type: string
+    security_requirements:
+      type: array
+      items:
+        type: array
+        items:
+          type: string
+  required:
+  - id
+  - name
+AgentInspectedAgentExtension:
+  type: object
+  properties:
+    uri:
+      type: string
+    description:
+      type: string
+    required:
+      type: boolean
+    params:
+      type: object
+      additionalProperties: {}
+  required:
+  - uri
+AgentInspectedSecurityScheme:
+  type: object
+  properties:
+    name:
+      type: string
+    type:
+      type: string
+    description:
+      type: string
+    in:
+      type: string
+    header:
+      type: string
+    scheme:
+      type: string
+    bearer_format:
+      type: string
+    authorization_url:
+      type: string
+    token_url:
+      type: string
+    scopes:
+      type: array
+      items:
+        type: string
+  required:
+  - name
+  - type
+AgentRegistrationView:
+  type: object
+  properties:
+    name:
+      type: string
+      pattern: ^[a-z0-9]+(?:-[a-z0-9]+)*$
+      maxLength: 255
+    agent_card_url:
+      type: string
+      description: Absolute HTTP(S) Agent Card URL without URL user information.
+    enabled:
+      type: boolean
+    allow_by_default:
+      type: boolean
+      description: Allow any valid virtual key to access this agent without an explicit grant.
+    forward_accepted_credential:
+      type: boolean
+      description: Forward the credential accepted by Bifrost to the upstream agent.
+    forward_accepted_credential_overrides_auth:
+      type: boolean
+      description: Allow the forwarded credential to override configured upstream authentication.
+    discovery_auth:
+      $ref: '#/AgentUpstreamAuth'
+    runtime_auth:
+      $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional origins permitted for all runtime requests and their credentials.
+        The card origin is permitted automatically.
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+      description: Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected.
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+  required:
+  - name
+  - agent_card_url
+  - enabled
+  - allow_by_default
+  - forward_accepted_credential
+  - forward_accepted_credential_overrides_auth
+  - created_at
+  - updated_at
+  description: Persisted registration with upstream secret values redacted.
+AgentPushConfigView:
+  type: object
+  properties:
+    agent_name:
+      type: string
+    task_id:
+      type: string
+    config_id:
+      type: string
+    tenant:
+      type: string
+    url:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+  required:
+  - agent_name
+  - task_id
+  - config_id
+  - url
+  - created_at
+  - updated_at
+AgentLogSummary:
+  type: object
+  properties:
+    session_child_count:
+      type: integer
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    record_kind:
+      type: string
+    operation:
+      type: string
+    status:
+      type: string
+    agent_name:
+      type: string
+    user_id:
+      type: string
+    user_name:
+      type: string
+    virtual_key_id:
+      type: string
+    virtual_key_name:
+      type: string
+    team_id:
+      type: string
+    team_name:
+      type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    team_names:
+      type: array
+      items:
+        type: string
+    customer_id:
+      type: string
+    customer_name:
+      type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    customer_names:
+      type: array
+      items:
+        type: string
+    business_unit_id:
+      type: string
+    business_unit_name:
+      type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    business_unit_names:
+      type: array
+      items:
+        type: string
+    project_id:
+      type: string
+    project_name:
+      type: string
+    budget_ids:
+      type: array
+      items:
+        type: string
+    rate_limit_ids:
+      type: array
+      items:
+        type: string
+    request_id:
+      type: string
+    trace_id:
+      type: string
+    task_id:
+      type: string
+    context_id:
+      type: string
+    message_id:
+      type: string
+    request_message_id:
+      type: string
+    response_message_id:
+      type: string
+    artifact_id:
+      type: string
+    push_config_id:
+      type: string
+    delivery_id:
+      type: string
+    attempt_id:
+      type: string
+    event_sequence:
+      type: integer
+    event_type:
+      type: string
+    task_state:
+      type: string
+    downstream_transport:
+      type: string
+    upstream_transport:
+      type: string
+    latency:
+      type: number
+    upstream_latency:
+      type: number
+    overhead_latency:
+      type: number
+    overhead_breakdown:
+      type: array
+      items:
+        $ref: '#/AgentOverheadBucket'
+    content_type:
+      type: string
+    input:
+      type: string
+  required:
+  - id
+  - timestamp
+  - record_kind
+  - operation
+  - status
+  - agent_name
+  - request_id
+AgentOverheadBucket:
+  type: object
+  properties:
+    name:
+      type: string
+    duration_us:
+      type: number
+  required:
+  - name
+  - duration_us
+AgentLogDetail:
+  type: object
+  properties:
+    raw_request:
+      type: string
+      description: Base64-encoded upstream body bytes, when raw capture is available.
+    raw_response:
+      type: string
+      description: Base64-encoded upstream body bytes, when raw capture is available.
+    session_child_count:
+      type: integer
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    record_kind:
+      type: string
+    operation:
+      type: string
+    status:
+      type: string
+    agent_name:
+      type: string
+    user_id:
+      type: string
+    user_name:
+      type: string
+    virtual_key_id:
+      type: string
+    virtual_key_name:
+      type: string
+    team_id:
+      type: string
+    team_name:
+      type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    team_names:
+      type: array
+      items:
+        type: string
+    customer_id:
+      type: string
+    customer_name:
+      type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    customer_names:
+      type: array
+      items:
+        type: string
+    business_unit_id:
+      type: string
+    business_unit_name:
+      type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    business_unit_names:
+      type: array
+      items:
+        type: string
+    project_id:
+      type: string
+    project_name:
+      type: string
+    budget_ids:
+      type: array
+      items:
+        type: string
+    rate_limit_ids:
+      type: array
+      items:
+        type: string
+    request_id:
+      type: string
+    trace_id:
+      type: string
+    task_id:
+      type: string
+    context_id:
+      type: string
+    message_id:
+      type: string
+    request_message_id:
+      type: string
+    response_message_id:
+      type: string
+    artifact_id:
+      type: string
+    push_config_id:
+      type: string
+    delivery_id:
+      type: string
+    attempt_id:
+      type: string
+    event_sequence:
+      type: integer
+    event_type:
+      type: string
+    task_state:
+      type: string
+    downstream_transport:
+      type: string
+    upstream_transport:
+      type: string
+    latency:
+      type: number
+    upstream_latency:
+      type: number
+    overhead_latency:
+      type: number
+    overhead_breakdown:
+      type: array
+      items:
+        $ref: '#/AgentOverheadBucket'
+    content_type:
+      type: string
+    input:
+      type: string
+    request_body:
+      type: string
+    response_body:
+      type: string
+    event_body:
+      type: string
+    plugin_logs:
+      type: string
+    error_details:
+      $ref: ../../openapi.yaml#/components/schemas/BifrostError
+  required:
+  - id
+  - timestamp
+  - record_kind
+  - operation
+  - status
+  - agent_name
+  - request_id
+AgentLogOperation:
+  type: object
+  properties:
+    raw_request:
+      type: string
+      description: Base64-encoded upstream body bytes, when raw capture is available.
+    raw_response:
+      type: string
+      description: Base64-encoded upstream body bytes, when raw capture is available.
+    session_child_count:
+      type: integer
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    record_kind:
+      type: string
+    operation:
+      type: string
+    status:
+      type: string
+    agent_name:
+      type: string
+    user_id:
+      type: string
+    user_name:
+      type: string
+    virtual_key_id:
+      type: string
+    virtual_key_name:
+      type: string
+    team_id:
+      type: string
+    team_name:
+      type: string
+    team_ids:
+      type: array
+      items:
+        type: string
+    team_names:
+      type: array
+      items:
+        type: string
+    customer_id:
+      type: string
+    customer_name:
+      type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    customer_names:
+      type: array
+      items:
+        type: string
+    business_unit_id:
+      type: string
+    business_unit_name:
+      type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    business_unit_names:
+      type: array
+      items:
+        type: string
+    project_id:
+      type: string
+    project_name:
+      type: string
+    budget_ids:
+      type: array
+      items:
+        type: string
+    rate_limit_ids:
+      type: array
+      items:
+        type: string
+    request_id:
+      type: string
+    trace_id:
+      type: string
+    task_id:
+      type: string
+    context_id:
+      type: string
+    message_id:
+      type: string
+    request_message_id:
+      type: string
+    response_message_id:
+      type: string
+    artifact_id:
+      type: string
+    push_config_id:
+      type: string
+    delivery_id:
+      type: string
+    attempt_id:
+      type: string
+    event_sequence:
+      type: integer
+    event_type:
+      type: string
+    task_state:
+      type: string
+    downstream_transport:
+      type: string
+    upstream_transport:
+      type: string
+    latency:
+      type: number
+    upstream_latency:
+      type: number
+    overhead_latency:
+      type: number
+    overhead_breakdown:
+      type: array
+      items:
+        $ref: '#/AgentOverheadBucket'
+    content_type:
+      type: string
+    input:
+      type: string
+    request_body:
+      type: string
+    response_body:
+      type: string
+    event_body:
+      type: string
+    plugin_logs:
+      type: string
+    error_details:
+      $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    events:
+      type: array
+      items:
+        $ref: '#/AgentLogDetail'
+  required:
+  - id
+  - timestamp
+  - record_kind
+  - operation
+  - status
+  - agent_name
+  - request_id
+  - events
+AgentLogHistoryResult:
+  type: object
+  properties:
+    logs:
+      type: array
+      items:
+        $ref: '#/AgentLogSummary'
+    pagination:
+      $ref: '#/AgentPaginationOptions'
+  required:
+  - logs
+  - pagination
+AgentPaginationOptions:
+  type: object
+  properties:
+    limit:
+      type: integer
+    offset:
+      type: integer
+    sort_by:
+      type: string
+    order:
+      type: string
+    total_count:
+      type: integer
+    selected_offset:
+      type: integer
+  required:
+  - limit
+  - offset
+  - sort_by
+  - order
+  - total_count
+AgentLogOperationResult:
+  type: object
+  properties:
+    logs:
+      type: array
+      items:
+        $ref: '#/AgentLogOperation'
+    pagination:
+      $ref: '#/AgentPaginationOptions'
+  required:
+  - logs
+  - pagination
+AgentLogStats:
+  type: object
+  properties:
+    total_entries:
+      type: integer
+    success_count:
+      type: integer
+    error_count:
+      type: integer
+    success_rate:
+      type: number
+    average_latency:
+      type: number
+  required:
+  - total_entries
+  - success_count
+  - error_count
+  - success_rate
+  - average_latency
+AgentTopAgentsResult:
+  type: object
+  properties:
+    agents:
+      type: array
+      items:
+        $ref: '#/AgentTopAgentResult'
+  required:
+  - agents
+AgentTopAgentResult:
+  type: object
+  properties:
+    agent_name:
+      type: string
+    count:
+      type: integer
+    error_count:
+      type: integer
+    average_latency:
+      type: number
+  required:
+  - agent_name
+  - count
+  - error_count
+  - average_latency
+AgentHistogramResult:
+  type: object
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/AgentHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+  required:
+  - buckets
+  - bucket_size_seconds
+AgentHistogramBucket:
+  type: object
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    count:
+      type: integer
+    success:
+      type: integer
+    error:
+      type: integer
+  required:
+  - timestamp
+  - count
+  - success
+  - error
+AgentFilterData:
+  type: object
+  properties:
+    users:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+    virtual_keys:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+    teams:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+    customers:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+    business_units:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+    projects:
+      type: array
+      items:
+        $ref: '#/AgentFilterKeyPair'
+AgentFilterKeyPair:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+  required:
+  - id
+  - name
+A2ASendMessageRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    configuration:
+      $ref: '#/A2ASendMessageConfig'
+    message:
+      $ref: '#/A2AMessage'
+    metadata:
+      type: object
+      additionalProperties: {}
+  required:
+  - message
+A2ASendMessageConfig:
+  type: object
+  properties:
+    acceptedOutputModes:
+      type: array
+      items:
+        type: string
+    returnImmediately:
+      type: boolean
+    historyLength:
+      type: integer
+    taskPushNotificationConfig:
+      $ref: '#/A2APushConfig'
+A2APushConfig:
+  type: object
+  properties:
+    tenant:
+      type: string
+    taskId:
+      type: string
+    id:
+      type: string
+    authentication:
+      $ref: '#/A2APushAuthInfo'
+    token:
+      type: string
+    url:
+      type: string
+  required:
+  - taskId
+  - url
+A2APushAuthInfo:
+  type: object
+  properties:
+    credentials:
+      type: string
+    scheme:
+      type: string
+  required:
+  - scheme
+A2AMessage:
+  type: object
+  properties:
+    messageId:
+      type: string
+    contextId:
+      type: string
+    extensions:
+      type: array
+      items:
+        type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+    parts:
+      type: array
+      items:
+        $ref: '#/A2APart'
+    referenceTaskIds:
+      type: array
+      items:
+        type: string
+    role:
+      type: string
+      enum:
+      - ROLE_USER
+      - ROLE_AGENT
+      - ROLE_UNSPECIFIED
+    taskId:
+      type: string
+  required:
+  - messageId
+  - parts
+  - role
+A2APart:
+  type: object
+  properties:
+    text:
+      type: string
+    raw:
+      type: string
+      description: Base64-encoded file bytes.
+    url:
+      type: string
+    data: {}
+    filename:
+      type: string
+    mediaType:
+      type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+  oneOf:
+  - required:
+    - text
+  - required:
+    - raw
+  - required:
+    - url
+  - required:
+    - data
+A2AGetTaskRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    id:
+      type: string
+    historyLength:
+      type: integer
+  required:
+  - id
+A2AListTasksRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    contextId:
+      type: string
+    status:
+      type: string
+    pageSize:
+      type: integer
+    pageToken:
+      type: string
+    historyLength:
+      type: integer
+    statusTimestampAfter:
+      type: string
+      format: date-time
+    includeArtifacts:
+      type: boolean
+A2ACancelTaskRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    id:
+      type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+  required:
+  - id
+A2ASubscribeToTaskRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    id:
+      type: string
+  required:
+  - id
+A2AGetExtendedAgentCardRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+A2AGetTaskPushConfigRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    taskId:
+      type: string
+    id:
+      type: string
+  required:
+  - taskId
+  - id
+A2AListTaskPushConfigRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    taskId:
+      type: string
+    pageSize:
+      type: integer
+    pageToken:
+      type: string
+  required:
+  - taskId
+A2ADeleteTaskPushConfigRequest:
+  type: object
+  properties:
+    tenant:
+      type: string
+    taskId:
+      type: string
+    id:
+      type: string
+  required:
+  - taskId
+  - id
+A2ATask:
+  type: object
+  properties:
+    id:
+      type: string
+    artifacts:
+      type: array
+      items:
+        $ref: '#/A2AArtifact'
+    contextId:
+      type: string
+    history:
+      type: array
+      items:
+        $ref: '#/A2AMessage'
+    metadata:
+      type: object
+      additionalProperties: {}
+    status:
+      $ref: '#/A2ATaskStatus'
+  required:
+  - id
+  - contextId
+  - status
+A2AArtifact:
+  type: object
+  properties:
+    artifactId:
+      type: string
+    description:
+      type: string
+    extensions:
+      type: array
+      items:
+        type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+    name:
+      type: string
+    parts:
+      type: array
+      items:
+        $ref: '#/A2APart'
+  required:
+  - artifactId
+  - parts
+A2ATaskStatus:
+  type: object
+  properties:
+    message:
+      $ref: '#/A2AMessage'
+    state:
+      type: string
+      enum:
+      - TASK_STATE_UNSPECIFIED
+      - TASK_STATE_SUBMITTED
+      - TASK_STATE_WORKING
+      - TASK_STATE_INPUT_REQUIRED
+      - TASK_STATE_COMPLETED
+      - TASK_STATE_CANCELED
+      - TASK_STATE_FAILED
+      - TASK_STATE_REJECTED
+      - TASK_STATE_AUTH_REQUIRED
+    timestamp:
+      type: string
+      format: date-time
+  required:
+  - state
+A2AListTasksResponse:
+  type: object
+  properties:
+    tasks:
+      type: array
+      items:
+        $ref: '#/A2ATask'
+    totalSize:
+      type: integer
+    pageSize:
+      type: integer
+    nextPageToken:
+      type: string
+  required:
+  - tasks
+  - totalSize
+  - pageSize
+  - nextPageToken
+A2AListTaskPushConfigResponse:
+  type: object
+  properties:
+    configs:
+      type: array
+      items:
+        $ref: '#/A2APushConfig'
+    nextPageToken:
+      type: string
+  required:
+  - configs
+A2ATaskStatusUpdateEvent:
+  type: object
+  properties:
+    contextId:
+      type: string
+    status:
+      $ref: '#/A2ATaskStatus'
+    taskId:
+      type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+  required:
+  - contextId
+  - status
+  - taskId
+A2ATaskArtifactUpdateEvent:
+  type: object
+  properties:
+    append:
+      type: boolean
+    artifact:
+      $ref: '#/A2AArtifact'
+    contextId:
+      type: string
+    lastChunk:
+      type: boolean
+    taskId:
+      type: string
+    metadata:
+      type: object
+      additionalProperties: {}
+  required:
+  - artifact
+  - contextId
+  - taskId
+A2AEvent:
+  type: object
+  properties:
+    message:
+      $ref: '#/A2AMessage'
+    task:
+      $ref: '#/A2ATask'
+    statusUpdate:
+      $ref: '#/A2ATaskStatusUpdateEvent'
+    artifactUpdate:
+      $ref: '#/A2ATaskArtifactUpdateEvent'
+  oneOf:
+  - required:
+    - message
+  - required:
+    - task
+  - required:
+    - statusUpdate
+  - required:
+    - artifactUpdate
+A2AJSONRPCError:
+  type: object
+  required:
+  - jsonrpc
+  - id
+  - error
+  properties:
+    jsonrpc:
+      const: '2.0'
+    id:
+      type:
+      - string
+      - number
+      - 'null'
+    error:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+A2ARESTError:
+  type: object
+  required:
+  - error
+  properties:
+    error:
+      type: object
+      required:
+      - code
+      - status
+      - message
+      properties:
+        code:
+          type: integer
+        status:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+A2AJSONRPCRequest:
+  oneOf:
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: SendMessage
+      params:
+        $ref: '#/A2ASendMessageRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: SendStreamingMessage
+      params:
+        $ref: '#/A2ASendMessageRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: GetTask
+      params:
+        $ref: '#/A2AGetTaskRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: ListTasks
+      params:
+        $ref: '#/A2AListTasksRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: CancelTask
+      params:
+        $ref: '#/A2ACancelTaskRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: SubscribeToTask
+      params:
+        $ref: '#/A2ASubscribeToTaskRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: GetExtendedAgentCard
+      params:
+        $ref: '#/A2AGetExtendedAgentCardRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: CreateTaskPushNotificationConfig
+      params:
+        $ref: '#/A2APushConfig'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: GetTaskPushNotificationConfig
+      params:
+        $ref: '#/A2AGetTaskPushConfigRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: ListTaskPushNotificationConfigs
+      params:
+        $ref: '#/A2AListTaskPushConfigRequest'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    - method
+    - params
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+      method:
+        const: DeleteTaskPushNotificationConfig
+      params:
+        $ref: '#/A2ADeleteTaskPushConfigRequest'
+A2AJSONRPCResponse:
+  oneOf:
+  - $ref: '#/A2AJSONRPCError'
+  - type: object
+    required:
+    - jsonrpc
+    - id
+    properties:
+      jsonrpc:
+        const: '2.0'
+      id:
+        type:
+        - string
+        - number
+        - 'null'
+      result:
+        oneOf:
+        - $ref: '#/A2ATask'
+        - $ref: '#/A2AListTasksResponse'
+        - $ref: '#/A2AAgentCard'
+        - $ref: '#/A2APushConfig'
+        - $ref: '#/A2AListTaskPushConfigResponse'
+        - type: 'null'
+        - $ref: '#/A2AEvent'
+    not:
+      required:
+      - error
+A2ASendMessageResponse:
+  type: object
+  properties:
+    message:
+      $ref: '#/A2AMessage'
+    task:
+      $ref: '#/A2ATask'
+  oneOf:
+  - required:
+    - message
+  - required:
+    - task

@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -145,7 +147,7 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 	ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer admin-secret-token"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-1",
@@ -155,10 +157,9 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 		ConnectionString: schemas.NewSecretVar(ts.URL),
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "oauth-client-echo", "discovered tool should be present, prefixed by client name")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	authVals := rec.headerValues("Authorization")
@@ -174,7 +175,7 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 // own error instead of ever attempting a connection.
 func TestPerformAdminToolDiscovery_PerUserOAuth_EmptyBearerToken_ErrorsWithoutDialing(t *testing.T) {
 	cred := &fakeAdminCredStore{headers: http.Header{}} // no Authorization header at all
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-1b",
@@ -185,10 +186,9 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_EmptyBearerToken_ErrorsWithoutDi
 		// ran first. Its absence here proves the guard short-circuits.
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.Contains(t, err.Error(), "admin credential resolved no access token")
 }
 
@@ -204,7 +204,7 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 		"X-Api-Key":   []string{"admin-key-1"},
 		"X-Tenant-Id": []string{"tenant-42"},
 	}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:                "client-2",
@@ -215,10 +215,9 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 		PerUserHeaderKeys: []string{"x-api-key", "x-tenant-id"},
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "headers-client-echo")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	apiKeyVals := rec.headerValues("X-Api-Key")
@@ -239,7 +238,7 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 // instead of attempting discovery.
 func TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError(t *testing.T) {
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer x"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-3",
@@ -247,10 +246,9 @@ func TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError(t *testing.T
 		AuthType: schemas.MCPAuthType("something_unknown"),
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.True(t, strings.Contains(err.Error(), "admin tool discovery not supported for auth_type"))
 }
 
@@ -264,7 +262,7 @@ func TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDis
 	ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-secret-token"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-5",
@@ -275,10 +273,9 @@ func TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDis
 		// NeedsSessionStickiness left nil: the default per-call value.
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "shared-oauth-client-echo")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	authVals := rec.headerValues("Authorization")
@@ -297,7 +294,7 @@ func TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersA
 			ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 			cred := &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"shared-key-1"}}}
-			m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+			m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 			config := &schemas.MCPClientConfig{
 				ID:               "client-6",
@@ -307,10 +304,9 @@ func TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersA
 				ConnectionString: schemas.NewSecretVar(ts.URL),
 			}
 
-			tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+			tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 			require.NoError(t, err)
 			require.Contains(t, tools, "shared-headers-client-echo")
-			require.Equal(t, "echo", mapping["echo"])
 			require.Equal(t, 1, cred.callCount())
 
 			apiKeyVals := rec.headerValues("X-Api-Key")
@@ -332,7 +328,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 	ts, _ := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{}} // resolves to nothing
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-7",
@@ -342,7 +338,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 		ConnectionString: schemas.NewSecretVar(ts.URL),
 	}
 
-	tools, _, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "shared-none-client-echo")
 }
@@ -353,7 +349,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 func TestPerformAdminToolDiscovery_CredStoreError_Propagates(t *testing.T) {
 	credErr := errors.New("admin credential store unavailable")
 	cred := &fakeAdminCredStore{err: credErr}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-4",
@@ -361,10 +357,51 @@ func TestPerformAdminToolDiscovery_CredStoreError_Propagates(t *testing.T) {
 		AuthType: schemas.MCPAuthTypePerUserOauth,
 	}
 
-	tools, mapping, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.True(t, errors.Is(err, credErr), "expected the credStore error to be wrapped (%%w), got: %v", err)
 	require.Contains(t, err.Error(), "failed to resolve admin credential")
+}
+
+// discoveryParts unpacks a discovery result for assertions, nil-safe on error.
+func discoveryParts(discovery *schemas.MCPDiscovery, err error) (map[string]schemas.ChatTool, string, error) {
+	if discovery == nil {
+		return nil, "", err
+	}
+	return discovery.Tools, discovery.Instructions, err
+}
+
+// TestVerifyHeadersConnection_DialsAnSSEClientOverSSE: verifying an SSE
+// client's headers dials it over SSE with the headers attached, as its live
+// connection does. A streamable-HTTP dial cannot reach an SSE-only server, so
+// an edit to an SSE client could not be tried before it was stored.
+func TestVerifyHeadersConnection_DialsAnSSEClientOverSSE(t *testing.T) {
+	s := server.NewMCPServer("sse-verify", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("echo"), func(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("ok"), nil
+	})
+	sse := server.NewSSEServer(s)
+	var sawHeader atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Key") == "v2" {
+			sawHeader.Store(true)
+		}
+		sse.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+
+	discovery, err := m.VerifyHeadersConnection(context.Background(), &schemas.MCPClientConfig{
+		ID:               "sse-verify",
+		Name:             "sse_verify",
+		ConnectionType:   schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		Headers:          map[string]schemas.SecretVar{"X-Key": *schemas.NewSecretVar("v2")},
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, discovery.Tools, "sse_verify-echo")
+	assert.True(t, sawHeader.Load(), "the headers reach the SSE server")
 }

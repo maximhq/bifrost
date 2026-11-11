@@ -1,12 +1,10 @@
+import i18n from "@/lib/i18n";
 import {
 	AnalyzerConfig,
 	COMPLEXITY_TIER_VALUES,
 	DEFAULT_DECISION_CONFIG,
-	DEFAULT_DECISION_MODEL,
 	DecisionGuidanceDefaults,
 	DecisionTier,
-	OPENROUTER_DECISION_MODELS,
-	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
 	MAX_DECISION_DEFINITION_CHARACTERS,
@@ -27,11 +25,15 @@ import {
 } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
-import { clefModelFromProvider, namedSelfHostedGroup, type SelfHostedModelGroup } from "@/lib/utils/decisionModelProviders";
 import { z } from "zod";
 
-// Re-exported for the callers that read a provider's Clef model alongside the form helpers.
-export { clefModelFromProvider };
+const complexityT = i18n.getFixedT(null, "models", "routing.complexityUi");
+
+function tierLabel(key: KeywordListKey) {
+	if (key === "simple_keywords") return complexityT("tierSimple");
+	if (key === "medium_keywords") return complexityT("tierMedium");
+	return complexityT("tierComplex");
+}
 
 // Form-owned duration values are always a single unit (the controls append
 // "ms"), so a plain positive-duration check is enough.
@@ -62,17 +64,20 @@ const semanticSchema = z.object({
 	// the default while the operator is still typing.
 	timeout: z
 		.string()
-		.min(1, "Enter an embedding timeout")
-		.refine((value) => isPositiveDurationString(value), `Enter a timeout greater than 0 and at most ${MAX_SEMANTIC_TIMEOUT_MS}ms`)
+		.min(1, { error: () => complexityT("enterEmbeddingTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZeroMax", { max: MAX_SEMANTIC_TIMEOUT_MS }) })
 		.optional(),
-	min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
+	min_similarity: z
+		.number({ error: () => complexityT("similarityNumber") })
+		.min(0, { error: () => complexityT("mustBeZeroOrGreater") })
+		.lt(1, { error: () => complexityT("mustBeLessThanOne") }),
 	message_history_count: z
 		.number({
-			error: `Enter a number between ${MIN_SEMANTIC_MESSAGE_HISTORY} and ${MAX_SEMANTIC_MESSAGE_HISTORY}`,
+			error: () => complexityT("historyRange", { min: MIN_SEMANTIC_MESSAGE_HISTORY, max: MAX_SEMANTIC_MESSAGE_HISTORY }),
 		})
-		.int("Must be a whole number")
-		.min(MIN_SEMANTIC_MESSAGE_HISTORY, `Must be at least ${MIN_SEMANTIC_MESSAGE_HISTORY}`)
-		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(MIN_SEMANTIC_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtLeast", { min: MIN_SEMANTIC_MESSAGE_HISTORY }) })
+		.max(MAX_SEMANTIC_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtMost", { max: MAX_SEMANTIC_MESSAGE_HISTORY }) }),
 	count_toward_budgets: z.boolean().optional(),
 	vector_store: z.enum(["embedded", "vector_store"]).optional(),
 	fallback: z.enum(["none", "llm", "decision"]),
@@ -81,22 +86,32 @@ const semanticSchema = z.object({
 // The editors always hold what the gateway will send, so an emptied field is
 // rejected rather than saved: it would reload as the shipped default, silently
 // undoing the deletion. Reset to default is the way back.
-const decisionCriteriaListSchema = (label: string) =>
-	z
+const decisionCriteriaListSchema = (kind: "signal" | "example") => {
+	const signal = kind === "signal";
+	return z
 		.array(
-			z
-				.string()
-				.max(MAX_DECISION_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_DECISION_CRITERIA_ITEM_CHARACTERS} characters`),
+			z.string().max(MAX_DECISION_CRITERIA_ITEM_CHARACTERS, {
+				error: () =>
+					signal
+						? complexityT("criteriaSignalItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS })
+						: complexityT("criteriaExampleItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS }),
+			}),
 		)
-		.min(1, `Add at least one ${label}`)
-		.max(MAX_DECISION_CRITERIA_ITEMS, `At most ${MAX_DECISION_CRITERIA_ITEMS} ${label}s`);
+		.min(1, { error: () => (signal ? complexityT("criteriaSignalMin") : complexityT("criteriaExampleMin")) })
+		.max(MAX_DECISION_CRITERIA_ITEMS, {
+			error: () =>
+				signal
+					? complexityT("criteriaSignalMax", { count: MAX_DECISION_CRITERIA_ITEMS })
+					: complexityT("criteriaExampleMax", { count: MAX_DECISION_CRITERIA_ITEMS }),
+		});
+};
 
 const decisionTierCriteriaSchema = z.object({
 	definition: z
 		.string()
 		.trim()
-		.min(1, "Enter a definition")
-		.max(MAX_DECISION_DEFINITION_CHARACTERS, `Must be at most ${MAX_DECISION_DEFINITION_CHARACTERS} characters`),
+		.min(1, { error: () => complexityT("enterDefinition") })
+		.max(MAX_DECISION_DEFINITION_CHARACTERS, { error: () => complexityT("promptMaxChars", { max: MAX_DECISION_DEFINITION_CHARACTERS }) }),
 	signals: decisionCriteriaListSchema("signal"),
 	examples: decisionCriteriaListSchema("example"),
 });
@@ -117,25 +132,31 @@ const decisionGuidanceSchema = z.object({
 	}),
 });
 
-const decisionSchema = z
-	.object({
-		provider: z.string().trim().min(1, "Select the provider serving the decision model"),
-		model: z.string().trim().min(1, "Select the decision model"),
-		previous_message_count: z
-			.number()
-			.int("Must be a whole number")
-			.min(0, "Must be at least 0")
-			.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
-		timeout: z
-			.string()
-			.min(1, "Enter a decision-model timeout")
-			.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
-	})
-	// OpenRouter's decisions endpoint serves only its Jev models; any other model it lists is a chat model.
-	.refine((decision) => decision.provider !== "openrouter" || (OPENROUTER_DECISION_MODELS as readonly string[]).includes(decision.model), {
-		message: "Select one of OpenRouter's Jev models",
-		path: ["model"],
-	});
+const decisionSchema = z.object({
+	provider: z
+		.string()
+		.trim()
+		.min(1, { error: () => complexityT("selectDecisionProvider") }),
+	model: z
+		.string()
+		.trim()
+		.min(1, { error: () => complexityT("selectDecisionModel") }),
+	previous_message_count: z
+		.number()
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(0, { error: () => complexityT("mustBeAtLeast", { min: 0 }) })
+		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, {
+			error: () => complexityT("mustBeAtMost", { max: MAX_DECISION_PREVIOUS_MESSAGE_COUNT }),
+		}),
+	timeout: z
+		.string()
+		.min(1, { error: () => complexityT("enterDecisionTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZero") }),
+	min_confidence: z
+		.number({ error: () => complexityT("similarityNumber") })
+		.min(0, { error: () => complexityT("mustBeZeroOrGreater") })
+		.max(1, { error: () => complexityT("mustBeAtMost", { max: 1 }) }),
+});
 
 const llmSchema = z.object({
 	provider: z.string(),
@@ -143,17 +164,17 @@ const llmSchema = z.object({
 	// Same millisecond-edited Go duration treatment as the semantic timeout.
 	timeout: z
 		.string()
-		.min(1, "Enter a classification timeout")
-		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0")
+		.min(1, { error: () => complexityT("enterClassificationTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZero") })
 		.optional(),
-	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, `Must be at most ${MAX_LLM_PROMPT_CHARACTERS} characters`),
+	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, { error: () => complexityT("promptMaxChars", { max: MAX_LLM_PROMPT_CHARACTERS }) }),
 	message_history_count: z
 		.number({
-			error: `Enter a number between ${MIN_LLM_MESSAGE_HISTORY} and ${MAX_LLM_MESSAGE_HISTORY}`,
+			error: () => complexityT("historyRange", { min: MIN_LLM_MESSAGE_HISTORY, max: MAX_LLM_MESSAGE_HISTORY }),
 		})
-		.int("Must be a whole number")
-		.min(MIN_LLM_MESSAGE_HISTORY, `Must be at least ${MIN_LLM_MESSAGE_HISTORY}`)
-		.max(MAX_LLM_MESSAGE_HISTORY, `Must be at most ${MAX_LLM_MESSAGE_HISTORY}`),
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(MIN_LLM_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtLeast", { min: MIN_LLM_MESSAGE_HISTORY }) })
+		.max(MAX_LLM_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtMost", { max: MAX_LLM_MESSAGE_HISTORY }) }),
 	count_toward_budgets: z.boolean().optional(),
 });
 
@@ -167,9 +188,9 @@ export const analyzerConfigSchema = z
 	.object({
 		classifier: z.enum(["semantic", "decision"]),
 		keywords: z.object({
-			simple_keywords: z.array(z.string()).min(1, "Simple phrases cannot be empty"),
-			medium_keywords: z.array(z.string()).min(1, "Medium phrases cannot be empty"),
-			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
+			simple_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierSimple") }) }),
+			medium_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierMedium") }) }),
+			complex_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierComplex") }) }),
 		}),
 		semantic: semanticSchema,
 		// Only shape-checked here: the Decision controls are hidden unless Decision is the
@@ -181,6 +202,7 @@ export const analyzerConfigSchema = z
 			model: z.string(),
 			previous_message_count: z.number().or(z.nan()),
 			timeout: z.string(),
+			min_confidence: z.number().or(z.nan()),
 			criteria: z.object({
 				SIMPLE: decisionTierFormShape,
 				MEDIUM: decisionTierFormShape,
@@ -200,14 +222,14 @@ export const analyzerConfigSchema = z
 			if (!hasProvider) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select an embedding provider",
+					message: complexityT("selectEmbeddingProvider"),
 					path: ["semantic", "provider"],
 				});
 			}
 			if (!hasModel) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select an embedding model",
+					message: complexityT("selectEmbeddingModel"),
 					path: ["semantic", "embedding_model"],
 				});
 			}
@@ -215,7 +237,7 @@ export const analyzerConfigSchema = z
 		if (data.session.enabled && data.classifier === "semantic" && (!hasProvider || !hasModel)) {
 			ctx.addIssue({
 				code: "custom",
-				message: "Configure the semantic classifier before enabling session routing",
+				message: complexityT("sessionNeedsClassifier"),
 				path: ["session", "enabled"],
 			});
 		}
@@ -244,14 +266,14 @@ export const analyzerConfigSchema = z
 			if (!hasLLMProvider) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select a fallback provider",
+					message: complexityT("selectFallbackProvider"),
 					path: ["llm", "provider"],
 				});
 			}
 			if (!hasLLMModel) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select a fallback model",
+					message: complexityT("selectFallbackModel"),
 					path: ["llm", "model"],
 				});
 			}
@@ -260,9 +282,9 @@ export const analyzerConfigSchema = z
 		// Mirrors validateComplexitySemanticPhrases so invalid input fails in the
 		// form instead of as an opaque 400.
 		const lists: Array<{ key: KeywordListKey; label: string }> = [
-			{ key: "simple_keywords", label: "Simple" },
-			{ key: "medium_keywords", label: "Medium" },
-			{ key: "complex_keywords", label: "Complex" },
+			{ key: "simple_keywords", label: tierLabel("simple_keywords") },
+			{ key: "medium_keywords", label: tierLabel("medium_keywords") },
+			{ key: "complex_keywords", label: tierLabel("complex_keywords") },
 		];
 
 		const seen = new Map<string, string>();
@@ -271,7 +293,7 @@ export const analyzerConfigSchema = z
 				if (phrase.length > MAX_SEMANTIC_PHRASE_CHARACTERS) {
 					ctx.addIssue({
 						code: "custom",
-						message: `A ${label} phrase exceeds the ${MAX_SEMANTIC_PHRASE_CHARACTERS}-character limit.`,
+						message: complexityT("phraseTooLong", { tier: label, max: MAX_SEMANTIC_PHRASE_CHARACTERS }),
 						path: ["keywords", key],
 					});
 					break;
@@ -281,7 +303,7 @@ export const analyzerConfigSchema = z
 				if (firstTier && firstTier !== label) {
 					ctx.addIssue({
 						code: "custom",
-						message: `"${phrase}" is also in the ${firstTier} list. Each phrase must belong to exactly one tier.`,
+						message: complexityT("phraseDuplicate", { phrase, tier: firstTier }),
 						path: ["keywords", key],
 					});
 				} else if (!firstTier) {
@@ -295,7 +317,13 @@ export const analyzerConfigSchema = z
 			if (counts.total > MAX_SEMANTIC_PHRASES) {
 				ctx.addIssue({
 					code: "custom",
-					message: `Semantic routing has ${counts.total} phrases (Simple=${counts.simple}, Medium=${counts.medium}, Complex=${counts.complex}); the maximum is ${MAX_SEMANTIC_PHRASES} across all tiers.`,
+					message: complexityT("phraseCapExceeded", {
+						total: counts.total,
+						simple: counts.simple,
+						medium: counts.medium,
+						complex: counts.complex,
+						max: MAX_SEMANTIC_PHRASES,
+					}),
 					path: ["keywords"],
 				});
 			}
@@ -419,6 +447,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 				: { provider: DEFAULT_DECISION_CONFIG.provider, model: DEFAULT_DECISION_CONFIG.model }),
 			previous_message_count: config.decision?.previous_message_count ?? DEFAULT_DECISION_CONFIG.previous_message_count,
 			timeout: config.decision?.timeout ?? DEFAULT_DECISION_CONFIG.timeout,
+			min_confidence: config.decision?.min_confidence ?? DEFAULT_DECISION_CONFIG.min_confidence,
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
@@ -485,6 +514,7 @@ function toDecisionPayload(decision: AnalyzerFormValues["decision"]): NonNullabl
 		model: decision.model.trim(),
 		previous_message_count: decision.previous_message_count,
 		timeout: decision.timeout,
+		...(decision.min_confidence > 0 ? { min_confidence: decision.min_confidence } : {}),
 		...(Object.keys(criteria).length ? { criteria } : {}),
 	};
 }
@@ -533,35 +563,6 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 // calls succeed — only a live request proves that — so the UI never calls it "ready".
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
-// isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, or a custom provider built on the Typesafe base (Laya,
-// Nimble, Clef). Other providers would only emulate decisions through chat,
-// which is what the LLM classifier is for.
-export function isDecisionProvider(provider: ModelProvider): boolean {
-	return (
-		provider.name === "typesafe" || provider.name === "openrouter" || provider.custom_provider_config?.base_provider_type === "typesafe"
-	);
-}
-
-// selfHostedModelGroups is the checkpoint list offered for a self-hosted provider
-// that cannot list its models: the checkpoints of the model it is named after,
-// otherwise every group.
-export function selfHostedModelGroups(providerName: string): SelfHostedModelGroup[] {
-	const named = namedSelfHostedGroup(providerName);
-	return named ? [named] : [...SELF_HOSTED_DECISION_MODELS];
-}
-
-// defaultDecisionModel is the model a newly selected provider starts on: Jev's
-// latest alias (named per provider), the Clef model a Cloudflare URL serves, or
-// the first checkpoint of the model a self-hosted provider is named after (Laya
-// starts on english). A provider whose name says nothing starts empty, since only
-// the operator knows which model it runs.
-export function defaultDecisionModel(provider: ModelProvider | undefined): string {
-	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
-	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODELS[0];
-	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
-}
-
 export function getDecisionProviderState(
 	providers: ModelProvider[] | undefined,
 	keys: DBKey[] | undefined,
@@ -569,12 +570,10 @@ export function getDecisionProviderState(
 ): DecisionProviderState {
 	const provider = (providers ?? []).find((candidate) => candidate.name === providerName);
 	if (!provider) return "missing";
-	// The provider failed to initialise, or could not list models with its keys:
-	// both mean its credentials or settings are wrong. A provider with model
-	// listing turned off (Laya, Clef) never lists, so a stale listing failure on
-	// it says nothing about its decisions endpoint.
-	const listsModels = provider.custom_provider_config?.allowed_requests?.list_models !== false;
-	if (provider.provider_status !== "active" || (listsModels && provider.status === "list_models_failed")) return "failing";
+	// The provider failed to initialise. A model-listing failure is not checked:
+	// it says nothing about the decisions endpoint, and the provider-level listing
+	// status can be stale while the provider's keys work.
+	if (provider.provider_status !== "active") return "failing";
 	// A keyless custom provider (a self-hosted Laya, for one) needs no key.
 	if (provider.custom_provider_config?.is_key_less) return "configured";
 	// A key omits `enabled` when unset, which the Go side reads as enabled.

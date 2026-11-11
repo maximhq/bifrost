@@ -6,14 +6,18 @@ import (
 	"compress/zlib"
 	"context"
 	cryptoRand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,7 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -85,7 +89,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -100,6 +104,39 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				t.Error("Next handler was not called")
 			}
 		})
+	}
+}
+
+// TestCorsMiddleware_ExposesBifrostResponseHeaders pins that a cross-origin browser client can
+// read the gateway's x-bifrost-* response headers. With client.extra_fields_placement =
+// "headers" they are the only place extra_fields reaches the client, and a browser hides any
+// response header that Access-Control-Expose-Headers does not list.
+func TestCorsMiddleware_ExposesBifrostResponseHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"https://app.example.com"}}}
+	handler := NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+
+	for _, origin := range []string{"https://app.example.com", "http://localhost:3000"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Origin", origin)
+		handler(ctx)
+		exposed := strings.Split(string(ctx.Response.Header.Peek("Access-Control-Expose-Headers")), ", ")
+		for _, name := range []string{
+			"x-bifrost-request-id", "x-bifrost-trace-id", "x-bifrost-provider", "x-bifrost-request-type",
+			"x-bifrost-routing-info-provider", "x-bifrost-routing-info-model", "x-bifrost-cache-hit",
+			"x-bifrost-latency-ms", "x-bifrost-converted-request-type", "x-bifrost-error-type", "x-bifrost-retry-after-ms",
+		} {
+			if !slices.Contains(exposed, name) {
+				t.Errorf("origin %s: Access-Control-Expose-Headers %q does not list %s", origin, exposed, name)
+			}
+		}
+	}
+
+	blocked := &fasthttp.RequestCtx{}
+	blocked.Request.Header.Set("Origin", "https://malicious.com")
+	handler(blocked)
+	if got := blocked.Response.Header.Peek("Access-Control-Expose-Headers"); len(got) != 0 {
+		t.Errorf("a non-allowed origin must not get Access-Control-Expose-Headers, got %q", got)
 	}
 }
 
@@ -189,6 +226,32 @@ func TestCorsMiddleware_PreflightAllowsSetupTokenHeader(t *testing.T) {
 				if !strings.Contains(allowHeaders, "x-bifrost-setup-token") {
 					t.Errorf("%s: Access-Control-Allow-Headers %q must include X-Bifrost-Setup-Token", origin, allowHeaders)
 				}
+			}
+		})
+	}
+}
+
+// Browser MCP clients send the Streamable HTTP headers on every request after initialize, and on
+// every 2026-07-28 request; a preflight that leaves any out blocks the request in the browser.
+func TestCorsMiddleware_PreflightAllowsMCPTransportHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	requested := []string{"content-type", "mcp-protocol-version", "mcp-session-id", "mcp-method", "mcp-name", "last-event-id", "mcp-param-region"}
+	for _, origins := range [][]string{{"*"}, {"https://inspector.example.com"}} {
+		t.Run(strings.Join(origins, ","), func(t *testing.T) {
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: origins}}
+			for _, origin := range []string{"http://localhost:6274", "https://inspector.example.com"} {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("OPTIONS")
+				ctx.Request.Header.Set("Origin", origin)
+				ctx.Request.Header.Set("Access-Control-Request-Headers", strings.Join(requested, ", "))
+				NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})(ctx)
+				assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), origin)
+				allowed := strings.Split(strings.ToLower(string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))), ", ")
+				for _, header := range requested {
+					assert.Contains(t, allowed, header, "%s: Access-Control-Allow-Headers", origin)
+				}
+				exposed := strings.Split(strings.ToLower(string(ctx.Response.Header.Peek("Access-Control-Expose-Headers"))), ", ")
+				assert.Contains(t, exposed, "mcp-session-id", "%s: initialize's session id must be readable", origin)
 			}
 		})
 	}
@@ -515,6 +578,63 @@ func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
 	}
 }
 
+// TestRecoverWebSocketSession_RecoversAndRedactsPanic pins the helper every WebSocket
+// upgrade callback defers: a panic on the hijacked session goroutine is swallowed (so the
+// process keeps serving), logged once, and never logged with the panic value itself.
+func TestRecoverWebSocketSession_RecoversAndRedactsPanic(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	session := func() {
+		defer recoverWebSocketSession(nil)
+		panic(errors.New("upstream rejected key sk-secret-456"))
+	}
+	session() // must return normally
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-456") {
+		t.Errorf("websocket recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "websocket session") || !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("websocket recovery log = %q, want the session marker and the panic value type", capLogger.errors[0])
+	}
+
+	quiet := func() {
+		defer recoverWebSocketSession(nil)
+	}
+	quiet()
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs after a non-panicking session = %d, want 1", len(capLogger.errors))
+	}
+
+	// A runtime.Error is summarized by type alone on the WebSocket paths too: its text can carry
+	// whatever a plugin put in it.
+	runtimeSession := func() {
+		defer recoverWebSocketSession(nil)
+		panic(secretRuntimeError{})
+	}
+	runtimeSession()
+	if len(capLogger.errors) != 2 {
+		t.Fatalf("error logs = %d, want 2", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[1], "sk-secret-789") {
+		t.Errorf("websocket recovery log leaked a runtime.Error's text: %q", capLogger.errors[1])
+	}
+	err := runWebSocketRelay(nil, func() error { panic(secretRuntimeError{}) })
+	if err == nil || strings.Contains(err.Error(), "sk-secret-789") {
+		t.Errorf("relay error leaked a runtime.Error's text: %v", err)
+	}
+}
+
+// secretRuntimeError is a runtime.Error whose text carries something that must not be echoed.
+type secretRuntimeError struct{}
+
+func (secretRuntimeError) Error() string { return "index out of range for key sk-secret-789" }
+func (secretRuntimeError) RuntimeError() {}
+
 // TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
 // a no-op for handlers that don't panic.
 func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {
@@ -619,6 +739,9 @@ func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
 	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
 		t.Errorf("x-request-id = %q, want req-panic-1", got)
 	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-panic-1" {
+		t.Errorf("x-bifrost-request-id = %q, want req-panic-1", got)
+	}
 	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 		t.Error("expected x-bifrost-trace-id on the recovered 500")
 	}
@@ -676,6 +799,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/realtime/calls",
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
 	}
 
 	for _, path := range paths {
@@ -970,6 +1094,51 @@ func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
 		am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
 		called, _ = run(am, api, "/api/public/status", "https://evil.example")
 		assert.True(t, called)
+	})
+
+	// Without a config store there is no auth middleware at all; the bypass middleware the server
+	// installs instead applies the same rule, since the API is just as open there.
+	t.Run("no config store, auth bypassed", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		bypassed := AuthBypassedMiddleware([]string{"*"}, nil)
+
+		called, _ := run(am, bypassed, "/api/logs", "")
+		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
+		called, _ = run(am, bypassed, "/api/logs", "http://localhost:3000")
+		assert.True(t, called, "localhost origins are always allowed")
+		called, status := run(am, bypassed, "/api/logs", "https://evil.example")
+		assert.False(t, called, "an unlisted origin must not reach the open management API without a config store either")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, bypassed, "/health", "https://evil.example")
+		assert.True(t, called, "whitelisted routes keep today's behaviour")
+
+		listed := AuthBypassedMiddleware([]string{"https://app.example.com", "https://*.corp.example"}, []string{"/api/public/*"})
+		called, _ = run(am, listed, "/api/logs", "https://app.example.com")
+		assert.True(t, called, "an explicitly listed origin passes")
+		called, _ = run(am, listed, "/api/logs", "https://tools.corp.example")
+		assert.True(t, called, "a domain pattern names the origin")
+		called, status = run(am, listed, "/api/logs", "https://app.example.com.evil.example")
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, listed, "/api/public/status", "https://evil.example")
+		assert.True(t, called, "operator-configured whitelisted routes are exempt")
+
+		sameOrigin := &fasthttp.RequestCtx{}
+		sameOrigin.Request.SetRequestURI("/api/config")
+		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
+		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
+		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
+		sameOriginCalled := false
+		bypassed(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
+		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
+
+		// A refused request is never marked as the local admin.
+		refused := &fasthttp.RequestCtx{}
+		refused.Request.SetRequestURI("/api/logs")
+		refused.Request.Header.Set("Origin", "https://evil.example")
+		bypassed(func(*fasthttp.RequestCtx) {})(refused)
+		assert.Nil(t, refused.UserValue(schemas.IsLocalAdminContextKey))
+		assert.Nil(t, refused.UserValue(schemas.BifrostContextKeyAuthBypassed))
 	})
 }
 
@@ -1273,6 +1442,8 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 		// into a redirect loop in the dashboard.
 		"/api/session/logout",
 		"/api/oauth/callback",
+		// Client ID Metadata Document
+		"/api/oauth/client-metadata.json",
 		"/health",
 	}
 
@@ -1956,7 +2127,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
@@ -1991,14 +2162,45 @@ func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
 	handler := middleware(next)
 	handler(ctx)
 
-	// Non-credentialed: wildcard is valid per spec
+	// Non-credentialed: the wildcard is valid per spec, but never covers Authorization, so the
+	// defaults stay listed beside it.
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
-	if actualHeaders != "*" {
-		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	if actualHeaders != corsAllowHeaders(nil)+", *" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be the defaults plus *, got %s", actualHeaders)
 	}
 
 	if !nextCalled {
 		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialedPreflightAllowsAuthorization pins that a browser
+// client on a wildcard-allowed origin can send a bearer token: the Fetch standard never lets "*"
+// authorize the Authorization request header, so it must be listed explicitly.
+func TestCorsMiddleware_WildcardHeaders_NonCredentialedPreflightAllowsAuthorization(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodOptions)
+	ctx.Request.Header.Set("Origin", "https://inspector.example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Method", fasthttp.MethodPost)
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	NewCorsMiddleware(config).Middleware()(func(*fasthttp.RequestCtx) {})(ctx)
+
+	allowed := strings.Split(string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")), ", ")
+	if !slices.Contains(allowed, "Authorization") {
+		t.Errorf("Expected Authorization to be listed explicitly, got %v", allowed)
+	}
+	if !slices.Contains(allowed, "*") {
+		t.Errorf("Expected the wildcard to still allow other headers, got %v", allowed)
+	}
+	if len(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != 0 {
+		t.Error("A wildcard-matched origin must not get credentialed CORS")
 	}
 }
 
@@ -2677,6 +2879,311 @@ func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 
 // --- Streaming decompression path tests ---
 
+// compressedCodecs are the request encodings the middleware accepts, with a test encoder each.
+var compressedCodecs = []struct {
+	name     string
+	encoding string
+	encode   func([]byte) ([]byte, error)
+}{
+	{name: "gzip", encoding: "gzip", encode: gzipCompress},
+	{name: "deflate", encoding: "deflate", encode: deflateCompress},
+	{name: "brotli", encoding: "br", encode: brotliCompress},
+	{name: "zstd", encoding: "zstd", encode: zstdCompress},
+}
+
+// incompressibleBytes returns n bytes no codec shrinks, from a fixed xorshift sequence.
+func incompressibleBytes(n int) []byte {
+	out := make([]byte, n)
+	x := uint64(0x9E3779B97F4A7C15)
+	for i := range out {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		out[i] = byte(x)
+	}
+	return out
+}
+
+// runDecompression sends one compressed body through the middleware and reports whether the
+// next handler ran.
+func runDecompression(t *testing.T, config *lib.Config, encoding string, compressed []byte) (*fasthttp.RequestCtx, bool) {
+	t.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", encoding)
+	ctx.Request.SetBodyRaw(compressed)
+	nextCalled := false
+	RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { nextCalled = true })(ctx)
+	return ctx, nextCalled
+}
+
+// TestRequestDecompressionMiddleware_ExpansionBound pins that what a compressed body may expand
+// to is bounded by what was sent, not only by the absolute cap: the middleware runs before
+// routing and auth, so the cap alone lets a few hundred unauthenticated bytes become 100 MiB of
+// heap. A body may grow to at most 100 times its compressed size, with a 1 MiB floor so small
+// bodies are never refused, and never past the cap. Bodies within those bounds are untouched.
+func TestRequestDecompressionMiddleware_ExpansionBound(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+
+	// A compressed length whose expansion would overflow int is still allowed the cap, not wrapped
+	// to a negative product and clamped to the floor. On a 32-bit build that is a 22 MiB body.
+	const capBytes = 100 << 20
+	if got := decompressionAllowance(math.MaxInt/requestDecompressionMaxRatio+1, capBytes); got != capBytes {
+		t.Fatalf("a length whose expansion overflows int must be allowed the cap %d, got %d", capBytes, got)
+	}
+	if got := decompressionAllowance(math.MaxInt, capBytes); got != capBytes {
+		t.Fatalf("the largest length must be allowed the cap %d, got %d", capBytes, got)
+	}
+
+	bomb := make([]byte, 2<<20) // 2 MiB of zeros: a few hundred bytes on the wire
+	for _, codec := range compressedCodecs {
+		t.Run(codec.name+" bomb", func(t *testing.T) {
+			compressed, err := codec.encode(bomb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(compressed) > 8<<10 {
+				t.Fatalf("test bomb is %d bytes compressed, expected a few hundred", len(compressed))
+			}
+			ctx, nextCalled := runDecompression(t, config, codec.encoding, compressed)
+			if nextCalled {
+				t.Fatalf("a %d-byte body expanding to %d bytes must be refused before the router", len(compressed), len(bomb))
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+				t.Fatalf("expected 413, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if !strings.Contains(string(ctx.Response.Body()), "expansion") {
+				t.Fatalf("the refusal must name the expansion bound, got %s", ctx.Response.Body())
+			}
+		})
+	}
+
+	// Under the floor, compressibility does not matter.
+	small := make([]byte, 512<<10)
+	compressed, err := gzipCompress(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body under the floor must pass however well it compresses: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	// Above the floor, a body within the ratio passes.
+	within := incompressibleBytes(2 << 20)
+	compressed, err = gzipCompress(within)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body within the ratio must pass: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_InFlightBudget pins that buffered decompressions cannot
+// stack up without bound: the bytes each one inflates are charged to a budget of four times the
+// cap for the life of the request, and a request that cannot be charged is answered 503 rather
+// than given another buffer.
+func TestRequestDecompressionMiddleware_InFlightBudget(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	compressed, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+		entered <- struct{}{}
+		<-release
+	})
+	send := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Encoding", "gzip")
+		ctx.Request.SetBodyRaw(compressed)
+		handler(ctx)
+		return ctx
+	}
+
+	// Each body inflates to the whole 1 MiB cap, so four fill the 4 MiB budget.
+	done := make(chan struct{})
+	for range 4 {
+		go func() {
+			send()
+			done <- struct{}{}
+		}()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the first four requests must be admitted")
+		}
+	}
+	fifth := make(chan *fasthttp.RequestCtx, 1)
+	go func() { fifth <- send() }()
+	select {
+	case ctx := <-fifth:
+		if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("the fifth request must be refused with 503 while the budget is held, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	case <-entered:
+		close(release)
+		t.Fatal("the fifth request was admitted while four held the whole budget")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the fifth request neither returned nor entered the handler")
+	}
+	close(release)
+	for range 4 {
+		<-done
+	}
+	// The reservations end with their requests.
+	release = make(chan struct{})
+	close(release)
+	if ctx := send(); ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("a request after the others returned must be admitted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// sdkLikeJSONBody builds a chat request of about inflatedLen bytes whose content mixes prose with
+// base64 noise, so it gzips at a ratio typical of real SDK payloads (single digits) rather than
+// the hundreds that runs of one byte reach.
+func sdkLikeJSONBody(t testing.TB, inflatedLen int) []byte {
+	t.Helper()
+	noise := make([]byte, 150)
+	prose := strings.Repeat("The quarterly report shows revenue growth across every region. ", 13)
+	var content strings.Builder
+	for content.Len() < inflatedLen {
+		if _, err := cryptoRand.Read(noise); err != nil {
+			t.Fatal(err)
+		}
+		content.WriteString(base64.StdEncoding.EncodeToString(noise))
+		content.WriteString(prose)
+	}
+	return []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"` + content.String() + `"}]}`)
+}
+
+// TestRequestDecompressionMiddleware_ConcurrentMultiMBGzipNotRefused pins that ordinary gzipped
+// SDK bodies are not refused just because several are in flight at once. Each body is past
+// cap/100 compressed, so its expansion allowance is the whole cap; the in-flight budget must be
+// charged for what the bodies really inflate to, not for that allowance, or the fifth concurrent
+// request is answered 503 while the process holds a fraction of the budget.
+func TestRequestDecompressionMiddleware_ConcurrentMultiMBGzipNotRefused(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 10}}
+	plain := sdkLikeJSONBody(t, 2*1024*1024)
+	compressed, err := gzipCompress(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compressed) <= requestBodyCap(config)/requestDecompressionMaxRatio {
+		t.Fatalf("fixture must be past cap/%d compressed to exercise a full-cap allowance, got %d bytes", requestDecompressionMaxRatio, len(compressed))
+	}
+
+	const concurrent = 8
+	entered := make(chan struct{}, concurrent)
+	release := make(chan struct{})
+	handler := RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		if !bytes.Equal(ctx.Request.Body(), plain) {
+			t.Errorf("decompressed body differs from what was sent: got %d bytes, want %d", len(ctx.Request.Body()), len(plain))
+		}
+		entered <- struct{}{}
+		<-release
+	})
+	results := make(chan *fasthttp.RequestCtx, concurrent)
+	for range concurrent {
+		go func() {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", "gzip")
+			ctx.Request.SetBodyRaw(compressed)
+			handler(ctx)
+			results <- ctx
+		}()
+	}
+	for i := range concurrent {
+		select {
+		case <-entered:
+		case ctx := <-results:
+			close(release)
+			t.Fatalf("after %d of %d concurrent %d-byte gzip bodies (%d bytes inflated each, %d MiB cap) were admitted, one was refused with %d: %s",
+				i, concurrent, len(compressed), len(plain), config.ClientConfig.MaxRequestBodySizeMB, ctx.Response.StatusCode(), ctx.Response.Body())
+		case <-time.After(10 * time.Second):
+			close(release)
+			t.Fatalf("only %d of %d concurrent requests reached the handler", i, concurrent)
+		}
+	}
+	close(release)
+	for range concurrent {
+		if ctx := <-results; ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+}
+
+// TestRequestDecompressionMiddleware_BudgetReleasedOnFailedDecode pins that a decompression that
+// fails part way, past the expansion bound or on a corrupt stream, gives back whatever budget it
+// had charged: afterwards requests that need the whole budget at once are all admitted.
+func TestRequestDecompressionMiddleware_BudgetReleasedOnFailedDecode(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	full, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bomb, err := gzipCompress(make([]byte, 2*1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncated := full[:len(full)/2]
+
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	hold := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+		if hold {
+			entered <- struct{}{}
+			<-release
+		}
+	})
+	send := func(body []byte) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Encoding", "gzip")
+		ctx.Request.SetBodyRaw(body)
+		handler(ctx)
+		return ctx
+	}
+	for range 4 {
+		if ctx := send(bomb); ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+			t.Fatalf("bomb: expected 413, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if ctx := send(truncated); ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("truncated gzip: expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+
+	// Four 1 MiB bodies need the whole 4 MiB budget; any leak above would refuse one of them.
+	hold = true
+	results := make(chan *fasthttp.RequestCtx, 4)
+	for range 4 {
+		go func() { results <- send(full) }()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case ctx := <-results:
+			close(release)
+			t.Fatalf("budget leaked by failed decodes: a 1 MiB body was refused with %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("the four full-size requests did not reach the handler")
+		}
+	}
+	close(release)
+	for range 4 {
+		<-results
+	}
+}
+
 func TestShouldStreamDecompress(t *testing.T) {
 	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
 	tests := []struct {
@@ -3193,8 +3700,8 @@ func TestCollectDimensionHeaders(t *testing.T) {
 }
 
 // TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
-// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
-// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+// carries x-bifrost-request-id, x-bifrost-trace-id and the deprecated x-request-id so
+// callers can pivot a request into its logs and trace in Grafana/Tempo/Loki (BF-1041).
 func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -3218,8 +3725,12 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
 		}
-		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
-			t.Error("expected x-request-id response header to be set")
+		got := string(ctx.Response.Header.Peek("x-bifrost-request-id"))
+		if got == "" {
+			t.Error("expected x-bifrost-request-id response header to be set")
+		}
+		if legacy := string(ctx.Response.Header.Peek("x-request-id")); legacy != got {
+			t.Errorf("x-request-id = %q, want the generated request id %q", legacy, got)
 		}
 	})
 
@@ -3228,11 +3739,39 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		ctx.Request.Header.Set("x-request-id", "req-abc-123")
 		mw(func(*fasthttp.RequestCtx) {})(ctx)
 
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
 			t.Errorf("x-request-id = %q, want req-abc-123", got)
 		}
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	// An upstream that answers with its own x-request-id (OpenAI does) takes over the deprecated
+	// header, as it always has. x-bifrost-request-id and x-bifrost-trace-id stay this gateway's,
+	// even against a chained upstream Bifrost that sends its own.
+	t.Run("provider headers never replace the gateway's correlation headers", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(c *fasthttp.RequestCtx) {
+			lib.ForwardProviderResponseHeaders(c, map[string]string{
+				"X-Request-Id":         "req_upstream",
+				"X-Bifrost-Request-Id": "upstream-hop",
+				"X-Bifrost-Trace-Id":   "upstream-trace",
+			})
+		})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" || got == "upstream-trace" {
+			t.Errorf("x-bifrost-trace-id = %q, want this gateway's trace id", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req_upstream" {
+			t.Errorf("x-request-id = %q, want the provider's req_upstream", got)
 		}
 	})
 
@@ -3250,6 +3789,9 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
 			t.Error("expected x-request-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got == "" {
+			t.Error("expected x-bifrost-request-id to survive the error path")
 		}
 	})
 }
@@ -3590,6 +4132,107 @@ func responseHeadersTestConfig(t *testing.T, plugins ...schemas.BasePlugin) *lib
 		}
 	}
 	return config
+}
+
+// TestTransportRealtimeTurnMetadata verifies the actual HTTP plugin middleware
+// exposes opt-in metadata to the session snapshot while excluding ordinary values.
+func TestTransportRealtimeTurnMetadata(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	const preAuthKey metadataKey = 2
+	preAuthPlugin := &fakePreAuthPlugin{
+		name: "realtime-pre-auth-metadata",
+		hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(preAuthKey, "pre-auth")
+			return nil, nil
+		},
+	}
+	plugin := &fakeResponseHeadersPlugin{
+		name: "realtime-metadata",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+			return nil
+		},
+		preHook: func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(userKey, req.CaseInsensitiveHeaderLookup("X-Example-User-ID"))
+			ctx.SetValue(requestOnlyKey, "request-only")
+			return nil, nil
+		},
+	}
+	var snapshot map[any]any
+	config := responseHeadersTestConfig(t, preAuthPlugin, plugin)
+	handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		snapshot = snapshotRealtimeMiddlewareValues(ctx)
+		requestCtx, requestCancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+		defer requestCancel()
+		relay, cancel := newRealtimeRelayContext(requestCtx)
+		defer cancel()
+		if relay.Value(userKey) != "test-alice" || relay.Value(preAuthKey) != "pre-auth" || relay.Value(requestOnlyKey) != nil {
+			t.Fatal("WebRTC relay lost opt-in metadata or inherited request-only values")
+		}
+	}))
+	ctx := preAuthTestCtx()
+	ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+	ctx.Request.Header.Set("X-Example-User-ID", "test-alice")
+	handler(ctx)
+	if snapshot[userKey] != "test-alice" || snapshot[preAuthKey] != "pre-auth" || snapshot[requestOnlyKey] != nil {
+		t.Fatalf("session snapshot = %v", snapshot)
+	}
+}
+
+// TestTransportRealtimeTurnMetadataLaterWrites reconciles pre-auth opt-ins with later writes and clears.
+func TestTransportRealtimeTurnMetadataLaterWrites(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	for _, mode := range []string{"overwrite", "nil", "clear", "untouched"} {
+		t.Run(mode, func(t *testing.T) {
+			preAuth := &fakePreAuthPlugin{name: "mark", hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				ctx.SetValueForRealtimeTurns(userKey, "pre-auth")
+				return nil, nil
+			}}
+			plugin := &fakeResponseHeadersPlugin{name: "update", hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+				return nil
+			}, preHook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				switch mode {
+				case "overwrite":
+					ctx.SetValue(userKey, "transport")
+				case "nil":
+					ctx.SetValue(userKey, nil)
+				case "clear":
+					ctx.ClearValue(userKey)
+				}
+				ctx.SetValue(requestOnlyKey, "request-only")
+				return nil, nil
+			}}
+			config := responseHeadersTestConfig(t, preAuth, plugin)
+			called := false
+			handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+				called = true
+				var want any
+				if mode == "overwrite" {
+					want = "transport"
+				} else if mode == "untouched" {
+					want = "pre-auth"
+				}
+				snapshot := snapshotRealtimeMiddlewareValues(ctx)
+				value, exists := snapshot[userKey]
+				assert.True(t, exists)
+				assert.Equal(t, want, value)
+				_, exists = snapshot[requestOnlyKey]
+				assert.False(t, exists, "ordinary new keys must stay request-local")
+				requestCtx, cancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+				defer cancel()
+				relay, relayCancel := newRealtimeRelayContext(requestCtx)
+				defer relayCancel()
+				assert.Equal(t, want, relay.Value(userKey))
+			}))
+			ctx := preAuthTestCtx()
+			ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+			handler(ctx)
+			assert.True(t, called)
+		})
+	}
 }
 
 func TestTransportResponseHeadersHook_NonStreaming(t *testing.T) {
@@ -4054,7 +4697,7 @@ func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
 	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
 		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 		sawLocalAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
-	}, AuthBypassedMiddleware())
+	}, AuthBypassedMiddleware([]string{"*"}, nil))
 
 	handler(&fasthttp.RequestCtx{})
 
@@ -4565,4 +5208,599 @@ func (p *capturePluginLogsPlugin) Inject(_ context.Context, trace *schemas.Trace
 		}
 	}
 	return nil
+}
+
+// TestIsSameOrigin pins how an Origin is compared with the Host the request was sent to: hosts
+// case-insensitively, the scheme's default port made explicit on either side, IPv6 brackets kept,
+// userinfo ignored, and anything that is not an http(s) origin never the same.
+func TestIsSameOrigin(t *testing.T) {
+	cases := []struct {
+		origin, host string
+		want         bool
+	}{
+		{"http://bifrost.internal:8080", "bifrost.internal:8080", true},
+		{"http://Bifrost.Internal:8080", "bifrost.internal:8080", true},
+		{"HTTP://bifrost.internal:8080", "bifrost.internal:8080", true},
+		{"https://b.example", "b.example:443", true},
+		{"https://b.example:443", "b.example", true},
+		{"http://b.example", "b.example:80", true},
+		{"http://b.example", "b.example", true},
+		{"http://[::1]:8080", "[::1]:8080", true},
+		{"http://[::1]", "[::1]:80", true},
+		{"http://user@b.example:8080", "b.example:8080", true},
+		{"http://b.example:8080/", "b.example:8080", true},
+		{"http://b.example:8080", "b.example:8081", false},
+		{"https://b.example", "b.example:80", false},
+		{"http://b.example", "b.example:443", false},
+		{"http://evil.example", "b.example", false},
+		{"ftp://b.example", "b.example", false},
+		{"null", "b.example", false},
+		{"", "b.example", false},
+		{"http://b.example", "", false},
+		{"http://", "b.example", false},
+		{"http://b.example:port", "b.example:port", false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, isSameOrigin(tc.origin, tc.host), "isSameOrigin(%q, %q)", tc.origin, tc.host)
+	}
+}
+
+// BenchmarkAuthBypassedMiddlewareOriginCheck measures the auth-bypassed management middleware on
+// an /api request with no Origin (CLI and SDKs), a same-origin dashboard request served from a
+// non-localhost address (localhost origins are accepted before the host comparison runs), and a
+// request from an origin listed in allowed_origins.
+func BenchmarkAuthBypassedMiddlewareOriginCheck(b *testing.B) {
+	handler := AuthBypassedMiddleware([]string{"https://app.example.com"}, nil)(func(*fasthttp.RequestCtx) {})
+	cases := []struct{ name, host, origin string }{
+		{"no_origin", "bifrost.internal:8080", ""},
+		{"same_origin", "bifrost.internal:8080", "http://bifrost.internal:8080"},
+		{"allowed_origin", "bifrost.internal:8080", "https://app.example.com"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.ResetUserValues()
+				ctx.Request.SetRequestURI("/api/providers")
+				ctx.Request.Header.SetHost(tc.host)
+				if tc.origin != "" {
+					ctx.Request.Header.Set("Origin", tc.origin)
+				}
+				handler(ctx)
+				if ctx.Response.StatusCode() == fasthttp.StatusForbidden {
+					b.Fatalf("%s was refused: %s", tc.name, ctx.Response.Body())
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRequestDecompressionMiddleware measures the decompression middleware on a 4 KiB JSON
+// request body sent uncompressed (the common case, which it passes straight through) and gzipped
+// (decompressed under the expansion bound and the in-flight budget), plus a 10 MiB SDK-like body
+// (about 1.5 MiB gzipped) and 1 MiB of zeros (about 1 KiB gzipped, the high-ratio extreme).
+func BenchmarkRequestDecompressionMiddleware(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {})
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("hello world ", 340) + `"}]}`)
+	compressed, err := gzipCompress(body)
+	if err != nil {
+		b.Fatal(err)
+	}
+	sdkCompressed, err := gzipCompress(sdkLikeJSONBody(b, 10*1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	zeros, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	cases := []struct {
+		name, encoding string
+		payload        []byte
+	}{
+		{"uncompressed", "", body},
+		{"gzip", "gzip", compressed},
+		{"gzip-sdk-10MiB", "gzip", sdkCompressed},
+		{"gzip-zeros-1MiB", "gzip", zeros},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI("/v1/chat/completions")
+				ctx.Request.Header.SetContentType("application/json")
+				if tc.encoding != "" {
+					ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+				}
+				ctx.Request.SetBody(tc.payload)
+				handler(ctx)
+			}
+		})
+	}
+}
+
+// BenchmarkRequestDecompressionMiddlewareParallel sends a 10 MiB SDK-like body, about 1.5 MiB
+// gzipped, through one middleware instance from many goroutines at once, with the handler held
+// for 5ms to stand in for the upstream call the in-flight budget is held across. 503/op is the
+// share of requests refused for budget; the body inflates to a tenth of the 100 MiB cap, so a
+// budget of four times the cap should refuse none of them below about 40 concurrent.
+func BenchmarkRequestDecompressionMiddlewareParallel(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	compressed, err := gzipCompress(sdkLikeJSONBody(b, 10*1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, perProc := range []int{1, 2, 4} {
+		goroutines := perProc * runtime.GOMAXPROCS(0)
+		b.Run(fmt.Sprintf("concurrent-%d", goroutines), func(b *testing.B) {
+			handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+				time.Sleep(5 * time.Millisecond)
+			})
+			var total, refused atomic.Int64
+			b.SetParallelism(perProc)
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				ctx := &fasthttp.RequestCtx{}
+				for pb.Next() {
+					ctx.Request.Reset()
+					ctx.Response.Reset()
+					ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+					ctx.Request.SetRequestURI("/v1/chat/completions")
+					ctx.Request.Header.SetContentType("application/json")
+					ctx.Request.Header.Set("Content-Encoding", "gzip")
+					ctx.Request.SetBody(compressed)
+					handler(ctx)
+					total.Add(1)
+					if ctx.Response.StatusCode() == fasthttp.StatusServiceUnavailable {
+						refused.Add(1)
+					}
+				}
+			})
+			b.ReportMetric(float64(refused.Load())/float64(total.Load()), "503/op")
+		})
+	}
+}
+
+// A connector rebuilding the caller's parent context needs the vendor trace state, which
+// rides tracestate rather than traceparent. It is captured as a trace attribute, not from
+// RequestHeaders, which exist only when a plugin opted into header capture.
+func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	const traceState = "dd=s:2;t.llmobs_ml_app:checkout-agent"
+	// Read inside the handler: the middleware completes the trace on the way out and the
+	// pooled object is reset, so a pointer held past the call sees nil attributes.
+	run := func(headers map[string]string) string {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		var got string
+		mw(func(c *fasthttp.RequestCtx) {
+			id, _ := c.UserValue(schemas.BifrostContextKeyTraceID).(string)
+			if trace := store.GetTrace(id); trace != nil {
+				v, _ := trace.GetAttribute(schemas.TraceAttrTraceState)
+				got, _ = v.(string)
+			}
+		})(ctx)
+		return got
+	}
+
+	if got := run(map[string]string{
+		"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"tracestate":  traceState,
+	}); got != traceState {
+		t.Errorf("tracestate attribute = %q, want %q", got, traceState)
+	}
+
+	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
+	if got := run(map[string]string{"tracestate": traceState}); got != "" {
+		t.Errorf("tracestate stored with no traceparent: %q", got)
+	}
+}
+
+// TestLogRequestTargetRedactsAPIKeyQuery pins that a key sent in the query string never reaches the access log,
+// including under a percent-encoded name.
+func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-secret": "/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=REDACTED",
+		"/v1/chat/completions?stream=true":                                  "/v1/chat/completions?stream=true",
+		"/voice-live/realtime?%61pi-key=sk-bf-secret&model=gpt-realtime-vl": "/voice-live/realtime?api-key=REDACTED&model=gpt-realtime-vl",
+		"/azure/voice-live/realtime?api%2Dkey=sk-bf-secret":                 "/azure/voice-live/realtime?api-key=REDACTED",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+// TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
+// the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
+func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=sk-bf-secret": "/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=REDACTED",
+		"/genai/ws/live?ke%79=sk-bf-secret&alt=json":                                                           "/genai/ws/live?key=REDACTED&alt=json",
+		"/genai/ws/live?key=AIza-secret&api-key=sk-bf-secret":                                                  "/genai/ws/live?key=REDACTED&api-key=REDACTED",
+		"/genai/ws/live?key=a&key=b":                                                                           "/genai/ws/live?key=REDACTED&key=REDACTED",
+		"/voice-live/realtime?api-key=a&model=m&api-key=b":                                                     "/voice-live/realtime?api-key=REDACTED&model=m&api-key=REDACTED",
+		"/api/logs?keys=a&key_name=b":                                                                          "/api/logs?keys=a&key_name=b",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+// BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
+func BenchmarkLogRequestTarget(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetQuery measures the access log target on a request whose query string holds no secret.
+func BenchmarkLogRequestTargetQuery(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/logs?limit=50&offset=100&providers=openai")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// BenchmarkLogRequestTargetRedacted measures the access log target on a request that carries a secret.
+func BenchmarkLogRequestTargetRedacted(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/genai/ws/live?alt=json&key=sk-bf-secret")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// manyMCPParamHeaders is an Access-Control-Request-Headers value naming n mcp-param- headers.
+func manyMCPParamHeaders(n int) string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("mcp-param-p%d", i)
+	}
+	return strings.Join(names, ", ")
+}
+
+// Echoing a preflight's mcp-param- names costs one allocation however many it lists, and a
+// disallowed origin gets no CORS headers.
+func TestCorsMiddleware_MCPParamHeadersAreBounded(t *testing.T) {
+	requested := manyMCPParamHeaders(500)
+	defaults, requestedBytes := corsAllowHeaders(nil), []byte(requested)
+	if got, want := appendMCPParamHeaders(defaults, requestedBytes), defaults+", "+requested; got != want {
+		t.Fatalf("every name must be echoed, in order: got %d bytes, want %d", len(got), len(want))
+	}
+	if allocs := testing.AllocsPerRun(20, func() { _ = appendMCPParamHeaders(defaults, requestedBytes) }); allocs > 1 {
+		t.Fatalf("the list must be built once, not copied per name: %.0f allocs", allocs)
+	}
+	noParams := []byte("content-type, mcp-method")
+	if allocs := testing.AllocsPerRun(20, func() { _ = appendMCPParamHeaders(defaults, noParams) }); allocs != 0 {
+		t.Fatalf("a preflight asking for no mcp-param- names must not allocate: %.0f allocs", allocs)
+	}
+
+	SetLogger(&mockLogger{})
+	handler := NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"https://app.example.com"}}}).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodOptions)
+	ctx.Request.Header.Set("Origin", "https://evil.example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", requested)
+	handler(&ctx)
+	if got := ctx.Response.Header.Peek("Access-Control-Allow-Headers"); len(got) != 0 {
+		t.Fatalf("a disallowed origin must get no CORS headers, got %q", got)
+	}
+}
+
+// BenchmarkCorsMiddleware measures the CORS headers on a cross-origin request, which every route
+// pays, and on an MCP client's preflight.
+func BenchmarkCorsMiddleware(b *testing.B) {
+	SetLogger(&mockLogger{})
+	handler := NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*"}}}).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+	cases := []struct {
+		name    string
+		method  string
+		request string
+	}{
+		{"request", fasthttp.MethodPost, ""},
+		{"preflight-mcp", fasthttp.MethodOptions, "content-type, mcp-protocol-version, mcp-method, mcp-name, mcp-param-region"},
+		{"preflight-many-params", fasthttp.MethodOptions, manyMCPParamHeaders(500)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.Header.Set("Origin", "https://app.example.com")
+			if tc.request != "" {
+				ctx.Request.Header.Set("Access-Control-Request-Headers", tc.request)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.Response.Reset()
+				handler(&ctx)
+			}
+		})
+	}
+}
+
+// basePathTestConfig returns a minimal Config with server.base_path set.
+func basePathTestConfig(basePath string) *lib.Config {
+	return &lib.Config{ClientConfig: &configstore.ClientConfig{}, ServerConfig: &lib.ServerConfig{BasePath: basePath}}
+}
+
+// TestBasePathMiddleware_StripsPrefix pins the URI rewrite: the prefix is removed
+// on whole-segment matches only, the query survives, and Path() and
+// PathOriginal() both see the stripped path.
+func TestBasePathMiddleware_StripsPrefix(t *testing.T) {
+	cases := []struct {
+		uri, wantPath, wantQuery string
+	}{
+		{"/bifrost", "/", ""},
+		{"/bifrost/", "/", ""},
+		{"/bifrost/workspace/logs", "/workspace/logs", ""},
+		{"/bifrost/api/logs?limit=10&offset=0", "/api/logs", "limit=10&offset=0"},
+		{"/bifrost/v1/chat/completions", "/v1/chat/completions", ""},
+		{"/bifrost/assets/index-abc.js", "/assets/index-abc.js", ""},
+		// Unprefixed requests (a stripping proxy, a /health probe) pass through.
+		{"/health", "/health", ""},
+		{"/api/logs?limit=1", "/api/logs", "limit=1"},
+		{"/", "/", ""},
+		// Lookalike prefixes are not segment matches.
+		{"/bifrostx/api/logs", "/bifrostx/api/logs", ""},
+		{"/bifrost-ui", "/bifrost-ui", ""},
+	}
+	for _, tc := range cases {
+		var gotPath, gotOriginal, gotQuery string
+		handler := basePathMiddleware("/bifrost")(func(ctx *fasthttp.RequestCtx) {
+			gotPath = string(ctx.Path())
+			gotOriginal = string(ctx.Request.URI().PathOriginal())
+			gotQuery = string(ctx.QueryArgs().QueryString())
+		})
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetHost("abc.com")
+		handler(ctx)
+		assert.Equal(t, tc.wantPath, gotPath, tc.uri)
+		assert.Equal(t, tc.wantPath, gotOriginal, tc.uri)
+		assert.Equal(t, tc.wantQuery, gotQuery, tc.uri)
+		assert.Equal(t, "abc.com", string(ctx.Host()), tc.uri)
+	}
+}
+
+// TestBasePathMiddleware_NestedPrefix covers a multi-segment prefix.
+func TestBasePathMiddleware_NestedPrefix(t *testing.T) {
+	var gotPath string
+	handler := basePathMiddleware("/tools/llm-gw")(func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Path()) })
+	for uri, want := range map[string]string{
+		"/tools/llm-gw/api/version": "/api/version",
+		"/tools/llm-gw":             "/",
+		"/tools/api/version":        "/tools/api/version",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		handler(ctx)
+		assert.Equal(t, want, gotPath, uri)
+	}
+}
+
+// TestServerRootHandler_BasePathRouting runs prefixed and unprefixed requests
+// through the production root chain and a real router, and checks the stripped
+// path is the one the auth whitelist matches against.
+func TestServerRootHandler_BasePathRouting(t *testing.T) {
+	SetLogger(&mockLogger{})
+	r := router.New()
+	var hitPath string
+	record := func(ctx *fasthttp.RequestCtx) { hitPath = string(ctx.Request.URI().PathOriginal()) }
+	r.GET("/health", record)
+	r.GET("/api/session/is-auth-enabled", record)
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) { hitPath = "ui:" + string(ctx.Path()) })
+
+	handler := ServerRootHandler(newRecoveryTestCors(), basePathTestConfig("/bifrost"), r.Handler)
+	for uri, want := range map[string]string{
+		"/bifrost/api/session/is-auth-enabled": "/api/session/is-auth-enabled",
+		"/api/session/is-auth-enabled":         "/api/session/is-auth-enabled",
+		"/bifrost/health":                      "/health",
+		"/health":                              "/health",
+		"/bifrost/workspace/logs":              "ui:/workspace/logs",
+		"/bifrost/login":                       "ui:/login",
+		// The root chain strips the prefix exactly once.
+		"/bifrost/bifrost/workspace": "ui:/bifrost/workspace",
+	} {
+		hitPath = ""
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.SetMethod("GET")
+		handler(ctx)
+		assert.Equal(t, want, hitPath, uri)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/bifrost/login")
+	basePathMiddleware("/bifrost")(func(ctx *fasthttp.RequestCtx) {
+		assert.True(t, isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), nil), "stripped /login must match the system whitelist")
+	})(ctx)
+
+	// API responses under the prefix still get the /api/ no-store header.
+	ctx = &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/bifrost/api/session/is-auth-enabled")
+	ctx.Request.Header.SetMethod("GET")
+	handler(ctx)
+	assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")))
+}
+
+// TestBasePathMiddleware_RedirectsKeepPrefix pins that a same-origin redirect
+// answering a prefixed request stays under the prefix. The router builds its
+// trailing-slash and fixed-path redirects from the stripped path, so without
+// this the browser would leave the proxy prefix. Redirects that already carry
+// the prefix, point at another origin, or answer an unprefixed request are
+// left alone.
+func TestBasePathMiddleware_RedirectsKeepPrefix(t *testing.T) {
+	SetLogger(&mockLogger{})
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {})
+	r.POST("/api/providers", func(*fasthttp.RequestCtx) {})
+	r.GET("/handler/{target}", func(ctx *fasthttp.RequestCtx) {
+		switch ctx.UserValue("target") {
+		case "prefixed":
+			ctx.Redirect("/bifrost/workspace", fasthttp.StatusFound)
+		case "external":
+			ctx.Redirect("https://idp.example.org/authorize?x=1", fasthttp.StatusFound)
+		case "relative":
+			ctx.Response.Header.Set("Location", "/workspace/logs?x=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "protocol-relative":
+			ctx.Response.Header.Set("Location", "//evil.example.org/x")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "backslash":
+			ctx.Response.Header.Set("Location", "/\\evil.example.org/x")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		case "lookalike":
+			ctx.Redirect("/bifrostx/y", fasthttp.StatusFound)
+		case "foreign-same-host":
+			// A third-party OAuth client's redirect_uri that happens to share this host.
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+			markLocationExternal(ctx)
+		case "foreign-same-host-unmarked":
+			ctx.Response.Header.Set("Location", "http://gw.example.com/app/cb?code=1")
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		}
+	})
+	handler := ServerRootHandler(newRecoveryTestCors(), basePathTestConfig("/bifrost"), r.Handler)
+
+	cases := []struct {
+		method, uri string
+		wantStatus  int
+		wantLoc     string
+	}{
+		// Router-generated trailing-slash redirects.
+		{"GET", "/bifrost/api/providers/", fasthttp.StatusMovedPermanently, "http://gw.example.com/bifrost/api/providers"},
+		{"POST", "/bifrost/api/providers/?a=b", fasthttp.StatusPermanentRedirect, "http://gw.example.com/bifrost/api/providers?a=b"},
+		// Router-generated fixed-path (case) redirect.
+		{"GET", "/bifrost/API/Providers", fasthttp.StatusMovedPermanently, "http://gw.example.com/bifrost/api/providers"},
+		// Unprefixed requests keep the unprefixed redirect.
+		{"GET", "/api/providers/", fasthttp.StatusMovedPermanently, "http://gw.example.com/api/providers"},
+		// Handler redirects.
+		{"GET", "/bifrost/handler/prefixed", fasthttp.StatusFound, "http://gw.example.com/bifrost/workspace"},
+		{"GET", "/bifrost/handler/external", fasthttp.StatusFound, "https://idp.example.org/authorize?x=1"},
+		{"GET", "/bifrost/handler/relative", fasthttp.StatusFound, "/bifrost/workspace/logs?x=1"},
+		{"GET", "/bifrost/handler/protocol-relative", fasthttp.StatusFound, "//evil.example.org/x"},
+		{"GET", "/bifrost/handler/backslash", fasthttp.StatusFound, "/\\evil.example.org/x"},
+		{"GET", "/bifrost/handler/lookalike", fasthttp.StatusFound, "http://gw.example.com/bifrost/bifrostx/y"},
+		// A redirect the handler marked as leaving Bifrost is not pulled under the prefix.
+		{"GET", "/bifrost/handler/foreign-same-host", fasthttp.StatusFound, "http://gw.example.com/app/cb?code=1"},
+		// Unmarked same-host Locations are still assumed to be ours.
+		{"GET", "/bifrost/handler/foreign-same-host-unmarked", fasthttp.StatusFound, "http://gw.example.com/bifrost/app/cb?code=1"},
+	}
+	for _, tc := range cases {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.Header.SetHost("gw.example.com")
+		handler(ctx)
+		assert.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), tc.method+" "+tc.uri)
+		assert.Equal(t, tc.wantLoc, string(ctx.Response.Header.Peek("Location")), tc.method+" "+tc.uri)
+	}
+}
+
+// TestServerRootHandler_NoBasePathNotWired pins that without a base path the
+// prefix is never stripped, i.e. the middleware is not part of the chain.
+func TestServerRootHandler_NoBasePathNotWired(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, config := range []*lib.Config{
+		basePathTestConfig(""),
+		{ClientConfig: &configstore.ClientConfig{}},
+	} {
+		var gotPath string
+		handler := ServerRootHandler(newRecoveryTestCors(), config, func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Path()) })
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/bifrost/api/logs")
+		handler(ctx)
+		assert.Equal(t, "/bifrost/api/logs", gotPath)
+	}
+}
+
+// TestBasePathRootHandler pins the exported root wrapper that builds with their
+// own root chain (enterprise) use in place of ServerRootHandler: it strips the
+// configured prefix once, and without a base path it returns next unchanged.
+func TestBasePathRootHandler(t *testing.T) {
+	var gotPath string
+	next := func(ctx *fasthttp.RequestCtx) { gotPath = string(ctx.Request.URI().PathOriginal()) }
+
+	handler := BasePathRootHandler(basePathTestConfig("/bifrost"), next)
+	for uri, want := range map[string]string{
+		"/bifrost/api/logs":         "/api/logs",
+		"/api/logs":                 "/api/logs",
+		"/bifrost":                  "/",
+		"/bifrostx/api/logs":        "/bifrostx/api/logs",
+		"/bifrost/bifrost/api/logs": "/bifrost/api/logs",
+	} {
+		gotPath = ""
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		handler(ctx)
+		assert.Equal(t, want, gotPath, uri)
+	}
+
+	for _, config := range []*lib.Config{nil, {}, basePathTestConfig("")} {
+		handler := BasePathRootHandler(config, next)
+		assert.Equal(t, reflect.ValueOf(next).Pointer(), reflect.ValueOf(handler).Pointer(), "no base path: next is returned as is")
+	}
+}
+
+// BenchmarkBasePathMiddleware measures the per-request cost of the prefix strip
+// when a base path is configured (it is not in the chain otherwise).
+func BenchmarkBasePathMiddleware(b *testing.B) {
+	noop := func(*fasthttp.RequestCtx) {}
+	handler := basePathMiddleware("/bifrost")(noop)
+	for name, uri := range map[string]string{
+		"prefixed":   "/bifrost/v1/chat/completions?stream=true",
+		"unprefixed": "/v1/chat/completions?stream=true",
+	} {
+		b.Run(name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetHost("abc.com")
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.Request.SetRequestURI(uri)
+				handler(ctx)
+			}
+		})
+	}
+	b.Run("baseline", func(b *testing.B) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetHost("abc.com")
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx.Request.SetRequestURI("/v1/chat/completions?stream=true")
+			_ = ctx.Request.URI()
+			noop(ctx)
+		}
+	})
 }

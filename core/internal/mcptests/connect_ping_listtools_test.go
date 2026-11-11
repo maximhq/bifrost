@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,26 @@ func inProcessClientConfig(clientName string, s *server.MCPServer) *schemas.MCPC
 		ConnectionType:  schemas.MCPConnectionTypeInProcess,
 		InProcessServer: s,
 		ToolsToExecute:  []string{"*"},
+	}
+}
+
+// legacyHTTPClientConfig serves s over Streamable HTTP pinned to 2025-11-25, the newest revision
+// that still has ping, and returns a Client config for it.
+func legacyHTTPClientConfig(t *testing.T, clientName string, s *server.MCPServer) *schemas.MCPClientConfig {
+	t.Helper()
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
+	// The client keeps a GET stream open to hear tools/list_changed, and the manager may still be
+	// running when this cleanup fires, so its connections are cut first.
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	})
+	return &schemas.MCPClientConfig{
+		ID:               clientName + "-id",
+		Name:             clientName,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		ToolsToExecute:   []string{"*"},
 	}
 }
 
@@ -192,7 +213,7 @@ func TestConnectHook_PreHookShortCircuitResponse_RegistersWithEmptyTools(t *test
 		}
 	}
 	require.NotNil(t, found, "client should be registered even with synthetic connect")
-	assert.Empty(t, found.ToolMap, "synthetic-connect client has no tools (list_tools is never called)")
+	assert.Empty(t, clientTools(manager, found.ExecutionConfig.ID), "synthetic-connect client has no tools (list_tools is never called)")
 }
 
 func TestConnectHook_AuthorizationHidden_HeadersAuth(t *testing.T) {
@@ -324,9 +345,10 @@ func TestListToolsHook_PostHookFilterAppliedToClientState(t *testing.T) {
 		}
 	}
 	require.NotNil(t, target)
-	assert.Len(t, target.ToolMap, 1, "PostHook filter should have removed 'add' tool")
-	_, hasEcho := target.ToolMap["list_filter-echo"]
-	_, hasAdd := target.ToolMap["list_filter-add"]
+	targetTools := clientTools(manager, target.ExecutionConfig.ID)
+	assert.Len(t, targetTools, 1, "PostHook filter should have removed 'add' tool")
+	_, hasEcho := targetTools["list_filter-echo"]
+	_, hasAdd := targetTools["list_filter-add"]
 	assert.True(t, hasEcho, "filtered ToolMap should keep echo")
 	assert.False(t, hasAdd, "filtered ToolMap should drop add")
 }
@@ -345,7 +367,6 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 				},
 			},
 		},
-		ToolNameMapping: map[string]string{"synthetic_tool": "synthetic-tool"},
 	}
 	plugin.SetShortCircuitResponse(synthetic)
 
@@ -362,8 +383,9 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 	}
 	require.NotNil(t, target)
 	// The synthetic tool list should have replaced the real server's tools.
-	_, hasSynthetic := target.ToolMap["synthetic-tool"]
-	_, hasEcho := target.ToolMap["list_synth-echo"]
+	synthTools := clientTools(manager, target.ExecutionConfig.ID)
+	_, hasSynthetic := synthTools["synthetic-tool"]
+	_, hasEcho := synthTools["list_synth-echo"]
 	assert.True(t, hasSynthetic, "synthetic tool should be in ToolMap from short-circuit")
 	assert.False(t, hasEcho, "real server tools should not appear when PreHook short-circuited")
 }
@@ -430,7 +452,7 @@ func TestPingHook_FiresViaHealthMonitor(t *testing.T) {
 	plugin := NewTestPingPlugin()
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	cfg := inProcessClientConfig("ping_fires", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_fires", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	// AddClient starts its own connection checker at 10s interval — far too slow for
@@ -468,7 +490,7 @@ func TestPingHook_PreHookShortCircuitHealthy(t *testing.T) {
 	plugin.SetShortCircuitHealthy(true)
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	cfg := inProcessClientConfig("ping_healthy", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_healthy", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
@@ -502,7 +524,7 @@ func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 	})
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	cfg := inProcessClientConfig("ping_err", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_err", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
@@ -551,6 +573,28 @@ func TestPingHook_DoesNotFireWhenPingUnavailable(t *testing.T) {
 
 	assert.Equal(t, 0, pingPlugin.GetPreHookCallCount(), "Ping hook MUST NOT fire when isPingAvailable=false")
 	assert.GreaterOrEqual(t, listPlugin.GetPreHookCallCount(), 2, "list_tools hook fires as liveness fallback")
+}
+
+// TestPingHook_DoesNotFireOnModernUpstream pins that a 2026-07-28 upstream, whose protocol has no
+// ping, is health checked by list_tools alone: no ping runs through the plugin pipeline.
+func TestPingHook_DoesNotFireOnModernUpstream(t *testing.T) {
+	t.Parallel()
+
+	pingPlugin := NewTestPingPlugin()
+	listPlugin := NewTestListToolsPlugin()
+	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{pingPlugin, listPlugin})
+
+	cfg := inProcessClientConfig("ping_modern", buildInProcessServer(t))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	listPlugin.Reset()
+
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor.Start()
+	defer monitor.Stop()
+
+	require.Eventually(t, func() bool { return listPlugin.GetPreHookCallCount() >= 2 }, 2*time.Second, 10*time.Millisecond,
+		"list_tools hook fires as the liveness check")
+	assert.Equal(t, 0, pingPlugin.GetPreHookCallCount(), "no ping for an upstream whose protocol has none")
 }
 
 // =============================================================================
@@ -606,7 +650,7 @@ func TestMCPGate_NoPluginsConfigured_OpStillRuns(t *testing.T) {
 	for _, c := range clients {
 		if c.Name == "no_plugins" {
 			found = true
-			assert.NotEmpty(t, c.ToolMap, "tools should have been discovered through the gate even without plugins")
+			assert.NotEmpty(t, clientTools(manager, c.ExecutionConfig.ID), "tools should have been discovered through the gate even without plugins")
 			break
 		}
 	}

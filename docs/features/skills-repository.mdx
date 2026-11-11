@@ -26,7 +26,7 @@ Use it when you want to:
 
 ## Create a skill
 
-From the dashboard, open **Skills Repository** and click **New Skill** (or **Create Skill** from the empty-state page if no skills exist yet).
+From the dashboard, open **Skills → Skills Repository** and click **New Skill** (or **Create Skill** from the empty-state page if no skills exist yet).
 
 The editor uses a two-pane workspace. The left sidebar has three navigation buttons -- **Details**, **Metadata**, and **Extra Frontmatter** -- above the file tree. Clicking a button switches the right pane to the corresponding editor.
 
@@ -254,7 +254,38 @@ Shifting changes which version is served to marketplaces and downloads. It does 
 
 ## Register Bifrost as a marketplace
 
-Once your repository has skills, click **Register as Marketplace** in the Skills Repository header. The menu provides a Git repository URL for Claude Desktop and Cowork, plus CLI commands for Claude Code and Codex.
+### Configure marketplace access
+
+Marketplace registration and serving require both:
+
+- An **External Client URL** in **Skills → Skills Settings**. Set Bifrost's public base URL, such as `https://bifrost.example.com`, and select **Save Changes**. Use an address reachable by the clients installing skills.
+- The `git` binary on the Bifrost server's `PATH`. Restart Bifrost after installing Git so it detects the binary.
+
+You can also set the URL in `config.json`:
+
+```json
+{
+  "client": {
+    "skills_external_client_url": "https://bifrost.example.com"
+  }
+}
+```
+
+For Helm deployments, set the corresponding chart value:
+
+```yaml
+bifrost:
+  client:
+    skillsExternalClientUrl: https://bifrost.example.com
+```
+
+The field supports environment references such as `env.BIFROST_SKILLS_URL` and vault references. Through the [configuration API](/api-reference/configuration/update-configuration), update `client_config.skills_external_client_url` while preserving your other configuration fields.
+
+If the URL is unset or resolves to an empty value, the dashboard disables **Register as Marketplace**, and marketplace catalog and Git endpoints return **503 Service Unavailable** when Git is installed. Bifrost does not derive marketplace URLs from `Host` or forwarded request headers. If Git is missing, marketplace routes are not registered.
+
+Skill creation, import, editing, versioning, and direct downloads remain available without a marketplace URL or Git. Only marketplace registration and serving are disabled.
+
+Once the prerequisites above are configured and your repository has skills, click **Register as Marketplace** in the Skills Repository header. The menu provides a Git repository URL for Claude Desktop and Cowork, plus CLI commands for Claude Code and Codex.
 
 <Frame>
   <img src="/media/skills-repository/claude-desktop-marketplace-url.png" alt="Bifrost Register as Marketplace menu showing the Claude Desktop and Cowork Git URL" />
@@ -317,7 +348,7 @@ codex plugin marketplace add <your-bifrost-url>/api/skills/serve/codex
 ```
 
 <Note>
-  The marketplace install flow requires the `git` binary on the Bifrost server. If Git is unavailable, the dashboard disables marketplace registration and explains that Bifrost must be restarted after Git is installed.
+  If **Register as Marketplace** is disabled, check the URL in **Skills → Skills Settings** and Git availability on the server. See [Configure marketplace access](#configure-marketplace-access).
 </Note>
 
 ## Install skills from the marketplace

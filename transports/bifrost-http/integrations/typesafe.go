@@ -3,11 +3,13 @@ package integrations
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -39,6 +41,7 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &typesafe.TypesafeDecisionRequest{}
 		},
+		RequestParser: parseTypesafeSystemOneRequest,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if typesafeReq, ok := req.(*typesafe.TypesafeDecisionRequest); ok {
 				decisionReq, err := typesafeReq.ToBifrostDecisionRequest(ctx)
@@ -106,4 +109,59 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 	})
 
 	return routes
+}
+
+// parseTypesafeSystemOneRequest reads a systemone body: JSON, or multipart with the
+// JSON in the "request" part and each multipart asset's image in the file part its
+// "part" names. Only what the request cannot be built without is checked here, each
+// a 400 Typesafe also returns: every part has a distinct name, every named part is
+// present, and every file part belongs to exactly one asset. The images are
+// Typesafe's to judge; their format is read from the bytes when they are sent on,
+// as Typesafe does, so a part's own content type is not kept.
+func parseTypesafeSystemOneRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	typesafeReq, ok := req.(*typesafe.TypesafeDecisionRequest)
+	if !ok {
+		return errors.New("invalid request type for systemone")
+	}
+	boundary := ctx.Request.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return parseJSONRequestBody(ctx.Request.Body(), typesafeReq)
+	}
+
+	body, files, err := lib.ReadMultipartRequest(ctx.Request.Body(), string(boundary))
+	if err != nil {
+		return err
+	}
+	if err := parseJSONRequestBody(body, typesafeReq); err != nil {
+		return err
+	}
+
+	refs := make([]string, 0, len(typesafeReq.Assets))
+	for ref := range typesafeReq.Assets {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	used := make(map[string]string, len(files))
+	for _, ref := range refs {
+		asset := typesafeReq.Assets[ref]
+		if asset.Part == "" {
+			continue
+		}
+		file, ok := files[asset.Part]
+		if !ok {
+			return fmt.Errorf("asset %q names part %q, which the request does not carry", ref, asset.Part)
+		}
+		if other, taken := used[asset.Part]; taken {
+			return fmt.Errorf("assets %q and %q both name part %q", other, ref, asset.Part)
+		}
+		used[asset.Part] = ref
+		asset.Data = file
+		typesafeReq.Assets[ref] = asset
+	}
+	for name := range files {
+		if _, ok := used[name]; !ok {
+			return fmt.Errorf("multipart part %q is not named by any asset", name)
+		}
+	}
+	return nil
 }

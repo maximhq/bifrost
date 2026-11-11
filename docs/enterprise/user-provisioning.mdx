@@ -13,10 +13,10 @@ Bifrost Enterprise connects your organization's identity provider to Bifrost thr
 - **Team synchronization** from IdP groups into Bifrost teams
 - **Business unit mapping** from IdP attributes to Bifrost business units
 - **Access profile mapping** from IdP attributes to Bifrost access profiles
+- **Project mapping** from IdP attributes to Bifrost projects
 - **Bulk user provisioning** with filter-preview before import
-- **Background lifecycle reconciliation** every **24 hours** for imported users
-- **OIDC session refresh checks** every **15 minutes** to confirm users are still active with the IdP
-- **Silent token refresh** using server-stored refresh tokens when the user remains active
+- **Background directory sync** on a schedule you choose (default every **24 hours**) when SCIM Provisioning is off
+- **Silent session refresh** using server-stored refresh tokens, so IdP changes land without a new sign-in
 - **Inbound SCIM 2.0** — IdPs can push user and group changes to Bifrost in real time via the `/scim/v2` API
 
 Once configured, users sign in to Bifrost with their corporate credentials and inherit the right [role and permissions](./rbac) immediately — no manual account creation.
@@ -78,13 +78,14 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 1. **Login** — Bifrost redirects unauthenticated users to the provider's authorization endpoint (Authorization Code flow).
 2. **Token exchange** — on callback, Bifrost exchanges the code for an access token and refresh token, stores them in an `HttpOnly` cookie / server session, and validates the JWT against the provider's JWKS.
 3. **Identity extraction** — configurable JWT claims (`userIdField`, `rolesField`, `teamIdsField`) are mapped to a Bifrost user, role, and teams. Provider-specific app roles or custom attributes override claim lookup.
-4. **Attribute mapping** — optional `attributeRoleMappings`, `attributeTeamMappings`, `attributeBusinessUnitMappings`, and `attributeAccessProfileMappings` translate arbitrary claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, business units, or access profiles.
-5. **Session refresh checks** — every 15 minutes, Bifrost refreshes the OIDC session. If the session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active.
-6. **Background reconciliation** — Bifrost periodically calls the configured provider's directory APIs to reconcile imported users and mapped roles, teams, business units, and access profiles.
-7. **Bulk import** — admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
-8. **Daily sync** — Bifrost reconciles imported users every 24 hours.
-9. **SCIM push** — IdPs configured with a SCIM provisioning connector can push user creates, updates, and deletes to Bifrost in real time via `/scim/v2`.
-10. **Decommissioning** — if the OIDC server reports that a user is no longer active, the 24-hour reconciliation no longer finds them in the active source set, or a SCIM DELETE arrives, Bifrost decommissions that user locally.
+4. **Attribute mapping** — optional `attributeRoleMappings`, `attributeTeamMappings`, `attributeBusinessUnitMappings`, `attributeAccessProfileMappings`, and `attributeProjectMappings` translate claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, business units, access profiles, or projects. A sign-in that resolves to no role is refused; there is no default role.
+5. **Session refresh** — when a dashboard session expires, Bifrost silently refreshes it with the IdP and re-applies the fresh claims. If the refresh fails and the IdP reports the user is no longer active, the user is removed.
+6. **Directory sync** — when SCIM Provisioning is off and directory API credentials are configured, Bifrost re-reads users from the IdP every **Directory sync interval** (default 24 hours), updating and removing users.
+7. **Bulk import** — admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API. Unavailable while SCIM Provisioning is on.
+8. **SCIM push** — IdPs configured with a SCIM provisioning connector can push user creates, updates, deactivations, and deletes to Bifrost in real time via `/scim/v2`.
+9. **Deprovisioning** — a SCIM deactivation or DELETE, a failed session refresh for a user the IdP reports inactive, or directory sync no longer finding the user, removes the user locally. A refused sign-in never removes anyone.
+
+For the full picture of what each channel changes, and how removals work, see [How identity sync works](/enterprise/how-identity-sync-works).
 
 ---
 
@@ -94,7 +95,7 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 | --- | --- |
 | **OAuth 2.0 / OIDC SSO** | Authorization Code + PKCE with configurable scopes (`openid profile email offline_access`). |
 | **JWKS validation** | JWTs are validated against the provider's published JWKS keys; configuration is cached and auto-refreshed. |
-| **Role mapping** | Map from a claim value (string or array) to Admin / Developer / Viewer or a custom role. Highest-privilege wins when multiple match. |
+| **Role mapping** | Map from a claim value (string or array) to Admin / Developer / Viewer or a custom role. When several match, the role with the most permissions wins by default, or the first matching rule if you choose list order. |
 | **Team mapping** | Map multiple claim values to Bifrost teams in a single pass (a user can belong to many teams). |
 | **Business unit mapping** | Map claim values to Bifrost business units. All matching rules apply, and a user can belong to many. |
 | **Access profile mapping** | Map claim values to [access profiles](/enterprise/access-profiles). All matching rules apply, and the user holds every profile they match. |
@@ -104,20 +105,19 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 | **Business unit sync** | Sync IdP organizational units as Bifrost business units. |
 | **Inbound SCIM 2.0** | IdPs push user and group changes to Bifrost via `/scim/v2` in real time. Bearer-token authenticated. |
 | **SCIM attribute mapping** | SCIM user attributes (including enterprise extension fields) drive role, team, business unit, and access profile assignments automatically on every SCIM write. |
-| **Deprovisioning** | Bifrost checks user status during each 15-minute OIDC session refresh and reconciles imported users against the provider directory every 24 hours. SCIM DELETE/deactivation (`active: false`) is also handled immediately. Users that are inactive, disabled, unassigned, or missing from the source set are decommissioned locally. |
+| **Project mapping** | Map claim values to [projects](/enterprise/projects). |
+| **Deprovisioning** | SCIM DELETE and deactivation (`active: false`) are handled immediately. With SCIM off, Bifrost also removes users whose session refresh fails because the IdP reports them inactive, and users directory sync finds disabled, unassigned, or missing. |
 | **API key pass-through** | Requests using Bifrost API keys (`bfst-*`) bypass OIDC user-provisioning middleware so inference traffic is not affected. |
 
 ---
 
 ## Background lifecycle reconciliation
 
-Bifrost's lifecycle model combines source-side reconciliation, OIDC session validation, and real-time SCIM push.
+Bifrost's lifecycle model combines session refresh, background directory sync, and real-time SCIM push.
 
-Every **15 minutes**, Bifrost refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active; if the provider reports the user is inactive, Bifrost decommissions that user locally.
-
-After users are imported, Bifrost also uses the configured provider credentials to sync with the IdP in the background every **24 hours**. That sync updates mapped roles, teams, business units, and access profiles, and decommissions imported users that are disabled, unassigned, or no longer present in the provider source set.
-
-When an IdP SCIM connector is configured, user deactivation and deletion are also handled immediately as the IdP pushes changes.
+- **Session refresh** - When a user's session expires, Bifrost refreshes it with the IdP and re-applies the fresh claims. If a refresh fails and the IdP reports the user inactive, Bifrost removes the user.
+- **Directory sync** - With directory API credentials configured, Bifrost re-reads users from the IdP every **Directory sync interval** (`bulkSyncInterval`, default `24h`, from `1h` to `30d`). It updates mapped roles, teams, business units, access profiles, and projects, and removes users that are disabled, unassigned, or no longer listed.
+- **SCIM push** - When SCIM Provisioning is on, your IdP pushes every change, including deactivations and deletes, in real time.
 
 ---
 
@@ -129,7 +129,7 @@ All providers share the same outer config shape in `config.json`:
 {
   "scim_config": {
     "enabled": true,
-    "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
+    "provider": "okta | entra | zitadel | keycloak | google | auth0 | generic | sailpoint",
     "config": {
       "...": "provider-specific fields - see each IdP guide"
     },
@@ -147,10 +147,14 @@ Shared fields across providers:
 | `clientId` | Yes | OAuth client ID from the identity provider. |
 | `clientSecret` | Usually | Client secret. Required for confidential clients and (where applicable) token revocation. |
 | `audience` | Optional | JWT audience to validate against. Defaults vary per provider. |
-| `attributeRoleMappings` | Optional | Ordered list of `{ attribute, value, role }` rules evaluated top-to-bottom. |
+| `attributeRoleMappings` | Optional | List of `{ attribute, value, role }` rules. A user gets one role; `roleResolutionStrategy` picks it when several rules match. |
+| `roleResolutionStrategy` | Optional | `highestPermissionCount` (default): the matching role with the most permissions, ties by list order. `order`: the first matching rule. |
 | `attributeTeamMappings` | Optional | List of `{ attribute, value, team }` rules (all matches apply). |
 | `attributeBusinessUnitMappings` | Optional | List of `{ attribute, value, businessUnit }` rules (all matches apply). |
-| `attributeAccessProfileMappings` | Optional | List of `{ attribute, value, accessProfile }` rules. First matching rule (declaration order) wins - a user holds a single access profile, so this is not an all-matches-apply list like team/BU mappings. |
+| `attributeAccessProfileMappings` | Optional | List of `{ attribute, value, accessProfile }` rules (all matches apply). The user holds every profile they match, in addition to those from their role and any assigned by hand. |
+| `attributeProjectMappings` | Optional | List of `{ attribute, value, project }` rules (all matches apply). |
+| `claimsSyncMode` | Optional | Only used when SCIM Provisioning is on. `both` (default): sign-in claims and SCIM both update users. `scim`: SCIM alone; sign-in claims are ignored and new users must be pushed over SCIM. See [Choosing a sync mode](/enterprise/how-identity-sync-works#choosing-a-sync-mode). |
+| `bulkSyncInterval` | Optional | How often directory sync runs, e.g. `12h` or `7d` (default `24h`, from `1h` to `30d`). Not used when SCIM Provisioning is on or without directory API credentials. |
 | `claimScimAttributes` | Optional | Map of claim name -> `{ attributeType, attributeValue }`, defining per-claim SCIM interpretation. See [`claimScimAttributes`](#claimscimattributes-field). |
 
 Provider-specific fields (domain, tenant ID, server URL, service-account credentials) are documented in each IdP's setup guide.
@@ -291,9 +295,9 @@ Each mapping is an ordered rule:
 }
 ```
 
-Rules are evaluated top-to-bottom:
-- **Role mappings** — first match wins, because a user holds exactly one role. Set a fallback with `"value": "*"` at the end.
-- **Team mappings**, **business unit mappings**, and **access profile mappings** — all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams, business units, and access profiles at once.
+How matches combine:
+- **Role mappings** — a user holds exactly one role. By default the matching role with the most permissions wins, with ties going to the rule higher in the list; switch the role resolution setting to **first matching role** to make list order decide. A `"value": "*"` rule matches any value of the attribute, but only when the attribute is present; it is not a fallback for users without it. There is no default role: a sign-in that matches no role rule is refused.
+- **Team mappings**, **business unit mappings**, **access profile mappings**, and **project mappings** — all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams, business units, and access profiles at once.
 
 Claim values can be strings, arrays, or nested objects — Bifrost resolves dotted paths (e.g., `realm_access.roles`).
 
@@ -309,16 +313,12 @@ Claim values can be strings, arrays, or nested objects — Bifrost resolves dott
 }
 ```
 
-**Every matching rule applies.** A user matching three rules holds all three profiles at once, and what they can reach is the sum of what each grants. A rule never replaces a profile granted by another rule, or one you assigned by hand — it only adds. See [Multiple profiles per user](/enterprise/access-profiles#multiple-profiles-per-user) for how a user's profiles behave once they hold several.
+**Every matching rule applies.** A user matching three rules holds all three profiles at once, and what they can reach is the sum of what each grants. A rule never replaces a profile granted by another rule, or one you assigned by hand — it only adds. See [Multiple profiles](/enterprise/access-profiles#multiple-profiles-what-a-user-can-do-and-who-pays) for how a user's profiles behave once they hold several.
 
 Write one rule per profile. To grant two profiles from the same claim value, write two rules with the same `attribute` and `value` and different `accessProfile` names. In the dashboard you do this in one row by picking several profiles; `config.json` stores them as separate rules, so the file will have more entries than the screen shows.
 
-Every sync re-checks these rules. A profile the user still matches is left alone, keeping its budget and accumulated usage; newly matched profiles are added, and ones they no longer match are removed. Profiles they hold by hand or through their role are never affected. A profile granted this way cannot be detached from the user directly — change the mapping or the underlying attribute instead.
+Every sync re-checks these rules. A profile the user still matches is left alone, keeping its budget and accumulated usage; newly matched profiles are added, and ones they no longer match are removed. Profiles they hold through their role are not affected. If an admin assigned the same profile by hand, the mapping takes it over, and from then on it is removed when the user stops matching. A profile granted this way cannot be detached from the user directly — change the mapping or the underlying attribute instead.
 
-
-### `attributeType` field
-
-Mappings have an optional `attributeType` field:
 
 ### `claimScimAttributes` field
 
@@ -374,20 +374,21 @@ A mapping rule then references the claim by its normal `attribute` name — e.g.
 
 If you only use OIDC (no inbound SCIM push), `claimScimAttributes` has no effect.
 
-### Business unit membership
+### Team and business unit membership
 
-A user can belong to any number of business units at once. Bifrost remembers how each membership was granted — by an admin, by SCIM, or from an OIDC claim — and uses that to decide what a later sync is allowed to change, so one source never quietly undoes another's work.
+A user can belong to any number of teams and business units at once. Bifrost remembers how each membership was granted — by an admin, by SCIM, or from a sign-in claim — and uses that to decide what a later sync is allowed to change.
 
 | Granted by | How it is added | How it is removed |
 | --- | --- | --- |
-| An admin | Assigned from the dashboard or the API | By an admin. A sync never removes it. |
-| SCIM | A SCIM user attribute or group push | By SCIM, when the attribute or group no longer points at that business unit |
-| An OIDC claim | A business unit mapping matching a claim in the user's token | By an admin, or by changing the mapping — see below |
+| An admin | Assigned from the dashboard or the API | By an admin. A sync removes it only if your IdP has taken it over (see below). |
+| SCIM | A SCIM user attribute or group push | By SCIM, when the attribute or group no longer points at that team or business unit |
+| A sign-in claim | A mapping matching a claim in the user's token | At a later sign-in or session refresh where the attribute is present and no longer matches |
 
 What this means in practice:
 
-- **SCIM keeps its own assignments up to date.** Each push re-checks them: units the user still matches are added or kept, and ones they no longer match are removed.
-- **Claim-based assignments are only ever added, never withdrawn automatically.** If a user's token stops carrying the attribute that granted a business unit, they keep it. This is deliberate — a single token missing an attribute should not silently remove someone's access. Remove it by changing the mapping or removing the membership yourself.
+- **Each sync keeps its own assignments up to date.** Memberships the user still matches are kept, and ones they no longer match are removed.
+- **A missing attribute is not a removal.** If a refreshed token leaves out the attribute entirely, Bifrost uses the value it last saw. Only an attribute that is present and no longer matches removes the membership.
+- **Your IdP takes over matching manual memberships.** If an admin added a user to a business unit by hand and a mapping later grants the same one, the membership follows the IdP from then on, including removal.
 - **Turning SCIM on later is safe.** SCIM takes over managing an assignment that came from a claim rather than adding a duplicate.
 
 To view or change memberships from the API, use `GET` and `POST /api/governance/business-units/{id}/users` and `DELETE /api/governance/business-units/{id}/users/{user_id}`. The list response tells you how each member was granted, so you can tell an admin assignment from one your identity provider manages.
@@ -419,6 +420,51 @@ When configuring attribute mappings for SCIM-provisioned users, the following at
 
 ---
 
+## Authenticate inference requests
+
+With a provider configured, inference requests can authenticate as an individual user, not only with a virtual key. Bifrost accepts these credentials on inference routes:
+
+| Credential | Sent as | Governed by |
+| --- | --- | --- |
+| Virtual key (`sk-bf-*`) | `Authorization: Bearer`, `x-bf-vk`, `x-api-key`, `x-goog-api-key`, or `api-key` | The virtual key |
+| Identity-provider access token | `Authorization: Bearer <token>` | The user the token identifies |
+| Bifrost session token, from [Bifrost CLI](/quickstart/cli/getting-started) or [Bifrost Edge](/edge/overview) sign-in | `Authorization: Bearer ck-bf-agent-…` | The signed-in user |
+
+Bifrost validates an identity-provider token with the configured provider on every request. When [`enforce_auth_on_inference`](/deployment-guides/config-json/client#security--cors) is on:
+
+- An invalid or expired token is rejected with `401`. Bifrost does not refresh tokens sent in a header; the client must send a current one.
+- A valid token for a user Bifrost does not know yet provisions that user, the same way an SSO sign-in does. The request is rejected with `403` if the token maps to no role or the user was deprovisioned.
+
+When enforcement is off, a token that fails validation does not block the request, and the request continues without a user identity.
+
+### Requests with both an identity token and a virtual key
+
+A request can carry an identity-provider token in `Authorization` and a virtual key in another header, for example `x-bf-vk`. **Dual Credential Conflict Behavior** decides which one Bifrost uses. Set it in the dashboard under **Settings → Security**, or with `client.dual_credential_conflict_behavior` in `config.json`.
+
+| Value | Dashboard label | Behavior | Use when |
+| --- | --- | --- | --- |
+| `prefer_idp` (default) | Prefer IDP token | Bifrost validates the token and attributes the request to the user. The virtual key is ignored for that request. | Usage, budgets, and rate limits should follow the individual user |
+| `prefer_vk` | Prefer virtual key | Bifrost authenticates and governs the request with the virtual key. The identity token is used only for [MCP token exchange](/mcp/auth/token-exchange). | A shared application authenticates with its own virtual key but forwards each user's token for MCP token exchange |
+| `error` | Reject request | Bifrost rejects the request with `400`. | You require exactly one credential per request |
+
+```json
+{
+  "client": {
+    "dual_credential_conflict_behavior": "prefer_idp"
+  }
+}
+```
+
+With Helm, set `bifrost.client.dualCredentialConflictBehavior`.
+
+<Note>
+  Under `prefer_idp`, the virtual key is not a fallback. If the identity token is invalid or expired and inference authentication is enforced, the request fails with `401` even though it also carries a valid virtual key.
+</Note>
+
+The setting applies only when the bearer token is an identity-provider JWT and another header carries a virtual key. Sending the same virtual key in both `Authorization` and `x-bf-vk` is not a conflict. Bifrost session tokens (`ck-bf-agent-…`) are also not subject to this setting.
+
+You cannot choose `error` while any MCP client uses `token_exchange` authentication, because token exchange relies on requests that carry both credentials. Bifrost rejects the change until those clients are removed.
+
 ## Inbound SCIM 2.0 provisioning
 
 Bifrost exposes a SCIM 2.0 endpoint that identity providers can use to push user and group changes in real time, without waiting for the next 24-hour reconciliation cycle.
@@ -441,9 +487,13 @@ The provisioning token is generated per SCIM provider and can be rotated from th
 
 ### How SCIM writes trigger governance updates
 
-Every SCIM create, replace, or patch immediately re-evaluates the user's `attributeRoleMappings`, `attributeTeamMappings`, `attributeBusinessUnitMappings`, and `attributeAccessProfileMappings` against the current SCIM attributes. Changes to role, team, business unit, or access profile assignments are committed to the database and broadcast to all cluster nodes before the SCIM response is returned.
+Every SCIM create, replace, or patch immediately re-evaluates the user's role, team, business unit, access profile, and project mappings against everything SCIM has pushed for that user. Changes are committed and broadcast to all cluster nodes before the SCIM response is returned. Group pushes with more than 500 members are applied in the background.
 
-Only SCIM-managed memberships are affected — any manually assigned teams or roles are preserved.
+- **Roles** follow SCIM: a matching rule sets the role, replacing the user's current one. When nothing maps to a role, the role is removed.
+- **Teams and business units** an admin assigned by hand are kept, unless SCIM grants the same one, in which case SCIM takes it over.
+- **Deactivation** (`active: false`) removes the user's keys, access profiles, and memberships but keeps their stored profile, so reactivating restores them. **DELETE** also clears the stored profile.
+
+See [How identity sync works](/enterprise/how-identity-sync-works) for the full rules.
 
 ---
 
@@ -464,7 +514,9 @@ Providers that support a directory API (Okta, Entra, Keycloak, Zitadel, Google W
   <img src="/media/user-provisioning/scim-import-preview.png" alt="Preview of users matching an import filter" />
 </Frame>
 
-Re-running an import reconciles existing users — role and team changes in the IdP are reflected on the next import.
+Re-running an import reconciles existing users — role and team changes in the IdP are reflected on the next import. Bulk import is unavailable while SCIM Provisioning is on; your IdP pushes users instead.
+
+To apply edited mapping rules to existing users without re-importing, use **Reconcile existing users**, with a preview first. See [Applying rule changes to existing users](/enterprise/how-identity-sync-works#applying-rule-changes-to-existing-users).
 
 **Via SCIM push (real-time):**
 
@@ -481,9 +533,10 @@ If the IdP supports SCIM provisioning (e.g. Okta with a SCIM app), you can confi
 | `invalid audience` | `audience` field does not match the access token's `aud` claim. Use the same value your IdP issues. |
 | Empty roles / teams | Claim mapping is off. Verify the JWT at [jwt.io](https://jwt.io) and check `rolesField` / `teamIdsField`. |
 | Token refresh failing | `offline_access` scope missing or refresh token revoked. Re-enable the scope and re-authenticate. |
-| First user gets Admin | By design — if no matching role mapping applies, the first user is promoted to Admin so they can finish configuration. Subsequent users default to Viewer. |
+| Can't sign in as the first admin | There is no default role, not even for the first user. Map an IdP group or attribute to the Admin role before signing in. |
+| "Provisioning is managed by SCIM" | The sync mode is **SCIM only** and your IdP hasn't pushed this user yet. Assign them to the Bifrost app in your IdP. |
 | SCIM `401 Unauthorized` | The `Authorization: Bearer <token>` header is missing or the provisioning token has been rotated. Rotate a new token and update your IdP SCIM connector. |
-| SCIM writes not updating teams / roles | Ensure `attributeTeamMappings` / `attributeRoleMappings` reference the correct attribute name (e.g. `department`, not `Department`). Attribute matching is case-insensitive for values but the attribute key must match exactly. |
+| SCIM writes not updating teams / roles | Ensure `attributeTeamMappings` / `attributeRoleMappings` reference the correct attribute name. SCIM attribute names and values are matched without regard to case; JWT claim names used at sign-in must match exactly. |
 | SCIM group push not placing users in teams | Make sure `claimScimAttributes` sets `"attributeType": "group"` for the claim your `attributeTeamMappings` rules reference. Without this, group `displayName` is not evaluated against team mappings. |
 
 Provider-specific troubleshooting lives in each IdP's guide.
@@ -493,5 +546,6 @@ Provider-specific troubleshooting lives in each IdP's guide.
 ## Related
 
 - [Role-Based Access Control](./rbac) — permissions model and custom roles
-- [Advanced Governance](./advanced-governance) — budgets, limits, and compliance
+- [How identity sync works](./how-identity-sync-works) — what each sync changes, and how removals work
+- [Access Profiles](./access-profiles) — what users get from their profiles
 - [Audit Logs](./audit-logs) — track authentication events and role changes

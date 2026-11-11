@@ -62,6 +62,11 @@ const EXCLUDE_FEATURE_ANY_PARTS = (args["exclude-feature-any"] || "")
 // the run-provider-harness-test Makefile target) instead of being forked and only then failing
 // with newman's "Unable to find a folder or request" once it tries to apply --folder itself.
 const FOLDER = (args.folder || "").toLowerCase();
+// --only-serial / --exclude-serial split the run into the parallel sweep and a pass of its own for
+// the [SERIAL] folders (see serialFolderKey). A [SERIAL] folder changes gateway-wide state, so the
+// sweep excludes them and the harness runs them afterwards, alone against the gateway.
+const ONLY_SERIAL = args["only-serial"] === "true";
+const EXCLUDE_SERIAL = args["exclude-serial"] === "true";
 // --class assigns every item to exactly ONE modality class (see CLASS_ORDER) and keeps only the
 // requested one. It exists so a provider fork can be sharded further without any item running
 // twice: --feature-any cannot do this job because the classes overlap heavily (a streaming vision
@@ -128,13 +133,17 @@ if (!SOURCE || (!OUT && !PLAN)) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
+if (ONLY_SERIAL && EXCLUDE_SERIAL) {
+  console.error("[filter-collection] --only-serial and --exclude-serial select nothing together");
+  process.exit(2);
+}
 if (PLAN && (!PLAN_PROVIDERS.length || !PLAN_CLASSES.length)) {
   console.error("[filter-collection] --plan needs --providers and --classes");
   process.exit(2);
 }
-if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
+if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE && !ONLY_SERIAL && !EXCLUDE_SERIAL) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke, --only-serial, --exclude-serial"
   );
   process.exit(2);
 }
@@ -153,6 +162,9 @@ const PROVIDER_KEYWORDS = {
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
+  // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
+  mcp: ["mcp"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -299,6 +311,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isOpenRouter = haystack.includes("openrouter");
   if (provider === "openrouter") return isOpenRouter;
   if (isOpenRouter) return false;
+  // GitHub Copilot rows (model "github-copilot/<model>") serve gpt-, claude- and gemini models,
+  // so they'd otherwise be claimed by those partitions and run without Copilot credentials.
+  // Route them exclusively to github-copilot, which is opt-in via PROVIDER=github-copilot.
+  const isCopilot = haystack.includes("github-copilot");
+  if (provider === "github-copilot") return isCopilot;
+  if (isCopilot) return false;
   // Bedrock Mantle rows (model "bedrock_mantle/...") contain the substring "bedrock", so they'd
   // otherwise be claimed by the bedrock partition too. Route them exclusively to bedrock_mantle.
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
@@ -306,16 +324,17 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (isMantle) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
-  // Route them exclusively to vertex.
+  // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
+  // name the model vendor the same way, so minimax is excluded for the same reason.
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
-  if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
-  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
-  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
+  // Rows that send a Gemini, OpenAI, Azure or Baseten model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/...", "azure/..." or "baseten/...") contain
   // "anthropic" only because of the route or folder name, yet the upstream call goes to the
   // model's own provider - same collision class as vertex above. Keep them out of the anthropic
   // partition; they still match their own provider's keywords through the model prefix.
-  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure|baseten)\//.test(item.request?.body?.raw || "")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
@@ -323,6 +342,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // Hugging Face's router reaches Baseten-hosted models ("huggingface/baseten/..."), so those rows
+  // contain "baseten" too. They call Hugging Face with a Hugging Face token, never the baseten
+  // provider, so keep them out of the baseten partition.
+  if (provider === "baseten" && haystack.includes("huggingface")) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route
@@ -330,6 +353,11 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // keyword with no extra logic needed for that direction).
   const isBedrockOpenai = haystack.includes("bedrock_openai");
   if (isBedrockOpenai && provider === "openai") return false;
+  // Azure GPT Live rows create sessions on Azure, named by the model ("azure/gpt-live-1") or by the
+  // Azure OpenAI SDK user agent, but their route and model name also match the openai keywords, so
+  // an openai run would bill a second Azure session. Route them exclusively to azure.
+  const isAzureLive = haystack.includes("/live/sessions") && (/"model"\s*:\s*"azure\//.test(item.request?.body?.raw || "") || haystack.includes("azureopenai"));
+  if (isAzureLive && provider === "openai") return false;
   return keywords.some((k) => haystack.includes(k));
 };
 
@@ -419,6 +447,14 @@ const itemMatchesRerunFailed = (item) => {
   return failedNames.has(item.name);
 };
 
+// Keeps an item in the pass it belongs to: with --only-serial only [SERIAL] folders, with
+// --exclude-serial everything else, and with neither, everything.
+const itemMatchesSerialPass = (ancestorNames) => {
+  if (!ONLY_SERIAL && !EXCLUDE_SERIAL) return true;
+  const serial = !!serialFolderKey(ancestorNames);
+  return ONLY_SERIAL ? serial : !serial;
+};
+
 const itemIsExcluded = (item, ancestorNames) => {
   if (!EXCLUDE_FEATURE_ANY_PARTS.length) return false;
   const haystack = buildHaystack(item, ancestorNames);
@@ -432,6 +468,7 @@ const itemIsExcluded = (item, ancestorNames) => {
 const passes = (item, ancestorNames, overrides = {}) => {
   if (!item.request) return true; // folders pass; we filter their items below
   if (itemIsExcluded(item, ancestorNames)) return false;
+  if (!itemMatchesSerialPass(ancestorNames)) return false;
   return itemMatchesProvider(item, ancestorNames, overrides.provider ?? PROVIDER) &&
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
@@ -607,9 +644,10 @@ const matched = entries.filter(({ item, ancestors }) => passes(item, ancestors))
 // both, which is the same duplication --class sharding already accepts for the same reason.
 const serialKeyOf = new Map(entries.map(({ item, ancestors }) => [item, serialFolderKey(ancestors)]));
 const sliced = SHARD_COUNT ? sliceKeepingSerialFolders(matched, serialKeyOf) : matched;
-const selected = withWholeSerialFolders(sliced, entries, serialKeyOf);
+// The sweep never pulls a [SERIAL] folder back in: those run in their own pass.
+const selected = EXCLUDE_SERIAL ? sliced : withWholeSerialFolders(sliced, entries, serialKeyOf);
 const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, shard=${SHARD_COUNT ? `${SHARD_INDEX}/${SHARD_COUNT} of ${matched.length}` : "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, shard=${SHARD_COUNT ? `${SHARD_INDEX}/${SHARD_COUNT} of ${matched.length}` : "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED}, serial=${ONLY_SERIAL ? "only" : EXCLUDE_SERIAL ? "excluded" : "-"})`);

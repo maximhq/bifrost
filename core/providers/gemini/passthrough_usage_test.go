@@ -39,6 +39,35 @@ func TestExtractGeminiPassthroughUsage(t *testing.T) {
 			},
 		},
 		{
+			// Live gemini-3.1-flash-image reply with thinkingLevel high: candidatesTokenCount sits below the IMAGE detail
+			name: "generateContent image output with thinking tokens",
+			path: "/v1beta/models/gemini-3.1-flash-image:generateContent",
+			body: `{"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":318,"totalTokenCount":698,"thoughtsTokenCount":372,"promptTokensDetails":[{"modality":"TEXT","tokenCount":8}],"candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1120}]}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				if u == nil || u.ImageUsage == nil || u.ImageUsage.OutputTokensDetails == nil {
+					t.Fatalf("image usage = %+v", u)
+				}
+				d := u.ImageUsage.OutputTokensDetails
+				if d.ImageTokens != 1120 || d.ReasoningTokens != 372 || u.ImageUsage.OutputTokens != 690 {
+					t.Fatalf("image usage = %+v, details = %+v, want 1120 image, 372 reasoning, 690 output", u.ImageUsage, d)
+				}
+			},
+		},
+		{
+			name: "generateContent image output keeps the TEXT detail",
+			path: "/v1beta/models/gemini-3.1-flash-image:generateContent",
+			body: `{"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":418,"totalTokenCount":798,"thoughtsTokenCount":372,"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":100},{"modality":"IMAGE","tokenCount":1120}]}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				if u == nil || u.ImageUsage == nil || u.ImageUsage.OutputTokensDetails == nil {
+					t.Fatalf("image usage = %+v", u)
+				}
+				d := u.ImageUsage.OutputTokensDetails
+				if d.ImageTokens != 1120 || d.TextTokens != 100 || d.ReasoningTokens != 372 {
+					t.Fatalf("details = %+v, want 1120 image, 100 text, 372 reasoning", d)
+				}
+			},
+		},
+		{
 			name: "embedContent",
 			path: "/v1beta/models/text-embedding-004:embedContent",
 			body: `{"usageMetadata":{"promptTokenCount":7,"totalTokenCount":7}}`,
@@ -182,5 +211,214 @@ func geminiMustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, com
 	if u.LLMUsage.PromptTokens != prompt || u.LLMUsage.CompletionTokens != completion || u.LLMUsage.TotalTokens != total {
 		t.Fatalf("LLMUsage = {prompt:%d completion:%d total:%d}, want {%d %d %d}",
 			u.LLMUsage.PromptTokens, u.LLMUsage.CompletionTokens, u.LLMUsage.TotalTokens, prompt, completion, total)
+	}
+}
+
+func TestClassifyPassthroughPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.RequestType
+	}{
+		{"/models/gemini-2.5-flash:generateContent", schemas.ResponsesRequest},
+		{"/models/gemini-2.5-flash:streamGenerateContent?alt=sse", schemas.ResponsesRequest},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent", schemas.ResponsesRequest},
+		{"/models/gemini-2.5-flash:countTokens", schemas.CountTokensRequest},
+		{"/models/text-embedding-004:embedContent", schemas.EmbeddingRequest},
+		{"/models/text-embedding-004:batchEmbedContents", schemas.EmbeddingRequest},
+		{"/models/imagen-4.0-generate-001:predict", schemas.ImageGenerationRequest},
+		// Vertex serves embedding models on :predict too; they are embeddings, not images.
+		{"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict", schemas.EmbeddingRequest},
+		{"/projects/p/locations/us-central1/publishers/google/models/text-embedding-005:predict", schemas.EmbeddingRequest},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-001:predict?alt=json", schemas.EmbeddingRequest},
+		{"/models/veo-3.0-generate-001:predictLongRunning", schemas.VideoGenerationRequest},
+		{"/interactions", ""},
+		{"/interactions/abc:cancel", ""},
+		{"/models", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := gemini.ClassifyPassthroughPath(tt.path); got != tt.want {
+				t.Fatalf("ClassifyPassthroughPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsInteractionsPassthroughPath(t *testing.T) {
+	if !gemini.IsInteractionsPassthroughPath("/v1beta/interactions?alt=sse") {
+		t.Fatal("expected /interactions to be an Interactions path")
+	}
+	if gemini.IsInteractionsPassthroughPath("/models/gemini-2.5-flash:generateContent") {
+		t.Fatal("generateContent is not an Interactions path")
+	}
+}
+
+func TestInteractionsPassthroughPathKinds(t *testing.T) {
+	tests := []struct {
+		method, path     string
+		create, resource bool
+	}{
+		{"POST", "/interactions", true, false},
+		{"POST", "/projects/p/locations/global/interactions", true, false},
+		{"POST", "/interactions?alt=sse", true, false},
+		{"GET", "/interactions", false, false},
+		{"GET", "/interactions/int_1", false, true},
+		{"GET", "/interactions/int_1?stream=true&last_event_id=e1", false, true},
+		{"DELETE", "/interactions/int_1", false, true},
+		{"POST", "/interactions/int_1/cancel", false, true},
+		{"POST", "/interactions/int_1:cancel", false, true},
+		{"POST", "/interactions/int_1", false, false},
+		{"GET", "/interactions/int_1/cancel", false, false},
+		{"GET", "/interactions/int_1/other", false, false},
+		{"POST", "/interactionsfoo", false, false},
+		{"POST", "/models/gemini-2.5-flash:generateContent", false, false},
+	}
+	for _, tt := range tests {
+		if got := gemini.IsInteractionsCreatePath(tt.method, tt.path); got != tt.create {
+			t.Errorf("IsInteractionsCreatePath(%s %s) = %v, want %v", tt.method, tt.path, got, tt.create)
+		}
+		if got := gemini.IsInteractionsResourcePath(tt.method, tt.path); got != tt.resource {
+			t.Errorf("IsInteractionsResourcePath(%s %s) = %v, want %v", tt.method, tt.path, got, tt.resource)
+		}
+	}
+}
+
+// TestInteractionsPassthroughResultReportsRun pins the Deep Research polling flow. Every read names
+// the agent and reports the stored run it reads, and no read carries usage billable on the request:
+// a finished run repeats its full usage on every read, so that usage rides on the job, to be settled
+// once, and a repeated read reports exactly what the first did.
+func TestInteractionsPassthroughResultReportsRun(t *testing.T) {
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions", APIVersion: "v1beta"}
+	poll := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_run", APIVersion: "v1beta"}
+	inProgress := []byte(`{"id":"int_run","agent":"deep-research-preview-04-2026","status":"in_progress"}`)
+	completed := []byte(`{"id":"int_run","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
+
+	u, model, job := gemini.InteractionsPassthroughResult(create, inProgress)
+	if u != nil || model != "deep-research-preview-04-2026" {
+		t.Fatalf("background create: usage=%v model=%q, want no request usage and the agent", u, model)
+	}
+	if job == nil || !job.Created || job.Terminal || job.ID != "int_run" || job.PollPath != "/interactions/int_run" || job.APIVersion != "v1beta" {
+		t.Fatalf("background create: job=%+v, want a created, running run polled at /interactions/int_run", job)
+	}
+
+	for i := range 2 {
+		u, model, job = gemini.InteractionsPassthroughResult(poll, completed)
+		if u != nil || model != "deep-research-preview-04-2026" {
+			t.Fatalf("completed read %d: usage=%v model=%q, want no request usage and the agent", i, u, model)
+		}
+		if job == nil || job.Created || !job.Terminal || job.Status != "completed" {
+			t.Fatalf("completed read %d: job=%+v, want a finished run this read did not create", i, job)
+		}
+		if job.Usage == nil || job.Usage.LLMUsage.PromptTokens != 361700 || job.Usage.LLMUsage.CompletionTokens != 33400 || job.Usage.LLMUsage.TotalTokens != 437000 {
+			t.Fatalf("completed read %d: job usage=%+v, want the run's usage", i, job.Usage)
+		}
+	}
+}
+
+// TestInteractionsPassthroughResultNoStoredRun pins the reads that report no stored run: a body
+// with no id keeps its usage billable on the request, and a list or delete reports no job.
+func TestInteractionsPassthroughResultNoStoredRun(t *testing.T) {
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"}
+	body := []byte(`{"model":"gemini-3.8-flash","status":"completed","usage":{"total_input_tokens":10,"total_output_tokens":5,"total_tokens":15}}`)
+	if u, model, job := gemini.InteractionsPassthroughResult(create, body); u == nil || model != "gemini-3.8-flash" || job != nil {
+		t.Fatalf("usage=%v model=%q job=%+v: a run with no id cannot be settled later, so the request carries its usage", u, model, job)
+	}
+	list := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions"}
+	if _, _, job := gemini.InteractionsPassthroughResult(list, []byte(`{"id":"int_x","status":"completed"}`)); job != nil {
+		t.Fatalf("a list reports no run, got %+v", job)
+	}
+	del := &schemas.BifrostPassthroughRequest{Method: "DELETE", Path: "/interactions/int_x"}
+	if _, _, job := gemini.InteractionsPassthroughResult(del, nil); job != nil {
+		t.Fatalf("a delete reports no run, got %+v", job)
+	}
+}
+
+// TestInteractionsPassthroughResultVertexCancel pins that a Vertex cancel reports the cancelled run
+// and that its poll path keeps the project and location prefix the request was sent with.
+func TestInteractionsPassthroughResultVertexCancel(t *testing.T) {
+	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/projects/p/locations/global/interactions/int_v:cancel", APIVersion: "v1beta1"}
+	_, _, job := gemini.InteractionsPassthroughResult(req, []byte(`{"id":"int_v","agent":"deep-research-preview-04-2026","status":"cancelled"}`))
+	if job == nil || !job.Terminal || job.Created || job.PollPath != "/projects/p/locations/global/interactions/int_v" || job.APIVersion != "v1beta1" {
+		t.Fatalf("job=%+v, want the cancelled run polled under its project path", job)
+	}
+}
+
+// TestInteractionsStreamObserverReportsRun pins the streaming side. A stream that ends on
+// interaction.completed reports the finished run with its usage and leaves none on the request; a
+// stream cut short reports a run still going, so it is settled from a later read rather than from
+// the partial usage; and a resumed stream (GET ?stream=true) reports the run without creating it.
+func TestInteractionsStreamObserverReportsRun(t *testing.T) {
+	created := []byte(`{"event_type":"interaction.created","interaction":{"id":"int_stream","agent":"deep-research-max-preview-04-2026","status":"in_progress"}}`)
+	statusUpdate := []byte(`{"event_type":"interaction.status_update","interaction_id":"int_stream","status":"in_progress","usage":{"total_input_tokens":100,"total_output_tokens":1,"total_tokens":101}}`)
+	completedEvt := []byte(`{"event_type":"interaction.completed","interaction":{"id":"int_stream","agent":"deep-research-max-preview-04-2026","status":"completed","usage":{"total_input_tokens":1000,"total_output_tokens":50,"total_tokens":1050}}}`)
+
+	run := func(req *schemas.BifrostPassthroughRequest, events ...[]byte) *schemas.BifrostPassthroughResponse {
+		o := gemini.NewInteractionsStreamObserver(req)
+		resp := &schemas.BifrostPassthroughResponse{}
+		for _, e := range events {
+			if !gemini.HasInteractionsStreamInfo(e) {
+				t.Fatalf("event skipped by the gate: %s", e)
+			}
+			if u := o.Observe(e); u != nil {
+				resp.PassthroughUsage = u
+			}
+		}
+		o.Finalize(resp)
+		return resp
+	}
+
+	create := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/interactions"}
+	resp := run(create, created, statusUpdate, completedEvt)
+	if resp.PassthroughUsage != nil || resp.ServedModel != "deep-research-max-preview-04-2026" {
+		t.Fatalf("finished stream: usage=%v model=%q, want no request usage and the agent", resp.PassthroughUsage, resp.ServedModel)
+	}
+	if job := resp.ProviderJob; job == nil || !job.Created || !job.Terminal || job.Usage == nil || job.Usage.LLMUsage.TotalTokens != 1050 {
+		t.Fatalf("finished stream: job=%+v, want the created, finished run with its full usage", resp.ProviderJob)
+	}
+
+	resp = run(create, created, statusUpdate)
+	if resp.PassthroughUsage != nil {
+		t.Fatalf("cut stream: usage=%v, want none billed on the request", resp.PassthroughUsage)
+	}
+	if job := resp.ProviderJob; job == nil || job.Terminal || job.ID != "int_stream" || job.PollPath != "/interactions/int_stream" {
+		t.Fatalf("cut stream: job=%+v, want a running run left for a poll to settle", resp.ProviderJob)
+	}
+
+	resume := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_stream"}
+	resp = run(resume, completedEvt)
+	if job := resp.ProviderJob; job == nil || job.Created || !job.Terminal {
+		t.Fatalf("resumed stream: job=%+v, want the finished run, not created by this read", resp.ProviderJob)
+	}
+}
+
+func BenchmarkInteractionsPassthroughResult(b *testing.B) {
+	req := &schemas.BifrostPassthroughRequest{Method: "GET", Path: "/interactions/int_bench", APIVersion: "v1beta"}
+	body := []byte(`{"id":"int_bench","agent":"deep-research-preview-04-2026","status":"completed","usage":{"total_input_tokens":361700,"total_output_tokens":20000,"total_thought_tokens":13400,"total_tokens":437000}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _, _ = gemini.InteractionsPassthroughResult(req, body)
+	}
+}
+
+// TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling pins that a Vertex embedding model on
+// :predict is billed from its predict response (token statistics) whatever the path classifies as,
+// and that an Imagen :predict is still billed per image.
+func TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling(t *testing.T) {
+	embedding := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/text-embedding-005:predict",
+		[]byte(`{"instances":[{"content":"hi"}]}`),
+		[]byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":7,"truncated":false}}}]}`),
+	)
+	if embedding == nil || embedding.LLMUsage == nil || embedding.LLMUsage.PromptTokens != 7 || embedding.LLMUsage.TotalTokens != 7 {
+		t.Fatalf("embedding :predict usage = %+v, want 7 prompt/total tokens", embedding)
+	}
+
+	imagen := gemini.ExtractGeminiPassthroughUsage(
+		"/models/imagen-4.0-generate-001:predict",
+		[]byte(`{"instances":[{"prompt":"a fox"}],"parameters":{"sampleCount":1}}`),
+		[]byte(`{"predictions":[{"bytesBase64Encoded":"aGk=","mimeType":"image/png"}]}`),
+	)
+	if imagen == nil || imagen.ImageUsage == nil {
+		t.Fatalf("imagen :predict usage = %+v, want per-image usage", imagen)
 	}
 }

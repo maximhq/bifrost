@@ -17,8 +17,8 @@ import (
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // InferPluginTypes determines which interface types a plugin implements
@@ -32,6 +32,9 @@ func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	}
 	if _, ok := plugin.(schemas.A2APlugin); ok {
 		types = append(types, schemas.PluginTypeA2A)
+	}
+	if _, ok := plugin.(schemas.RelayPlugin); ok {
+		types = append(types, schemas.PluginTypeRelay)
 	}
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
@@ -53,13 +56,51 @@ func InstantiatePlugin(ctx context.Context, name string, path *string, pluginCon
 	return loadBuiltinPlugin(ctx, name, pluginConfig, bifrostConfig)
 }
 
+// mergeCustomLabels unions the two sources of extra Prometheus label names, preserving
+// order and dropping duplicates. Both client_config.prometheus_labels and the telemetry
+// plugin's custom_labels name extra labels, so setting one must not silently drop the
+// other; only the client list used to be read, and custom_labels was accepted and
+// ignored. The result is freshly allocated so neither input's spare capacity is written.
+func mergeCustomLabels(clientLabels, pluginLabels []string) []string {
+	if len(clientLabels) == 0 && len(pluginLabels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(clientLabels)+len(pluginLabels))
+	seen := make(map[string]struct{}, len(clientLabels)+len(pluginLabels))
+	for _, label := range append(append([]string(nil), clientLabels...), pluginLabels...) {
+		if label == "" {
+			continue
+		}
+		if _, dup := seen[label]; dup {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
+}
+
+// loggingPluginConfig decodes the logging plugin config and sets the fields that come from logs_store. A reload decodes
+// the stored plugin config, which does not carry them, so they are set on every load rather than only at startup.
+func loggingPluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*logging.Config, error) {
+	loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
+	if err != nil {
+		return nil, err
+	}
+	if loggingConfig != nil {
+		loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
+			bifrostConfig.LogsStoreConfig.ObjectStorage != nil
+		loggingConfig.CaptureClientIP = bifrostConfig.ShouldCaptureClientIP()
+	}
+	return loggingConfig, nil
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
 	case telemetry.PluginName:
-		telConfig := &telemetry.Config{
-			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
-		}
+		telConfig := &telemetry.Config{}
+		var pluginCustomLabels []string
 		// Merge persisted config if provided.
 		if pluginConfig != nil {
 			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
@@ -79,21 +120,19 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.UserLabelsEnabled != nil {
 					telConfig.UserLabelsEnabled = extraConfig.UserLabelsEnabled
 				}
+				pluginCustomLabels = extraConfig.CustomLabels
 			}
 		}
+		telConfig.CustomLabels = mergeCustomLabels(bifrostConfig.ClientConfig.PrometheusLabels, pluginCustomLabels)
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
 	case prompts.PluginName:
 		return prompts.Init(ctx, bifrostConfig.ConfigStore, logger)
 
 	case logging.PluginName:
-		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
+		loggingConfig, err := loggingPluginConfig(pluginConfig, bifrostConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal logging plugin config: %w", err)
-		}
-		if loggingConfig != nil {
-			loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
-				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
 		}
 		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
 			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
@@ -241,6 +280,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		}
 		if s.Config.LogsStoreConfig != nil {
 			config.Writer = s.Config.LogsStoreConfig.Writer
+			config.CaptureClientIP = s.Config.LogsStoreConfig.CaptureClientIP
 		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {
@@ -254,6 +294,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
+
+			ObjectOwnershipEnforced: s.Config.ShouldEnforceVKObjectOwnership,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
@@ -301,6 +343,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ShouldConvertParams:                 cc.ShouldConvertParams,
 		AzureDeepseek:                       cc.AzureDeepseek,
 		ForceReasoningOnlyModelsToResponses: cc.ForceReasoningOnlyModelsToResponses,
+		ConvertDecisionToResponses:          cc.ConvertDecisionToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

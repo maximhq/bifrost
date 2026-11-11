@@ -22,11 +22,18 @@ type cacheState struct {
 	ParamsHash            string
 	Embeddings            []float32
 	EmbeddingsInputTokens int
+	PlaceholderEmbeddings bool // Embeddings is the placeholder vector, not an embedding of the prompt
 
 	// FilteredInput caches getInputForCaching(req) so attachment extraction,
 	// embedding text extraction, and history-threshold checks reuse the same
 	// filtered slice instead of re-filtering on each call.
 	FilteredInput interface{}
+
+	// IdentityScope is who the request is made by, folded into the params hash
+	// so an entry is only ever served to the identity that wrote it. Nil when
+	// identity scoping is disabled; empty (not nil) for a request with no
+	// identity. See resolveIdentityScope.
+	IdentityScope map[string]interface{}
 
 	// ShortCircuited is set when PreLLMHook served the response from cache
 	// (returned a non-nil LLMPluginShortCircuit). PostLLMHook uses this to

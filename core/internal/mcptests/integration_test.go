@@ -76,7 +76,7 @@ func TestIntegration_FullChatWorkflow(t *testing.T) {
 	// 5. Check health monitoring
 	// Verify clients have tools
 	for _, client := range clients {
-		assert.NotEmpty(t, client.ToolMap, "client %s should have tools", client.ExecutionConfig.ID)
+		assert.NotEmpty(t, clientTools(manager, client.ExecutionConfig.ID), "client %s should have tools", client.ExecutionConfig.ID)
 	}
 
 	// 6. Remove HTTP client if it was added

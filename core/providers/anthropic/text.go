@@ -23,7 +23,7 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 
 	anthropicReq := &AnthropicTextRequest{
 		Model:             bifrostReq.Model,
-		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", prompt),
+		Prompt:            frameAnthropicTextPrompt(prompt),
 		MaxTokensToSample: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
@@ -46,6 +46,26 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 	}
 
 	return anthropicReq
+}
+
+// Turn markers of the legacy text completions prompt format.
+const (
+	anthropicHumanTurn     = "\n\nHuman:"
+	anthropicAssistantTurn = "\n\nAssistant:"
+)
+
+// frameAnthropicTextPrompt returns prompt in the "\n\nHuman: ...\n\nAssistant:"
+// frame the legacy API requires. A prompt that already opens with a Human turn
+// (what /anthropic/v1/complete callers must send) is kept as is, only gaining the
+// closing Assistant turn if it lacks one; any other prompt is wrapped.
+func frameAnthropicTextPrompt(prompt string) string {
+	if !strings.HasPrefix(prompt, anthropicHumanTurn) {
+		return fmt.Sprintf("%s %s%s", anthropicHumanTurn, prompt, anthropicAssistantTurn)
+	}
+	if strings.HasSuffix(strings.TrimRight(prompt, " "), anthropicAssistantTurn) {
+		return prompt
+	}
+	return prompt + anthropicAssistantTurn
 }
 
 // ToBifrostTextCompletionRequest converts an Anthropic text request back to Bifrost format

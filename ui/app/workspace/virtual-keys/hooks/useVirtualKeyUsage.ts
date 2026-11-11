@@ -1,10 +1,11 @@
 import { Budget, RateLimit, VirtualKey } from "@/lib/types/governance";
 import { getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
 import { User } from "@enterprise/lib/types/user";
-import { hasProfileRateLimit, resolveDisplayRateLimit } from "./useVirtualKeyUsage.utils";
+import { hasProfileRateLimit, resolveDisplayRateLimit, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
 
 /**
  * The assignee fields every caller actually reads. Narrower than User on purpose: the
@@ -19,7 +20,10 @@ export type VirtualKeyAssignee = Pick<User, "id" | "name" | "email">;
  * for a VK and returns budget/rate-limit values that prefer AP counters, falling back to the VK's
  * own when there is no managing profile.
  *
- * The AP query polls every 5s so bars reflect live usage without manual refresh.
+ * The AP query polls every 5s so bars reflect live usage without manual refresh. It needs
+ * AccessProfiles:View and is skipped without it, so callers lacking the permission do not poll
+ * a 403 per assignee; they get no managingProfile and fall back to the VK's own values, which
+ * the admin read paths already fill from the managing profile.
  *
  * The assignee comes off the VK itself (`assigned_user`), which the governance read paths
  * resolve for a whole page at a time. The per-VK /users request is only a fallback for rows
@@ -30,6 +34,10 @@ export type VirtualKeyAssignee = Pick<User, "id" | "name" | "email">;
 export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	assignedUsers: VirtualKeyAssignee[];
 	isManagedByProfile: boolean;
+	/** Managed through the profile of the team, business unit or customer that owns it. */
+	isOwnerGoverned: boolean;
+	/** A user's managed key: locked except for its name and description. */
+	isUserProfileManaged: boolean;
 	managingProfile: UserAccessProfile | undefined;
 	hasApRateLimit: boolean;
 	displayBudgets: Budget[] | undefined;
@@ -47,9 +55,11 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		: (vkUsersData?.users ?? []);
 
 	const managingUserId = assignedUsers[0]?.id;
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+	const shouldFetchUserAPs = !!managingUserId && hasAccessProfilesAccess;
 	const { data: userAPsData } = useGetUserAccessProfilesQuery(managingUserId ?? "", {
-		skip: !managingUserId,
-		pollingInterval: managingUserId ? 5000 : 0,
+		skip: !shouldFetchUserAPs,
+		pollingInterval: shouldFetchUserAPs ? 5000 : 0,
 	});
 	const userAPs = userAPsData?.access_profiles ?? [];
 
@@ -57,11 +67,14 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
 	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
 	// The server-computed flag is the sole source of truth for "is this managed": the
-	// access-profile call above is RBAC-gated and 403s for callers without AccessProfiles:View,
-	// which used to leave the VK looking unmanaged (and editable) here. managingProfile is now
+	// access-profile call above is RBAC-gated and skipped for callers without AccessProfiles:View,
+	// which would leave the VK looking unmanaged (and editable) if it decided this. managingProfile is now
 	// display-only — it resolves the profile name/actions when the caller can view access
 	// profiles; without that permission the VK is still locked, just without the profile name.
 	const isManagedByProfile = vk?.is_access_profile_managed ?? false;
+	// Which kind of management: a user's managed key stays locked, while a key its owner's profile
+	// governs is still the owner's to edit, unassign and delete (see virtualKeyManagement).
+	const { isOwnerGoverned, isUserProfileManaged } = virtualKeyManagement(vk);
 
 	const displayBudgets: Budget[] | undefined = managingProfile
 		? (managingProfile.budgets ?? []).map((line) => ({
@@ -98,5 +111,15 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 			displayRateLimit?.request_max_limit != null &&
 			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
 
-	return { assignedUsers, isManagedByProfile, managingProfile, hasApRateLimit, displayBudgets, displayRateLimit, isExhausted };
+	return {
+		assignedUsers,
+		isManagedByProfile,
+		isOwnerGoverned,
+		isUserProfileManaged,
+		managingProfile,
+		hasApRateLimit,
+		displayBudgets,
+		displayRateLimit,
+		isExhausted,
+	};
 }

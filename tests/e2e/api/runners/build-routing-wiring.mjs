@@ -13,7 +13,10 @@
 // Verification:
 //   * sync — on success assert extra_fields.routing_info {provider, model, key,
 //     resolved_key_alias}; on rejection assert the error message (routing_info is
-//     empty on errors).
+//     empty on errors). Each routing request is sent once and judged once: before a
+//     scenario's first inference request, a polling step waits for the model
+//     catalog to list every provider's models (live discovery), and asserts nothing
+//     about routing, so a route that only shows up on a retry fails.
 //   * async — the stored log (polled), correlated by virtual_key_ids/providers:
 //     status, selected_key_name, virtual_key presence. routing_engine_logs is
 //     null for plain governance allow/deny, so it is NOT asserted here.
@@ -33,6 +36,8 @@ import {
   folderPrerequest,
   pollPrerequest,
   pollTest,
+  singleTest,
+  catalogReadyAssertLines,
   mutationTest,
   cleanupTest,
   buildCollection,
@@ -148,13 +153,43 @@ const jsProviderName = (sid) => `'${NAME_PREFIX}${sid}-' + pm.variables.get('run
 // Assertion line builders
 // --------------------------------------------------------------------------- //
 
+// Header checks shared by success and rejection: the routing-info provider header names a provider,
+// and no response header carries a given prefix (a fallback's provider headers leaking through).
+function routeHeaderLines(step, jsNameOf) {
+  const lines = [];
+  if (step.expectHeaderProviderRef != null) {
+    lines.push(`var headerProvider = ${jsNameOf(step.expectHeaderProviderRef)};`);
+    lines.push("if (pm.response.headers.get('x-bifrost-routing-info-provider') !== headerProvider) { throw new Error('x-bifrost-routing-info-provider=' + pm.response.headers.get('x-bifrost-routing-info-provider') + ' expected ' + headerProvider); }");
+  }
+  if (step.expectNoHeaderPrefix) {
+    lines.push(`var bannedPrefix = ${JSON.stringify(step.expectNoHeaderPrefix.toLowerCase())};`);
+    lines.push("pm.response.headers.each(function (h) { if (String(h.key).toLowerCase().indexOf(bannedPrefix) === 0) { throw new Error('response carries header ' + h.key + ': ' + h.value); } });");
+  }
+  return lines;
+}
+
 function routeAssertLines(sid, step, jsNameOf) {
+  if (step.expectStatus === 200 && step.endpoint === "anthropic") {
+    // The /anthropic route answers in the Messages shape; routing info rides on the headers.
+    const lines = [
+      "if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+      "var body = pm.response.json();",
+      "if (body.type !== 'message' || !Array.isArray(body.content) || body.content.length === 0) { throw new Error('not a Messages-shaped answer: ' + pm.response.text()); }",
+    ];
+    if (step.expectProviderOneOf) {
+      lines.push(`var allowedProviders = [${step.expectProviderOneOf.map((r) => jsNameOf(r)).join(", ")}];`);
+      lines.push("var served = pm.response.headers.get('x-bifrost-routing-info-provider');");
+      lines.push("if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }");
+    }
+    return [...lines, ...routeHeaderLines(step, jsNameOf)];
+  }
   if (step.expectStatus === 200) {
     const lines = [
       "if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
       "var body = pm.response.json();",
       "if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
       "var ri = (body.extra_fields || {}).routing_info || {};",
+      ...routeHeaderLines(step, jsNameOf),
     ];
     if (step.expectProviderOneOf) {
       lines.push(`var allowedProviders = [${step.expectProviderOneOf.map((r) => jsNameOf(r)).join(", ")}];`);
@@ -190,9 +225,14 @@ function routeAssertLines(sid, step, jsNameOf) {
     "var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
   ];
   if (step.expectErrorSubstr) {
-    lines.push(`if (String(msg).indexOf(${JSON.stringify(step.expectErrorSubstr)}) < 0) { throw new Error('error message=' + msg); }`);
+    // Run variables such as {{run_id}} are not substituted inside script source, so resolve them here.
+    lines.push(`var expectedSubstr = pm.variables.replaceIn(${JSON.stringify(step.expectErrorSubstr)});`);
+    lines.push("if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }");
   }
-  return lines;
+  if (step.expectErrorType) {
+    lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}'); }`);
+  }
+  return [...lines, ...routeHeaderLines(step, jsNameOf)];
 }
 
 function logAssertLines(sid, step, jsNameOf) {
@@ -214,6 +254,9 @@ function logAssertLines(sid, step, jsNameOf) {
   }
   if (step.expectVkPresent) {
     lines.push("if (!row.virtual_key_id) { throw new Error('log row missing virtual_key_id'); }");
+  }
+  if (step.expectFallbackIndex != null) {
+    lines.push(`if (row.fallback_index !== ${JSON.stringify(step.expectFallbackIndex)}) { throw new Error('fallback_index=' + row.fallback_index + ' expected ${step.expectFallbackIndex}'); }`);
   }
   return lines;
 }
@@ -292,7 +335,42 @@ function captureVkTest(testname, sid, cleanupName) {
     "  var vk = (pm.response.json() || {}).virtual_key || {};",
     `  pm.collectionVariables.set('vkval_${sid}', vk.value || '');`,
     `  pm.collectionVariables.set('vkid_${sid}', vk.id || '');`,
+    // Each provider config's id by provider name, so an update can edit a config in place.
+    "  var pcIds = {};",
+    "  (vk.provider_configs || []).forEach(function (pc) { pcIds[pc.provider] = pc.id; });",
+    `  pm.collectionVariables.set('vkpc_${sid}', JSON.stringify(pcIds));`,
     "} else { pm.execution.setNextRequest(cleanupReq); }",
+  ];
+}
+
+// The provider configs of a VK update, built at request time so each carries the id of the config it
+// edits (captured at create; an undefined id is left out). Each config is an object literal inside
+// the one JSON.stringify that builds the body, so its field order is fixed. weight undefined omits the
+// field; weight null sends JSON null.
+function vkUpdatePrerequest(sid, configs, jsNameOf) {
+  const literals = configs.map((pc) => {
+    const name = jsNameOf(pc.providerRef);
+    const weight = pc.weight === undefined ? "" : `, weight: ${JSON.stringify(pc.weight)}`;
+    return `{ provider: ${name}, allowed_models: ${JSON.stringify(pc.allowedModels || ["*"])}, key_ids: ["*"], id: pcIds[${name}] != null ? pcIds[${name}] : undefined${weight} }`;
+  });
+  return [
+    `var pcIds = JSON.parse(pm.collectionVariables.get('vkpc_${sid}') || '{}');`,
+    `pm.request.body.update(JSON.stringify({ provider_configs: [${literals.join(", ")}] }));`,
+  ];
+}
+
+// Assert a VK read back from GET /api/governance/virtual-keys/{id} stores weight on provider's
+// config (null: no weight stored).
+function vkWeightAssertLines(step, jsNameOf) {
+  return [
+    "if (pm.response.code !== 200) { throw new Error('get vk status ' + pm.response.code + ' body ' + pm.response.text()); }",
+    "var vk = (pm.response.json() || {}).virtual_key || {};",
+    `var name = ${jsNameOf(step.providerRef)};`,
+    "var pc = (vk.provider_configs || []).filter(function (c) { return c.provider === name; })[0];",
+    "if (!pc) { throw new Error('no provider config for ' + name + ' in ' + JSON.stringify(vk.provider_configs)); }",
+    `var want = ${JSON.stringify(step.expectWeight)};`,
+    "var got = pc.weight === undefined ? null : pc.weight;",
+    "if (got !== want) { throw new Error('stored weight=' + JSON.stringify(pc.weight) + ' expected ' + JSON.stringify(want)); }",
   ];
 }
 
@@ -310,7 +388,9 @@ function expandScenario(sc) {
   // provider delete follows it); jumping straight to the provider delete would
   // skip the VK and leak it.
   const hasVkScenario = sc.steps.some((s) => s.type === "createVK");
-  const cleanupTarget = hasVkScenario ? cleanupVk : cleanupProvider;
+  const hasRuleScenario = sc.steps.some((s) => s.type === "createRule");
+  const cleanupRule = `cleanup: delete routing rule [${sid}]`;
+  const cleanupTarget = hasRuleScenario ? cleanupRule : hasVkScenario ? cleanupVk : cleanupProvider;
   // A scenario may stand up more than one provider (e.g. governance LB across
   // providers). ref "self" is the scenario's primary provider; any other ref
   // gets its own run-scoped name. All created providers are torn down.
@@ -345,7 +425,32 @@ function expandScenario(sc) {
   const nextId = (tag) => `rt-${sid}-${String(++counter).padStart(2, "0")}-${tag}`;
   const uniq = (label) => `${String(++ordinal).padStart(2, "0")}. ${label} [${sid}]`;
 
+  // Providers added since the last catalog wait. Before the next inference request, one polling
+  // step per provider waits for the catalog to list its models: the list is non-empty (live
+  // discovery landed) and holds every model its enabled keys name explicitly. Only that wait
+  // polls; the routing requests after it are sent once.
+  let catalogPending = [];
+  const awaitCatalog = () => {
+    for (const { ref, keys } of catalogPending) {
+      const enabled = keys.filter((k) => k.enabled);
+      if (enabled.length === 0) continue; // nothing to discover: no key can serve
+      const models = [];
+      for (const k of enabled) {
+        for (const m of k.models) {
+          if (m !== "*" && !k.blacklisted.includes(m) && !models.includes(m)) models.push(m);
+        }
+      }
+      const name = uniq(`wait for the catalog to list ${ref === "self" ? "the provider" : ref}'s models`);
+      const query = [{ key: "provider", value: nameOf(ref) }, { key: "limit", value: "1000" }];
+      items.push(item(nextId("await-catalog"), name, request("GET", url(["api", "models"], query), null),
+        events(pollPrerequest(0), pollTest(name, catalogReadyAssertLines(jsNameOf(ref), models), cleanupTarget))));
+    }
+    catalogPending = [];
+  };
+  const inferenceSteps = new Set(["route", "keyDistribution", "providerDistribution"]);
+
   for (const step of sc.steps) {
+    if (inferenceSteps.has(step.type) && catalogPending.length) awaitCatalog();
     switch (step.type) {
       case "addProvider": {
         const pseg = nameOf(step.ref);
@@ -367,6 +472,7 @@ function expandScenario(sc) {
             request("POST", url(["api", "providers", pseg, "keys"]), keyBody(k, keyNameSeg(sid, k.id), prov)),
             events(null, mutationTest(kname, [200, 201], cleanupTarget))));
         }
+        catalogPending.push({ ref: step.ref || "self", keys: step.keys || [] });
         break;
       }
       case "createVK": {
@@ -394,6 +500,11 @@ function expandScenario(sc) {
       case "route": {
         const name = uniq(step.label);
         const headers = step.useVk === false ? [] : [{ key: "x-bf-vk", value: `{{vkval_${sid}}}` }];
+        // pinKey pins the request to one of the scenario's keys (x-bf-api-key-id), for a check that
+        // needs a particular key rather than whichever the weighted pick lands on.
+        if (step.pinKey) {
+          headers.push({ key: "x-bf-api-key-id", value: keyId(step.pinKey) });
+        }
         const body = {
           // bareModel routes without a provider prefix so an upstream routing
           // layer (governance LB) resolves the provider. routeRef targets a
@@ -407,14 +518,126 @@ function expandScenario(sc) {
         if (step.fallbacks) {
           body.fallbacks = step.fallbacks.map((f) => `${nameOf(f.providerRef)}/${f.model}`);
         }
-        items.push(item(nextId("route"), name, request("POST", url(["v1", "chat", "completions"]), body, headers),
-          events(pollPrerequest(step.waitSeconds), pollTest(name, routeAssertLines(sid, step, jsNameOf), cleanupTarget))));
+        // endpoint: "v1" (default) is /v1/chat/completions, "openai" the OpenAI drop-in route and
+        // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens).
+        const path = { v1: ["v1", "chat", "completions"], openai: ["openai", "v1", "chat", "completions"], anthropic: ["anthropic", "v1", "messages"] }[step.endpoint || "v1"];
+        // requestId sends a known x-request-id, kept as reqid_<sid>, so later steps can read this
+        // request's own log row (its id) and its fallback attempts' rows (their parent_request_id).
+        const pre = step.requestId ? [
+          `var rid = 'rw-${sid}-${String(ordinal).padStart(2, "0")}-' + pm.variables.get('run_id');`,
+          `pm.collectionVariables.set('reqid_${sid}', rid);`,
+          "pm.request.headers.upsert({ key: 'x-request-id', value: rid });",
+        ] : null;
+        items.push(item(nextId("route"), name, request("POST", url(path), body, headers),
+          events(pre, singleTest(name, routeAssertLines(sid, step, jsNameOf), cleanupTarget))));
+        break;
+      }
+      case "updateKey": {
+        // A key PUT is a full-field replace, so the whole intended key is sent.
+        const ref = step.ref || "self";
+        const name = uniq(step.label);
+        const prov = PROVIDERS[providerByRef[ref].pt];
+        items.push(item(nextId("update-key"), name,
+          request("PUT", url(["api", "providers", nameOf(ref), "keys", keyId(step.key.id)]), keyBody(step.key, keyNameSeg(sid, step.key.id), prov)),
+          events(null, mutationTest(name, [200], cleanupTarget))));
+        break;
+      }
+      case "aliasPricing": {
+        // The catalog's listing of an alias: /api/models/details prices the alias row from one key's
+        // target. The price is kept as aliasprice_<sid>_<as>; with higherThan it must also be above a
+        // price kept earlier.
+        const name = uniq(step.label);
+        const query = [{ key: "provider", value: nameOf(step.ref) }, { key: "limit", value: "1000" }];
+        const lines = [
+          "if (pm.response.code !== 200) { throw new Error('model details status ' + pm.response.code); }",
+          `var alias = pm.variables.replaceIn(${JSON.stringify(step.alias)});`,
+          `var providerName = ${jsNameOf(step.ref)};`,
+          "var row = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName && m.name === alias; })[0];",
+          "if (!row) { throw new Error('no details row for ' + alias); }",
+          "if (typeof row.input_cost_per_token !== 'number') { throw new Error('the alias row carries no price: ' + JSON.stringify(row)); }",
+          `pm.collectionVariables.set('aliasprice_${sid}_${step.as}', String(row.input_cost_per_token));`,
+          ...(step.higherThan ? [
+            `var earlier = parseFloat(pm.collectionVariables.get('aliasprice_${sid}_${step.higherThan}'));`,
+            `if (!(row.input_cost_per_token > earlier)) { throw new Error('alias priced ' + row.input_cost_per_token + ', expected above the ${step.higherThan} price ' + earlier); }`,
+          ] : []),
+        ];
+        items.push(item(nextId("alias-pricing"), name, request("GET", url(["api", "models", "details"], query), null),
+          events(pollPrerequest(0), pollTest(name, lines, cleanupTarget))));
+        break;
+      }
+      case "assertFallbackRow": {
+        // The log row of one fallback attempt of the last requestId route: attempts after the
+        // primary are logged under it as their parent_request_id.
+        const name = uniq(step.label);
+        const query = [{ key: "parent_request_id", value: `{{reqid_${sid}}}` }, { key: "limit", value: "10" }];
+        const lines = [
+          "if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
+          "var logs = (pm.response.json() || {}).logs || [];",
+          `var providerName = ${jsNameOf(step.providerRef)};`,
+          `var row = logs.filter(function (l) { return l.provider === providerName && l.fallback_index === ${step.fallbackIndex}; })[0];`,
+          `if (!row) { throw new Error('no fallback attempt on ' + providerName + ' at index ${step.fallbackIndex} among ' + JSON.stringify(logs.map(function (l) { return [l.provider, l.fallback_index, l.status]; }))); }`,
+          `if (row.status !== ${JSON.stringify(step.expectStatus)}) { throw new Error('fallback attempt status=' + row.status); }`,
+          ...(step.model ? [`if (row.model !== ${JSON.stringify(step.model)}) { throw new Error('fallback attempt model=' + row.model); }`] : []),
+        ];
+        items.push(item(nextId("assert-fallback-row"), name, request("GET", url(["api", "logs"], query), null),
+          events(pollPrerequest(step.waitSeconds), pollTest(name, lines, cleanupTarget))));
+        break;
+      }
+      case "createRule": {
+        // A global routing rule. Its CEL expression should match only this run's own model, so the
+        // rule cannot route another scenario's requests. Targets and fallbacks name providers by ref.
+        const name = uniq(step.label);
+        const body = {
+          name: `catwiring-rt-${sid}-{{run_id}}`,
+          cel_expression: step.cel,
+          targets: step.targets.map((tg) => ({ provider: nameOf(tg.providerRef), model: tg.model, weight: tg.weight ?? 1 })),
+          fallbacks: (step.fallbacks || []).map((f) => `${nameOf(f.providerRef)}/${f.model}`),
+          scope: "global",
+        };
+        const exec = [
+          `var cleanupReq = ${JSON.stringify(cleanupTarget)};`,
+          `pm.test(${JSON.stringify(name)}, function () { pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code); });`,
+          "if (pm.response.code === 200 || pm.response.code === 201) {",
+          `  pm.collectionVariables.set('ruleid_${sid}', ((pm.response.json() || {}).rule || {}).id || '');`,
+          "} else { pm.execution.setNextRequest(cleanupReq); }",
+        ];
+        items.push(item(nextId("create-rule"), name, request("POST", url(["api", "governance", "routing-rules"]), body), events(null, exec)));
+        break;
+      }
+      case "deleteProvider": {
+        const name = uniq(step.label);
+        items.push(item(nextId("delete-provider"), name, request("DELETE", url(["api", "providers", nameOf(step.ref)]), null),
+          events(null, mutationTest(name, [200, 204], cleanupTarget))));
+        // A deleted provider has no models left to wait for.
+        catalogPending = catalogPending.filter((p) => p.ref !== step.ref);
+        break;
+      }
+      case "updateVK": {
+        const name = uniq(step.label);
+        const req = request("PUT", url(["api", "governance", "virtual-keys", `{{vkid_${sid}}}`]), {});
+        const status = step.expectStatus;
+        const exec = [
+          `var cleanupReq = ${JSON.stringify(cleanupTarget)};`,
+          `pm.test(${JSON.stringify(name)}, function () {`,
+          `  pm.expect(pm.response.code, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.equal(${status});`,
+          ...(step.expectErrorSubstr ? [`  pm.expect(pm.response.text()).to.include(${JSON.stringify(step.expectErrorSubstr)});`] : []),
+          "});",
+          `if (pm.response.code !== ${status}) { pm.execution.setNextRequest(cleanupReq); }`,
+        ];
+        items.push(item(nextId("update-vk"), name, req, events(vkUpdatePrerequest(sid, step.providerConfigs, jsNameOf), exec)));
+        break;
+      }
+      case "assertVKWeight": {
+        const name = uniq(step.label);
+        items.push(item(nextId("get-vk"), name, request("GET", url(["api", "governance", "virtual-keys", `{{vkid_${sid}}}`]), null),
+          events(null, singleTest(name, vkWeightAssertLines(step, jsNameOf), cleanupTarget))));
         break;
       }
       case "assertLog": {
         const name = uniq(step.label);
+        // byVk:false reads the rows of providerRef (default: the scenario's own provider).
         const query = step.byVk === false
-          ? [{ key: "providers", value: seg }, { key: "limit", value: "10" }]
+          ? [{ key: "providers", value: nameOf(step.providerRef) }, { key: "limit", value: "10" }]
           : [{ key: "virtual_key_ids", value: `{{vkid_${sid}}}` }, { key: "limit", value: "10" }];
         items.push(item(nextId("assert-log"), name, request("GET", url(["api", "logs"], query), null),
           events(pollPrerequest(step.waitSeconds), pollTest(name, logAssertLines(sid, step, jsNameOf), cleanupTarget))));
@@ -425,7 +648,7 @@ function expandScenario(sc) {
         for (let i = 0; i < n; i++) {
           const sname = uniq(`sample ${i + 1}/${n} (${step.model})`);
           const body = {
-            model: `${seg}/${step.model}`,
+            model: `${nameOf(step.routeRef)}/${step.model}`,
             messages: [{ role: "user", content: "Reply with the single word: ok." }],
             max_tokens: 5,
           };
@@ -485,31 +708,39 @@ function expandScenario(sc) {
         break;
       }
       case "assertRoutingTrail": {
-        // Step 1: poll the log list for the VK's most recent row and capture its id.
-        const capName = uniq("capture routing log id");
-        const capQuery = [{ key: "virtual_key_ids", value: `{{vkid_${sid}}}` }, { key: "limit", value: "1" }];
-        const capAssert = [
-          "if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
-          "var logs = (pm.response.json() || {}).logs || [];",
-          "if (!logs.length || !logs[0].id) { throw new Error('no log row yet for VK'); }",
-          `pm.collectionVariables.set('logid_${sid}', logs[0].id);`,
-        ];
-        items.push(item(nextId("capture-log"), capName, request("GET", url(["api", "logs"], capQuery), null),
-          events(pollPrerequest(step.waitSeconds), pollTest(capName, capAssert, cleanupTarget))));
+        // Step 1: poll the log list for the VK's most recent row and capture its id. With
+        // fromRequest the row is the last requestId route's own, read by its id below.
+        if (!step.fromRequest) {
+          const capName = uniq("capture routing log id");
+          const capQuery = [{ key: "virtual_key_ids", value: `{{vkid_${sid}}}` }, { key: "limit", value: "1" }];
+          const capAssert = [
+            "if (pm.response.code !== 200) { throw new Error('logs status ' + pm.response.code); }",
+            "var logs = (pm.response.json() || {}).logs || [];",
+            "if (!logs.length || !logs[0].id) { throw new Error('no log row yet'); }",
+            `pm.collectionVariables.set('logid_${sid}', logs[0].id);`,
+          ];
+          items.push(item(nextId("capture-log"), capName, request("GET", url(["api", "logs"], capQuery), null),
+            events(pollPrerequest(step.waitSeconds), pollTest(capName, capAssert, cleanupTarget))));
+        }
+        const logIdVar = step.fromRequest ? `reqid_${sid}` : `logid_${sid}`;
         // Step 2: fetch the log detail and assert the routing-engine decision trail.
         const trailName = uniq(step.label);
         const trailAssert = [
           "if (pm.response.code !== 200) { throw new Error('log detail status ' + pm.response.code); }",
           "var row = pm.response.json() || {};",
           "var trail = row.routing_engine_logs || '';",
-          `var expected = ${JSON.stringify(step.expectSubstrings || [])};`,
+          `var expected = ${JSON.stringify(step.expectSubstrings || [])}.map(function (s) { return pm.variables.replaceIn(s); });`,
           "expected.forEach(function (s) {",
           "  if (String(trail).indexOf(s) < 0) { throw new Error('routing_engine_logs missing ' + JSON.stringify(s) + '; got ' + JSON.stringify(trail)); }",
           "});",
+          `var absent = ${JSON.stringify(step.expectAbsent || [])}.map(function (s) { return pm.variables.replaceIn(s); });`,
+          "absent.forEach(function (s) {",
+          "  if (String(trail).indexOf(s) >= 0) { throw new Error('routing_engine_logs should not contain ' + JSON.stringify(s) + '; got ' + JSON.stringify(trail)); }",
+          "});",
         ];
         items.push(item(nextId("assert-trail"), trailName,
-          request("GET", url(["api", "logs", `{{logid_${sid}}}`]), null),
-          events(null, pollTest(trailName, trailAssert, cleanupTarget))));
+          request("GET", url(["api", "logs", `{{${logIdVar}}}`]), null),
+          events(step.fromRequest ? pollPrerequest(step.waitSeconds) : null, pollTest(trailName, trailAssert, cleanupTarget))));
         break;
       }
       case "cleanup":
@@ -520,6 +751,11 @@ function expandScenario(sc) {
   }
 
   const cleanupItems = [];
+  if (hasRuleScenario) {
+    cleanupItems.push(item(`rt-${sid}-cleanup-rule`, cleanupRule,
+      request("DELETE", url(["api", "governance", "routing-rules", `{{ruleid_${sid}}}`]), null),
+      events(null, cleanupTest(cleanupRule))));
+  }
   if (hasVk) {
     cleanupItems.push(item(`rt-${sid}-cleanup-vk`, cleanupVk,
       request("DELETE", url(["api", "governance", "virtual-keys", `{{vkid_${sid}}}`]), null),
@@ -555,7 +791,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: MODEL_B, expectStatus: 200, expectKeyId: "k1", waitSeconds: 1, label: "allowed model routes (routing_info.key)" },
+      { type: "route", model: MODEL_B, expectStatus: 200, expectKeyId: "k1", label: "allowed model routes (routing_info.key)" },
       { type: "assertLog", model: MODEL_B, expectStatus: "success", expectSelectedKeyId: "k1", expectVkPresent: true, waitSeconds: 2, label: "log records VK + selected key" },
       { type: "cleanup" },
     ],
@@ -567,7 +803,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] }), key({ id: "k2", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ keyIds: ["k1"], allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_B, expectStatus: 200, expectKeyId: "k1", waitSeconds: 1, label: "routes via the VK-permitted key (routing_info.key=k1)" },
+      { type: "route", model: MODEL_B, expectStatus: 200, expectKeyId: "k1", label: "routes via the VK-permitted key (routing_info.key=k1)" },
       { type: "assertLog", model: MODEL_B, expectStatus: "success", expectSelectedKeyId: "k1", expectVkPresent: true, waitSeconds: 2, label: "log selected_key_name is k1" },
       { type: "cleanup" },
     ],
@@ -579,7 +815,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"], enabled: false }), key({ id: "k2", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ keyIds: ["k1"], allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_B, expectStatus: 400, expectErrorSubstr: "no keys found", waitSeconds: 1, label: "disabled+VK-restricted key yields no usable key (400)" },
+      { type: "route", model: MODEL_B, expectStatus: 400, expectErrorSubstr: "no keys found", label: "disabled+VK-restricted key yields no usable key (400)" },
       { type: "cleanup" },
     ],
   },
@@ -589,7 +825,7 @@ const SCENARIOS = [
     description: "Two enabled, equal-weight keys on one provider (no VK). Over a batch of requests, core's weighted key selection routes through both keys.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"], weight: 1 }), key({ id: "k2", models: ["*"], weight: 1 })] },
-      { type: "keyDistribution", model: MODEL_B, n: 8, expectKeyIds: ["k1", "k2"], label: "both keys served across 8 samples" },
+      { type: "keyDistribution", model: MODEL_B, n: 24, expectKeyIds: ["k1", "k2"], label: "both keys served across 24 samples" },
       { type: "cleanup" },
     ],
   },
@@ -601,8 +837,8 @@ const SCENARIOS = [
       { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ka", models: [MODEL_B] })] },
       { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: [MODEL_A] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: null, allowedModels: ["*"] }), vkProvider({ providerRef: "b", weight: null, allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self"], waitSeconds: 3, label: "bare model routes to the only capable provider (allow-list, no LB)" },
-      { type: "assertRoutingTrail", expectSubstrings: ["not in allowed models list", "No weighted configs", "skipping load balancing"], waitSeconds: 2, label: "log trail shows allow-list filtering and LB skipped" },
+      { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self"], label: "bare model routes to the only capable provider (allow-list, no LB)" },
+      { type: "assertRoutingTrail", expectSubstrings: ["excluded: model gpt-4o-mini is not permitted", "No weighted providers", "skipping load balancing"], waitSeconds: 2, label: "log trail shows allow-list filtering and LB skipped" },
       { type: "cleanup" },
     ],
   },
@@ -614,7 +850,7 @@ const SCENARIOS = [
       { type: "addProvider", ref: "self", keys: [key({ id: "ka", models: ["*"], weight: 1 })] },
       { type: "addProvider", ref: "b", keys: [key({ id: "kb", models: ["*"], weight: 1 })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] }), vkProvider({ providerRef: "b", allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "b"], waitSeconds: 2, label: "bare model routes via a governance-selected provider" },
+      { type: "route", model: MODEL_B, bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "b"], label: "bare model routes via a governance-selected provider" },
       { type: "assertRoutingTrail", expectSubstrings: ["Load balancing model", "Selected provider"], waitSeconds: 2, label: "log detail records the LB decision trail" },
       { type: "cleanup" },
     ],
@@ -625,21 +861,25 @@ const SCENARIOS = [
     description: "A key gates the alias name, not the resolved id. Routing the alias resolves and succeeds; routing the resolved model id directly fails the gate — alias targets are not auto-added to the key's Models.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", useVk: false, expectStatus: 200, expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias routes (resolves to the model id)" },
-      { type: "route", model: MODEL_B, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", waitSeconds: 0, label: "resolved id routed directly → 400 (not in Models)" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", useVk: false, expectStatus: 200, expectResolvedModelId: MODEL_B, label: "alias routes (resolves to the model id)" },
+      { type: "route", model: MODEL_B, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", label: "resolved id routed directly → 400 (not in Models)" },
       { type: "cleanup" },
     ],
   },
   {
-    id: "alias-collision-last-wins",
-    title: "An alias defined on two keys resolves to the last key",
-    description: "Two keys define the same alias to different models. The alias resolves to the last-defined key's target and is served by that key.",
+    id: "alias-collision-both-keys-serve",
+    title: "An alias defined on two keys is served by both, each resolving its own target",
+    description: "Two keys of a standard openai provider define the same alias, k1 to gpt-4o and k2 to gpt-4o-mini. Both keys pass the key gate for the alias, so a request pinned to either one is served by it, and each resolves the alias to its own target. The catalog's alias index, used for listing and pricing, takes the last enabled key instead: /api/models/details prices the alias at k2's gpt-4o-mini, and at k1's dearer gpt-4o once k2 is disabled. A standard provider is used because only datasheet providers carry prices. Serial-only (global standard provider).",
     steps: [
-      { type: "addProvider", keys: [
+      { type: "addProvider", providerKind: "standard", providerType: "openai", keys: [
         key({ id: "k1", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_A } }),
         key({ id: "k2", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_B } }),
       ] },
-      { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k2", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias resolves to the last key (k2 → gpt-4o-mini)" },
+      { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, pinKey: "k1", expectStatus: 200, expectKeyId: "k1", expectResolvedModelId: MODEL_A, label: "k1 serves the alias, resolving it to its own target (gpt-4o)" },
+      { type: "route", model: "catwiring-dup-{{run_id}}", useVk: false, pinKey: "k2", expectStatus: 200, expectKeyId: "k2", expectResolvedModelId: MODEL_B, label: "k2 serves the alias, resolving it to its own target (gpt-4o-mini)" },
+      { type: "aliasPricing", alias: "catwiring-dup-{{run_id}}", as: "both", label: "the catalog prices the alias from the last enabled key (k2)" },
+      { type: "updateKey", key: key({ id: "k2", models: ["catwiring-dup-{{run_id}}"], aliases: { "catwiring-dup-{{run_id}}": MODEL_B }, enabled: false }), label: "disable k2" },
+      { type: "aliasPricing", alias: "catwiring-dup-{{run_id}}", as: "k1only", higherThan: "both", label: "with k2 disabled the alias is priced from k1's dearer gpt-4o, so the price with both keys was k2's gpt-4o-mini" },
       { type: "cleanup" },
     ],
   },
@@ -649,7 +889,7 @@ const SCENARIOS = [
     description: "A key defines a mixed-case alias and gates the mixed-case name. Routing the lowercased form finds no exact-case alias but resolves through a case-insensitive fallback to the same target.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["CatWiring-CI-{{run_id}}"], aliases: { "CatWiring-CI-{{run_id}}": MODEL_B } })] },
-      { type: "route", model: "catwiring-ci-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k1", expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "lowercased request resolves via case-insensitive fallback" },
+      { type: "route", model: "catwiring-ci-{{run_id}}", useVk: false, expectStatus: 200, expectKeyId: "k1", expectResolvedModelId: MODEL_B, label: "lowercased request resolves via case-insensitive fallback" },
       { type: "cleanup" },
     ],
   },
@@ -659,7 +899,7 @@ const SCENARIOS = [
     description: "Pure model-catalog case (no VK): a key alias routes an inference request to the underlying model; routing_info.resolved_key_alias records the resolution.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", useVk: false, expectStatus: 200, expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias routes to underlying model (no VK)" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", useVk: false, expectStatus: 200, expectResolvedModelId: MODEL_B, label: "alias routes to underlying model (no VK)" },
       { type: "cleanup" },
     ],
   },
@@ -669,7 +909,7 @@ const SCENARIOS = [
     description: "Pure model-catalog case (no VK): a key that allows all models but blacklists one rejects that model at key selection.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"], blacklisted: [MODEL_A] })] },
-      { type: "route", model: MODEL_A, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", waitSeconds: 0, label: "blacklisted model rejected by key gate (400)" },
+      { type: "route", model: MODEL_A, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", label: "blacklisted model rejected by key gate (400)" },
       { type: "cleanup" },
     ],
   },
@@ -679,7 +919,7 @@ const SCENARIOS = [
     description: "Pure model-catalog case (no VK): the only key for a model is disabled, so key selection finds nothing.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"], enabled: false })] },
-      { type: "route", model: MODEL_B, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found", waitSeconds: 0, label: "disabled key yields no route (400)" },
+      { type: "route", model: MODEL_B, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found", label: "disabled key yields no route (400)" },
       { type: "cleanup" },
     ],
   },
@@ -689,7 +929,7 @@ const SCENARIOS = [
     description: "A standard azure provider (value + azure_key_config via env.) routes a model whose deployment matches the name. Serial-only (global standard provider).",
     steps: [
       { type: "addProvider", providerType: "azure", keys: [key({ id: "kaz", models: ["*"] })] },
-      { type: "route", model: PROVIDERS.azure.model, useVk: false, expectStatus: 200, expectKeyId: "kaz", waitSeconds: 1, label: "azure routes its deployment (200)" },
+      { type: "route", model: PROVIDERS.azure.model, useVk: false, expectStatus: 200, expectKeyId: "kaz", label: "azure routes its deployment (200)" },
       { type: "cleanup" },
     ],
   },
@@ -699,7 +939,7 @@ const SCENARIOS = [
     description: "A standard bedrock provider whose key aliases the common name claude-sonnet-4-5 to the cross-region inference-profile id. Routing the friendly name resolves to the wire id. Serial-only (global standard provider).",
     steps: [
       { type: "addProvider", providerType: "bedrock", keys: [key({ id: "kbr", models: ["*"] })] },
-      { type: "route", model: PROVIDERS.bedrock.model, useVk: false, expectStatus: 200, expectKeyId: "kbr", expectResolvedModelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", waitSeconds: 1, label: "bedrock alias resolves to inference profile (200)" },
+      { type: "route", model: PROVIDERS.bedrock.model, useVk: false, expectStatus: 200, expectKeyId: "kbr", expectResolvedModelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "bedrock alias resolves to inference profile (200)" },
       { type: "cleanup" },
     ],
   },
@@ -711,28 +951,28 @@ const SCENARIOS = [
       { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ko", models: ["*"], weight: 1 })] },
       { type: "addProvider", ref: "az", providerType: "azure", keys: [key({ id: "kaz", models: ["*"], weight: 1 })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] }), vkProvider({ providerRef: "az", allowedModels: ["*"] })] },
-      { type: "route", model: "gpt-4o-mini", bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "az"], waitSeconds: 3, label: "bare model routes via openai or azure (200)" },
+      { type: "route", model: "gpt-4o-mini", bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "az"], label: "bare model routes via openai or azure (200)" },
       { type: "assertRoutingTrail", expectSubstrings: ["Load balancing model gpt-4o-mini", "Selected provider"], waitSeconds: 2, label: "log detail records openai/azure LB trail" },
       { type: "cleanup" },
     ],
   },
   {
     id: "route-anthropic",
-    title: "Anthropic provider routes its model",
-    description: "A custom provider backed by anthropic (key via env.) routes a claude model.",
+    title: "Standard anthropic provider routes its model",
+    description: "A standard anthropic provider (key via env.) routes a claude model. Serial-only (global standard provider).",
     steps: [
-      { type: "addProvider", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
-      { type: "route", model: PROVIDERS.anthropic.model, useVk: false, expectStatus: 200, expectKeyId: "ka", waitSeconds: 1, label: "anthropic provider routes claude model (200)" },
+      { type: "addProvider", providerKind: "standard", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "route", model: PROVIDERS.anthropic.model, useVk: false, expectStatus: 200, expectKeyId: "ka", label: "anthropic provider routes claude model (200)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "route-gemini",
-    title: "Gemini provider routes its model",
-    description: "A custom provider backed by gemini (key via env.) routes a gemini model.",
+    title: "Standard gemini provider routes its model",
+    description: "A standard gemini provider (key via env.) routes a gemini model. Serial-only (global standard provider).",
     steps: [
-      { type: "addProvider", providerType: "gemini", keys: [key({ id: "kg", models: ["*"] })] },
-      { type: "route", model: PROVIDERS.gemini.model, useVk: false, expectStatus: 200, expectKeyId: "kg", waitSeconds: 1, label: "gemini provider routes gemini model (200)" },
+      { type: "addProvider", providerKind: "standard", providerType: "gemini", keys: [key({ id: "kg", models: ["*"] })] },
+      { type: "route", model: PROVIDERS.gemini.model, useVk: false, expectStatus: 200, expectKeyId: "kg", label: "gemini provider routes gemini model (200)" },
       { type: "cleanup" },
     ],
   },
@@ -743,7 +983,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: [MODEL_B] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_A] })] },
-      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "no keys found that support model", waitSeconds: 0, label: "explicit allowed model the key can't serve → 400" },
+      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "no keys found that support model", label: "explicit allowed model the key can't serve → 400" },
       { type: "cleanup" },
     ],
   },
@@ -819,13 +1059,13 @@ const SCENARIOS = [
   {
     id: "cross-provider-allowlist",
     title: "VK provider allowlist blocks a different real provider",
-    description: "A VK that lists only the openai provider routes openai but rejects an explicit request to the anthropic provider (pruned from the routing allowlist).",
+    description: "A VK that lists only the openai provider routes openai, and governance refuses an explicit request to the anthropic provider with 403 provider_blocked.",
     steps: [
       { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ko", models: ["*"] })] },
       { type: "addProvider", ref: "b", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] })] },
-      { type: "route", routeRef: "self", model: PROVIDERS.openai.model, expectStatus: 200, expectKeyId: "ko", waitSeconds: 2, label: "VK-allowed provider routes (200)" },
-      { type: "route", routeRef: "b", model: PROVIDERS.anthropic.model, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "VK-disallowed provider blocked (400)" },
+      { type: "route", routeRef: "self", model: PROVIDERS.openai.model, expectStatus: 200, expectKeyId: "ko", label: "VK-allowed provider routes (200)" },
+      { type: "route", routeRef: "b", model: PROVIDERS.anthropic.model, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", label: "VK-disallowed provider blocked (403 provider_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -838,7 +1078,7 @@ const SCENARIOS = [
       { type: "addProvider", ref: "vtx", providerType: "vertex", keys: [key({ id: "kvx", models: ["*"], weight: 1 })] },
       { type: "addProvider", ref: "bdr", providerType: "bedrock", keys: [key({ id: "kbd", models: ["*"], weight: 1 })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] }), vkProvider({ providerRef: "vtx", allowedModels: ["*"] }), vkProvider({ providerRef: "bdr", allowedModels: ["*"] })] },
-      { type: "route", model: "claude-sonnet-4-5", bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "vtx", "bdr"], waitSeconds: 3, label: "bare claude model routes via anthropic, vertex, or bedrock (200)" },
+      { type: "route", model: "claude-sonnet-4-5", bareModel: true, expectStatus: 200, expectProviderOneOf: ["self", "vtx", "bdr"], label: "bare claude model routes via anthropic, vertex, or bedrock (200)" },
       { type: "assertRoutingTrail", expectSubstrings: ["Load balancing model claude-sonnet-4-5", "Selected provider"], waitSeconds: 2, label: "log detail records cross-provider LB trail" },
       { type: "cleanup" },
     ],
@@ -850,7 +1090,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: [MODEL_B], badKey: true })] },
       { type: "addProvider", ref: "b", keys: [key({ id: "kgood", models: [MODEL_B] })] },
-      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, waitSeconds: 1, label: "primary fails; request fallback serves (200, is_fallback)" },
+      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, label: "primary fails; request fallback serves (200, is_fallback)" },
       { type: "cleanup" },
     ],
   },
@@ -862,7 +1102,12 @@ const SCENARIOS = [
       { type: "addProvider", ref: "self", keys: [key({ id: "kbad1", models: [MODEL_B], badKey: true })] },
       { type: "addProvider", ref: "b", keys: [key({ id: "kbad2", models: [MODEL_B], badKey: true })] },
       { type: "addProvider", ref: "c", keys: [key({ id: "kgood", models: [MODEL_B] })] },
-      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }, { providerRef: "c", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["c"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, waitSeconds: 1, label: "chain falls through to the only healthy provider (200)" },
+      { type: "route", model: MODEL_B, routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: MODEL_B }, { providerRef: "c", model: MODEL_B }], expectStatus: 200, expectProviderOneOf: ["c"], expectIsFallback: true, expectPrimaryProviderRef: "self", expectPrimaryModel: MODEL_B, label: "chain falls through to the only healthy provider (200)" },
+      // Every attempt of the chain is its own log row: the primary failed at fallback_index 0, B was
+      // tried and failed at index 1, and C served at index 2.
+      { type: "assertLog", byVk: false, providerRef: "self", model: MODEL_B, expectStatus: "error", expectFallbackIndex: 0, waitSeconds: 2, label: "log: the primary failed (fallback_index 0)" },
+      { type: "assertLog", byVk: false, providerRef: "b", model: MODEL_B, expectStatus: "error", expectFallbackIndex: 1, waitSeconds: 0, label: "log: B was tried and failed (fallback_index 1)" },
+      { type: "assertLog", byVk: false, providerRef: "c", model: MODEL_B, expectStatus: "success", expectFallbackIndex: 2, waitSeconds: 0, label: "log: C served (fallback_index 2)" },
       { type: "cleanup" },
     ],
   },
@@ -874,7 +1119,49 @@ const SCENARIOS = [
       { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: [MODEL_B], badKey: true })] },
       { type: "addProvider", ref: "b", keys: [key({ id: "kgood", models: [MODEL_B] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_B, routeRef: "self", fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 401, expectErrorSubstr: "Incorrect API key", waitSeconds: 1, label: "off-allowlist fallback pruned; request fails on the primary (401)" },
+      { type: "route", model: MODEL_B, routeRef: "self", fallbacks: [{ providerRef: "b", model: MODEL_B }], expectStatus: 401, expectErrorSubstr: "Incorrect API key", label: "off-allowlist fallback pruned; request fails on the primary (401)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "exhausted-fallback-headers",
+    title: "An exhausted chain returns the primary's error and headers, on /v1 and /openai",
+    description: "The primary is an OpenAI-backed provider asked for a model that does not exist; its fallback is an Anthropic-backed provider asked for another missing model. Both fail, so the caller gets OpenAI's 404, the routing-info provider header names the primary, and no anthropic-* header from the fallback leaks into the response. The fallback's own log row, under the request as its parent, shows it was tried. Run on /v1/chat/completions and on the /openai drop-in route.",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ko", models: ["*"] })] },
+      { type: "addProvider", ref: "b", providerType: "anthropic", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "route", model: "gpt-harness-missing-model", routeRef: "self", useVk: false, requestId: true, fallbacks: [{ providerRef: "b", model: "claude-harness-missing-model" }], expectStatus: 404, expectErrorSubstr: "gpt-harness-missing-model", expectHeaderProviderRef: "self", expectNoHeaderPrefix: "anthropic-", label: "/v1: both fail; OpenAI's 404 with the primary's headers and no anthropic-* header" },
+      { type: "assertFallbackRow", providerRef: "b", fallbackIndex: 1, expectStatus: "error", model: "claude-harness-missing-model", waitSeconds: 2, label: "/v1: the Anthropic fallback was tried and failed (fallback_index 1)" },
+      { type: "route", endpoint: "openai", model: "gpt-harness-missing-model", routeRef: "self", useVk: false, requestId: true, fallbacks: [{ providerRef: "b", model: "claude-harness-missing-model" }], expectStatus: 404, expectErrorSubstr: "gpt-harness-missing-model", expectHeaderProviderRef: "self", expectNoHeaderPrefix: "anthropic-", label: "/openai: both fail; OpenAI's 404 with the primary's headers and no anthropic-* header" },
+      { type: "assertFallbackRow", providerRef: "b", fallbackIndex: 1, expectStatus: "error", model: "claude-harness-missing-model", waitSeconds: 2, label: "/openai: the Anthropic fallback was tried and failed (fallback_index 1)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "anthropic-route-catalog-candidates",
+    title: "The /anthropic route resolves a model Anthropic does not serve through the catalog",
+    description: "Two run-scoped OpenAI-backed providers serve a run-scoped alias of gpt-4o-mini; Anthropic does not. A bare request for the alias on /anthropic/v1/messages is resolved by the model catalog to one of the two, the trail lists exactly those two as the candidates (so Anthropic is not one), and the answer is Messages-shaped.",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ka", models: ["catwiring-mce04-{{run_id}}"], aliases: { "catwiring-mce04-{{run_id}}": MODEL_B } })] },
+      { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: ["catwiring-mce04-{{run_id}}"], aliases: { "catwiring-mce04-{{run_id}}": MODEL_B } })] },
+      { type: "route", endpoint: "anthropic", model: "catwiring-mce04-{{run_id}}", bareModel: true, useVk: false, requestId: true, expectStatus: 200, expectProviderOneOf: ["self", "b"], label: "/anthropic resolves the alias to one of the two providers (Messages-shaped 200)" },
+      { type: "assertRoutingTrail", fromRequest: true, expectSubstrings: ["[model-catalog]", "No provider specified for model catwiring-mce04-{{run_id}}, found 2 options in model catalog: [", "catwiring-rt-anthropic-route-catalog-candidates-{{run_id}}", "catwiring-rt-anthropic-route-catalog-candidates-b-{{run_id}}"], waitSeconds: 2, label: "trail: the catalog's candidates are exactly the two providers, not Anthropic" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "rule-fallback-to-deleted-provider",
+    title: "A rule fallback whose provider was deleted is skipped with a trail warning",
+    description: "A rule matching this run's own alias targets A, whose key OpenAI refuses, with fallbacks [C, B]. C is deleted after the rule is saved. The request's trail warns that the C fallback does not name a known provider, and B serves as fallback 1.",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "kbad", models: ["catwiring-rr16-{{run_id}}"], aliases: { "catwiring-rr16-{{run_id}}": MODEL_B }, badKey: true })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kb", models: ["catwiring-rr16-{{run_id}}"], aliases: { "catwiring-rr16-{{run_id}}": MODEL_B } })] },
+      { type: "addProvider", ref: "c", keys: [key({ id: "kc", models: ["catwiring-rr16-{{run_id}}"], aliases: { "catwiring-rr16-{{run_id}}": MODEL_B } })] },
+      { type: "createRule", cel: "model == 'catwiring-rr16-{{run_id}}'", targets: [{ providerRef: "self", model: "catwiring-rr16-{{run_id}}" }], fallbacks: [{ providerRef: "c", model: "catwiring-rr16-{{run_id}}" }, { providerRef: "b", model: "catwiring-rr16-{{run_id}}" }], label: "create the rule: A, fallbacks [C, B]" },
+      { type: "deleteProvider", ref: "c", label: "delete provider C after saving the rule" },
+      { type: "route", model: "catwiring-rr16-{{run_id}}", bareModel: true, useVk: false, requestId: true, expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, expectPrimaryProviderRef: "self", label: "the rule's A fails; B serves" },
+      { type: "assertRoutingTrail", fromRequest: true, expectSubstrings: ["fallback \"catwiring-rt-rule-fallback-to-deleted-provider-c-{{run_id}}/catwiring-rr16-{{run_id}}\" skipped: it does not name a known provider"], waitSeconds: 2, label: "trail: the deleted C fallback is skipped with a warning" },
+      { type: "assertFallbackRow", providerRef: "b", fallbackIndex: 1, expectStatus: "success", waitSeconds: 0, label: "B served as fallback 1" },
       { type: "cleanup" },
     ],
   },
@@ -896,42 +1183,88 @@ const SCENARIOS = [
     description: "A standard openai provider created via the API routes its model. The catalog is datasheet-backed (no live-cache wait). NOTE: standard providers are global singletons — this scenario is NOT run-id-isolated; run serially against a clean instance, not in parallel shards.",
     steps: [
       { type: "addProvider", providerKind: "standard", providerType: "openai", keys: [key({ id: "ko", models: ["gpt-4o-mini"] })] },
-      { type: "route", model: "gpt-4o-mini", useVk: false, expectStatus: 200, expectKeyId: "ko", waitSeconds: 0, label: "standard openai routes its model (200)" },
+      { type: "route", model: "gpt-4o-mini", useVk: false, expectStatus: 200, expectKeyId: "ko", label: "standard openai routes its model (200)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "standard-openai-vk-gate",
     title: "Governance gates a standard provider",
-    description: "A VK over a standard openai provider routes an allowed model and prunes a disallowed one. Serial-only (global provider).",
+    description: "A VK over a standard openai provider routes an allowed model, and governance refuses a disallowed one with 403 model_blocked. Serial-only (global provider).",
     steps: [
       { type: "addProvider", providerKind: "standard", providerType: "openai", keys: [key({ id: "ko", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", allowedModels: ["gpt-4o-mini"] })] },
-      { type: "route", model: "gpt-4o-mini", expectStatus: 200, expectKeyId: "ko", waitSeconds: 2, label: "VK-allowed model routes on standard provider (200)" },
+      { type: "route", model: "gpt-4o-mini", expectStatus: 200, expectKeyId: "ko", label: "VK-allowed model routes on standard provider (200)" },
       { type: "assertLog", model: "gpt-4o-mini", expectStatus: "success", expectSelectedKeyId: "ko", expectVkPresent: true, waitSeconds: 2, label: "log records standard-provider route" },
-      { type: "route", model: "gpt-4o", expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "VK-disallowed model pruned (400)" },
+      { type: "route", model: "gpt-4o", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "VK-disallowed model refused (403 model_blocked)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "vk-allowed-models-exclude-provider",
+    title: "A VK's allowed_models exclude a provider from the weighted pick",
+    description: "Two equally weighted providers whose keys serve every model; the VK lets A serve only gpt-4o-mini and B only gpt-4o. A bare gpt-4o-mini goes to A every time, the trail names B as excluded because the model is not permitted, the pick runs over A alone, and no fallback is attached.",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: 1, allowedModels: [MODEL_B] }), vkProvider({ providerRef: "b", weight: 1, allowedModels: [MODEL_A] })] },
+      { type: "providerDistribution", model: MODEL_B, bareModel: true, n: 10, expectOnly: ["self"], expectNever: ["b"], label: "every request goes to A, the only provider the VK permits the model on" },
+      { type: "assertRoutingTrail", expectSubstrings: ["Provider catwiring-rt-vk-allowed-models-exclude-provider-b-{{run_id}} excluded: model gpt-4o-mini is not permitted", "(from 1 weighted:"], expectAbsent: ["fallback providers"], waitSeconds: 2, label: "trail: B excluded by allowed_models, the pick over A alone, no fallbacks attached" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "named-provider-skips-load-balancing",
+    title: "A provider-prefixed request skips the VK's load balancing, with or without the VK",
+    description: "A VK weights A and B equally. A request naming B is served by B as the primary both with the VK and without it; governance logs that it skips load balancing because the provider is already set and attaches no fallbacks, and the model catalog writes nothing to the trail (stored entries read \"[<ts>] [<engine>] [<level>] - <message>\").",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "openai", keys: [key({ id: "ka", models: ["*"] })] },
+      { type: "addProvider", ref: "b", providerType: "openai", keys: [key({ id: "kb", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ providerRef: "self", weight: 1 }), vkProvider({ providerRef: "b", weight: 1 })] },
+      { type: "route", routeRef: "b", model: MODEL_B, requestId: true, expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: false, label: "B/m with the VK is served by B" },
+      { type: "assertRoutingTrail", fromRequest: true, expectSubstrings: ["Skipping load balancing for model gpt-4o-mini: provider catwiring-rt-named-provider-skips-load-balancing-b-{{run_id}} already set"], expectAbsent: ["fallback providers", "Selected provider", "[model-catalog]"], waitSeconds: 2, label: "trail (with the VK): governance skips load balancing, attaches nothing, and the catalog writes nothing" },
+      { type: "route", routeRef: "b", model: MODEL_B, useVk: false, requestId: true, expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: false, label: "B/m without a VK is served by B" },
+      { type: "assertRoutingTrail", fromRequest: true, expectSubstrings: ["Skipping load balancing for model gpt-4o-mini: provider catwiring-rt-named-provider-skips-load-balancing-b-{{run_id}} already set"], expectAbsent: ["fallback providers", "Selected provider", "[model-catalog]"], waitSeconds: 2, label: "trail (without a VK): governance skips load balancing, attaches nothing, and the catalog writes nothing" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "vk-weight-update-validation",
+    title: "Updating a VK provider weight: -1 is refused, 0, 0.5 and null are stored",
+    description: "A VK created with weight 1 on its provider is updated through PUT /api/governance/virtual-keys/{id}: weight -1 is refused with 400 and leaves the stored weight at 1; weights 0, 0.5 and null are each accepted with 200 and read back as stored.",
+    steps: [
+      { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ weight: 1 })] },
+      { type: "updateVK", providerConfigs: [{ providerRef: "self", weight: -1 }], expectStatus: 400, expectErrorSubstr: "weight", label: "PUT weight -1 is refused (400)" },
+      { type: "assertVKWeight", providerRef: "self", expectWeight: 1, label: "the refused update left the weight at 1" },
+      { type: "updateVK", providerConfigs: [{ providerRef: "self", weight: 0 }], expectStatus: 200, label: "PUT weight 0 is accepted (200)" },
+      { type: "assertVKWeight", providerRef: "self", expectWeight: 0, label: "weight 0 is stored" },
+      { type: "updateVK", providerConfigs: [{ providerRef: "self", weight: 0.5 }], expectStatus: 200, label: "PUT weight 0.5 is accepted (200)" },
+      { type: "assertVKWeight", providerRef: "self", expectWeight: 0.5, label: "weight 0.5 is stored" },
+      { type: "updateVK", providerConfigs: [{ providerRef: "self", weight: null }], expectStatus: 200, label: "PUT weight null is accepted (200)" },
+      { type: "assertVKWeight", providerRef: "self", expectWeight: null, label: "weight null is stored (no weight)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-model-whitelist",
     title: "VK model whitelist blocks an unlisted model",
-    description: "A model outside the VK's allowed_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+    description: "A model outside the VK's allowed_models is refused by governance with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "unlisted model rejected via empty allowlist (400)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "unlisted model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-blacklist",
     title: "VK blacklist blocks a model",
-    description: "A model in the VK's blacklisted_models prunes the (single) provider from the routing allowlist, so core rejects with a 'provider not permitted' 400 (intended).",
+    description: "A model in the VK's blacklisted_models is refused by governance with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["*"], blacklistedModels: [MODEL_A] })] },
-      { type: "route", model: MODEL_A, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "blacklisted model rejected via empty allowlist (400)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "blacklisted model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -942,7 +1275,7 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: [MODEL_B] })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["*"] })] },
-      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorSubstr: "is not allowed for this virtual key", waitSeconds: 0, label: "wildcard VK still blocks a model the key does not gate (403)" },
+      { type: "route", model: MODEL_A, expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "Model 'gpt-4o' is not allowed for virtual key 'catwiring-rtvk-vk-wildcard-bounded-by-key-gate-{{run_id}}'", label: "wildcard VK still blocks a model the key does not gate (403, names the VK)" },
       { type: "cleanup" },
     ],
   },
@@ -952,7 +1285,7 @@ const SCENARIOS = [
     description: "Without a virtual key, governance does not run; a model the key does not allow is rejected by core key selection.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: [MODEL_B] })] },
-      { type: "route", model: MODEL_A, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", waitSeconds: 0, label: "key gate rejects unlisted model (400)" },
+      { type: "route", model: MODEL_A, useVk: false, expectStatus: 400, expectErrorSubstr: "no keys found that support model", label: "key gate rejects unlisted model (400)" },
       { type: "cleanup" },
     ],
   },
@@ -963,29 +1296,29 @@ const SCENARIOS = [
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["catwiring-alias-{{run_id}}"] })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 200, expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias routes, resolves to model id" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 200, expectResolvedModelId: MODEL_B, label: "alias routes, resolves to model id" },
       { type: "cleanup" },
     ],
   },
   {
     id: "alias-vs-whitelist",
     title: "Alias name not whitelisted is blocked",
-    description: "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so the provider is pruned from the routing allowlist and core rejects with a 'provider not permitted' 400 (intended).",
+    description: "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "unlisted alias rejected via empty allowlist (400)" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "unlisted alias refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },
   {
     id: "vk-empty-configs",
     title: "VK with no provider configs blocks everything",
-    description: "An empty provider_configs is deny-by-default; the provider is not permitted.",
+    description: "An empty provider_configs is deny-by-default: governance refuses the provider with 403 provider_blocked.",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [] },
-      { type: "route", model: MODEL_B, expectStatus: 400, expectErrorSubstr: "is not permitted for this request", waitSeconds: 0, label: "deny-by-default blocks request (400 routing allowlist)" },
+      { type: "route", model: MODEL_B, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", label: "deny-by-default refuses the request (403 provider_blocked)" },
       { type: "cleanup" },
     ],
   },
@@ -1000,6 +1333,8 @@ const collection = buildCollection({
     "and asserts the route via extra_fields.routing_info (success), the error message (rejection), and " +
     "the stored log. Machine-generated by runners/build-routing-wiring.mjs — do not hand-edit.",
   expandedScenarios: SCENARIOS.map(expandScenario),
+  // OSS locks /api behind the setup token until an admin exists; the e2e profile sets one.
+  setupToken: true,
 });
 
 writeCollection(resolveOutPath(DEFAULT_OUT), collection, SCENARIOS.map((s) => s.id));

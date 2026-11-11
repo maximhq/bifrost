@@ -23,8 +23,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -339,7 +339,7 @@ func (h *ClaudeCodeGatewayHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		}
 		// Bound to the built-in client, so a refresh token issued to any other
 		// client (an MCP client's) is refused here with invalid_grant.
-		h.issuance.refreshGrant(ctx, refreshToken, claudeCodeClientID, "")
+		h.issuance.refreshGrant(ctx, refreshToken, claudeCodeClientID, "", claudeCodeResourceURL(ctx, h.store))
 	default:
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("grant_type %q not supported", grantType))
 	}
@@ -390,7 +390,7 @@ func (h *ClaudeCodeGatewayHandler) handleDeviceCodeGrant(ctx *fasthttp.RequestCt
 		return
 	}
 
-	accessToken, refreshToken, refreshTokenObj, err := h.issuance.issueTokenPair(ctx, req.ID, req.ClientID, req.BfMode, req.BfSub, req.Scope, req.Resource)
+	accessToken, refreshToken, refreshTokenObj, err := h.issuance.issueTokenPair(ctx, req.ID, req.ClientID, req.BfMode, req.BfSub, req.Scope, req.Resource, claudeCodeClientName)
 	if err != nil {
 		return
 	}
@@ -614,7 +614,7 @@ func (h *ClaudeCodeGatewayHandler) authenticate(ctx *fasthttp.RequestCtx) (int, 
 		logger.Error("claude code gateway: failed to load oauth2 signing key: %v", err)
 		return fasthttp.StatusServiceUnavailable, "signing key unavailable"
 	}
-	claims, err := verifyOAuth2JWT(ctx, rawJWT, h.store, signingKey, claudeCodeResourceURL(ctx, h.store))
+	claims, err := verifyBifrostJWT(ctx, rawJWT, h.store, signingKey, claudeCodeResourceURL(ctx, h.store))
 	if err != nil {
 		if errors.Is(err, errOAuth2TokenRejected) {
 			return fasthttp.StatusUnauthorized, "the gateway session is invalid or expired; sign in again with /login"

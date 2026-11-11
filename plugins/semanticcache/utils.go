@@ -12,11 +12,48 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// Cache the same completion usage fields sent to clients, so explicit zeros
+// survive without a separate metadata format. Encoding stays sonic.Marshal as
+// before the fix; only Chat/Text responses with an explicit zero are wrapped.
+func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
+	if res.ChatResponse != nil {
+		if view := res.ChatResponse.WithPreservedUsage(); view != res.ChatResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				ChatResponse any
+			}{res, view})
+		}
+	}
+	if res.TextCompletionResponse != nil {
+		if view := res.TextCompletionResponse.WithPreservedUsage(); view != res.TextCompletionResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				TextCompletionResponse any
+			}{res, view})
+		}
+	}
+	return sonic.Marshal(res)
+}
+
+func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
+	if err := json.Unmarshal(data, res); err != nil {
+		return err
+	}
+	if res.ChatResponse != nil {
+		res.ChatResponse.Usage.PreserveTokenCountZeros(data, "ChatResponse.usage.prompt_tokens", "ChatResponse.usage.completion_tokens")
+	}
+	if res.TextCompletionResponse != nil {
+		res.TextCompletionResponse.Usage.PreserveTokenCountZeros(data, "TextCompletionResponse.usage.prompt_tokens", "TextCompletionResponse.usage.completion_tokens")
+	}
+	return nil
+}
 
 // directCacheNamespace is a fixed namespace UUID for generating deterministic
 // UUID v5 cache IDs via uuid.NewSHA1, used by generateDirectCacheID. The
@@ -299,6 +336,17 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
+	}
+
+	// identity_scope keeps entries with the identity that wrote them (see
+	// resolveIdentityScope). Like request_family it is set after the params, so a
+	// request body field of the same name can never claim another identity's
+	// scope; with scoping disabled such a field is dropped rather than hashed, so
+	// the key stays the plugin's own in both modes.
+	if state != nil && state.IdentityScope != nil {
+		metadata["identity_scope"] = state.IdentityScope
+	} else {
+		delete(metadata, "identity_scope")
 	}
 
 	return metadata, nil
@@ -1051,6 +1099,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

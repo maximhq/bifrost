@@ -1,13 +1,15 @@
 import {
 	MCPToolLogEntry,
 	MCPToolLogFilters,
-	MCPToolLogStats,
+	LatencyHistogramResponse,
+	MCPToolLogStatsResponse,
 	MCPToolLogFilterData,
 	MCPHistogramResponse,
 	MCPCostHistogramResponse,
 	MCPTopToolsResponse,
 	Pagination,
 } from "@/lib/types/logs";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Helper function to build MCP filter params
@@ -39,6 +41,7 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.session_id) params.session_id = filters.session_id;
 	if (filters.agent_correlation_id) params.agent_correlation_id = filters.agent_correlation_id;
+	if (filters.round_trip_id) params.round_trip_id = filters.round_trip_id;
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
 	}
@@ -47,6 +50,8 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;
@@ -90,16 +95,18 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: (result, error, id) => [{ type: "MCPLogs", id }],
 		}),
 
-		// Get MCP tool logs statistics with filters
+		// Get MCP tool logs statistics with filters. comparePrevious opts in to change-vs-previous-period, as
+		// getLogsStats and getRelayLogStats do; callers that omit it get the plain stats and their own cache entry.
 		getMCPLogsStats: builder.query<
-			MCPToolLogStats,
+			MCPToolLogStatsResponse,
 			{
 				filters: MCPToolLogFilters;
+				comparePrevious?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, comparePrevious }) => ({
 				url: "/mcp-logs/stats",
-				params: buildMCPFilterParams(filters),
+				params: { ...buildMCPFilterParams(filters), ...(comparePrevious ? { compare_to_previous: "true" } : {}) },
 			}),
 			providesTags: ["MCPLogs"],
 		}),
@@ -127,6 +134,15 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 		getMCPHistogram: builder.query<MCPHistogramResponse, { filters: MCPToolLogFilters }>({
 			query: ({ filters }) => ({
 				url: "/mcp-logs/histogram",
+				params: buildMCPFilterParams(filters),
+			}),
+			providesTags: ["MCPLogs"],
+		}),
+
+		// Get MCP latency percentiles, in the /logs/histogram/latency shape
+		getMCPLatencyHistogram: builder.query<LatencyHistogramResponse, { filters: MCPToolLogFilters }>({
+			query: ({ filters }) => ({
+				url: "/mcp-logs/histogram/latency",
 				params: buildMCPFilterParams(filters),
 			}),
 			providesTags: ["MCPLogs"],
@@ -175,6 +191,7 @@ export const {
 	useGetMCPHistogramQuery,
 	useLazyGetMCPHistogramQuery,
 	useGetMCPCostHistogramQuery,
+	useGetMCPLatencyHistogramQuery,
 	useGetMCPTopToolsQuery,
 	useLazyGetMCPCostHistogramQuery,
 	useLazyGetMCPTopToolsQuery,

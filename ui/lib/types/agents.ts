@@ -31,6 +31,7 @@ export interface AgentUpstreamAuth {
 }
 
 export interface AgentSecurityScheme {
+	definition?: Record<string, unknown>;
 	name: string;
 	type: "apiKey" | "http" | "oauth2" | "openIdConnect" | "mutualTLS" | string;
 	description?: string;
@@ -68,6 +69,7 @@ export interface InspectedAgentSkill {
 	input_modes?: string[];
 	output_modes?: string[];
 	security_requirements?: AgentSecurityRequirements;
+	security_requirement_details?: Record<string, string[]>[];
 }
 
 export interface InspectedAgentExtension {
@@ -78,6 +80,9 @@ export interface InspectedAgentExtension {
 }
 
 export interface InspectAgentCardResponse {
+	card?: Record<string, unknown>;
+	signatures?: Record<string, unknown>[];
+	security_requirement_details?: Record<string, string[]>[];
 	name?: string;
 	description?: string;
 	version?: string;
@@ -100,14 +105,13 @@ export interface InspectAgentCardResponse {
 export interface AgentRegistrationView {
 	name: string;
 	agent_card_url: string;
-	tenant?: string;
 	enabled: boolean;
 	allow_by_default: boolean;
 	forward_accepted_credential: boolean;
 	forward_accepted_credential_overrides_auth: boolean;
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
-	extension_uris?: string[];
+	credential_origins?: string[];
 	virtual_key_ids?: string[];
 	created_at: string;
 	updated_at: string;
@@ -115,6 +119,7 @@ export interface AgentRegistrationView {
 
 export interface AgentPushConfigView {
 	agent_name: string;
+	tenant?: string;
 	task_id: string;
 	config_id: string;
 	url: string;
@@ -148,7 +153,6 @@ export interface GetAgentsResponse {
 export interface CreateAgentRequest {
 	name: string;
 	agent_card_url: string;
-	tenant?: string;
 	enabled?: boolean;
 	allow_by_default: boolean;
 	forward_accepted_credential: boolean;
@@ -156,7 +160,7 @@ export interface CreateAgentRequest {
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
 	virtual_key_ids?: string[];
-	extension_uris?: string[];
+	credential_origins?: string[];
 }
 
 // PUT is a full replacement. Every field, including empty collections, must be

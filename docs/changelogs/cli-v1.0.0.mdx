@@ -1,0 +1,16 @@
+---
+title: "v1.0.0"
+description: "v1.0.0 changelog - 2026-10-13"
+---
+
+<Update label="Bifrost CLI" description="v1.0.0">
+- feat: authenticated gateway access - Enterprise browser SSO (PKCE, public `bifrost-cli` OAuth client, refresh-token rotation) alongside management keys, virtual keys and dashboard sessions, with secrets stored in the OS keyring; the transport blocks cross-origin redirects, HTTPS downgrades and plaintext gateway URLs outside loopback hosts
+- feat: OpenAPI operation catalog generated from the bundled spec, with search and tag lookup, plus table, JSON, YAML and raw output; human-readable output strips terminal control characters
+- feat: management and inference commands - `chat`, inference, raw HTTP requests, contexts, `auth`, `usage`, shell completion, and reversible `configure`/`unconfigure` for native agents; destructive operations require `--yes`
+- feat: authenticated launches for Claude Code, Codex CLI, Gemini CLI and OpenCode using an SSO agent token or virtual key, including Claude's refresh-aware `apiKeyHelper`, an isolated Codex home, and Windows-safe PowerShell launch rendering
+- feat: the interactive launcher shows the active auth mode, discovers models with SSO credentials on the trusted profile URL, withholds tokens when the Base URL is edited away from it, and selects assigned virtual keys without downloading their secrets
+- feat: `--disable-content-logging` flag on virtual key generation
+- chore: upgraded Go to 1.27.0 and refreshed sonic, x/term and x/sys
+
+</Update>
+

@@ -3,8 +3,10 @@ package logging
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -176,8 +178,26 @@ type LogManager interface {
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
+	// GetAvailableMCPUsers returns the users ID-Name pairs from MCP tool logs
+	GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPTeams returns the teams ID-Name pairs from MCP tool logs
+	GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPCustomers returns the customers ID-Name pairs from MCP tool logs
+	GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPBusinessUnits returns the business units ID-Name pairs from MCP tool logs
+	GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableMCPProjects returns the projects ID-Name pairs from MCP tool logs
+	GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
 	// GetMCPHistogram returns time-bucketed MCP tool call volume
 	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+	GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
 
 	// GetMCPCostHistogram returns time-bucketed MCP cost data
 	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
@@ -201,6 +221,16 @@ type PluginLogManager struct {
 
 func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
 	return p.plugin.GetLog(ctx, id)
+}
+
+// LogStore returns the store the plugin writes to, for readers that need a
+// surface the manager does not adapt, such as Warp's topic tables. Nil when
+// the plugin has none.
+func (p *PluginLogManager) LogStore() logstore.LogStore {
+	if p == nil || p.plugin == nil {
+		return nil
+	}
+	return p.plugin.store
 }
 
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -322,6 +352,12 @@ func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
 
+// GetDroppedDuringMaintenance returns how many of the dropped requests were
+// dropped while the writer was paused for another node's logstore migration.
+func (p *PluginLogManager) GetDroppedDuringMaintenance(ctx context.Context) int64 {
+	return p.plugin.droppedDuringMaintenance.Load()
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableModels(ctx, limit, query)
@@ -421,7 +457,13 @@ func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLog(ctx, id)
+	// A partial delete removed the log, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, []string{id})
+	return err
 }
 
 // DeleteLogs deletes multiple logs from the log store
@@ -429,7 +471,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLogs(ctx, ids)
+	// A partial delete removed the logs, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, ids)
+	return err
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
@@ -525,12 +573,55 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx, limit, query)
 }
 
+func (p *PluginLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPUsers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPTeams(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPCustomers(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}, nil
+	}
+	return p.plugin.GetAvailableMCPProjects(ctx, limit, query)
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume
 func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
 	if p.plugin == nil || p.plugin.store == nil {
 		return &logstore.MCPHistogramResult{}, nil
 	}
 	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls
+func (p *PluginLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.LatencyHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data
@@ -629,6 +720,27 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 	return lastErr
 }
 
+// textRequestParamsAndTools returns the logged params and tools of a text completion, chat or
+// Responses request: the request's own params, plus its tools in chat shape (Responses tools are
+// converted with ToChatTool). It returns nil for every other request kind. The request for the
+// type must be set with non-nil Params, as every converter guarantees. PreLLMHook and passthrough log
+// parsing both use it, so a parsed passthrough row records the same fields as a typed request.
+func textRequestParamsAndTools(request *schemas.BifrostRequest) (interface{}, []schemas.ChatTool) {
+	switch request.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return request.TextCompletionRequest.Params, nil
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return request.ChatRequest.Params, request.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		var tools []schemas.ChatTool
+		for _, tool := range request.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+		return request.ResponsesRequest.Params, tools
+	}
+	return nil, nil
+}
+
 // extractInputHistory extracts input history from request input
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
@@ -664,20 +776,7 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.DecisionRequest != nil {
-		var state string
-		if s, ok := request.DecisionRequest.State.(string); ok {
-			state = s
-		} else if raw, err := sonic.Marshal(request.DecisionRequest.State); err == nil {
-			state = string(raw)
-		}
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &state,
-				},
-			},
-		}, []schemas.ResponsesMessage{}
+		return decisionInputLog(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
 	}
 	if request.RerankRequest != nil {
 		query := request.RerankRequest.Query
@@ -729,6 +828,112 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 		stripped[i] = schemas.EmbeddingInputItem{Content: parts, Params: item.Params}
 	}
 	return stripped
+}
+
+// decisionInputLog renders a decision input as chat messages for the log.
+// Text and a structured input (as JSON, the way a state was always logged)
+// are one user message; messages are logged the way chat requests are, so the
+// logs UI shows their text and inline images the same way. A tool call or
+// output is logged as its JSON (see decisionToolItemLog). A part of a type the
+// schema does not model is kept as its type name, and a message without a
+// role is the user's.
+func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
+	if input.Messages == nil {
+		var text string
+		if input.Text != nil {
+			text = *input.Text
+		} else if raw, err := sonic.Marshal(input.Structured); err == nil {
+			text = string(raw)
+		}
+		return []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &text},
+		}}
+	}
+	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage {
+			messages = append(messages, decisionToolItemLog(message))
+			continue
+		}
+		role := schemas.ChatMessageRole(message.Role)
+		if role == "" {
+			role = schemas.ChatMessageRoleUser
+		}
+		if message.Content.Text != nil {
+			messages = append(messages, schemas.ChatMessage{
+				Role:    role,
+				Content: &schemas.ChatMessageContent{ContentStr: message.Content.Text},
+			})
+			continue
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			switch {
+			case (part.Type == schemas.DecisionInputPartTypeText || part.Type == schemas.DecisionInputPartTypeOutputText) && part.Text != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(part.Text))})
+			case part.Type == schemas.DecisionInputPartTypeRefusal && part.Refusal != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Refusal})
+			case part.Type == schemas.DecisionInputPartTypeJSON && part.Data.Structured != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(&schemas.DecisionText{Structured: part.Data.Structured}))})
+			case part.IsAsset() && part.Data.File != nil:
+				// An image sent by reference carries its file, not a URL: log it as an
+				// image the same way. Its ID is already in the text that references it.
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data.File)},
+				})
+			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL, Detail: part.Detail},
+				})
+			default:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
+			}
+		}
+		messages = append(messages, schemas.ChatMessage{
+			Role:    role,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		})
+	}
+	return messages
+}
+
+// decisionToolItemLog logs a tool call as the assistant's message and a tool
+// output as a tool message answering its call, each with the item's JSON as
+// its text, so the call ID, name, input, and output are all kept.
+func decisionToolItemLog(item schemas.DecisionInputMessage) schemas.ChatMessage {
+	raw, _ := sonic.Marshal(item)
+	text := string(raw)
+	if *item.Type == schemas.DecisionInputItemTypeFunctionCallOutput || *item.Type == schemas.DecisionInputItemTypeCustomToolCallOutput {
+		return schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentStr: &text},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: item.CallID},
+		}
+	}
+	return schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}
+}
+
+// decisionAssetDataURL renders an asset's file as a data URL the logs UI shows as
+// an image, with the media type read from the bytes.
+func decisionAssetDataURL(data []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// decisionPartText renders a text part for the log: its string, or a structured
+// value as JSON, the way a structured input is logged.
+func decisionPartText(text *schemas.DecisionText) string {
+	if text.Text != nil {
+		return *text.Text
+	}
+	raw, err := sonic.Marshal(text.Structured)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // embeddingMediaDataSize totals the inline media bytes across every item.
@@ -890,6 +1095,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		PassthroughOutput:     result.PassthroughOutput,
 		FinishReason:          result.FinishReason,
 		RawResponse:           result.RawResponse,
+		RawResponseFormat:     result.RawResponseFormat,
 	}
 
 	// Handle tool calls if present
@@ -962,6 +1168,38 @@ func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.Bif
 		}
 		if metadata == nil {
 			metadata = make(map[string]interface{}, len(attempt))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
+// virtualKeyMetadataContextKey is the context key under which the governance plugin publishes the
+// resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey). This module cannot
+// import the governance plugin, and the key is kept out of core so both plugins build against
+// published core; the string must stay identical to governance's.
+const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
+// mergeVirtualKeyMetadata snapshots the resolved virtual key's metadata onto a log row's metadata,
+// so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
+// It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
+// on a key collision the virtual key's value wins: attribution an operator set on the key cannot be
+// spoofed by a caller sending a header of the same name. Keys under schemas.LoadBalancerMetadataPrefix
+// are skipped, as for headers; config validation already refuses them.
+func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	vkMetadata, ok := ctx.Value(virtualKeyMetadataContextKey).(map[string]string)
+	if !ok || len(vkMetadata) == 0 {
+		return metadata
+	}
+	for key, value := range vkMetadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(vkMetadata))
 		}
 		metadata[key] = value
 	}

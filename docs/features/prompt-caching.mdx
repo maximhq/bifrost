@@ -73,10 +73,10 @@ the former.
 |----------|---------------------------|-------------|-----|
 | Anthropic | All Claude models | `cache_control: {"type": "ephemeral"}` on the content block | `5m` default, `1h` with `ttl` |
 | Vertex AI | Claude models only. Gemini caches through a server-side `cachedContent` resource, so injection is a no-op there | `cache_control` | `5m` default, `1h` with `ttl` |
-| Bedrock | Claude and Amazon Nova on the Converse API. gpt-5.6 ids that resolve to the Mantle surface, or that a key with `use_openai_endpoints` sends to `/openai/v1`, follow the OpenAI row. A gpt-5.6 id served by Converse (cross-region ids such as `global.openai.gpt-5.6-luna` on a default key) gets Bedrock's implicit, best-effort prefix caching with no marker at all. Mid-conversation `role: "system"` messages are inlined in place for every model family so the cached prefix stays stable across turns | `cachePoint` block | Claude only. Nova accepts only the default and returns 400 for `1h` |
-| Bedrock Mantle | Claude, Amazon Nova, and the gpt-5.6 family | `cachePoint` for Claude and Nova, `prompt_cache_breakpoint` for gpt-5.6 | Same as Bedrock |
-| OpenAI | gpt-5.6 family on the Responses API. Earlier models cache implicitly, and Chat Completions strips the marker for every model | `prompt_cache_breakpoint` on the block plus `prompt_cache_options.mode: "explicit"` on the request | Ignored |
-| Azure OpenAI | gpt-5.6 family on the Responses API | Same as OpenAI | Ignored |
+| Bedrock | Claude and Amazon Nova on the Converse API. gpt-5.6 ids that resolve to the Mantle surface, or that a key with `use_openai_endpoints` sends to `/openai/v1`, take `prompt_cache_breakpoint` but follow the Bedrock Mantle row for block-level TTLs: Mantle rejects `prompt_cache_breakpoint.ttl`, so Bifrost drops a caller-sent `ttl`. A gpt-5.6 id served by Converse (cross-region ids such as `global.openai.gpt-5.6-luna` on a default key) gets Bedrock's implicit, best-effort prefix caching with no marker at all. Mid-conversation `role: "system"` messages are inlined in place for every model family so the cached prefix stays stable across turns | `cachePoint` block | Claude only. Nova accepts only the default and returns 400 for `1h` |
+| Bedrock Mantle | Claude, Amazon Nova, and the gpt-5.6 family | `cachePoint` for Claude and Nova, `prompt_cache_breakpoint` for gpt-5.6 | Same as Bedrock. On gpt-5.6 and later only `30m` exists: Mantle rejects `prompt_cache_breakpoint.ttl`, so Bifrost drops a caller-sent `ttl` |
+| OpenAI | gpt-5.6 family and later, on the Responses API and Chat Completions. Earlier models cache implicitly and the marker is stripped | `prompt_cache_breakpoint` on the block. The request stays in the default implicit mode, which honours the breakpoint and still looks back over earlier message endings. Send `prompt_cache_options.mode: "explicit"` yourself to opt into explicit-only caching | `30m` default. On the Responses API, `"12h"` is forwarded both per block (`prompt_cache_breakpoint.ttl`) and request-wide (`prompt_cache_options.ttl`). Chat Completions rejects the block field and accepts only `"30m"` request-wide, so Bifrost drops anything else there and the write is 30m. A translated `cache_control` marker is not promoted to `12h` |
+| Azure OpenAI | gpt-5.6 family and later, on the Responses API and Chat Completions | Same as OpenAI | Same as OpenAI |
 | OpenRouter | Claude models | `cache_control` (Chat) or `prompt_cache_breakpoint` (Responses), converted upstream | `5m` default, `1h` with `ttl` |
 | Custom providers | Follow the base provider they wrap | Same as the base provider | Same as the base provider |
 | Gemini, DeepSeek, Groq, xAI, Mistral, and other implicit-caching providers | None | Not applicable, injection is a no-op | Not applicable |
@@ -404,6 +404,26 @@ On Chat Completions, Bifrost surfaces the provider's cache counters under
 
 On the Responses API the same counters appear under `usage.input_tokens_details`.
 
+On OpenAI's gpt-5.6 family and later, the Responses API also splits writes by
+lifetime. Bifrost records the split under `cached_write_token_details` and passes OpenAI's
+`cache_write_tokens_details` back whenever either bucket is non-zero:
+
+```json
+{
+  "usage": {
+    "input_tokens_details": {
+      "cached_tokens": 4000,
+      "cache_write_tokens": 7000,
+      "cache_write_tokens_details": { "ttl_30m_tokens": 3000, "ttl_12h_tokens": 4000 },
+      "cached_write_token_details": {
+        "cached_write_tokens_5m": 0, "cached_write_tokens_1h": 0,
+        "cached_write_tokens_30m": 3000, "cached_write_tokens_12h": 4000
+      }
+    }
+  }
+}
+```
+
 Expect the first request in a session to report `cached_write_tokens` and the following
 requests to report `cached_read_tokens`. If every turn reports writes and no reads, the
 cached prefix is changing between turns: check for a timestamp in the system prompt,
@@ -420,10 +440,19 @@ inspect `extra_fields.raw_request`. See
 Prompt caching is cheaper only when the cached prefix is read more often than it is
 written. Cache reads are billed well below the fresh-input rate, but the turn that
 writes the cache costs more than fresh input: on Anthropic, 1.25x for the default 5
-minute TTL and 2x for the 1 hour TTL.
+minute TTL and 2x for the 1 hour TTL; on OpenAI gpt-5.6 and later, 1.25x for the
+default 30 minute TTL and 2.5x for the 12 hour TTL. Bifrost bills Anthropic 1h writes at the
+model's `cache_creation_input_token_cost_above_1hr` rate (with its `_fast`, `_above_200k_tokens` and
+`_above_100k_tokens` variants), and OpenAI 12h writes at `cache_creation_input_token_cost_above_12hr`
+(with its `_priority`, `_flex`, `_ultrafast` and `_above_272k_tokens` variants) when the request's
+service tier or context length calls for them. If the matching long-TTL rate is not set, Bifrost falls
+back to the ordinary cache-creation rate and understates the cost, so set it for every model that takes
+1h or 12h writes. The base rate alone is not enough: a missing variant falls back to the base rate, so
+also set the variants for the service tiers you use and for requests above the context tiers.
 
 - **Agent loops** replay the same prefix every turn, often dozens of times within a minute. This is the case the feature is built for and the savings are large.
 - **One-shot requests** never read what they wrote. Injecting a marker there costs 25% to 100% more on the marked prefix for nothing in return. Leave `auto_inject` off on providers that only serve one-shot traffic, or use the header to opt those requests out.
+- **A 12 hour TTL** (OpenAI Responses API, `prompt_cache_breakpoint.ttl: "12h"`) keeps shared instructions and tools warm across a working day for persistent agents. Mark only the stable prefix with it and leave the conversation tail on the 30 minute default, since a 12h write costs twice a 30m one.
 - **A 1 hour TTL** survives long pauses between turns but doubles the write cost. Use it when turns are minutes apart, such as a human-in-the-loop workflow, and stay on the default when turns are seconds apart.
 
 ---
@@ -434,4 +463,4 @@ minute TTL and 2x for the 1 hour TTL.
 - **[Request Options](/providers/request-options)** - Every per-request header and context key, including the prompt-cache override.
 - **[Anthropic](/providers/supported-providers/anthropic#cache-control)** - Cache-control semantics for Claude, which injected markers follow.
 - **[Bedrock](/providers/supported-providers/bedrock#cache-control)** - How markers become `cachePoint` blocks on Bedrock.
-- **[OpenAI](/providers/supported-providers/openai)** - Explicit cache mode on the gpt-5.6 family.
+- **[OpenAI](/providers/supported-providers/openai)** - `prompt_cache_breakpoint` on the gpt-5.6 family.

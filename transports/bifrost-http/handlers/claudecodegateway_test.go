@@ -14,7 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -210,7 +210,7 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	// The token is bound to the /claude-code audience: valid here, refused on /mcp.
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
-	claims, err := verifyOAuth2JWT(bgCtx(), accessToken, cfg, signingKey, testClaudeCodeResource)
+	claims, err := verifyBifrostJWT(bgCtx(), accessToken, cfg, signingKey, testClaudeCodeResource)
 	require.NoError(t, err)
 	assert.Equal(t, string(schemas.MCPAuthModeVK), claims.BfMode)
 	assert.Equal(t, vk.ID, claims.Subject)
@@ -241,9 +241,16 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, refresh.Response.StatusCode(), string(refresh.Response.Body()))
 	rotated, _ := jsonBody(t, refresh)["refresh_token"].(string)
 	require.NotEmpty(t, rotated)
-	refreshedClaims, err := verifyOAuth2JWT(bgCtx(), jsonBody(t, refresh)["access_token"].(string), cfg, signingKey, testClaudeCodeResource)
+	refreshedClaims, err := verifyBifrostJWT(bgCtx(), jsonBody(t, refresh)["access_token"].(string), cfg, signingKey, testClaudeCodeResource)
 	require.NoError(t, err)
 	assert.Equal(t, vk.ID, refreshedClaims.Subject)
+
+	// The grant is bound to /claude-code, so the /oauth2/token refresh path (the
+	// handler it dispatches to when MCP OAuth is on) refuses it, even when the
+	// caller names the built-in client.
+	viaMCP := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rotated}, "client_id": {claudeCodeClientID}}.Encode())
+	h.issuance.handleTokenRefresh(viaMCP)
+	assert.Equal(t, "invalid_grant", oauthErrorCode(t, viaMCP))
 
 	// Sign-out revokes the grant, so the rotated refresh token stops working.
 	revoke := formPostCtx(url.Values{"token": {rotated}, "token_type_hint": {"refresh_token"}}.Encode())

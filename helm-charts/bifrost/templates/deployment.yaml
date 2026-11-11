@@ -55,9 +55,9 @@ spec:
       {{- if .Values.terminationGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- end }}
-      {{- with .Values.initContainers }}
+      {{- with include "bifrost.initContainers" . }}
       initContainers:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -205,6 +205,13 @@ spec:
                   name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
                   key: {{ .Values.storage.logsStore.objectStorage.credentialsJsonKey | default "credentials-json" }}
             {{- end }}
+            {{- if eq .Values.storage.logsStore.objectStorage.type "azure" }}
+            - name: BIFROST_OBJECT_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.connectionStringKey | default "connection-string" }}
+            {{- end }}
             {{- end }}
             {{- /* Maxim API key from existing secret */ -}}
             {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
@@ -276,6 +283,10 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -294,6 +305,9 @@ spec:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
@@ -317,6 +331,10 @@ spec:
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- include "bifrost.topologySpreadConstraints" . | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:

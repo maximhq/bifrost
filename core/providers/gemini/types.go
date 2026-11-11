@@ -103,6 +103,8 @@ const (
 	FinishReasonMissingThoughtSignature FinishReason = "MISSING_THOUGHT_SIGNATURE"
 	// Finished due to malformed response.
 	FinishReasonMalformedResponse FinishReason = "MALFORMED_RESPONSE"
+	// A long-decode hop hit its per-call cap; resend the request with the candidate's continuationToken.
+	FinishReasonContinuation FinishReason = "CONTINUATION"
 )
 
 // googleRetryInfoType is the @type of the error detail Google APIs use to say how long to
@@ -120,6 +122,8 @@ type GeminiGenerationRequest struct {
 	ToolConfig        *ToolConfig              `json:"toolConfig,omitempty"`
 	Labels            map[string]string        `json:"labels,omitempty"`
 	CachedContent     string                   `json:"cachedContent,omitempty"`
+	SessionID         *GeminiSessionID         `json:"session_id,omitempty"` // snake_case as Vertex documents it; Vertex routes the same ID to one replica
+	ContinuationToken string                   `json:"continuationToken,omitempty"`
 	// Optional. The service tier to use for the request. For example, ServiceTier.FLEX.
 	ServiceTier       ServiceTier `json:"serviceTier,omitempty"`
 	Stream            bool        `json:"-"` // Internal field to track streaming requests
@@ -161,6 +165,7 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 		ToolConfigSnake        *ToolConfig       `json:"tool_config,omitempty"`
 		CachedContentSnake     string            `json:"cached_content,omitempty"`
 		ServiceTierSnake       ServiceTier       `json:"service_tier,omitempty"`
+		ContinuationTokenSnake string            `json:"continuation_token,omitempty"`
 	}{
 		Alias: (*Alias)(g),
 	}
@@ -192,6 +197,9 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 	if !hasJSONKey(data, "serviceTier") && aux.ServiceTierSnake != "" {
 		g.ServiceTier = aux.ServiceTierSnake
 	}
+	if !hasJSONKey(data, "continuationToken") && aux.ContinuationTokenSnake != "" {
+		g.ContinuationToken = aux.ContinuationTokenSnake
+	}
 
 	return nil
 }
@@ -199,6 +207,35 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (r *GeminiGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GeminiSessionID is the request's session ID: a string on Vertex AI, an int64 on the Gemini API.
+type GeminiSessionID struct {
+	Value   string
+	Numeric bool // received as a JSON number; marshaled back as one
+}
+
+// MarshalJSON writes the session ID in the form it was received.
+func (s GeminiSessionID) MarshalJSON() ([]byte, error) {
+	if s.Numeric {
+		return []byte(s.Value), nil
+	}
+	return sonic.Marshal(s.Value)
+}
+
+// UnmarshalJSON accepts a string or a number.
+func (s *GeminiSessionID) UnmarshalJSON(data []byte) error {
+	switch v := gjson.ParseBytes(data); v.Type {
+	case gjson.String:
+		*s = GeminiSessionID{Value: v.Str}
+	case gjson.Number:
+		*s = GeminiSessionID{Value: v.Raw, Numeric: true}
+	case gjson.Null:
+		*s = GeminiSessionID{}
+	default:
+		return fmt.Errorf("session_id must be a string or a number, got %s", v.Raw)
+	}
+	return nil
 }
 
 // ImagenInstance represents a single instance in an Imagen request
@@ -601,6 +638,8 @@ type DynamicRetrievalConfig struct {
 type GoogleSearchRetrieval struct {
 	// Optional. Specifies the dynamic retrieval configuration for the given source.
 	DynamicRetrievalConfig *DynamicRetrievalConfig `json:"dynamicRetrievalConfig,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // EnterpriseWebSearch is a tool to search public web data, powered by Vertex AI Search and Sec4 compliance.
@@ -608,6 +647,8 @@ type EnterpriseWebSearch struct {
 	// Optional. List of domains to be excluded from the search results. The default limit
 	// is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // APIKeyConfig represents configuration for authentication with API key.
@@ -701,15 +742,21 @@ const (
 type GoogleMaps struct {
 	// Optional. Auth config for the Google Maps tool.
 	AuthConfig *AuthConfig `json:"authConfig,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // URLContext is a tool to support URL context retrieval.
-type URLContext struct{}
+type URLContext struct {
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
+}
 
 // ToolComputerUse is a tool to support computer use.
 type ToolComputerUse struct {
 	// Optional. Required. The environment being operated.
 	Environment Environment `json:"environment,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // Environment represents the environment being operated.
@@ -902,6 +949,126 @@ type Retrieval struct {
 	// Set to use data source powered by Vertex RAG store. User data is uploaded via the
 	// VertexRAGDataService.
 	VertexRAGStore *VertexRAGStore `json:"vertexRagStore,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
+}
+
+// nativeToolJSON copies the bytes a Gemini-native tool (retrieval, googleSearchRetrieval,
+// enterpriseWebSearch, googleMaps, urlContext, computerUse) arrived with. These tools have no
+// neutral Bifrost form and are forwarded to Google as-is, so their MarshalJSON emits these
+// bytes verbatim: a sub-field the typed struct does not model (a newer Google option, or an
+// invalid one such as retrieval.dynamicRetrievalConfig) then reaches the provider and Google
+// judges it, instead of being silently dropped. The typed fields stay decoded for Bifrost's
+// own reads. A value built in code has no raw bytes and marshals from its fields. Only
+// requests that carry such a tool pay the copy. Because the bytes win, code that edits a
+// typed field of a decoded tool must clear raw (or build a fresh value) for the edit to
+// reach the wire; this holds for every raw-backed tool type in this file.
+func nativeToolJSON(data []byte) json.RawMessage {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	return append(json.RawMessage(nil), data...)
+}
+
+func (r *Retrieval) UnmarshalJSON(data []byte) error {
+	type alias Retrieval
+	if err := sonic.Unmarshal(data, (*alias)(r)); err != nil {
+		return err
+	}
+	r.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (r Retrieval) MarshalJSON() ([]byte, error) {
+	if len(r.raw) > 0 {
+		return r.raw, nil
+	}
+	type alias Retrieval
+	return providerUtils.MarshalSorted(alias(r))
+}
+
+func (g *GoogleSearchRetrieval) UnmarshalJSON(data []byte) error {
+	type alias GoogleSearchRetrieval
+	if err := sonic.Unmarshal(data, (*alias)(g)); err != nil {
+		return err
+	}
+	g.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (g GoogleSearchRetrieval) MarshalJSON() ([]byte, error) {
+	if len(g.raw) > 0 {
+		return g.raw, nil
+	}
+	type alias GoogleSearchRetrieval
+	return providerUtils.MarshalSorted(alias(g))
+}
+
+func (e *EnterpriseWebSearch) UnmarshalJSON(data []byte) error {
+	type alias EnterpriseWebSearch
+	if err := sonic.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+	e.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (e EnterpriseWebSearch) MarshalJSON() ([]byte, error) {
+	if len(e.raw) > 0 {
+		return e.raw, nil
+	}
+	type alias EnterpriseWebSearch
+	return providerUtils.MarshalSorted(alias(e))
+}
+
+func (g *GoogleMaps) UnmarshalJSON(data []byte) error {
+	type alias GoogleMaps
+	if err := sonic.Unmarshal(data, (*alias)(g)); err != nil {
+		return err
+	}
+	g.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (g GoogleMaps) MarshalJSON() ([]byte, error) {
+	if len(g.raw) > 0 {
+		return g.raw, nil
+	}
+	type alias GoogleMaps
+	return providerUtils.MarshalSorted(alias(g))
+}
+
+func (u *URLContext) UnmarshalJSON(data []byte) error {
+	type alias URLContext
+	if err := sonic.Unmarshal(data, (*alias)(u)); err != nil {
+		return err
+	}
+	u.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (u URLContext) MarshalJSON() ([]byte, error) {
+	if len(u.raw) > 0 {
+		return u.raw, nil
+	}
+	return []byte("{}"), nil
+}
+
+func (c *ToolComputerUse) UnmarshalJSON(data []byte) error {
+	type alias ToolComputerUse
+	if err := sonic.Unmarshal(data, (*alias)(c)); err != nil {
+		return err
+	}
+	c.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (c ToolComputerUse) MarshalJSON() ([]byte, error) {
+	if len(c.raw) > 0 {
+		return c.raw, nil
+	}
+	type alias ToolComputerUse
+	return providerUtils.MarshalSorted(alias(c))
 }
 
 // ToolCodeExecution is a tool that executes code generated by the model, and automatically returns the result
@@ -1208,6 +1375,14 @@ type GeminiImageConfig struct {
 	// ImageSize controls the resolution of generated images.
 	// Valid values: "1k", "2k", "4k"
 	ImageSize string `json:"imageSize,omitempty"`
+	// ImageOutputOptions controls the encoding of generated images.
+	ImageOutputOptions *GeminiImageOutputOptions `json:"imageOutputOptions,omitempty"`
+}
+
+// GeminiImageOutputOptions controls the encoding of generated images (Vertex AI only).
+type GeminiImageOutputOptions struct {
+	MimeType           string `json:"mimeType,omitempty"`           // "image/png" or "image/jpeg"
+	CompressionQuality *int   `json:"compressionQuality,omitempty"` // 0-100, JPEG only
 }
 
 // ModelSelectionConfig represents configuration for model selection.
@@ -1587,20 +1762,26 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
-	Content              *Content               `json:"content,omitempty"`
-	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
-	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
-	TaskType             *string                `json:"taskType,omitempty"`
-	Title                *string                `json:"title,omitempty"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	Fallbacks            []string               `json:"fallbacks,omitempty"`
-	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
+	Content              *Content                  `json:"content,omitempty"`
+	EmbedContentConfig   *GeminiEmbedContentConfig `json:"embedContentConfig,omitempty"`
+	TaskType             *string                   `json:"taskType,omitempty"`
+	Title                *string                   `json:"title,omitempty"`
+	OutputDimensionality *int                      `json:"outputDimensionality,omitempty"`
+	Model                string                    `json:"model,omitempty"`
+	Fallbacks            []string                  `json:"fallbacks,omitempty"`
+	ExtraParams          map[string]interface{}    `json:"-"` // Optional: Extra parameters
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (r *GeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GeminiEmbedContentConfig carries the embedding options Gemini and Vertex accept only
+// under embedContentConfig, never at the top level of a request.
+type GeminiEmbedContentConfig struct {
+	DocumentOCR          *bool `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool `json:"audioTrackExtraction,omitempty"`
 }
 
 // Content contains the multi-part content of a message.
@@ -2532,6 +2713,8 @@ type Candidate struct {
 	// Optional. The reason why the model stopped generating tokens.
 	// If empty, the model has not stopped generating the tokens.
 	FinishReason FinishReason `json:"finishReason,omitempty"`
+	// Optional. Long decode: state token to resend for the next hop while finishReason is CONTINUATION.
+	ContinuationToken string `json:"continuationToken,omitempty"`
 	// Optional. Metadata related to URL context retrieval tool.
 	URLContextMetadata *URLContextMetadata `json:"urlContextMetadata,omitempty"`
 	// Output only. Average log probability score of the candidate.
@@ -3503,4 +3686,158 @@ type GeminiFileUploadHandlerReq struct {
 	// Step 2 fields — populated when upload_id is present in query
 	UploadID string `json:"-"`
 	FileData []byte `json:"-"`
+}
+
+// ==================== LIVE API (BidiGenerateContent) TYPES ====================
+
+// GeminiLiveClientMessage is one frame sent to the Live API. Exactly one field is set.
+type GeminiLiveClientMessage struct {
+	Setup         *GeminiLiveSetup         `json:"setup,omitempty"`
+	ClientContent *GeminiLiveClientContent `json:"clientContent,omitempty"`
+	RealtimeInput *GeminiLiveRealtimeInput `json:"realtimeInput,omitempty"`
+	ToolResponse  *GeminiLiveToolResponse  `json:"toolResponse,omitempty"`
+}
+
+// GeminiLiveSetup is the first and only configuration frame of a Live session.
+type GeminiLiveSetup struct {
+	Model                    string                         `json:"model"`
+	GenerationConfig         *GeminiLiveGenerationConfig    `json:"generationConfig,omitempty"`
+	SystemInstruction        *Content                       `json:"systemInstruction,omitempty"`
+	Tools                    []Tool                         `json:"tools,omitempty"`
+	RealtimeInputConfig      *GeminiLiveRealtimeInputConfig `json:"realtimeInputConfig,omitempty"`
+	InputAudioTranscription  *GeminiLiveAudioTranscription  `json:"inputAudioTranscription,omitempty"`
+	OutputAudioTranscription *GeminiLiveAudioTranscription  `json:"outputAudioTranscription,omitempty"`
+}
+
+// GeminiLiveGenerationConfig holds the generation settings a Live session accepts. The Live API
+// rejects names it does not know, so this deliberately carries only what it supports.
+type GeminiLiveGenerationConfig struct {
+	ResponseModalities []string                        `json:"responseModalities,omitempty"`
+	Temperature        *float64                        `json:"temperature,omitempty"`
+	MaxOutputTokens    *int                            `json:"maxOutputTokens,omitempty"`
+	SpeechConfig       *SpeechConfig                   `json:"speechConfig,omitempty"`
+	ThinkingConfig     *GenerationConfigThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// GeminiLiveRealtimeInputConfig configures how the session detects and reacts to speech.
+type GeminiLiveRealtimeInputConfig struct {
+	AutomaticActivityDetection *GeminiLiveActivityDetection `json:"automaticActivityDetection,omitempty"`
+	ActivityHandling           string                       `json:"activityHandling,omitempty"`
+}
+
+// GeminiLiveActivityDetection configures server-side voice activity detection. Disabled hands
+// turn boundaries to the client through activityStart and activityEnd.
+type GeminiLiveActivityDetection struct {
+	Disabled          bool `json:"disabled,omitempty"`
+	PrefixPaddingMs   *int `json:"prefixPaddingMs,omitempty"`
+	SilenceDurationMs *int `json:"silenceDurationMs,omitempty"`
+}
+
+// GeminiLiveAudioTranscription turns on transcription of one audio direction. It has no options
+// here; its presence is the switch.
+type GeminiLiveAudioTranscription struct{}
+
+// GeminiLiveClientContent adds turns to the conversation. TurnComplete asks the model to answer.
+type GeminiLiveClientContent struct {
+	Turns        []*Content `json:"turns,omitempty"`
+	TurnComplete bool       `json:"turnComplete,omitempty"`
+}
+
+// GeminiLiveRealtimeInput streams audio to the model. With automatic detection on, AudioStreamEnd
+// flushes the audio; with it off, ActivityStart and ActivityEnd bracket each utterance.
+type GeminiLiveRealtimeInput struct {
+	Audio          *GeminiLiveBlob     `json:"audio,omitempty"`
+	AudioStreamEnd bool                `json:"audioStreamEnd,omitempty"`
+	ActivityStart  *GeminiLiveActivity `json:"activityStart,omitempty"`
+	ActivityEnd    *GeminiLiveActivity `json:"activityEnd,omitempty"`
+}
+
+// GeminiLiveActivity marks the start or end of a client-detected utterance. It has no fields.
+type GeminiLiveActivity struct{}
+
+// GeminiLiveToolResponse answers function calls from one toolCall frame. Answer every pending call
+// in one frame: a partial answer makes the model ask again for the rest under new ids.
+type GeminiLiveToolResponse struct {
+	FunctionResponses []*FunctionResponse `json:"functionResponses"`
+}
+
+// GeminiLiveBlob is base64 media with its MIME type. Unlike Blob it is never normalized, so audio
+// chunks pass through unchanged.
+type GeminiLiveBlob struct {
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// GeminiLiveServerMessage is one frame received from the Live API. A frame can carry several of
+// these at once, such as serverContent with usageMetadata.
+type GeminiLiveServerMessage struct {
+	SetupComplete        *GeminiLiveSetupComplete        `json:"setupComplete,omitempty"`
+	ServerContent        *GeminiLiveServerContent        `json:"serverContent,omitempty"`
+	ToolCall             *GeminiLiveToolCall             `json:"toolCall,omitempty"`
+	ToolCallCancellation *GeminiLiveToolCallCancellation `json:"toolCallCancellation,omitempty"`
+	VoiceActivity        *GeminiLiveVoiceActivity        `json:"voiceActivity,omitempty"`
+	UsageMetadata        *GeminiLiveUsageMetadata        `json:"usageMetadata,omitempty"`
+}
+
+// GeminiLiveSetupComplete acknowledges the setup frame. It has no fields.
+type GeminiLiveSetupComplete struct{}
+
+// GeminiLiveServerContent carries the model's output and the turn boundaries around it.
+// InteractionStatus is IN_PROGRESS while an extended-thinking model still has an answer to give
+// after a TurnComplete, and IDLE once it is done.
+type GeminiLiveServerContent struct {
+	ModelTurn           *GeminiLiveModelTurn  `json:"modelTurn,omitempty"`
+	InputTranscription  *GeminiLiveTranscript `json:"inputTranscription,omitempty"`
+	OutputTranscription *GeminiLiveTranscript `json:"outputTranscription,omitempty"`
+	GenerationComplete  bool                  `json:"generationComplete,omitempty"`
+	TurnComplete        bool                  `json:"turnComplete,omitempty"`
+	Interrupted         bool                  `json:"interrupted,omitempty"`
+	InteractionStatus   string                `json:"interactionStatus,omitempty"`
+}
+
+// GeminiLiveModelTurn holds the model's output parts for one chunk of a turn.
+type GeminiLiveModelTurn struct {
+	Parts []*GeminiLiveModelPart `json:"parts,omitempty"`
+}
+
+// GeminiLiveModelPart is text or audio from the model. Thought parts are the model's reasoning.
+type GeminiLiveModelPart struct {
+	Text       string          `json:"text,omitempty"`
+	Thought    bool            `json:"thought,omitempty"`
+	InlineData *GeminiLiveBlob `json:"inlineData,omitempty"`
+}
+
+// GeminiLiveTranscript is a transcription fragment of one audio direction.
+type GeminiLiveTranscript struct {
+	Text string `json:"text,omitempty"`
+}
+
+// GeminiLiveToolCall asks the client to run functions. Parallel calls share one frame.
+type GeminiLiveToolCall struct {
+	FunctionCalls []*FunctionCall `json:"functionCalls,omitempty"`
+}
+
+// GeminiLiveToolCallCancellation withdraws pending function calls, for example after an interruption.
+type GeminiLiveToolCallCancellation struct {
+	IDs []string `json:"ids,omitempty"`
+}
+
+// GeminiLiveVoiceActivity reports where the server heard speech start or end. AudioOffset is a
+// protobuf duration such as "1.366125s".
+type GeminiLiveVoiceActivity struct {
+	Type        string `json:"type,omitempty"`
+	AudioOffset string `json:"audioOffset,omitempty"`
+}
+
+// GeminiLiveUsageMetadata reports token usage. It arrives only on the frame that ends a turn, and
+// the prompt count is the whole context re-sent for that generation, not a delta. The response
+// count excludes thinking tokens.
+type GeminiLiveUsageMetadata struct {
+	PromptTokenCount        int                   `json:"promptTokenCount,omitempty"`
+	ResponseTokenCount      int                   `json:"responseTokenCount,omitempty"`
+	ThoughtsTokenCount      int                   `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int                   `json:"cachedContentTokenCount,omitempty"`
+	TotalTokenCount         int                   `json:"totalTokenCount,omitempty"`
+	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -9,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -20,7 +21,8 @@ import (
 // resolves nothing; tests of the admission step install a fakeAdmitter.
 func newTestMCPHandler(cfg *lib.Config) *MCPServerHandler {
 	h := &MCPServerHandler{config: cfg}
-	h.mcpServer.Store(server.NewMCPServer("test", "v0", server.WithToolCapabilities(true)))
+	h.mcpServer = server.NewMCPServer("test", "v0", server.WithToolCapabilities(true))
+	h.transport = newMCPTransport(h.mcpServer)
 	return h
 }
 
@@ -35,6 +37,15 @@ type fakeAdmitter struct {
 func (f *fakeAdmitter) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
 	f.seen = ctx
 	return f.access, f.refusal
+}
+
+// fakeAdmitter resolves no slugs; these tests only exercise the plain /mcp route.
+func (f *fakeAdmitter) VirtualMCPToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
+func (f *fakeAdmitter) MCPClientToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
 }
 
 // newRequestCtx returns the pair a request is handled with: the fasthttp request, and a
@@ -553,4 +564,130 @@ func TestAdmit(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusUnauthorized, refusal.status)
 		assert.Nil(t, admitter.seen)
 	})
+}
+
+// TestMCPRefusals checks what a refused /mcp request is answered with: every 401 in a mode that
+// accepts Bifrost-issued tokens points at the authorization server, and a governance refusal keeps
+// the error type that execute and chat return for it.
+func TestMCPRefusals(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	goneVKToken := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+		c["bf_mode"] = string(schemas.MCPAuthModeVK)
+		c["sub"] = "deleted-vk"
+	})
+
+	t.Run("a token whose virtual key is gone gets a 401 with WWW-Authenticate", func(t *testing.T) {
+		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
+			store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{}}
+			h := newTestMCPHandler(newTestOAuth2Config(store, mode, false))
+			ctx, bifrostCtx := newRequestCtx()
+			ctx.Request.Header.Set("Authorization", "Bearer "+goneVKToken)
+
+			refusal := h.admit(ctx, bifrostCtx)
+			require.NotNil(t, refusal, mode)
+			assert.Equal(t, fasthttp.StatusUnauthorized, refusal.status, mode)
+			assert.NotEmpty(t, ctx.Response.Header.Peek("WWW-Authenticate"), mode)
+		}
+	})
+
+	t.Run("a governance refusal keeps its error type on the wire", func(t *testing.T) {
+		h := newTestMCPHandler(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeHeaders, false))
+		h.admitter = &fakeAdmitter{refusal: &schemas.BifrostError{
+			Type:       new("access_blocked"),
+			StatusCode: new(fasthttp.StatusForbidden),
+			Error:      &schemas.ErrorField{Message: "virtual key is inactive"},
+		}}
+		ctx, _ := newRequestCtx()
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+		h.handleMCPServer(ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+		var body struct {
+			Type  *string `json:"type"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body), string(ctx.Response.Body()))
+		require.NotNil(t, body.Type, string(ctx.Response.Body()))
+		assert.Equal(t, "access_blocked", *body.Type)
+		assert.Equal(t, "virtual key is inactive", body.Error.Message)
+	})
+}
+
+// TestAuthenticate_TokenValidator checks a token validator sees a verified
+// token's claims, extras included, and can refuse it; tokens it accepts are
+// admitted as before.
+func TestAuthenticate_TokenValidator(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	token := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+		c["bf_mode"] = string(schemas.MCPAuthModeUser)
+		c["sub"] = "user-1"
+		c["bf_test"] = "client-1"
+	})
+	store := &mockOAuth2Store{signingKey: key}
+	h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	var seen MCPTokenClaims
+	refuse := false
+	h.SetTokenValidator(func(_ context.Context, claims MCPTokenClaims) error {
+		seen = claims
+		if refuse {
+			return assert.AnError
+		}
+		return nil
+	})
+
+	ctx, bifrostCtx := newRequestCtx()
+	ctx.Request.Header.Set("Authorization", "Bearer "+token)
+	require.NoError(t, h.authenticate(ctx, bifrostCtx))
+	assert.Equal(t, MCPTokenClaims{Mode: "user", Subject: "user-1", Scope: "mcp", Extra: map[string]any{"bf_test": "client-1"}}, seen)
+	assert.Equal(t, "user-1", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+
+	refuse = true
+	ctx, bifrostCtx = newRequestCtx()
+	ctx.Request.Header.Set("Authorization", "Bearer "+token)
+	require.ErrorIs(t, h.authenticate(ctx, bifrostCtx), assert.AnError)
+	assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+}
+
+// TestVerifyBifrostToken checks the exported verifier enforces the audience it
+// is given: a /mcp-only token does not verify for the gateway audience.
+func TestVerifyBifrostToken(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	store := &mockOAuth2Store{signingKey: key}
+	h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	gateway := h.GatewayAudience(bgCtx())
+	both := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) { c["aud"] = jwt.ClaimStrings{testMCPResource, gateway} })
+	mcpOnly := mintTestToken(t, priv, key.KID, nil)
+
+	claims, err := h.VerifyBifrostToken(bgCtx(), both, gateway)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-123", claims.Subject)
+	// An extension's numeric claim keeps its exact value, even past 2^53.
+	big := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+		c["aud"] = jwt.ClaimStrings{gateway}
+		c["bf_test_id"] = int64(9007199254740993)
+	})
+	bigClaims, err := h.VerifyBifrostToken(bgCtx(), big, gateway)
+	require.NoError(t, err)
+	assert.Equal(t, json.Number("9007199254740993"), bigClaims.Extra["bf_test_id"])
+	_, err = h.VerifyBifrostToken(bgCtx(), mcpOnly, gateway)
+	require.Error(t, err)
+	_, err = h.VerifyBifrostToken(bgCtx(), "not-a-jwt", gateway)
+	require.Error(t, err)
+
+	// With MCP OAuth off and the issuer cleared, a request whose Host rebuilds
+	// the old issuer must not make an already-issued token verify again.
+	cfg := h.config
+	cfg.ClientConfig.MCPServerAuthMode = configtables.MCPServerAuthModeHeaders
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = nil
+	spoofed := &fasthttp.RequestCtx{}
+	spoofed.Request.Header.SetHost("bifrost.test")
+	spoofed.Request.Header.Set("X-Forwarded-Proto", "https")
+	_, err = h.VerifyBifrostToken(spoofed, both, gateway)
+	require.Error(t, err, "no token verifies without a pinned issuer")
 }
