@@ -854,7 +854,7 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
       }
     }
   }
-  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"]]) {
+  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"], ["baseten", "BasetenAliasCfg"]]) {
     const fixture = redactionFixtures.find((f) => f.provider === provider);
     for (const field of secretFields(type)) assert.strictEqual(fixture.key.aliases.probe[field], redactionRef, `${type}.${field}`);
   }
