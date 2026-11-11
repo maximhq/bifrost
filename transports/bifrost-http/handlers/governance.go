@@ -4348,9 +4348,32 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // Model Config CRUD Operations
 
+// modelConfigAppliesToMCP reports whether MCP tool executions are charged by a model config: it is
+// a holder-level row, and one of its budgets is shared or MCP-only. The in-memory counterpart of
+// ModelConfigsQueryParams.AppliesToMCP.
+func modelConfigAppliesToMCP(mc *configstoreTables.TableModelConfig) bool {
+	if !mc.IsHolderLevel() {
+		return false
+	}
+	for i := range mc.Budgets {
+		if mc.Budgets[i].Scope.AppliesTo(true) {
+			return true
+		}
+	}
+	return false
+}
+
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	// applies_to=mcp lists the rows MCP tool executions are charged by (the MCP Budgets & Limits
+	// page): holder-level rows (model "*", no provider) with a shared or mcp budget.
+	appliesTo := string(ctx.QueryArgs().Peek("applies_to"))
+	if appliesTo != "" && appliesTo != "mcp" {
+		SendError(ctx, 400, "Invalid applies_to parameter: must be mcp")
+		return
+	}
+	appliesToMCP := appliesTo == "mcp"
 	if fromMemory {
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
@@ -4383,6 +4406,9 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 				if mc.Provider == nil || *mc.Provider != providerFilter {
 					continue
 				}
+			}
+			if appliesToMCP && !modelConfigAppliesToMCP(mc) {
+				continue
 			}
 			clone := *mc
 			if len(mc.Budgets) > 0 {
@@ -4444,7 +4470,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
-	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
+	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" || appliesToMCP {
 		// Paginated path. `scope` accepts a comma-separated list so one UI filter
 		// option can cover several scope values; scope values are identifiers and
 		// never contain commas, so splitting is unambiguous.
@@ -4455,10 +4481,11 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		params := configstore.ModelConfigsQueryParams{
-			Search:   search,
-			Scopes:   scopes,
-			ScopeID:  scopeID,
-			Provider: provider,
+			Search:       search,
+			Scopes:       scopes,
+			ScopeID:      scopeID,
+			Provider:     provider,
+			AppliesToMCP: appliesToMCP,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)

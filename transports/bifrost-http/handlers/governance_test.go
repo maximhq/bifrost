@@ -5936,6 +5936,120 @@ func TestBudgetScopeRejectedWhereMCPCannotReach(t *testing.T) {
 	assert.Equal(t, configstoreTables.LimitScopeModel, stored.Budgets[0].Scope)
 }
 
+// listedModelConfigs lists model configs through the handler with the given query string.
+func listedModelConfigs(t *testing.T, handler *GovernanceHandler, query string) []configstoreTables.TableModelConfig {
+	t.Helper()
+	ctx := newTestRequestCtx("")
+	ctx.Request.SetRequestURI("/api/governance/model-configs?" + query)
+	handler.getModelConfigs(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "query=%s resp=%s", query, ctx.Response.Body())
+	var resp struct {
+		ModelConfigs []configstoreTables.TableModelConfig `json:"model_configs"`
+		TotalCount   int64                                `json:"total_count"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Equal(t, int64(len(resp.ModelConfigs)), resp.TotalCount)
+	return resp.ModelConfigs
+}
+
+// TestModelConfigsAppliesToMCPListsHolderLevelRows pins the MCP Budgets & Limits page contract: with
+// applies_to=mcp the model-config list returns the holder-level rows (model "*", no provider) of the
+// deployment and of virtual keys that carry a shared or mcp budget, and nothing narrower. Saving MCP
+// and shared lines on a key's holder-level row with the row's full budget list, as the page does,
+// keeps the model-only lines the Models page set there, rows and usage included.
+func TestModelConfigsAppliesToMCPListsHolderLevelRows(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	vkHandler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+
+	createVK := newTestRequestCtx(`{"name":"mcp-page-key","budgets":[{"max_limit":8,"reset_duration":"1d","scope":"model"}]}`)
+	vkHandler.createVirtualKey(createVK)
+	require.Equal(t, fasthttp.StatusOK, createVK.Response.StatusCode(), "resp=%s", createVK.Response.Body())
+	var createdVK struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createVK.Response.Body(), &createdVK))
+	vkID := createdVK.VirtualKey.ID
+
+	for _, body := range []string{
+		`{"model_name":"*","budgets":[{"max_limit":5,"reset_duration":"1M"}]}`,
+		`{"model_name":"gpt-4o","budgets":[{"max_limit":5,"reset_duration":"1M"}]}`,
+		`{"model_name":"*","provider":"openai","budgets":[{"max_limit":5,"reset_duration":"1M"}]}`,
+		fmt.Sprintf(`{"model_name":"*","provider":"openai","scope":"virtual_key","scope_id":%q,"budgets":[{"max_limit":5,"reset_duration":"1M"}]}`, vkID),
+	} {
+		ctx := newTestRequestCtx(body)
+		handler.createModelConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s resp=%s", body, ctx.Response.Body())
+	}
+
+	const mcpPage = "applies_to=mcp&scope=global,virtual_key"
+	listed := listedModelConfigs(t, handler, mcpPage)
+	require.Len(t, listed, 1, "the key's holder-level row has model-only lines, so only the deployment's row is listed")
+	assert.Equal(t, configstoreTables.ModelConfigScopeGlobal, listed[0].Scope)
+	assert.Equal(t, configstoreTables.ModelConfigAllModels, listed[0].ModelName)
+	assert.Nil(t, listed[0].Provider)
+
+	// The page finds the key's holder-level row among its all-models rows and saves it with every
+	// line it read back, adding a shared and an MCP line beside the model-only one.
+	var row *configstoreTables.TableModelConfig
+	for _, mc := range listedModelConfigs(t, handler, "scope=virtual_key&scope_id="+vkID+"&search=*") {
+		if mc.ModelName == configstoreTables.ModelConfigAllModels && mc.Provider == nil {
+			row = &mc
+		}
+	}
+	require.NotNil(t, row, "a key's own budgets live on its holder-level row")
+	require.Len(t, row.Budgets, 1)
+	modelLine := row.Budgets[0]
+	require.Equal(t, configstoreTables.LimitScopeModel, modelLine.Scope)
+	require.NoError(t, store.UpdateBudgetUsage(context.Background(), modelLine.ID, 3))
+
+	update := newTestRequestCtx(fmt.Sprintf(`{"budgets":[{"id":%q,"max_limit":8,"reset_duration":"1d","scope":"model"},{"max_limit":2,"reset_duration":"1d","scope":"mcp"},{"max_limit":20,"reset_duration":"1M"}]}`, modelLine.ID))
+	update.SetUserValue("mc_id", row.ID)
+	handler.updateModelConfig(update)
+	require.Equal(t, fasthttp.StatusOK, update.Response.StatusCode(), "resp=%s", update.Response.Body())
+
+	byScope := map[configstoreTables.LimitScope]configstoreTables.TableBudget{}
+	for _, b := range vkAllModelsBudgets(t, store, vkID) {
+		byScope[b.Scope] = b
+	}
+	require.Len(t, byScope, 3)
+	assert.Equal(t, modelLine.ID, byScope[configstoreTables.LimitScopeModel].ID, "the model-only line keeps its row")
+	assert.Equal(t, 3.0, byScope[configstoreTables.LimitScopeModel].CurrentUsage, "and its usage")
+	assert.Equal(t, 2.0, byScope[configstoreTables.LimitScopeMCP].MaxLimit)
+	assert.Equal(t, 20.0, byScope[configstoreTables.LimitScopeShared].MaxLimit)
+
+	listed = listedModelConfigs(t, handler, mcpPage)
+	require.Len(t, listed, 2, "with shared and mcp lines the key's row joins the MCP page")
+	ids := []string{listed[0].ID, listed[1].ID}
+	assert.Contains(t, ids, row.ID)
+
+	invalid := newTestRequestCtx("")
+	invalid.Request.SetRequestURI("/api/governance/model-configs?applies_to=model")
+	handler.getModelConfigs(invalid)
+	assert.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), "resp=%s", invalid.Response.Body())
+}
+
+// TestModelConfigAppliesToMCP pins the in-memory listing's filter, which must agree with the store's.
+func TestModelConfigAppliesToMCP(t *testing.T) {
+	openai := "openai"
+	budgets := func(scopes ...configstoreTables.LimitScope) []configstoreTables.TableBudget {
+		out := make([]configstoreTables.TableBudget, 0, len(scopes))
+		for _, scope := range scopes {
+			out = append(out, configstoreTables.TableBudget{Scope: scope})
+		}
+		return out
+	}
+	assert.True(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets(configstoreTables.LimitScopeModel, configstoreTables.LimitScopeMCP)}))
+	assert.True(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets("")}), "an unset scope reads as shared")
+	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets(configstoreTables.LimitScopeModel)}))
+	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*"}))
+	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Provider: &openai, Budgets: budgets(configstoreTables.LimitScopeShared)}))
+	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "gpt-4o", Budgets: budgets(configstoreTables.LimitScopeShared)}))
+}
+
 // TestFindExistingBudgetMatchesOnDurationAndScope pins that a budget without an ID is matched to an
 // existing row only when both its reset period and its scope agree, so an MCP budget can never take
 // over the model budget of the same period, and that a new budget inherits usage only from its own

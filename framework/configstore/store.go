@@ -51,9 +51,10 @@ type ModelConfigsQueryParams struct {
 	// thinks of as the same thing — e.g. rows scoped to a user directly and rows
 	// materialized onto them from an access profile. Empty (with Scope also empty)
 	// means no scope filter.
-	Scopes   []string
-	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
-	Provider string // optional; filters to an exact provider value (e.g. "openai")
+	Scopes       []string
+	ScopeID      string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
+	Provider     string // optional; filters to an exact provider value (e.g. "openai")
+	AppliesToMCP bool   // optional; holder-level rows with at least one shared or mcp budget
 }
 
 // effectiveScopes returns the scope values to filter on, merging the deprecated

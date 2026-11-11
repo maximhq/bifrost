@@ -6959,6 +6959,11 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if params.Provider != "" {
 		baseQuery = baseQuery.Where("provider = ?", params.Provider)
 	}
+	if params.AppliesToMCP {
+		baseQuery = baseQuery.
+			Where("model_name = ? AND provider IS NULL", tables.ModelConfigAllModels).
+			Where("EXISTS (SELECT 1 FROM governance_budgets WHERE governance_budgets.model_config_id = governance_model_configs.id AND governance_budgets.scope <> ?)", tables.LimitScopeModel)
+	}
 
 	var totalCount int64
 	if err := baseQuery.Count(&totalCount).Error; err != nil {
