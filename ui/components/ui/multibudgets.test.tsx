@@ -1,7 +1,8 @@
 import "@/lib/i18n";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import MultiBudgetLines, { RequestLimitLines } from "./multibudgets";
+import MultiBudgetLines, { pickNewLineDuration, RequestLimitLines } from "./multibudgets";
+import { resetDurationOptions } from "@/lib/constants/governance";
 
 const noop = () => {};
 
@@ -66,5 +67,13 @@ describe("RequestLimitLines", () => {
 		expect(markup).toContain('aria-label="Remove request limit 1"');
 		expect(markup).toContain("request limits with the same scope must use different intervals");
 		expect(markup).toContain("Must be a positive whole number");
+	});
+});
+describe("pickNewLineDuration", () => {
+	it("starts a request limit on the preferred hour, then the first unused period, then the first option", () => {
+		expect(pickNewLineDuration(resetDurationOptions, () => false, "1h")).toBe("1h");
+		expect(pickNewLineDuration(resetDurationOptions, (value) => value === "1h", "1h")).toBe(resetDurationOptions[0].value);
+		expect(pickNewLineDuration(resetDurationOptions, () => true, "1h")).toBe(resetDurationOptions[0].value);
+		expect(pickNewLineDuration(resetDurationOptions, () => false)).toBe(resetDurationOptions[0].value);
 	});
 });

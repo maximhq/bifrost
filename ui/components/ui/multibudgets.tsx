@@ -7,7 +7,7 @@ import { budgetPeriodKey } from "@/lib/budgetOutline";
 import { budgetResetDurationOptions, resetDurationOptions } from "@/lib/constants/governance";
 import type { LimitScope } from "@/lib/types/governance";
 import { Plus, RotateCcw, Trash2 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 export interface BudgetLineEntry {
@@ -50,12 +50,21 @@ export interface MultiBudgetLinesProps {
 	scopeOptions?: readonly LimitScope[];
 	// The scope a new line starts with when the selector is shown; the shared default when omitted.
 	defaultScope?: LimitScope;
+	// The reset period a new line starts with when it is unused; the first unused one when omitted.
+	defaultDuration?: string;
 	// Wording for lines that are not spend budgets (request limits); the budget strings when omitted.
 	copy?: LineCopy;
 	// Whole numbers only (request counts).
 	integer?: boolean;
 	// Inline error for a line's amount, shown under it (e.g. a request limit below 1).
 	amountError?: (value: number | undefined) => string | undefined;
+}
+
+// pickNewLineDuration is the reset period a new line starts with: the preferred one when no line uses it,
+// else the first unused one, else the first option.
+export function pickNewLineDuration(options: { value: string }[], isUsed: (value: string) => boolean, preferred?: string): string {
+	const available = options.find((o) => o.value === preferred && !isUsed(o.value)) ?? options.find((o) => !isUsed(o.value));
+	return available?.value ?? options[0]?.value ?? "";
 }
 
 export default function MultiBudgetLines({
@@ -70,6 +79,7 @@ export default function MultiBudgetLines({
 	showScope = false,
 	scopeOptions,
 	defaultScope,
+	defaultDuration,
 	copy,
 	integer = false,
 	amountError,
@@ -97,21 +107,30 @@ export default function MultiBudgetLines({
 		return counts;
 	}, [lines, showScope]);
 
+	// Each line keeps a client-side identity that is independent of what is typed into it, so removing
+	// one never hands its controls (or the focus in them) to the line below.
+	const nextKey = useRef(0);
+	const lineKeys = useRef<string[]>([]);
+	while (lineKeys.current.length < lines.length) lineKeys.current.push(`line-${nextKey.current++}`);
+	lineKeys.current.length = lines.length;
+
 	function addLine() {
-		// Pick the first duration unused by a line of the new line's scope, falling back to the first option value
+		// Pick the preferred duration when no line of the new line's scope uses it, else the first unused
+		// one, falling back to the first option value
 		const scope = showScope ? defaultScope : undefined;
-		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, scope)));
+		const duration = pickNewLineDuration(options, (value) => usedPeriods.has(budgetPeriodKey(value, scope)), defaultDuration);
 		onChange([
 			...lines,
 			{
 				max_limit: undefined,
-				reset_duration: available?.value ?? options[0]?.value ?? "",
+				reset_duration: duration,
 				...(scope && { scope }),
 			},
 		]);
 	}
 
 	function removeLine(index: number) {
+		lineKeys.current.splice(index, 1);
 		onChange(lines.filter((_, i) => i !== index));
 	}
 
@@ -171,7 +190,7 @@ export default function MultiBudgetLines({
 				const isDuplicate = (usedPeriods.get(periodKeyOf(line)) || 0) > 1;
 				const lineAmountError = amountError?.(line.max_limit);
 				return (
-					<div key={index} className="space-y-1" data-testid={`${testId}-line-${index}`}>
+					<div key={lineKeys.current[index]} className="space-y-1" data-testid={`${testId}-line-${index}`}>
 						<div className={showScope ? "flex flex-col gap-2 sm:flex-row sm:items-end" : "flex items-end gap-2"}>
 							<div className="flex-1">
 								<NumberAndSelect
@@ -232,7 +251,7 @@ export default function MultiBudgetLines({
 		</div>
 	);
 }
-type RequestLimitLinesProps = Omit<MultiBudgetLinesProps, "options" | "copy" | "integer" | "amountError">;
+type RequestLimitLinesProps = Omit<MultiBudgetLinesProps, "options" | "copy" | "integer" | "amountError" | "defaultDuration">;
 
 // Request limit lines: the budget line editor with request wording, whole-number maximums and the
 // rate-limit reset periods (no quarterly window, which request limits do not support).
@@ -244,6 +263,7 @@ export function RequestLimitLines({ label, ...props }: RequestLimitLinesProps) {
 			{...props}
 			label={label ?? t("requestLimits.title")}
 			options={resetDurationOptions}
+			defaultDuration="1h"
 			copy={{
 				amountLabel: t("sheet.maximumRequests"),
 				addLabel: t("requestLimits.add"),

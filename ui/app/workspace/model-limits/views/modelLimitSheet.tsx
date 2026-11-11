@@ -1,6 +1,5 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
-import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";

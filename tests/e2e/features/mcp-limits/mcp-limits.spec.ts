@@ -210,7 +210,6 @@ test.describe('MCP Budgets & Limits', () => {
       expect(after?.budgets?.[0]?.id, 'the line kept its row').toBe(lineID)
     })
 
-    test('adds an MCP budget to the deployment\'s own limits', async ({ page }) => {
     test('adds an MCP budget and request limit to the deployment\'s own limits', async ({ page }) => {
       await page.goto('/workspace/mcp-limits')
       await page.getByTestId('mcp-limits-button-create').click()

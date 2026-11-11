@@ -237,7 +237,8 @@ export class ModelLimitsPage extends BasePage {
   async removeGlobalModelConfig(modelName: string, provider: string): Promise<void> {
     const current = await this.getGlobalModelConfig(modelName, provider)
     if (current) {
-      await this.page.request.delete(`/api/governance/model-configs/${current.id}`)
+      const res = await this.page.request.delete(`/api/governance/model-configs/${current.id}`)
+      expect(res.status(), await res.text()).toBe(200)
     }
   }
 
