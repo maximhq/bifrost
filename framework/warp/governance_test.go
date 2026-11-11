@@ -220,7 +220,14 @@ func TestWarpDescribeVirtualKeyReportsRequestLimits(t *testing.T) {
 			{ID: "rule-mcp", RequestMaxLimit: int64Ptr(20), RequestResetDuration: schemas.Ptr("1h"), Scope: tables.LimitScopeMCP},
 		},
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-			{Provider: "openai", RequestLimits: []tables.TableRateLimit{{ID: "rule-pc", RequestMaxLimit: int64Ptr(5), RequestResetDuration: schemas.Ptr("1m"), Scope: tables.LimitScopeModel}}},
+			{
+				Provider:      "openai",
+				RequestLimits: []tables.TableRateLimit{{ID: "rule-pc", RequestMaxLimit: int64Ptr(5), RequestResetDuration: schemas.Ptr("1m"), Scope: tables.LimitScopeModel}},
+				ModelBudgets: []tables.VKProviderModelBudget{{
+					ModelName:     "gpt-4o",
+					RequestLimits: []tables.TableRateLimit{{ID: "rule-model", RequestMaxLimit: int64Ptr(2), RequestResetDuration: schemas.Ptr("1m")}},
+				}},
+			},
 			{Provider: "anthropic"},
 		},
 	}
@@ -237,6 +244,10 @@ func TestWarpDescribeVirtualKeyReportsRequestLimits(t *testing.T) {
 		{"request_max_limit": int64(5), "request_current_usage": int64(0), "request_reset_duration": "1m", "scope": "model"},
 	}, providers[0]["request_limits"])
 	require.NotContains(t, providers[1], "request_limits")
+	require.Equal(t, []map[string]any{
+		{"model": "gpt-4o", "request_limits": []map[string]any{{"request_max_limit": int64(2), "request_current_usage": int64(0), "request_reset_duration": "1m", "scope": "shared"}}},
+	}, providers[0]["model_budgets"], "a request limit set for one model is reported with the model's name")
+	require.NotContains(t, providers[1], "model_budgets")
 }
 
 // The key row is not where a managed key's cap lives: on an enterprise

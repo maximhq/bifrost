@@ -749,6 +749,7 @@ func (h *GovernanceHandler) updateHolderRateLimit(ctx context.Context, tx *gorm.
 			TokenCurrentUsage:  row.TokenCurrentUsage,
 			TokenLastReset:     row.TokenLastReset,
 			RequestLastReset:   time.Now(),
+			CreatedAt:          row.CreatedAt, // the window's lattice anchor, so an aligned copy keeps its boundaries
 		}
 		if err := validateRateLimit(&tokenCopy); err != nil {
 			return holderRateLimitUpdate{}, err

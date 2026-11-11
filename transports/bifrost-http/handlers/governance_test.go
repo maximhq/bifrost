@@ -6742,6 +6742,7 @@ func TestCombinedRateLimitGivesWayToRequestLimits(t *testing.T) {
 		require.NotNil(t, got.RateLimit)
 		assert.Equal(t, int64(500), *got.RateLimit.TokenMaxLimit)
 		assert.Nil(t, got.RateLimit.RequestMaxLimit)
+		assert.True(t, got.RateLimit.CreatedAt.Equal(shared.CreatedAt), "the token-only copy keeps the row's reset-window anchor")
 		require.Len(t, got.RequestLimits, 1)
 		assert.Equal(t, int64(4), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the row's counter")
 	})

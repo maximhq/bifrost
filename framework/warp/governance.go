@@ -428,6 +428,24 @@ func providerConfigSummary(config tables.TableVirtualKeyProviderConfig) map[stri
 	if len(config.RequestLimits) > 0 {
 		out["request_limits"] = requestLimitSummaries(config.RequestLimits)
 	}
+	// A model's own caps under this provider, so a key limited only for one model is not read as uncapped.
+	if len(config.ModelBudgets) > 0 {
+		models := make([]map[string]any, len(config.ModelBudgets))
+		for i, mb := range config.ModelBudgets {
+			m := map[string]any{"model": mb.ModelName}
+			if len(mb.Budgets) > 0 {
+				m["budgets"] = budgetSummaries(mb.Budgets)
+			}
+			if mb.RateLimit != nil {
+				m["rate_limit"] = rateLimitSummary(*mb.RateLimit)
+			}
+			if len(mb.RequestLimits) > 0 {
+				m["request_limits"] = requestLimitSummaries(mb.RequestLimits)
+			}
+			models[i] = m
+		}
+		out["model_budgets"] = models
+	}
 	return out
 }
 
