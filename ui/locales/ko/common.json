@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "적용 범위",
-		"shared": "모두",
+		"shared": "공유",
 		"model": "모델",
 		"mcp": "MCP",
 		"sharedHint": "모델 요청과 MCP 도구 실행 모두에 사용돼요",

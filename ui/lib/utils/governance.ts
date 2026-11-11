@@ -1,5 +1,6 @@
 import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import i18n from "@/lib/i18n";
+import type { Budget, LimitScope, ModelConfig } from "@/lib/types/governance";
 import type { ParseKeys } from "i18next";
 
 const RESET_UNIT_KEYS: Record<string, ParseKeys<"common">> = {
@@ -272,4 +273,41 @@ export function actionDisabledReason(
 	if (allowed) return undefined;
 	const entityKey = GOVERNANCE_ENTITY_KEYS[entityPlural];
 	return i18n.t(`permissionDenied.${action}`, { entity: entityKey ? i18n.t(entityKey) : entityPlural });
+}
+/**
+ * The traffic a Budgets & Limits page edits on a holder-level row: the Models page edits the lines
+ * model requests are charged by, the MCP page the lines MCP tool executions are charged by.
+ */
+export type LimitTraffic = "model" | "mcp";
+
+/** Whether a budget of this scope is charged by the given traffic; an unset scope is Shared. */
+export function budgetScopeChargedBy(scope: LimitScope | undefined, traffic: LimitTraffic): boolean {
+	const value = scope || "shared";
+	return value === "shared" || value === traffic;
+}
+
+/**
+ * A holder-level model config: all models with no provider. It holds the deployment's or a virtual
+ * key's own limits, the only lines that may be scoped to Model or MCP traffic.
+ */
+export function isHolderLevelModelConfig(mc: Pick<ModelConfig, "model_name" | "provider">): boolean {
+	return mc.model_name === "*" && !mc.provider;
+}
+
+/** Whether MCP tool executions are charged by a model config; mirrors the API's applies_to=mcp listing. */
+export function modelConfigAppliesToMCP(mc: ModelConfig): boolean {
+	return isHolderLevelModelConfig(mc) && (mc.budgets ?? []).some((b) => budgetScopeChargedBy(b.scope, "mcp"));
+}
+
+/**
+ * What removing one page's limits from a model config leaves on it, or null when the row is to be
+ * deleted whole. On a holder-level row the lines the other page edits stay: from the MCP page the
+ * Model lines and the rate limit, from the Models page the MCP lines. Shared lines are on both
+ * pages, so either removes them. Any other row belongs to the Models page alone.
+ */
+export function budgetsLeftAfterRemoving(mc: ModelConfig, traffic: LimitTraffic): Budget[] | null {
+	if (!isHolderLevelModelConfig(mc)) return null;
+	const left = (mc.budgets ?? []).filter((b) => !budgetScopeChargedBy(b.scope, traffic));
+	const keepsRateLimit = traffic === "mcp" && !!mc.rate_limit;
+	return left.length > 0 || keepsRateLimit ? left : null;
 }

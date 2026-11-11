@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "Portée",
-		"shared": "Les deux",
+		"shared": "Partagé",
 		"model": "Modèle",
 		"mcp": "MCP",
 		"sharedHint": "Débité par les requêtes de modèles et les exécutions d'outils MCP",

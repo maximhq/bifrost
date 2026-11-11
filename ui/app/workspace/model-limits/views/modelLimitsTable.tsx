@@ -24,10 +24,16 @@ import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
-import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery } from "@/lib/store";
+import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery, useUpdateModelConfigMutation } from "@/lib/store";
 import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import {
+	budgetScopeChargedBy,
+	budgetsLeftAfterRemoving,
+	formatCurrency,
+	isHolderLevelModelConfig,
+	LimitTraffic,
+} from "@/lib/utils/governance";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowUpRight, ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
@@ -56,19 +62,33 @@ const toTestIdPart = (value: string) =>
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-|-$/g, "");
 
+// A row's test-id suffix: its model and provider on the Models page; on the MCP page, where every row
+// is all models on all providers, its holder.
+const rowTestIdPart = (config: ModelConfig, traffic: LimitTraffic) =>
+	traffic === "mcp"
+		? `${toTestIdPart(config.scope ?? "global")}-${toTestIdPart(config.scope_id || "all")}`
+		: `${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`;
+
+// The MCP page lists the deployment's and virtual keys' own limits only.
+const MCP_PAGE_SCOPE_FILTERS = ["global", "virtual_key"];
+
 function ModelLimitActionsMenu({
 	config,
+	traffic,
 	hasUpdateAccess,
 	hasDeleteAccess,
 	onEdit,
 	onDelete,
 }: {
 	config: ModelConfig;
+	traffic: LimitTraffic;
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	onEdit: (config: ModelConfig) => void;
 	onDelete: (configId: string) => void;
 }) {
+	const testIdPrefix = traffic === "mcp" ? "mcp-limit" : "model-limit";
+	const testIdPart = rowTestIdPart(config, traffic);
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
@@ -85,7 +105,7 @@ function ModelLimitActionsMenu({
 					size="icon"
 					className="h-8 w-8"
 					aria-label={t("modelLimits.actionsAria", { name: config.model_name })}
-					data-testid={`model-limit-button-actions-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+					data-testid={`${testIdPrefix}-button-actions-${testIdPart}`}
 				>
 					<MoreHorizontal className="h-4 w-4" />
 				</Button>
@@ -94,7 +114,7 @@ function ModelLimitActionsMenu({
 				<DisabledReasonMenuItem
 					reason={actionDisabledReason(isManaged || hasUpdateAccess, "edit", "model limits")}
 					className="cursor-pointer"
-					data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+					data-testid={`${testIdPrefix}-button-edit-${testIdPart}`}
 					onSelect={(e) => {
 						e.preventDefault();
 						onEdit(config);
@@ -113,7 +133,7 @@ function ModelLimitActionsMenu({
 					)}
 					variant="destructive"
 					className="cursor-pointer"
-					data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+					data-testid={`${testIdPrefix}-button-delete-${testIdPart}`}
 					onSelect={(e) => {
 						e.preventDefault();
 						onDelete(config.id);
@@ -146,6 +166,8 @@ interface ModelLimitsTableProps {
 	limit: number;
 	onOffsetChange: (offset: number) => void;
 	isLoading?: boolean;
+	/** "mcp" is the MCP Budgets & Limits page: holder-level rows, their MCP and Shared lines only. */
+	traffic?: LimitTraffic;
 }
 
 export default function ModelLimitsTable({
@@ -162,7 +184,10 @@ export default function ModelLimitsTable({
 	limit,
 	onOffsetChange,
 	isLoading = false,
+	traffic = "model",
 }: ModelLimitsTableProps) {
+	const isMCPPage = traffic === "mcp";
+	const testIdPrefix = isMCPPage ? "mcp-limits" : "model-limits";
 	const { t } = useTranslation("models");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelLimits.allProviders") }), [t]);
 	const { t: tc } = useTranslation("common");
@@ -211,11 +236,33 @@ export default function ModelLimitsTable({
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
 
-	const [deleteModelConfig, { isLoading: isDeleting }] = useDeleteModelConfigMutation();
+	const [deleteModelConfig, { isLoading: isDeletingConfig }] = useDeleteModelConfigMutation();
+	const [updateModelConfig, { isLoading: isUpdatingConfig }] = useUpdateModelConfigMutation();
+	const isDeleting = isDeletingConfig || isUpdatingConfig;
 
-	const handleDelete = async (id: string) => {
+	// Deleting from one page removes that page's limits. A holder-level row keeps the lines the other
+	// page edits (see budgetsLeftAfterRemoving) and is deleted only once nothing is left on it.
+	const handleDelete = async (config: ModelConfig) => {
 		try {
-			await deleteModelConfig(id).unwrap();
+			const left = budgetsLeftAfterRemoving(config, traffic);
+			if (left === null) {
+				await deleteModelConfig(config.id).unwrap();
+			} else {
+				await updateModelConfig({
+					id: config.id,
+					data: {
+						budgets: left.map((b) => ({
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration,
+							reset_config: b.reset_config,
+							scope: b.scope,
+						})),
+						// The rate limit is the Models page's: removed with its lines, kept by the MCP page.
+						rate_limit: !isMCPPage && config.rate_limit ? {} : undefined,
+					},
+				}).unwrap();
+			}
 			toast.success(t("modelLimits.deletedSuccess"));
 			setDeleteModelConfigId(null);
 		} catch (error) {
@@ -244,7 +291,12 @@ export default function ModelLimitsTable({
 	// Rendered on the empty branch too, not just the populated one: PageTitle
 	// draws nothing inline, and leaving it out drops the topbar to the
 	// route-derived fallback, which for this route reads "Model Limits".
-	const pageTitle = <PageTitle title={t("modelLimits.title")}>{t("modelLimits.titleDescription")}</PageTitle>;
+	const pageTitle = (
+		<PageTitle title={t("modelLimits.title")}>{isMCPPage ? t("mcpLimits.titleDescription") : t("modelLimits.titleDescription")}</PageTitle>
+	);
+	const sheet = isSheetOpen && (
+		<ModelLimitSheet modelConfig={editingModelConfig} onSave={closeModelLimitSheet} onCancel={closeModelLimitSheet} traffic={traffic} />
+	);
 
 	// True empty state: no model limits at all (not just filtered to zero).
 	// Suppress while the initial load is in flight so we don't flash the empty
@@ -253,32 +305,34 @@ export default function ModelLimitsTable({
 		return (
 			<>
 				{pageTitle}
-				{isSheetOpen && <ModelLimitSheet modelConfig={editingModelConfig} onSave={closeModelLimitSheet} onCancel={closeModelLimitSheet} />}
-				<ModelLimitsEmptyState onAddClick={handleAddModelLimit} canCreate={hasCreateAccess} />
+				{sheet}
+				<ModelLimitsEmptyState onAddClick={handleAddModelLimit} canCreate={hasCreateAccess} traffic={traffic} />
 			</>
 		);
 	}
 
 	return (
 		<>
-			{isSheetOpen && <ModelLimitSheet modelConfig={editingModelConfig} onSave={closeModelLimitSheet} onCancel={closeModelLimitSheet} />}
+			{sheet}
 			<AlertDialog open={!!deletingModelConfig} onOpenChange={(open) => !open && setDeleteModelConfigId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>{t("modelLimits.deleteTitle")}</AlertDialogTitle>
+						<AlertDialogTitle>{isMCPPage ? t("mcpLimits.deleteTitle") : t("modelLimits.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							{t("modelLimits.deleteDescription", {
-								name:
-									deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
-										? `${deletingModelConfig.model_name.slice(0, 30)}...`
-										: deletingModelConfig?.model_name,
-							})}
+							{isMCPPage
+								? t("mcpLimits.deleteDescription", { name: deletingModelConfig?.scope_name || t("modelLimits.global") })
+								: t("modelLimits.deleteDescription", {
+										name:
+											deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
+												? `${deletingModelConfig.model_name.slice(0, 30)}...`
+												: deletingModelConfig?.model_name,
+									})}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
-							onClick={() => deletingModelConfig && handleDelete(deletingModelConfig.id)}
+							onClick={() => deletingModelConfig && handleDelete(deletingModelConfig)}
 							disabled={isDeleting}
 							className="bg-red-600 hover:bg-red-700"
 						>
@@ -292,41 +346,48 @@ export default function ModelLimitsTable({
 				{/* Toolbar: Search + Filters + Actions */}
 				<div className="mb-4 flex flex-wrap items-center gap-3">
 					{pageTitle}
-					<div className="relative min-w-[220px] flex-1">
-						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-						<Input
-							aria-label={t("modelLimits.searchAria")}
-							placeholder={t("modelLimits.searchByModelName")}
-							value={search}
-							onChange={(e) => onSearchChange(e.target.value)}
-							className="pl-9"
-							data-testid="model-limits-search-input"
-						/>
-					</div>
+					{/* Every MCP page row is all models on all providers, so there is no model or provider to filter by */}
+					{!isMCPPage && (
+						<div className="relative min-w-[220px] flex-1">
+							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+							<Input
+								aria-label={t("modelLimits.searchAria")}
+								placeholder={t("modelLimits.searchByModelName")}
+								value={search}
+								onChange={(e) => onSearchChange(e.target.value)}
+								className="pl-9"
+								data-testid="model-limits-search-input"
+							/>
+						</div>
+					)}
 
 					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
-						<SelectTrigger className="w-[160px]" aria-label={t("modelLimits.filterScopeAria")} data-testid="model-limits-filter-scope">
+						<SelectTrigger className="w-[160px]" aria-label={t("modelLimits.filterScopeAria")} data-testid={`${testIdPrefix}-filter-scope`}>
 							<SelectValue placeholder={t("modelLimits.allScopes")} />
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="all">{t("modelLimits.allScopes")}</SelectItem>
-							{getModelLimitScopeFilterOptions().map((o) => (
-								<SelectItem key={o.value} value={o.value}>
-									{o.label}
-								</SelectItem>
-							))}
+							{getModelLimitScopeFilterOptions()
+								.filter((o) => !isMCPPage || MCP_PAGE_SCOPE_FILTERS.includes(o.value))
+								.map((o) => (
+									<SelectItem key={o.value} value={o.value}>
+										{o.label}
+									</SelectItem>
+								))}
 						</SelectContent>
 					</Select>
 
-					<ProviderSelector
-						ariaLabel={t("modelLimits.filterProviderAria")}
-						data-testid="model-limits-filter-provider"
-						className="h-9 w-[160px]"
-						size="sm"
-						allOption={allProvidersOption}
-						value={provider || ALL_PROVIDERS_VALUE}
-						onChange={(v: string) => onProviderChange(v === ALL_PROVIDERS_VALUE ? "" : v)}
-					/>
+					{!isMCPPage && (
+						<ProviderSelector
+							ariaLabel={t("modelLimits.filterProviderAria")}
+							data-testid="model-limits-filter-provider"
+							className="h-9 w-[160px]"
+							size="sm"
+							allOption={allProvidersOption}
+							value={provider || ALL_PROVIDERS_VALUE}
+							onChange={(v: string) => onProviderChange(v === ALL_PROVIDERS_VALUE ? "" : v)}
+						/>
+					)}
 
 					{hasActiveFilters && (
 						<Button
@@ -337,7 +398,7 @@ export default function ModelLimitsTable({
 								onProviderChange("");
 							}}
 							className="h-9"
-							data-testid="model-limits-filter-clear"
+							data-testid={`${testIdPrefix}-filter-clear`}
 						>
 							{t("modelLimits.clearFilters")}
 						</Button>
@@ -348,7 +409,7 @@ export default function ModelLimitsTable({
 							className="ml-auto h-9"
 							onClick={handleAddModelLimit}
 							disabled={!hasCreateAccess}
-							data-testid="model-limits-button-create"
+							data-testid={`${testIdPrefix}-button-create`}
 						>
 							<Plus className="h-4 w-4" />
 							{t("modelLimits.addLimit")}
@@ -356,23 +417,23 @@ export default function ModelLimitsTable({
 					</DisabledReason>
 				</div>
 
-				<div className="mb-2 overflow-hidden rounded-sm border" data-testid="model-limits-table">
+				<div className="mb-2 overflow-hidden rounded-sm border" data-testid={`${testIdPrefix}-table`}>
 					<Table containerClassName="h-full overflow-auto">
 						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="font-medium">{t("modelLimits.model")}</TableHead>
-								<TableHead className="font-medium">{t("modelLimits.provider")}</TableHead>
+								{!isMCPPage && <TableHead className="font-medium">{t("modelLimits.model")}</TableHead>}
+								{!isMCPPage && <TableHead className="font-medium">{t("modelLimits.provider")}</TableHead>}
 								<TableHead className="font-medium">{t("modelLimits.scope")}</TableHead>
 								<TableHead className="font-medium">{t("modelLimits.scopeTarget")}</TableHead>
 								<TableHead className="font-medium">{t("modelLimits.budget")}</TableHead>
-								<TableHead className="font-medium">{t("modelLimits.rateLimit")}</TableHead>
+								{!isMCPPage && <TableHead className="font-medium">{t("modelLimits.rateLimit")}</TableHead>}
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{modelConfigs.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={7} className="h-24 text-center">
+									<TableCell colSpan={isMCPPage ? 4 : 7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">
 											{isLoading ? t("modelLimits.loading") : t("modelLimits.noMatching")}
 										</span>
@@ -380,16 +441,20 @@ export default function ModelLimitsTable({
 								</TableRow>
 							) : (
 								modelConfigs.map((config) => {
-									// Model configs can own multiple budgets; show all (like the VK table).
-									const budgets = config.budgets ?? (config.budget ? [config.budget] : []);
+									// Model configs can own multiple budgets; show all (like the VK table). A holder-level row
+									// shows the lines this page's traffic is charged by; the other page shows the rest.
+									const budgets = (config.budgets ?? (config.budget ? [config.budget] : [])).filter(
+										(b) => !isHolderLevelModelConfig(config) || budgetScopeChargedBy(b.scope, traffic),
+									);
 									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
 									const isRateLimitExhausted =
-										(config.rate_limit?.token_max_limit &&
+										!isMCPPage &&
+										((config.rate_limit?.token_max_limit &&
 											config.rate_limit.token_max_limit > 0 &&
 											config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit) ||
-										(config.rate_limit?.request_max_limit &&
-											config.rate_limit.request_max_limit > 0 &&
-											config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit);
+											(config.rate_limit?.request_max_limit &&
+												config.rate_limit.request_max_limit > 0 &&
+												config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit));
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
 									// Compute safe percentages to avoid division by zero
@@ -405,38 +470,49 @@ export default function ModelLimitsTable({
 									return (
 										<TableRow
 											key={config.id}
-											data-testid={`model-limit-row-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+											data-testid={`${isMCPPage ? "mcp-limit" : "model-limit"}-row-${rowTestIdPart(config, traffic)}`}
 											className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
 										>
-											<TableCell className="max-w-[280px] py-4">
+											{!isMCPPage && (
+												<>
+													<TableCell className="max-w-[280px] py-4">
+														<div className="flex flex-col gap-2">
+															<span className="truncate font-mono text-sm font-medium">
+																{config.model_name === "*" ? t("modelLimits.allModels") : config.model_name}
+															</span>
+															{isExhausted && (
+																<Badge variant="destructive" className="w-fit text-xs">
+																	{t("modelLimits.limitReached")}
+																</Badge>
+															)}
+														</div>
+													</TableCell>
+													<TableCell>
+														{config.provider ? (
+															<div className="flex items-center gap-2">
+																<RenderProviderIcon provider={config.provider as ProviderIconType} size="sm" className="h-4 w-4" />
+																<span className="text-sm">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
+															</div>
+														) : (
+															<span className="text-muted-foreground text-sm">{t("modelLimits.allProviders")}</span>
+														)}
+													</TableCell>
+												</>
+											)}
+											<TableCell className={cn(isMCPPage && "py-4")}>
 												<div className="flex flex-col gap-2">
-													<span className="truncate font-mono text-sm font-medium">
-														{config.model_name === "*" ? t("modelLimits.allModels") : config.model_name}
-													</span>
-													{isExhausted && (
+													<Badge variant="secondary">
+														{(() => {
+															const entry = getModelLimitScope(config.scope ?? "global");
+															return entry?.displayAsScope ?? getScopeLabel(config.scope ?? "global");
+														})()}
+													</Badge>
+													{isMCPPage && isExhausted && (
 														<Badge variant="destructive" className="w-fit text-xs">
 															{t("modelLimits.limitReached")}
 														</Badge>
 													)}
 												</div>
-											</TableCell>
-											<TableCell>
-												{config.provider ? (
-													<div className="flex items-center gap-2">
-														<RenderProviderIcon provider={config.provider as ProviderIconType} size="sm" className="h-4 w-4" />
-														<span className="text-sm">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">{t("modelLimits.allProviders")}</span>
-												)}
-											</TableCell>
-											<TableCell>
-												<Badge variant="secondary">
-													{(() => {
-														const entry = getModelLimitScope(config.scope ?? "global");
-														return entry?.displayAsScope ?? getScopeLabel(config.scope ?? "global");
-													})()}
-												</Badge>
 											</TableCell>
 											<TableCell>
 												<div className="flex flex-col items-start gap-1">
@@ -498,104 +574,106 @@ export default function ModelLimitsTable({
 													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
-											<TableCell className="min-w-[180px]">
-												{config.rate_limit ? (
-													<div className="space-y-2.5">
-														{config.rate_limit.token_max_limit && (
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">
-																					{t("modelLimits.tokensCount", {
-																						value: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
-																					})}
-																				</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
-																				</span>
+											{!isMCPPage && (
+												<TableCell className="min-w-[180px]">
+													{config.rate_limit ? (
+														<div className="space-y-2.5">
+															{config.rate_limit.token_max_limit && (
+																<TooltipProvider>
+																	<Tooltip>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("modelLimits.tokensCount", {
+																							value: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																						})}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
+																					</span>
+																				</div>
+																				<Progress
+																					aria-label={t("modelLimits.tokenUsageAria")}
+																					value={tokenPercentage}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit
+																							? "[&>div]:bg-red-500/70"
+																							: tokenPercentage > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
 																			</div>
-																			<Progress
-																				aria-label={t("modelLimits.tokenUsageAria")}
-																				value={tokenPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit
-																						? "[&>div]:bg-red-500/70"
-																						: tokenPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{t("modelLimits.usageTokens", {
-																				used: config.rate_limit.token_current_usage.toLocaleString(getLocale()),
-																				max: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
-																			})}
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			{t("modelLimits.resets", {
-																				period: formatResetDuration(config.rate_limit.token_reset_duration || "1h"),
-																			})}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														)}
-														{config.rate_limit.request_max_limit && (
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">
-																					{t("modelLimits.reqCount", {
-																						value: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
-																					})}
-																				</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
-																				</span>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{t("modelLimits.usageTokens", {
+																					used: config.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																					max: config.rate_limit.token_max_limit.toLocaleString(getLocale()),
+																				})}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				{t("modelLimits.resets", {
+																					period: formatResetDuration(config.rate_limit.token_reset_duration || "1h"),
+																				})}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																</TooltipProvider>
+															)}
+															{config.rate_limit.request_max_limit && (
+																<TooltipProvider>
+																	<Tooltip>
+																		<TooltipTrigger asChild>
+																			<div className="space-y-1.5">
+																				<div className="flex items-center justify-between gap-4 text-xs">
+																					<span className="font-medium">
+																						{t("modelLimits.reqCount", {
+																							value: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																						})}
+																					</span>
+																					<span className="text-muted-foreground">
+																						{formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
+																					</span>
+																				</div>
+																				<Progress
+																					aria-label={t("modelLimits.requestUsageAria")}
+																					value={requestPercentage}
+																					className={cn(
+																						"bg-muted/70 dark:bg-muted/30 h-1",
+																						config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit
+																							? "[&>div]:bg-red-500/70"
+																							: requestPercentage > 80
+																								? "[&>div]:bg-amber-500/70"
+																								: "[&>div]:bg-emerald-500/70",
+																					)}
+																				/>
 																			</div>
-																			<Progress
-																				aria-label={t("modelLimits.requestUsageAria")}
-																				value={requestPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit
-																						? "[&>div]:bg-red-500/70"
-																						: requestPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{t("modelLimits.usageRequests", {
-																				used: config.rate_limit.request_current_usage.toLocaleString(getLocale()),
-																				max: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
-																			})}
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			{t("modelLimits.resets", {
-																				period: formatResetDuration(config.rate_limit.request_reset_duration || "1h"),
-																			})}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														)}
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
-											</TableCell>
+																		</TooltipTrigger>
+																		<TooltipContent>
+																			<p className="font-medium">
+																				{t("modelLimits.usageRequests", {
+																					used: config.rate_limit.request_current_usage.toLocaleString(getLocale()),
+																					max: config.rate_limit.request_max_limit.toLocaleString(getLocale()),
+																				})}
+																			</p>
+																			<p className="text-primary-foreground/80 text-xs">
+																				{t("modelLimits.resets", {
+																					period: formatResetDuration(config.rate_limit.request_reset_duration || "1h"),
+																				})}
+																			</p>
+																		</TooltipContent>
+																	</Tooltip>
+																</TooltipProvider>
+															)}
+														</div>
+													) : (
+														<span className="text-muted-foreground text-sm">-</span>
+													)}
+												</TableCell>
+											)}
 											<TableCell
 												className={cn(
 													"group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-20 bg-white text-right",
@@ -606,6 +684,7 @@ export default function ModelLimitsTable({
 												<div className="flex items-center justify-center">
 													<ModelLimitActionsMenu
 														config={config}
+														traffic={traffic}
 														hasUpdateAccess={hasUpdateAccess}
 														hasDeleteAccess={hasDeleteAccess}
 														onEdit={handleEditModelLimit}
@@ -638,7 +717,7 @@ export default function ModelLimitsTable({
 								size="sm"
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
-								data-testid="model-limits-pagination-prev-btn"
+								data-testid={`${testIdPrefix}-pagination-prev-btn`}
 								aria-label={t("virtualKeys.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
@@ -655,7 +734,7 @@ export default function ModelLimitsTable({
 								size="sm"
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
-								data-testid="model-limits-pagination-next-btn"
+								data-testid={`${testIdPrefix}-pagination-next-btn`}
 								aria-label={t("virtualKeys.nextPage")}
 							>
 								<ChevronRight className="size-3" />

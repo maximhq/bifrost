@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "Ambito",
-		"shared": "Entrambi",
+		"shared": "Condiviso",
 		"model": "Modello",
 		"mcp": "MCP",
 		"sharedHint": "Addebitato da richieste ai modelli ed esecuzioni di strumenti MCP",

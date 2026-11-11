@@ -220,6 +220,7 @@
 			"routingRule": "Routing-Regel erstellen",
 			"mcpServer": "MCP-Server hinzufügen",
 			"modelLimit": "Modelllimit erstellen",
+			"mcpLimit": "MCP-Limit erstellen",
 			"webhook": "Webhook erstellen",
 			"mcpLibraryServer": "Server zur MCP-Bibliothek hinzufügen",
 			"virtualMcp": "Virtuellen MCP erstellen",

@@ -32,12 +32,14 @@ interface MultiBudgetLinesProps {
 	// How many lines this holder can carry; Add Budget disappears once they are all there. Left out
 	// where there is no ceiling - a team, a customer or a virtual key may carry one per reset window.
 	maxLines?: number;
-	// Offer the Both / Model / MCP scope beside each line's reset period. Only for holders MCP tool
-	// executions can be charged against (a key's own budgets, a team, a customer, an all-models
-	// limit); elsewhere every line stays the shared default and no option is shown.
+	// Offer the Shared / Model / MCP scope beside each line's reset period: on a key's own budgets, a
+	// team, a customer and a model limit. Elsewhere every line stays the shared default and no option
+	// is shown.
 	showScope?: boolean;
 	// Which scopes the selector offers when shown; every scope when omitted.
 	scopeOptions?: readonly LimitScope[];
+	// The scope a new line starts with when the selector is shown; the shared default when omitted.
+	defaultScope?: LimitScope;
 }
 
 export default function MultiBudgetLines({
@@ -51,6 +53,7 @@ export default function MultiBudgetLines({
 	maxLines,
 	showScope = false,
 	scopeOptions,
+	defaultScope,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
 	const { t: tModels } = useTranslation("models");
@@ -68,13 +71,15 @@ export default function MultiBudgetLines({
 	}, [lines, showScope]);
 
 	function addLine() {
-		// Pick the first duration unused by a shared ("shared") line, falling back to the first option value
-		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, undefined)));
+		// Pick the first duration unused by a line of the new line's scope, falling back to the first option value
+		const scope = showScope ? defaultScope : undefined;
+		const available = options.find((o) => !usedPeriods.has(budgetPeriodKey(o.value, scope)));
 		onChange([
 			...lines,
 			{
 				max_limit: undefined,
 				reset_duration: available?.value ?? options[0]?.value ?? "",
+				...(scope && { scope }),
 			},
 		]);
 	}

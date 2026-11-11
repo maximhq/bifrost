@@ -208,7 +208,7 @@
 	},
 	"budgetScope": {
 		"label": "Geltungsbereich",
-		"shared": "Beide",
+		"shared": "Geteilt",
 		"model": "Modell",
 		"mcp": "MCP",
 		"sharedHint": "Wird von Modellanfragen und MCP-Tool-Ausführungen belastet",

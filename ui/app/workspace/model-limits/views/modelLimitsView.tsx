@@ -3,6 +3,7 @@ import { LoadErrorView } from "@/components/loadErrorView";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
 import { getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
+import type { LimitTraffic } from "@/lib/utils/governance";
 import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
@@ -13,7 +14,16 @@ import ModelLimitsTable from "./modelLimitsTable";
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
-export default function ModelLimitsView() {
+// The scopes the MCP page lists when no scope is picked: the deployment's and virtual keys' own limits.
+const MCP_PAGE_SCOPES = "global,virtual_key";
+
+interface ModelLimitsViewProps {
+	/** "mcp" lists the holder-level rows MCP tool executions are charged by (the MCP Budgets & Limits page). */
+	traffic?: LimitTraffic;
+}
+
+export default function ModelLimitsView({ traffic = "model" }: ModelLimitsViewProps) {
+	const isMCPPage = traffic === "mcp";
 	const { t } = useTranslation("models");
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
@@ -39,15 +49,16 @@ export default function ModelLimitsView() {
 		isLoading: isModelConfigsLoading,
 		refetch: refetchModelConfigs,
 	} = useGetModelConfigsQuery(
-		{
-			limit: PAGE_SIZE,
-			offset,
-			search: debouncedSearch || undefined,
-			// The filter option's value names one scope, but it may cover several (an
-			// enterprise access-profile row is still a user's limit) — send them all.
-			scope: scopeQueryValue || undefined,
-			provider: provider || undefined,
-		},
+		isMCPPage
+			? { applies_to: "mcp", limit: PAGE_SIZE, offset, scope: scopeQueryValue || MCP_PAGE_SCOPES }
+			: {
+					limit: PAGE_SIZE,
+					offset,
+					search: debouncedSearch || undefined,
+					// The filter option's value names one scope, but it may cover several; send them all.
+					scope: scopeQueryValue || undefined,
+					provider: provider || undefined,
+				},
 		{
 			skip: !hasGovernanceAccess,
 			pollingInterval: POLLING_INTERVAL,
@@ -106,6 +117,7 @@ export default function ModelLimitsView() {
 			limit={PAGE_SIZE}
 			onOffsetChange={setOffset}
 			isLoading={isModelConfigsLoading}
+			traffic={traffic}
 		/>
 	);
 }
