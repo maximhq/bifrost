@@ -1644,7 +1644,7 @@
 		"issuerLabel": "URL de l’émetteur",
 		"issuerDescription": "L’URL publique stable de Bifrost. Claude Code se connecte à <code0/>. C’est le même émetteur que celui du serveur OAuth MCP : le modifier affecte donc aussi les clients MCP connectés via OAuth. Prend en charge la syntaxe des variables d’environnement (par ex. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com ou env.BIFROST_ISSUER_URL",
-		"gatewayURLTemplate": "<URL de l’émetteur>/claude-code",
+		"gatewayURLTemplate": "<URL de l’émetteur>/gateway/claude-code",
 		"connectTitle": "Connecter Claude Code",
 		"gatewayURLLabel": "URL de la passerelle :",
 		"connectBody": "Claude Code ne lit l’URL de la passerelle que dans les paramètres gérés au niveau de la machine. Déployez ces clés sur chaque poste de développeur (via MDM ou le fichier <code0>managed-settings.json</code0> de Claude Code), puis les développeurs exécutent <code1>/login</code1> et appuient sur Entrée sur l’écran <b2>Cloud gateway</b2> :",

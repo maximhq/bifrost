@@ -14,7 +14,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 	h, _, _, cfg := newClaudeCodeGateway(t, false)
 
 	t.Run("no policy configured", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
+		ctx := getCtx("/gateway/claude-code/managed/settings")
 		claudeCodeProfile{}.managedSettingsHandler(h.store)(ctx)
 		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	})
@@ -30,7 +30,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 	wantChecksum := "sha256:" + hex.EncodeToString(sum[:])
 
 	t.Run("policy is served with its checksum", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
+		ctx := getCtx("/gateway/claude-code/managed/settings")
 		claudeCodeProfile{}.managedSettingsHandler(h.store)(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 		body := jsonBody(t, ctx)
@@ -41,7 +41,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 	})
 
 	t.Run("unchanged policy answers 304", func(t *testing.T) {
-		ctx := getCtx("/claude-code/managed/settings")
+		ctx := getCtx("/gateway/claude-code/managed/settings")
 		ctx.Request.Header.Set("If-None-Match", `"`+wantChecksum+`"`)
 		claudeCodeProfile{}.managedSettingsHandler(h.store)(ctx)
 		assert.Equal(t, fasthttp.StatusNotModified, ctx.Response.StatusCode())
@@ -49,7 +49,7 @@ func TestClaudeCodeGateway_ManagedSettings(t *testing.T) {
 
 	t.Run("an empty policy is still a policy", func(t *testing.T) {
 		cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings = map[string]any{}
-		ctx := getCtx("/claude-code/managed/settings")
+		ctx := getCtx("/gateway/claude-code/managed/settings")
 		claudeCodeProfile{}.managedSettingsHandler(h.store)(ctx)
 		assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 	})

@@ -16,9 +16,9 @@ import (
 )
 
 // Claude Code gateway profile constants. Claude Code's /login (Cloud gateway)
-// is pointed at {issuer}/claude-code and derives every other URL from it.
+// is pointed at {issuer}/gateway/claude-code and derives every other URL from it.
 const (
-	claudeCodeGatewayPathPrefix = "/claude-code"
+	claudeCodeGatewayPathPrefix = "/gateway/claude-code"
 	// claudeCodeClientID names the built-in OAuth client every Claude Code
 	// device grant and refresh token is bound to. Claude Code sends no client_id
 	// at either endpoint, so the gateway supplies this one.
@@ -83,7 +83,7 @@ func (p claudeCodeProfile) RegisterExtraRoutes(r *router.Router, ep *clientGatew
 	}
 }
 
-// --- GET /claude-code/managed/settings ---
+// --- GET /gateway/claude-code/managed/settings ---
 
 type claudeCodeManagedSettingsResponse struct {
 	UUID     string         `json:"uuid"`
@@ -138,7 +138,7 @@ func claudeCodeSettingsChecksum(settings map[string]any) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// --- POST /claude-code/v1/{metrics,logs,traces} ---
+// --- POST /gateway/claude-code/v1/{metrics,logs,traces} ---
 
 // handleClaudeCodeOTLP accepts Claude Code's OTLP/HTTP exports. While signed in
 // to a gateway the client sends telemetry here instead of to its configured
