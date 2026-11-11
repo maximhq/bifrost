@@ -511,7 +511,7 @@
 		"grpcHostPortFormat": "Doit être au format <host>:<port> pour gRPC (par ex. {{example}})",
 		"invalidInput": "Saisie invalide",
 		"vertexEndpointId": "Saisissez un ID de point de terminaison Vertex ou collez une URL de point de terminaison prise en charge",
-		"basetenDeploymentUrl": "L'URL du déploiement doit être une URL https absolue",
+		"basetenDeploymentUrl": "L'URL du déploiement doit être une URL https absolue sans identifiants, requête ni fragment",
 		"mcp": {
 			"privateKeyRequired": "Une clé privée est requise pour private_key_jwt",
 			"secretRequiredForMethod": "Un secret client est requis pour choisir son mode d'envoi",

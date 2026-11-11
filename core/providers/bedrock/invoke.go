@@ -176,6 +176,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		IsError   *bool           `json:"is_error,omitempty"`
 		Thinking  *string         `json:"thinking,omitempty"`
 		Signature *string         `json:"signature,omitempty"`
+		ToolName  *string         `json:"tool_name,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(b),
@@ -262,6 +263,11 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 			break
 		}
 		b.AnthropicToolSearchResult = res
+	case "tool_reference":
+		if aux.ToolName == nil {
+			return nil
+		}
+		b.AnthropicToolReference = aux.ToolName
 	case "thinking":
 		if aux.Thinking == nil {
 			return nil
@@ -280,7 +286,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 // normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
 // "content" field, which per Anthropic's API is either a plain string or an
 // array of content blocks. Array elements are decoded as []BedrockContentBlock,
-// so a nested image or tool_use inside a tool_result is normalized recursively
+// so a nested image, tool_use or tool_reference inside a tool_result is normalized recursively
 // via BedrockContentBlock.UnmarshalJSON above.
 func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
 	if len(raw) == 0 {
