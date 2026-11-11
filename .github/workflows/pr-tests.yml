@@ -20,7 +20,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     outputs:
@@ -50,7 +50,7 @@ jobs:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
     name: Run Tests (Awaiting Approval)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
 
     # Environment with protection rules - requires admin approval
     # Note: You need to configure this environment in repo settings
@@ -78,6 +78,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -95,7 +96,7 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -171,7 +172,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -223,6 +224,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

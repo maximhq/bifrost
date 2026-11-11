@@ -2,25 +2,11 @@ package lib
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 )
-
-// GenerateRelayHash fingerprints an endpoint as config.json declares it, so a load can
-// tell a changed declaration from an unchanged one without comparing field by field. Map keys are
-// sorted, so the hash is stable across loads.
-func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
-	data, err := providerUtils.MarshalSorted(cfg)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
-}
 
 // loadRelaysConfig reconciles the top-level "relays" section against the
 // config store, the way loadAgentsConfig reconciles agents: declarations are validated with a
@@ -74,7 +60,7 @@ func loadRelaysConfig(ctx context.Context, config *Config, configData *ConfigDat
 		if exists {
 			keep[cfg.Name] = true
 		}
-		fileHash, err := GenerateRelayHash(cfg)
+		fileHash, err := configstore.GenerateRelayHash(cfg)
 		if err != nil {
 			logger.Warn("failed to hash relay %q: %v", cfg.Name, err)
 			continue

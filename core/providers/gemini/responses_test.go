@@ -150,6 +150,56 @@ func TestGeminiResponsesStreamTerminalFromFinishReason(t *testing.T) {
 	}
 }
 
+// nilPartBeforeTextFixture is a STOP turn whose candidate parts open with a nil
+// entry (a JSON null decodes to a nil *Part) followed by valid text.
+func nilPartBeforeTextFixture() *GenerateContentResponse {
+	resp := geminiTruncationFixture(FinishReasonStop)
+	resp.Candidates[0].Content.Parts = []*Part{nil, {Text: "Rome was"}}
+	return resp
+}
+
+// TestGeminiResponsesNilPartBeforeText pins that the unary Responses converter skips a
+// nil candidate part and still emits the valid text after it.
+func TestGeminiResponsesNilPartBeforeText(t *testing.T) {
+	var resp *schemas.BifrostResponsesResponse
+	require.NotPanics(t, func() { resp = nilPartBeforeTextFixture().ToResponsesBifrostResponsesResponse() })
+	require.NotNil(t, resp)
+	var texts []string
+	for _, item := range resp.Output {
+		if item.Content == nil {
+			continue
+		}
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil {
+				texts = append(texts, *block.Text)
+			}
+		}
+	}
+	assert.Equal(t, []string{"Rome was"}, texts, "text after the nil part must survive")
+	assertGeminiResponsesStatus(t, resp.Status, resp.IncompleteDetails, "completed", "")
+}
+
+// TestGeminiResponsesStreamNilPartBeforeTextCompletes pins that the Responses stream
+// converter skips a nil candidate part, streams the valid text after it, and still
+// reaches response.completed.
+func TestGeminiResponsesStreamNilPartBeforeTextCompletes(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	var events []*schemas.BifrostResponsesStreamResponse
+	var bErr *schemas.BifrostError
+	require.NotPanics(t, func() { events, bErr = nilPartBeforeTextFixture().ToBifrostResponsesStream(0, state) })
+	require.Nil(t, bErr)
+	require.NotEmpty(t, events)
+	var deltas string
+	for _, ev := range events {
+		if ev.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && ev.Delta != nil {
+			deltas += *ev.Delta
+		}
+	}
+	assert.Equal(t, "Rome was", deltas, "text after the nil part must be streamed")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, events[len(events)-1].Type, "stream must reach its terminal event")
+}
+
 // Issue #7601: response.incomplete is a terminal event. The GenAI stream egress handled
 // only response.completed, so a truncated turn lost its final chunk (finishReason and
 // usage). A provider that reports truncation only via incomplete_details must still
@@ -1007,7 +1057,7 @@ func TestGeminiCodeExecutionPartsBecomeCodeInterpreterCall(t *testing.T) {
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "print(6*7)"}},
 			{CodeExecutionResult: &CodeExecutionResult{Outcome: OutcomeOK, Output: "42\n"}},
 		}}},
-	})
+	}, "msg_test")
 
 	var calls []schemas.ResponsesMessage
 	for _, msg := range out {
@@ -1054,12 +1104,12 @@ func TestGeminiCodeExecutionFailureKeepsOutput(t *testing.T) {
 		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{
 			{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: "1/0"}},
 			{CodeExecutionResult: failed},
-		}}}})
+		}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
 	t.Run("constructed without code", func(t *testing.T) {
-		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}})
+		out := convertGeminiCandidatesToResponsesOutput([]*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{CodeExecutionResult: failed}}}}}, "msg_test")
 		assertFailedCall(t, &out[len(out)-1])
 	})
 
@@ -2233,6 +2283,229 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 			if gjson.GetBytes(wire, "continuation_token").Exists() {
 				t.Errorf("snake_case continuation_token must not reach the wire; body %s", wire)
 			}
+		})
+	}
+}
+
+// TestGeminiResponsesRawAttachment verifies a Gemini chunk's raw payload rides on the event carrying its text or its
+// function call's whole arguments, so the closing events a finishing chunk also expands into never hold text they do
+// not back, and that the payload is declared only when that one event carries all of the chunk's text and arguments.
+func TestGeminiResponsesRawAttachment(t *testing.T) {
+	textChunk := func(finish FinishReason, texts ...string) *GenerateContentResponse {
+		parts := make([]*Part, 0, len(texts))
+		for _, text := range texts {
+			parts = append(parts, &Part{Text: text})
+		}
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}, FinishReason: finish}}}
+	}
+	callChunk := func(parts ...*Part) *GenerateContentResponse {
+		return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: parts}}}}
+	}
+	cases := map[string]struct {
+		chunks     []*GenerateContentResponse
+		wantType   schemas.ResponsesStreamResponseType
+		wantFormat schemas.RawResponseFormat
+		notLast    bool // the chunk also expands into closing events after its text
+	}{
+		"first chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"finishing chunk": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there")},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+			notLast:    true,
+		},
+		"finishing chunk without text": {
+			chunks:     []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop)},
+			wantType:   schemas.ResponsesStreamResponseTypeCompleted,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text spread over several deltas": {
+			chunks:   []*GenerateContentResponse{textChunk("", "Hello"), textChunk(FinishReasonStop, " there", " friend")},
+			wantType: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+		"one function call": {
+			chunks:     []*GenerateContentResponse{callChunk(&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType:   schemas.ResponsesStreamResponseTypeOutputItemDone,
+			wantFormat: schemas.RawResponseFormatGeminiStreamChunk,
+		},
+		"text and a function call": {
+			chunks:   []*GenerateContentResponse{callChunk(&Part{Text: "Sending"}, &Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}})},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		},
+		"two function calls": {
+			chunks: []*GenerateContentResponse{callChunk(
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"alex@example.com"}`)}},
+				&Part{FunctionCall: &FunctionCall{Name: "notify", Args: json.RawMessage(`{"to":"sam@example.com"}`)}},
+			)},
+			wantType: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			state := &GeminiResponsesStreamState{}
+			state.flush()
+			var responses []*schemas.BifrostResponsesStreamResponse
+			for _, chunk := range tc.chunks {
+				converted, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+				require.Nil(t, bifrostErr)
+				responses = converted
+			}
+
+			rawIdx, format := geminiResponsesRawAttachment(responses)
+
+			require.GreaterOrEqual(t, rawIdx, 0)
+			assert.Equal(t, tc.wantType, responses[rawIdx].Type)
+			assert.Equal(t, tc.wantFormat, format)
+			if tc.notLast {
+				assert.Less(t, rawIdx, len(responses)-1, "raw must move off the closing events")
+			}
+		})
+	}
+}
+
+// The /anthropic ingress routed to gemini-4: Claude Code style thinking.budget_tokens
+// must reach Google as thinkingLevel, because gemini-4 rejects thinkingBudget.
+// Source: https://ai.google.dev/gemini-api/docs/thinking
+func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &anthropic.AnthropicMessageRequest{
+		Model:     "gemini/gemini-4-argon",
+		MaxTokens: 16000,
+		Messages: []anthropic.AnthropicMessage{
+			{Role: anthropic.AnthropicMessageRoleUser, Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Thinking: &anthropic.AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(4096)},
+	}
+	normalized := req.ToBifrostResponsesRequest(ctx)
+	out, err := ToGeminiResponsesRequest(ctx, normalized)
+	require.NoError(t, err)
+	got := out.GenerationConfig.ThinkingConfig
+	require.NotNil(t, got)
+	assert.Nil(t, got.ThinkingBudget, "gemini-4 rejects thinkingBudget with a 400")
+	require.NotNil(t, got.ThinkingLevel)
+	assert.Equal(t, "medium", *got.ThinkingLevel)
+}
+
+// TestExtractFunctionResponseOutput_KeepsSiblingFields pins which functionResponse.response
+// shapes are unwrapped. Only the documented {"output": X} envelope is unwrapped; any sibling
+// field (stderr, ok, budget, error, ...) means the whole object is the tool result, so it must
+// survive intact. Before the fix, the "output" key was picked whenever present, and a null
+// output collapsed to "" because unmarshalling JSON null into a Go string succeeds.
+func TestExtractFunctionResponseOutput_KeepsSiblingFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		want     string
+		wantJSON bool
+	}{
+		{name: "sole string output is unwrapped", response: `{"output":"hello"}`, want: "hello"},
+		{name: "sole object output is unwrapped", response: `{"output":{"count":3}}`, want: `{"count":3}`, wantJSON: true},
+		{name: "no output key keeps whole object", response: `{"temperature":22}`, want: `{"temperature":22}`, wantJSON: true},
+		{
+			name:     "null output with stderr sibling",
+			response: `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			want:     `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			wantJSON: true,
+		},
+		{
+			name:     "null output with stdout sibling",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			want:     `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			wantJSON: true,
+		},
+		{
+			name:     "object output with siblings",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			want:     `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			wantJSON: true,
+		},
+		{
+			name:     "output with error sibling",
+			response: `{"output":"partial","error":"timeout"}`,
+			want:     `{"output":"partial","error":"timeout"}`,
+			wantJSON: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFunctionResponseOutput(&FunctionResponse{Name: "run", Response: json.RawMessage(tt.response)})
+			if tt.wantJSON {
+				assert.JSONEq(t, tt.want, got)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip drives the /genai converting route
+// end to end: GenAI request -> Bifrost Responses request -> outbound Gemini request. Every
+// field the client put in functionResponse.response must reach the upstream.
+func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{
+			name:     "execution error",
+			response: `{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}`,
+			want:     `{"output":{"ok":false,"stdout":"","stderr":"SYNTHETIC_ERROR","output":null}}`,
+		},
+		{
+			name:     "printed text",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}`,
+			want:     `{"output":{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"","output":null}}`,
+		},
+		{
+			name:     "expression and siblings",
+			response: `{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}`,
+			want:     `{"output":{"ok":true,"stdout":"VISIBLE_MARKER\n","stderr":"DIAGNOSTIC","output":{"count":3},"budget":"Finish now."}}`,
+		},
+		{
+			name:     "budget",
+			response: `{"ok":false,"stdout":"","stderr":"","output":null,"budget":"Finish now."}`,
+			want:     `{"output":{"ok":false,"stdout":"","stderr":"","output":null,"budget":"Finish now."}}`,
+		},
+		{
+			name:     "sole output envelope is unchanged",
+			response: `{"output":{"count":3}}`,
+			want:     `{"output":{"count":3}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			genaiReq := &GeminiGenerationRequest{
+				Model: "gemini-2.5-flash",
+				Contents: []Content{
+					{Role: "user", Parts: []*Part{{Text: "Run the code."}}},
+					{Role: "model", Parts: []*Part{{FunctionCall: &FunctionCall{ID: "call_1", Name: "run", Args: json.RawMessage(`{"code":"1+2"}`)}}}},
+					{Role: "user", Parts: []*Part{{FunctionResponse: &FunctionResponse{ID: "call_1", Name: "run", Response: json.RawMessage(tt.response)}}}},
+				},
+			}
+			bifrostReq := genaiReq.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			bifrostReq.Provider = schemas.Gemini
+
+			out, err := ToGeminiResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+
+			var got []string
+			for _, content := range out.Contents {
+				for _, part := range content.Parts {
+					if part != nil && part.FunctionResponse != nil {
+						got = append(got, string(part.FunctionResponse.Response))
+					}
+				}
+			}
+			require.Len(t, got, 1)
+			assert.JSONEq(t, tt.want, got[0])
 		})
 	}
 }

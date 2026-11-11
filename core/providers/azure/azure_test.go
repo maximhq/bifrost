@@ -674,14 +674,16 @@ const (
 )
 
 // TestAzureWhisperTranscriptionReportsDurationUsage pins Whisper billing on Azure, which returns no
-// usage block: json is fetched as verbose_json and returned as text only, verbose_json is returned
-// whole, and both carry the duration rounded up to the second. text carries no duration and is
-// left as is, and other transcription models keep the format the caller asked for.
+// usage block: the seconds in Azure's Csp-Billing-Usage header are the usage for every format, and
+// without the header json is fetched as verbose_json and returned as text only, verbose_json is
+// returned whole, and both carry the duration rounded up to the second. text without the header
+// carries no duration and is left unbilled, and other transcription models keep the format asked for.
 func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 	const text = "Hello, this is a sample test. Respond with hello for my Bifrost."
 	cases := []struct {
 		name, model  string
 		format       *string
+		billing      string
 		wantUpstream string
 		wantSeconds  *float64
 		wantVerbose  bool
@@ -690,6 +692,9 @@ func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 		{name: "json", model: "whisper", format: new("json"), wantUpstream: "verbose_json", wantSeconds: new(5.0)},
 		{name: "verbose_json", model: "whisper", format: new("verbose_json"), wantUpstream: "verbose_json", wantSeconds: new(5.0), wantVerbose: true},
 		{name: "text", model: "whisper", format: new("text"), wantUpstream: "text"},
+		{name: "text billed from the header", model: "whisper", format: new("text"), billing: "CognitiveServices.OpenAI.Whisper=5", wantUpstream: "text", wantSeconds: new(5.0)},
+		{name: "header wins over the duration", model: "whisper", format: new("verbose_json"), billing: "CognitiveServices.OpenAI.Whisper=7", wantUpstream: "verbose_json", wantSeconds: new(7.0), wantVerbose: true},
+		{name: "infinite header falls back to the duration", model: "whisper", format: new("verbose_json"), billing: "CognitiveServices.OpenAI.Whisper=+Inf", wantUpstream: "verbose_json", wantSeconds: new(5.0), wantVerbose: true},
 		{name: "other model", model: "gpt-4o-transcribe", wantUpstream: ""},
 	}
 	for _, tc := range cases {
@@ -700,6 +705,9 @@ func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
 				_ = r.ParseMultipartForm(1 << 20)
 				format := r.FormValue("response_format")
 				captured <- capturedRequest{path: r.URL.Path, format: format}
+				if tc.billing != "" {
+					w.Header().Set("Csp-Billing-Usage", tc.billing)
+				}
 				switch format {
 				case "verbose_json":
 					w.Header().Set("Content-Type", "application/json")
@@ -804,6 +812,38 @@ func TestAzureWhisperLargePayloadKeepsVerboseFields(t *testing.T) {
 	}
 }
 
+// TestAzureWhisperLargePayloadBilledFromHeader pins a large json upload, whose reply carries no
+// duration: it is billed from the seconds in Azure's Csp-Billing-Usage header.
+func TestAzureWhisperLargePayloadBilledFromHeader(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "whisper")
+	part, _ := writer.CreateFormFile("file", "sample.mp3")
+	_, _ = part.Write([]byte("ID3 audio"))
+	_ = writer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Csp-Billing-Usage", "CognitiveServices.OpenAI.Whisper=5")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureWhisperJSONBody)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(body.Bytes())))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, writer.FormDataContentType())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, body.Len())
+	request := &schemas.BifrostTranscriptionRequest{Provider: schemas.Azure, Model: "whisper"}
+	resp, bifrostErr := newAzureDecisionProvider(t).Transcription(ctx, newAzureDecisionKey(server.URL), request)
+	if bifrostErr != nil {
+		t.Fatalf("Transcription: %+v", bifrostErr.Error)
+	}
+	if resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 5 {
+		t.Errorf("usage = %+v, want 5 duration seconds from the billing header", resp.Usage)
+	}
+}
+
 // BenchmarkAzureWhisperTranscription measures a json transcription round trip to a local server:
 // Whisper pays the verbose_json fetch and strip, other models only the model check.
 func BenchmarkAzureWhisperTranscription(b *testing.B) {
@@ -837,4 +877,130 @@ func BenchmarkAzureWhisperTranscription(b *testing.B) {
 			}
 		})
 	}
+}
+
+// azureOnYourDataContext is the citation context Azure On Your Data returns with an answer:
+// on choices[].message.context for a unary reply and on the first delta.context of a stream.
+const azureOnYourDataContext = `{"citations":[{"content":"Bifrost routes requests across providers.","title":"overview.md","url":"https://example.com/overview.md","filepath":"overview.md","chunk_id":"0"}],"intent":"[\"what does bifrost do\"]"}`
+
+func newAzureOnYourDataRequest() *schemas.BifrostChatRequest {
+	text := "What does Bifrost do?"
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{
+			"data_sources": []interface{}{map[string]interface{}{"type": "azure_search", "parameters": map[string]interface{}{"endpoint": "https://search.example.com", "index_name": "docs"}}},
+		}},
+	}
+}
+
+// TestAzureOnYourDataKeepsCitationContext pins that the citations Azure On Your Data returns
+// reach the caller. The deployments route answers with choices[].message.context (unary) and
+// delta.context (streaming); Bifrost's chat message had no such field, so the answer came back
+// without its sources once data_sources requests started reaching On Your Data.
+func TestAzureOnYourDataKeepsCitationContext(t *testing.T) {
+	var wantContext any
+	if err := json.Unmarshal([]byte(azureOnYourDataContext), &wantContext); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("unary", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/openai/deployments/gpt-4o/chat/completions" {
+				t.Errorf("path = %s, want the deployments route", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-oyd","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Bifrost routes requests [doc1].","context":`+azureOnYourDataContext+`}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+		}))
+		defer server.Close()
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := newAzureDecisionProvider(t).ChatCompletion(ctx, newAzureDecisionKey(server.URL), newAzureOnYourDataRequest())
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %+v", bifrostErr.Error)
+		}
+		encoded, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+					Context any    `json:"context"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.Choices) != 1 || decoded.Choices[0].Message.Content != "Bifrost routes requests [doc1]." {
+			t.Fatalf("unexpected response: %s", encoded)
+		}
+		if !reflect.DeepEqual(decoded.Choices[0].Message.Context, wantContext) {
+			t.Errorf("message.context = %v, want Azure's citation context; response: %s", decoded.Choices[0].Message.Context, encoded)
+		}
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/openai/deployments/gpt-4o/chat/completions" {
+				t.Errorf("path = %s, want the deployments route", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			frames := []string{
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","context":` + azureOnYourDataContext + `}}]}`,
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Bifrost routes requests [doc1]."}}]}`,
+				`{"id":"chatcmpl-oyd","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			}
+			for _, f := range frames {
+				_, _ = io.WriteString(w, "data: "+f+"\n\n")
+			}
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		}))
+		defer server.Close()
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		passThrough := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return result, err
+		}
+		stream, bifrostErr := newAzureDecisionProvider(t).ChatCompletionStream(ctx, passThrough, nil, newAzureDecisionKey(server.URL), newAzureOnYourDataRequest())
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStream: %+v", bifrostErr.Error)
+		}
+		var contexts []any
+		var chunks []string
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+			}
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			encoded, err := json.Marshal(chunk.BifrostChatResponse)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks = append(chunks, string(encoded))
+			var decoded struct {
+				Choices []struct {
+					Delta struct {
+						Context any `json:"context"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range decoded.Choices {
+				if c.Delta.Context != nil {
+					contexts = append(contexts, c.Delta.Context)
+				}
+			}
+		}
+		if len(contexts) != 1 || !reflect.DeepEqual(contexts[0], wantContext) {
+			t.Errorf("delta.context seen %d times, want Azure's citation context once; chunks:\n%s", len(contexts), strings.Join(chunks, "\n"))
+		}
+	})
 }

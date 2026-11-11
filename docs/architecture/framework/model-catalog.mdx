@@ -163,6 +163,14 @@ type PricingEntry struct {
     CacheCreationInputTokenCostAbove100kTokens         *float64 `json:"cache_creation_input_token_cost_above_100k_tokens,omitempty"`
     CacheReadInputTokenCostAbove100kTokens             *float64 `json:"cache_read_input_token_cost_above_100k_tokens,omitempty"`
     CacheCreationInputTokenCostAbove1hrAbove100kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_100k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove12hr *float64 `json:"cache_creation_input_token_cost_above_12hr,omitempty"`
+    CacheCreationInputTokenCostAbove12hrAbove272kTokens *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove12hrPriority        *float64 `json:"cache_creation_input_token_cost_above_12hr_priority,omitempty"`
+    CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority,omitempty"`
+    CacheCreationInputTokenCostAbove12hrFlex            *float64 `json:"cache_creation_input_token_cost_above_12hr_flex,omitempty"`
+    CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex,omitempty"`
+    CacheCreationInputTokenCostAbove12hrUltrafast       *float64 `json:"cache_creation_input_token_cost_above_12hr_ultrafast,omitempty"`
+    CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
     CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
     CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
 
@@ -209,6 +217,17 @@ type PricingEntry struct {
     OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
     OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
     OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+    // Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set
+    InputCostPerTokenVoiceLive                     *float64 `json:"input_cost_per_token_voice_live,omitempty"`
+    OutputCostPerTokenVoiceLive                    *float64 `json:"output_cost_per_token_voice_live,omitempty"`
+    CacheReadInputTokenCostVoiceLive               *float64 `json:"cache_read_input_token_cost_voice_live,omitempty"`
+    InputCostPerAudioTokenVoiceLive                *float64 `json:"input_cost_per_audio_token_voice_live,omitempty"`
+    OutputCostPerAudioTokenVoiceLive               *float64 `json:"output_cost_per_audio_token_voice_live,omitempty"`
+    InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+    OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+    InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+    OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
 
     OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
     OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`

@@ -1120,6 +1120,102 @@ func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *test
 	}
 }
 
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch pins the Codex
+// shape on Bedrock Claude: a tool_search moves the request onto InvokeModel, where the
+// web_search Codex always sends used to go out as web_search_20250305 and Bedrock
+// answered 400 "tool type 'web_search_20250305' is not supported for this model".
+// Converse already drops it for non-Nova models; InvokeModel must too.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5-5",
+		Input:    makeSimpleInput("What changed in the repo?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+				responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+				responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "global.anthropic.claude-sonnet-5-5",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var sawShell bool
+	for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+		typ := tool.Get("type").String()
+		if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+			t.Errorf("Bedrock Claude does not accept %s, but it was sent: %s", typ, string(body))
+		}
+		if tool.Get("name").String() == "shell" {
+			sawShell = true
+		}
+	}
+	if !sawShell {
+		t.Errorf("function tool was lost: %s", string(body))
+	}
+}
+
+// TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog pins the
+// live failure the catalog-free test above missed: the datasheet marks Claude on Bedrock
+// supports_web_search (60 Bedrock rows do), and that record used to override the host flag,
+// so web_search_20250305 still reached InvokeModel and Bedrock answered 400.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeDropsWebSearchDespiteCatalog(t *testing.T) {
+	yes := true
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsWebSearch: &yes, SupportsCodeExecution: &yes}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			model := "global.anthropic.claude-sonnet-4-6"
+			request := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    model,
+				Input:    makeSimpleInput("What changed in the repo?"),
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{
+						responsesToolFromJSON(t, `{"type":"tool_search","execution":"client"}`),
+						responsesToolFromJSON(t, `{"type":"web_search","external_web_access":false}`),
+						responsesToolFromJSON(t, `{"type":"code_interpreter","container":{"type":"auto"}}`),
+						responsesToolFromJSON(t, `{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{}}}`),
+					},
+				},
+			}
+			body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+				Provider:      provider,
+				Model:         model,
+				ValidateTools: true,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var sawFunction bool
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				typ := tool.Get("type").String()
+				if strings.HasPrefix(typ, "web_search_") || strings.HasPrefix(typ, "code_execution_") {
+					t.Errorf("%s does not serve %s, but a catalog record let it through: %s", provider, typ, string(body))
+				}
+				if tool.Get("name").String() == "get_weather" {
+					sawFunction = true
+				}
+			}
+			if !sawFunction {
+				t.Errorf("function tool was lost: %s", string(body))
+			}
+		})
+	}
+}
+
 // TestRawBodyBuilderKeepsToolsAndSetsBetaHeaders checks the thing that actually goes
 // upstream, rather than any one step of building it.
 //
@@ -1378,6 +1474,59 @@ func TestClaudeCodeBodyRetargetedToHaiku(t *testing.T) {
 	}
 	if got := providerUtils.GetJSONField(out, "context_management.edits.0.type").String(); got != "clear_thinking_20251015" {
 		t.Errorf("context_management edit = %q, want clear_thinking_20251015 kept; body: %s", got, out)
+	}
+}
+
+// A custom provider with an Anthropic base resolves capabilities under its own
+// name, which no datasheet row carries, so ToAnthropicChatRequest decides on the
+// name fallbacks; the builder's re-strip runs under cfg.Provider, where a row can
+// apply. For Haiku 5.5 the fallbacks did not know the model: the converter built
+// enabled thinking with a budget, dropped the effort and kept temperature. With a
+// row the re-strip turned the thinking back into adaptive, so the upstream ran at
+// its default effort and rejected temperature; without one, budget_tokens went out
+// as well, which Haiku 5.5 also rejects. Pinned both ways.
+func TestBuildAnthropicChatRequestBody_Haiku55OnCustomProvider(t *testing.T) {
+	const model = "claude-haiku-5-5"
+	yes, no := true, false
+	for _, withRow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("datasheet_row=%v", withRow), func(t *testing.T) {
+			if withRow {
+				// The published row is keyed to provider "anthropic", so only the re-strip sees it.
+				providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if p == schemas.Anthropic && m == model {
+						return &schemas.ModelCapabilities{SupportsNativeEffort: &yes, SupportsAdaptiveThinking: &yes, SupportsSamplingParams: &no}
+					}
+					return nil
+				})
+				t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+			}
+			for _, effort := range []string{"low", "max"} {
+				temp := 0.0
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				out, err := BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+					Provider: schemas.ModelProvider("my-claude"),
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+					Params: &schemas.ChatParameters{
+						MaxCompletionTokens: new(8000),
+						Temperature:         &temp,
+						Reasoning:           &schemas.ChatReasoning{Effort: new(effort)},
+					},
+				}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+				if err != nil {
+					t.Fatalf("effort %q: build: %v", effort, err)
+				}
+				if got := providerUtils.GetJSONField(out, "thinking").Raw; got != `{"type":"adaptive","display":"summarized"}` {
+					t.Errorf("effort %q: thinking = %s, want adaptive with summarized display; body: %s", effort, got, out)
+				}
+				if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != effort {
+					t.Errorf("effort %q: output_config.effort = %q; body: %s", effort, got, out)
+				}
+				if providerUtils.JSONFieldExists(out, "temperature") {
+					t.Errorf("effort %q: temperature forwarded to a model that rejects it; body: %s", effort, out)
+				}
+			}
+		})
 	}
 }
 
@@ -3443,4 +3592,298 @@ func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSearchToolVersionsOnProviderWire(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
+		for _, version := range []AnthropicToolType{AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209, AnthropicToolTypeWebFetch20250910} {
+			// Vertex does not support web fetch.
+			if provider == schemas.Vertex && strings.HasPrefix(string(version), "web_fetch_") {
+				continue
+			}
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", provider, version, stream), func(t *testing.T) {
+					name := "web_search"
+					if strings.HasPrefix(string(version), "web_fetch_") {
+						name = "web_fetch"
+					}
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: &version, Name: name}}}
+					request := client.ToBifrostResponsesRequest(nil)
+					request.Provider = provider
+					request.Input = makeSimpleInput("Reply hello without using tools.")
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+						AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+					if err != nil {
+						t.Fatalf("build: %v", err)
+					}
+					want := string(version)
+					if provider == schemas.Vertex && version == AnthropicToolTypeWebSearch20260209 {
+						want = string(AnthropicToolTypeWebSearch20250305)
+					}
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("tool = %s, want %s; body=%s", got, want, body)
+					}
+					if gjson.GetBytes(body, "tools.#").Int() != 1 {
+						t.Errorf("unexpected tools: %s", body)
+					}
+					if strings.Contains(string(body), "web_search_version") || strings.Contains(string(body), "web_fetch_version") {
+						t.Errorf("neutral metadata leaked: %s", body)
+					}
+					if want == string(AnthropicToolTypeWebSearch20250305) || want == string(AnthropicToolTypeWebFetch20250910) {
+						if doesWebSearchOrFetchAutoInjectCodeExecution(gjson.GetBytes(body, "tools.0.type").String()) {
+							t.Errorf("old version now enables code execution: %s", body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// Regression for PR #9258: an older web tool version supplies no code execution, so a
+// declared code execution tool beside it must reach the wire.
+func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
+	codeExec := AnthropicToolTypeCodeExecution20260120
+	cases := []struct {
+		provider     schemas.ModelProvider
+		webTool      *AnthropicToolType // nil sends the neutral tool with no version
+		webName      string
+		wantCodeExec bool
+	}{
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20250910), "web_fetch", true},
+		{schemas.Azure, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", true},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebSearch20260209), "web_search", false},
+		{schemas.Anthropic, schemas.Ptr(AnthropicToolTypeWebFetch20260309), "web_fetch", false},
+		{schemas.Anthropic, nil, "web_search", false}, // Sonnet 4.6 defaults to web_search_20260209.
+		// Vertex has no code execution, so the earlier omission still applies there.
+		{schemas.Vertex, schemas.Ptr(AnthropicToolTypeWebSearch20250305), "web_search", false},
+	}
+	for _, tc := range cases {
+		for _, stream := range []bool{false, true} {
+			label := "neutral"
+			if tc.webTool != nil {
+				label = string(*tc.webTool)
+			}
+			t.Run(fmt.Sprintf("%s/%s/stream=%t", tc.provider, label, stream), func(t *testing.T) {
+				var tools []schemas.ResponsesTool
+				if tc.webTool != nil {
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: tc.webTool, Name: tc.webName}}}
+					tools = client.ToBifrostResponsesRequest(nil).Params.Tools
+				} else {
+					tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}
+				}
+				tools = append(tools, schemas.ResponsesTool{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr(string(codeExec))},
+				})
+				request := &schemas.BifrostResponsesRequest{
+					Provider: tc.provider, Model: "claude-sonnet-4-6",
+					Input:  makeSimpleInput("Reply hello without using tools."),
+					Params: &schemas.ResponsesParameters{Tools: tools},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+					AnthropicRequestBuildConfig{Provider: tc.provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+				if err != nil {
+					t.Fatalf("build: %v", err)
+				}
+				gotCodeExec := false
+				for _, tool := range gjson.GetBytes(body, "tools").Array() {
+					if tool.Get("type").String() == string(codeExec) {
+						gotCodeExec = true
+					}
+				}
+				if gotCodeExec != tc.wantCodeExec {
+					t.Errorf("code execution sent = %t, want %t; body=%s", gotCodeExec, tc.wantCodeExec, body)
+				}
+				if tc.webTool != nil {
+					want := string(*tc.webTool)
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("web tool = %s, want %s; body=%s", got, want, body)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay pins that a thinking
+// block with an empty signature is replayed verbatim to Anthropic-compatible
+// self-hosted servers (vLLM, SGLang), which never sign their own thinking, while
+// native Anthropic still has it stripped (it rejects an unsigned block).
+func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T) {
+	const thinking = "I privately choose the code word PAMPLEMOUSSE-47."
+	body := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":3000,"thinking":{"type":"enabled","budget_tokens":2000},` +
+		`"tools":[{"name":"ping","description":"ping","input_schema":{"type":"object","properties":{}}}],` +
+		`"messages":[{"role":"user","content":"Pick a code word, then call ping."},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"` + thinking + `","signature":""},{"type":"tool_use","id":"t1","name":"ping","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"pong"}]}]}`)
+
+	build := func(t *testing.T, provider schemas.ModelProvider, raw bool) []byte {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		var req AnthropicMessageRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		request := req.ToBifrostResponsesRequest(ctx)
+		request.Provider = provider
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			request.RawRequestBody = body
+		}
+		out, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: provider, ValidateTools: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %v", bifrostErr.Error)
+		}
+		return out
+	}
+	thinkingOf := func(out []byte) string {
+		return gjson.GetBytes(out, `messages.1.content.#(type=="thinking").thinking`).String()
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s_raw=%v_keeps", provider, raw), func(t *testing.T) {
+				if got := thinkingOf(build(t, provider, raw)); got != thinking {
+					t.Fatalf("unsigned thinking not replayed, got %q", got)
+				}
+			})
+		}
+	}
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("anthropic_raw=%v_strips", raw), func(t *testing.T) {
+			if got := thinkingOf(build(t, schemas.Anthropic, raw)); got != "" {
+				t.Fatalf("unsigned thinking must be stripped for native Anthropic, got %q", got)
+			}
+		})
+	}
+}
+
+// topLevelKeys returns the top-level keys of a JSON object in wire order.
+func topLevelKeys(b []byte) []string {
+	var ks []string
+	gjson.ParseBytes(b).ForEach(func(k, _ gjson.Result) bool {
+		ks = append(ks, k.String())
+		return true
+	})
+	return ks
+}
+
+// Vertex's Anthropic prompt cache misses when the growing messages array precedes
+// the stable tools/system prefix in the raw body (#6406). Every Vertex build path
+// must end with tools, system, messages; other providers keep their bytes.
+func TestBuildAnthropicRequestBody_CachePrefixKeyOrder(t *testing.T) {
+	raw := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"system":"be nice","tools":[{"name":"t","description":"d","input_schema":{"type":"object"}}],"metadata":{"user_id":"u"}}`)
+	chatInput := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be nice")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+	}
+	chatTools := []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "t", Description: schemas.Ptr("d"), Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+	respTools := []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("t"), Description: schemas.Ptr("d"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Anthropic, schemas.Bedrock, schemas.Azure} {
+		for _, useRaw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				for _, streaming := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/raw=%v/chat=%v/stream=%v", provider, useRaw, chat, streaming), func(t *testing.T) {
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, useRaw)
+						// A beta that Vertex embeds as anthropic_beta, appended after the body is built.
+						ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {"context-1m-2025-08-07"}})
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-5", IsStreaming: streaming}
+						var out []byte
+						var bErr *schemas.BifrostError
+						if chat {
+							out, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: "claude-sonnet-4-5", RawRequestBody: raw, Input: chatInput, Params: &schemas.ChatParameters{Tools: chatTools}}, cfg)
+						} else {
+							out, bErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-5", RawRequestBody: raw, Input: makeSimpleInput("hello"), Params: &schemas.ResponsesParameters{Instructions: schemas.Ptr("be nice"), Tools: respTools}}, cfg)
+						}
+						if bErr != nil {
+							t.Fatalf("build: %v", bErr.Error.Message)
+						}
+						if !json.Valid(out) {
+							t.Fatalf("invalid JSON: %s", out)
+						}
+						keys := topLevelKeys(out)
+						for _, k := range []string{"messages", "system", "tools"} {
+							if !slices.Contains(keys, k) {
+								t.Fatalf("missing %q in %v: %s", k, keys, out)
+							}
+						}
+						if provider == schemas.Vertex {
+							if got := keys[len(keys)-3:]; !slices.Equal(got, []string{"tools", "system", "messages"}) {
+								t.Fatalf("vertex body must end with tools, system, messages; got %v", keys)
+							}
+							return
+						}
+						if slices.Index(keys, "messages") > slices.Index(keys, "system") {
+							t.Fatalf("non-vertex key order changed: %v", keys)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestMoveCachePrefixKeysLast(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"reorders", `{"max_tokens":8,"messages":[1],"system":"s","tools":[2],"stream":true}`, `{"max_tokens":8,"stream":true,"tools":[2],"system":"s","messages":[1]}`},
+		{"already ordered", `{"a":1,"tools":[],"system":"s","messages":[]}`, `{"a":1,"tools":[],"system":"s","messages":[]}`},
+		{"subset", `{"messages":[{"role":"user","content":"tools"}],"a":{"system":1}}`, `{"a":{"system":1},"messages":[{"role":"user","content":"tools"}]}`},
+		{"none present", `{"a":1,"b":[1,2]}`, `{"a":1,"b":[1,2]}`},
+		{"whitespace and escapes", "{ \"messages\" : [ \"x\\\"y\" ] ,\n \"system\":\"s\\u0041\", \"z\" : null }", "{\"z\" : null,\"system\":\"s\\u0041\",\"messages\" : [ \"x\\\"y\" ]}"},
+		{"only messages", `{"messages":[]}`, `{"messages":[]}`},
+		{"not an object", `[1,2]`, `[1,2]`},
+		{"empty object", `{}`, `{}`},
+		{"duplicate key left alone", `{"messages":[1],"system":"s","messages":[2]}`, `{"messages":[1],"system":"s","messages":[2]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := moveCachePrefixKeysLast([]byte(tc.in))
+			if string(got) != tc.want {
+				t.Fatalf("got  %s\nwant %s", got, tc.want)
+			}
+			if json.Valid([]byte(tc.in)) && !json.Valid(got) {
+				t.Fatalf("produced invalid JSON: %s", got)
+			}
+		})
+	}
+}
+
+// BenchmarkMoveCachePrefixKeysLast measures the Vertex-only reorder on a long
+// multi-turn body (the case it exists for) and the already-ordered fast path.
+func BenchmarkMoveCachePrefixKeysLast(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString(`{"max_tokens":4096,"messages":[`)
+	for i := 0; i < 400; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 40) + `"}]}`)
+	}
+	sb.WriteString(`],"system":[{"type":"text","text":"you are helpful","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"t","input_schema":{"type":"object"}}],"stream":true,"anthropic_version":"vertex-2023-10-16"}`)
+	unordered := []byte(sb.String())
+	ordered := moveCachePrefixKeysLast(unordered)
+	b.Run("reorder", func(b *testing.B) {
+		b.SetBytes(int64(len(unordered)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = moveCachePrefixKeysLast(unordered)
+		}
+	})
+	b.Run("already_ordered", func(b *testing.B) {
+		b.SetBytes(int64(len(ordered)))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = moveCachePrefixKeysLast(ordered)
+		}
+	})
 }

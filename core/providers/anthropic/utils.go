@@ -28,17 +28,17 @@ import (
 // through without a code change. Exact-match types (currently just
 // "mcp_toolset") are handled separately.
 // The provider flag is the fallback; a datasheet row for this (provider, model)
-// overrides it. computer_ has no datasheet field, so it stays provider-level.
+// overrides it, except for web_search_ and code_execution_, where the host flag is an
+// upper bound (hostServesWebSearch). computer_ has no datasheet field, so it stays
+// provider-level.
 var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, schemas.ModelCaps) bool{
-	// OR in the Nova carve-outs to match ValidateResponsesToolsForProvider —
-	// WebSearch/CodeExecution are false for Bedrock, but WebSearchNova/CodeExecNova
-	// are true (nova_grounding / nova_code_interpreter system tools).
+	// Host-bounded to match ValidateResponsesToolsForProvider — see hostServesWebSearch.
 	"web_search_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsWebSearch(f.WebSearch || f.WebSearchNova)
+		return hostServesWebSearch(f, c)
 	},
 	"web_fetch_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsWebFetch(f.WebFetch) },
 	"code_execution_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool {
-		return c.SupportsCodeExecution(f.CodeExecution || f.CodeExecNova)
+		return hostServesCodeExecution(f, c)
 	},
 	"computer_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return f.ComputerUse },
 	"bash_":     func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsBashTool(f.Bash) },
@@ -50,6 +50,29 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport, s
 		return c.SupportsToolSearch(f.ToolSearch)
 	},
 	"advisor_": func(f ProviderFeatureSupport, c schemas.ModelCaps) bool { return c.SupportsAdvisorTool(f.AdvisorTool) },
+}
+
+// novaCarveOut reports whether a Nova system-tool flag applies to the model. Only Nova 2
+// has nova_grounding / nova_code_interpreter; for Claude on Bedrock the same tools would
+// reach InvokeModel as web_search_* / code_execution_*, which Bedrock rejects with 400.
+func novaCarveOut(flag bool, caps schemas.ModelCaps) bool {
+	return flag && schemas.IsNova2Model(caps.Model())
+}
+
+// hostServesWebSearch reports whether the web_search server tool may be sent to this host
+// and model. Unlike the other server tools, the host flag (or the Nova 2 carve-out) is an
+// upper bound, not a fallback: the datasheet marks Claude supports_web_search on hosts
+// that do not serve the tool (Bedrock, Bedrock Mantle), and letting that record win sent
+// web_search_20250305 to InvokeModel, which answers 400. A record can still narrow it.
+func hostServesWebSearch(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+	host := f.WebSearch || novaCarveOut(f.WebSearchNova, caps)
+	return host && caps.SupportsWebSearch(host)
+}
+
+// hostServesCodeExecution is hostServesWebSearch for the code_execution server tool.
+func hostServesCodeExecution(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+	host := f.CodeExecution || novaCarveOut(f.CodeExecNova, caps)
+	return host && caps.SupportsCodeExecution(host)
 }
 
 // ErrReasoningMaxTokensTooLow marks a reasoning/thinking configuration error caused by
@@ -156,11 +179,11 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schem
 		supported := true
 		switch tool.Type {
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-			supported = caps.SupportsWebSearch(features.WebSearch || features.WebSearchNova)
+			supported = hostServesWebSearch(features, caps)
 		case schemas.ResponsesToolTypeWebFetch:
 			supported = caps.SupportsWebFetch(features.WebFetch)
 		case schemas.ResponsesToolTypeCodeInterpreter:
-			supported = caps.SupportsCodeExecution(features.CodeExecution || features.CodeExecNova)
+			supported = hostServesCodeExecution(features, caps)
 		case schemas.ResponsesToolTypeComputerUsePreview:
 			supported = features.ComputerUse
 		case schemas.ResponsesToolTypeComputer:
@@ -329,9 +352,9 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		req.MCPServers = nil
 	}
 	// Speed is both provider-gated (FastMode flag) and model-gated
-	// (Opus 4.6 and Opus 4.7+ per SupportsFastMode). Strip if either gate
-	// fails — Anthropic's API rejects speed:"fast" elsewhere with a 400.
-	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model()))) {
+	// (per-provider model list in DefaultSupportsFastMode). Strip if either
+	// gate fails — the upstream rejects speed:"fast" elsewhere with a 400.
+	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model()))) {
 		req.Speed = nil
 	}
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !caps.SupportsTaskBudgets(features.TaskBudgets) {
@@ -640,7 +663,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
-		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
@@ -1300,6 +1323,21 @@ func IsSonnet55Plus(model string) bool {
 	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
 }
 
+// IsHaiku5Plus returns true for Claude Haiku 5.5 (and later Haiku 5.x). It shares
+// the Sonnet 5+ request surface: extended thinking (budget_tokens) is removed,
+// non-default temperature/top_p/top_k are rejected with a 400, and depth is set
+// with output_config.effort (all five levels, default "medium"). Unlike Sonnet
+// 5.5 it still accepts thinking:{type:"disabled"}, at effort "high" or below.
+// Matching "haiku-5" excludes "haiku-4-5" and "3-5-haiku" and matches
+// Bedrock/Vertex/date-suffixed forms.
+//
+// Sources:
+//   - https://platform.claude.com/docs/en/build-with-claude/thinking ("Configuring thinking" table)
+//   - https://platform.claude.com/docs/en/build-with-claude/effort
+func IsHaiku5Plus(model string) bool {
+	return strings.Contains(strings.ToLower(model), "haiku-5")
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1312,8 +1350,9 @@ func IsSonnet55Plus(model string) bool {
 //     ("Claude Fable 5 and Claude Mythos 5 use adaptive thinking, which is
 //     always on ... thinking: {type: "disabled"} is rejected.")
 //   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
-//     (fast mode is NOT supported on Fable — Opus 4.6/4.7/4.8 only; this is why
-//     Fable is kept separate from IsOpus47Plus, which gates SupportsFastMode).
+//     (Fable is kept separate from IsOpus47Plus, which gates the Claude API
+//     fast-mode fallback; per-host Fable support comes from DefaultSupportsFastMode
+//     and the datasheet's supports_speed).
 func IsFableFamily(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
@@ -1358,10 +1397,10 @@ func RejectsEnabledThinking(caps schemas.ModelCaps) bool {
 //	"budget_tokens" for extended thinking.
 //
 // Fable 5, Mythos 5, Mythos Preview and Opus 5.5 are always-on and reject it
-// outright. Opus 5 accepts it only at effort "high" or below - pairing it with
-// "xhigh" or "max" is rejected, and that is enforced per request, which is why
-// effort has to be passed in rather than inferred from the model alone. Opus
-// 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
+// outright. Opus 5 and Haiku 5.5 accept it only at effort "high" or below -
+// pairing it with "xhigh" or "max" is rejected, and that is enforced per request,
+// which is why effort has to be passed in rather than inferred from the model
+// alone. Opus 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
 //
 // The unconditional half reads caps.CanDisableReasoning so the datasheet's
 // supports_reasoning_disable drives this passthrough gate and the converter's
@@ -1375,7 +1414,7 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 	if !caps.CanDisableReasoning(DefaultCanDisableReasoning(model)) {
 		return true
 	}
-	if IsOpus5Plus(model) && effort != nil {
+	if (IsOpus5Plus(model) || IsHaiku5Plus(model)) && effort != nil {
 		switch strings.ToLower(*effort) {
 		case "xhigh", "max":
 			return true
@@ -1384,15 +1423,31 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 	return false
 }
 
-// DefaultSupportsFastMode: speed:"fast" is a research preview on Opus 4.6 and
-// Opus 4.7+ (which covers 4.8 and 5); every other model rejects it with a 400.
-func DefaultSupportsFastMode(model string) bool {
+// DefaultSupportsFastMode reports whether speed:"fast" is accepted for a
+// (provider, model) pair when the datasheet has no supports_fast_mode value.
+// The model lists differ per host, so the provider decides which one applies:
+//   - Vertex: Claude Fable 5.2 only (cite: V-fast). Google serves fast mode on the
+//     latest version of a family plus a 30-day window for the retiring one; a
+//     later model is carried by the datasheet rather than this fallback.
+//   - Everywhere else: the Claude API research preview on Opus 4.6 and Opus 4.7+
+//     (which covers 4.8 and 5). Every other model rejects it with a 400.
+func DefaultSupportsFastMode(provider schemas.ModelProvider, model string) bool {
+	if provider == schemas.Vertex {
+		return isFable52(model)
+	}
 	if IsOpus47Plus(model) {
 		return true
 	}
 	m := strings.ToLower(model)
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+}
+
+// isFable52 matches Claude Fable 5.2 in its plain, dotted, Vertex "@date" and
+// date-suffixed forms.
+func isFable52(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "fable") && (strings.Contains(m, "5-2") || strings.Contains(m, "5.2"))
 }
 
 // DefaultSupportsSafeguards is the name-detection fallback for the Claude Code
@@ -1524,9 +1579,9 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 }
 
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
-// 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+ and the Fable/Mythos family.
+// 4.6, Sonnet 4.6, Sonnet 5+, Haiku 5+, Opus 4.7+ and the Fable/Mythos family.
 func DefaultSupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
+	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model) {
 		return true
 	}
 	m := strings.ToLower(model)
@@ -1537,11 +1592,11 @@ func DefaultSupportsAdaptiveThinking(model string) bool {
 }
 
 // DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
-// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Fable add xhigh.
+// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Haiku 5+/Fable add xhigh.
 func DefaultEffortControl(model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
 	switch {
-	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
+	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model):
 		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
 	case DefaultSupportsAdaptiveThinking(model):
 		levels = append(levels, schemas.ReasoningEffortMax)
@@ -1595,7 +1650,7 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
 // and temperature/top_p/top_k are rejected — adaptive is the only thinking mode.
 func DefaultAdaptiveOnlyThinking(model string) bool {
-	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
+	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model)
 }
 
 // DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
@@ -1608,9 +1663,11 @@ func DefaultCanDisableReasoning(model string) bool {
 // DefaultSupportsThinkingDisplayUpdates: the adaptive-only generation takes thinking.display:"updates"
 // with its beta on every surface that ships it, and is where it does anything (only those models
 // write progress updates). Bedrock rejects it on Opus 4.6 and the 4.5 generation even with the beta,
-// and on the models that write no updates it returns what "omitted" does.
+// and on the models that write no updates it returns what "omitted" does. Haiku 5.5 writes no
+// progress updates, so it keeps the downgrade to "omitted": that is the response "updates" would
+// return, and it avoids sending a beta value Haiku 5.5 is not documented to accept.
 func DefaultSupportsThinkingDisplayUpdates(model string) bool {
-	return DefaultAdaptiveOnlyThinking(model)
+	return DefaultAdaptiveOnlyThinking(model) && !IsHaiku5Plus(model)
 }
 
 // SupportsThinkingDisplayUpdates reports whether thinking.display:"updates" may be sent for the
@@ -1688,7 +1745,7 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // SupportsEffortParameter returns true if the model accepts the
 // output_config.effort parameter. Supported models: Claude Fable 5,
 // Claude Mythos 5, Claude Mythos Preview, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6,
-// Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
+// Sonnet 5, Sonnet 4.6, Haiku 5.5, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
@@ -1703,7 +1760,7 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func DefaultSupportsNativeEffort(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) || IsHaiku5Plus(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
@@ -2021,9 +2078,9 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 //
 // Override-aware: the datasheet's supports_computer_toolset decides when set, so
 // a model gaining the toolset is a catalog change. The provider gate stays in
-// code because the toolset is GA on the Claude API and Google Cloud only.
+// code because only the Claude API, Google Cloud and Bedrock serve the toolset.
 func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
-	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) && caps.Provider() != schemas.Bedrock {
 		return false
 	}
 	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))
@@ -2451,7 +2508,7 @@ func appendAnthropicToolBetaHeaders(headers []string, tool *AnthropicTool, caps 
 	// current docs — it's no longer part of the AdvancedToolUse bundle.
 	// allowed_callers is still bundle-only.
 	if tool.DeferLoading != nil && *tool.DeferLoading {
-		if !hasProvider || caps.SupportsToolSearch(features.ToolSearch) {
+		if !hasProvider || (caps.SupportsToolSearch(features.ToolSearch) && !features.ToolSearchHeaderless) {
 			headers = appendUniqueHeader(headers, AnthropicToolSearchBetaHeader)
 		}
 	}
@@ -2566,10 +2623,11 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 		}
 	}
 	// Check for fast mode. Only add the beta header when both the provider
-	// supports fast mode AND the model does (Opus 4.6 and Opus 4.7+ per
-	// SupportsFastMode); otherwise sending the header guarantees a 400.
-	if req.Speed != nil {
-		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
+	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
+	// speed field alone.
+	if req.Speed != nil && !features.FastModeHeaderless {
+		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
@@ -2577,9 +2635,9 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// can carry no top-level speed at all. Gate on the entry's own model — that is the
 	// one that would run fast — and take it verbatim rather than alias-resolving it,
 	// since it names an Anthropic model directly, not a Bifrost alias.
-	if !hasProvider || features.FastMode {
+	if (!hasProvider || features.FastMode) && !features.FastModeHeaderless {
 		for _, fb := range req.nativeFallbacks() {
-			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(fb.Model)) {
+			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(provider, fb.Model)) {
 				headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 				break
 			}
@@ -2971,7 +3029,8 @@ func hasProgrammaticCaller(callers []string) bool {
 // rejected by Anthropic: those with an empty "thinking" field, or those
 // with an empty "signature" field. An empty signature means the block came
 // from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
-// always does), so it is unsafe to replay to Anthropic.
+// always does), so it is unsafe to replay to Anthropic. keepUnsigned keeps the
+// latter for upstreams that never sign their own thinking (vLLM, SGLang).
 //
 // The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
 // blocks carry only an encrypted "data" payload (no thinking or signature
@@ -2983,7 +3042,7 @@ func hasProgrammaticCaller(callers []string) bool {
 // (23.7% of all bytes allocated, measured in production). Instead: scan once, then
 // rewrite each affected message once and the messages array once.
 // Pinned by TestStripEmptyThinkingBlocks_AllocationScaling.
-func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
 		return jsonBody, nil
@@ -3004,7 +3063,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
 			if block.Get("type").String() == "thinking" &&
-				(block.Get("thinking").String() == "" || block.Get("signature").String() == "") {
+				(block.Get("thinking").String() == "" || (!keepUnsigned && block.Get("signature").String() == "")) {
 				stripped = true
 				continue
 			}
@@ -3331,12 +3390,12 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
 	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
 	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
-	AnthropicToolSearchBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+	AnthropicToolSearchBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.ToolSearch && !f.ToolSearchHeaderless },
 	AnthropicToolExamplesBetaHeaderPrefix:        func(f ProviderFeatureSupport) bool { return f.InputExamples },
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
-	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
+	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode && !f.FastModeHeaderless },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
@@ -4007,6 +4066,11 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	return imageBlock
 }
 
+// isPlainTextFileType reports whether a Bifrost file type names a plain-text document.
+func isPlainTextFileType(fileType *string) bool {
+	return fileType != nil && (*fileType == "text/plain" || *fileType == "txt")
+}
+
 // ConvertToAnthropicDocumentBlock converts a Bifrost file block to Anthropic document format
 func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
@@ -4041,6 +4105,14 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	if file.FileURL != nil && *file.FileURL != "" {
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = file.FileURL
+		return documentBlock
+	}
+
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if file.FileData != nil && *file.FileData == "" && isPlainTextFileType(file.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
 		return documentBlock
 	}
 
@@ -4183,6 +4255,14 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 		return documentBlock
 	}
 
+	// An empty plain-text document is valid on Anthropic's wire; keep it as a text source.
+	if fileBlock.FileData != nil && *fileBlock.FileData == "" && isPlainTextFileType(fileBlock.FileType) {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = schemas.Ptr("")
+		return documentBlock
+	}
+
 	return documentBlock
 }
 
@@ -4233,8 +4313,9 @@ func parseJSONInput(jsonStr string) json.RawMessage {
 		return json.RawMessage(compacted)
 	}
 
-	// If compaction fails (invalid JSON), return json.RawMessage of the raw string
-	return json.RawMessage(jsonStr)
+	// Invalid JSON as raw bytes fails the request marshal with a 500.
+	// Replay {} like the chat converter and the other providers do.
+	return json.RawMessage("{}")
 }
 
 // compactJSONBytes compacts JSON bytes, removing insignificant whitespace while

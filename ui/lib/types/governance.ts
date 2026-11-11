@@ -611,6 +611,14 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_creation_input_token_cost_above_12hr?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_12hr_priority?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_above_12hr_flex?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex?: number;
+	cache_creation_input_token_cost_above_12hr_ultrafast?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast?: number;
 	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
@@ -663,6 +671,16 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
 	output_cost_per_video_token?: number;
+	// Azure Voice Live
+	input_cost_per_token_voice_live?: number;
+	output_cost_per_token_voice_live?: number;
+	cache_read_input_token_cost_voice_live?: number;
+	input_cost_per_audio_token_voice_live?: number;
+	output_cost_per_audio_token_voice_live?: number;
+	input_cost_per_standard_speech_audio_token_voice_live?: number;
+	output_cost_per_standard_speech_audio_token_voice_live?: number;
+	input_cost_per_custom_speech_audio_token_voice_live?: number;
+	output_cost_per_custom_speech_audio_token_voice_live?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

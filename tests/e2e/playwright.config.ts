@@ -14,13 +14,23 @@ import { loadPlan, REPORTS_DIR, storageStatePath } from './plan'
 const plan = loadPlan()
 const debugArtifacts = process.env.E2E_DEBUG_ARTIFACTS === '1'
 const sharedBaseURL = process.env.E2E_BASE_URL || 'http://localhost:8080'
+// The server trims a trailing slash from --base-path ("/bifrost/" -> "/bifrost",
+// "/" -> domain root), so E2E_BASE_PATH is trimmed the same way before specs join paths onto it.
+const sharedBasePath = (process.env.E2E_BASE_PATH ?? '').replace(/\/$/, '') || undefined
+// Without a plan nothing starts a prefixed server, so the prefix must belong to the server E2E_BASE_URL names.
+if (!plan && sharedBasePath && !process.env.E2E_BASE_URL) {
+  throw new Error('E2E_BASE_PATH needs E2E_BASE_URL pointing at a server started with that -base-path')
+}
 
-const workerProjects = (name: string, baseURL: string, files: string[] | null): NonNullable<PlaywrightTestConfig['projects']> => [
+// basePath is the URL prefix the worker's server is mounted under. baseURL stays the
+// origin (requests are accepted with or without the prefix), and base-path specs
+// read the prefix from the project metadata.
+const workerProjects = (name: string, baseURL: string, files: string[] | null, basePath?: string): NonNullable<PlaywrightTestConfig['projects']> => [
   {
     name: `${name}:auth`,
     testDir: './core',
     testMatch: /auth\.setup\.ts/,
-    metadata: { worker: name },
+    metadata: { worker: name, basePath },
     use: { baseURL },
   },
   {
@@ -28,12 +38,13 @@ const workerProjects = (name: string, baseURL: string, files: string[] | null): 
     testDir: './features',
     // Paths from the plan are relative to tests/e2e; match on the absolute path.
     testMatch: files ? files.map((f) => resolve(__dirname, f)) : '**/*.spec.ts',
-    // Accessibility audits run via playwright.a11y.config.ts.
-    testIgnore: ['**/accessibility/**'],
+    // Accessibility audits run via playwright.a11y.config.ts. Base-path specs need a
+    // server mounted under a prefix, so a shared server runs them only with E2E_BASE_PATH.
+    testIgnore: files || basePath ? ['**/accessibility/**'] : ['**/accessibility/**', '**/base-path/**'],
     dependencies: [`${name}:auth`],
     // One spec at a time per server: specs share its config and entities.
     workers: 1,
-    metadata: { worker: name },
+    metadata: { worker: name, basePath },
     use: {
       ...devices['Desktop Chrome'],
       baseURL,
@@ -43,8 +54,8 @@ const workerProjects = (name: string, baseURL: string, files: string[] | null): 
 ]
 
 const projects = plan
-  ? plan.flatMap((w) => workerProjects(w.name, `http://localhost:${w.port}`, w.files))
-  : workerProjects('shared', sharedBaseURL, null)
+  ? plan.flatMap((w) => workerProjects(w.name, `http://localhost:${w.port}`, w.files, w.basePath))
+  : workerProjects('shared', sharedBaseURL, null, sharedBasePath)
 
 const enterpriseFeaturesDir = resolve(__dirname, '../../../bifrost-enterprise/tests/e2e/features')
 if (process.env.BIFROST_E2E_INCLUDE_ENTERPRISE === '1' && existsSync(enterpriseFeaturesDir)) {

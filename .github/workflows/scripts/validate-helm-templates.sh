@@ -825,6 +825,102 @@ test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
 
+# connection_type "openapi" builds an MCP server from an OpenAPI/Swagger document. Every
+# openapiConfig field must render under its config.schema.json key, and the values schema plus
+# the template guards must refuse what config.schema.json refuses.
+cat > "$VALUES_DIR/mcp-openapi.yaml" << 'VALS'
+bifrost:
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: web_search
+        connectionType: openapi
+        authType: headers
+        headers:
+          X-Team: platform
+        openapiConfig:
+          specUrl: "https://searxng.example.com/openapi.json"
+          baseUrl: "https://searxng.example.com"
+          securityCredentials:
+            apiKeyAuth:
+              value: "env.SEARXNG_API_KEY"
+            basicAuth:
+              username: "svc"
+              password: "env.SEARXNG_PASSWORD"
+          includeDeprecated: true
+          maxResponseBytes: 131072
+        toolsToExecute: ["*"]
+      - name: inline_spec
+        connectionType: openapi
+        openapiConfig:
+          spec: |
+            openapi: 3.0.3
+            info: {title: Inline, version: "1"}
+            paths: {}
+      - name: file_spec
+        connectionType: openapi
+        authType: per_user_headers
+        perUserHeaderKeys: ["Authorization"]
+        openapiConfig:
+          specFile: "specs/petstore.yaml"
+          includeDeprecated: false
+          maxResponseBytes: 0
+VALS
+OPENAPI_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=oa'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi'
+)
+
+check_config "mcp openapi: every openapiConfig field renders under its openapi_config key" \
+  'cc = cfg["mcp"]["client_configs"]
+assert cc[0]["connection_type"] == "openapi", cc[0]
+assert cc[0]["auth_type"] == "headers", cc[0]
+assert cc[0]["headers"] == {"X-Team": "platform"}, cc[0]
+assert cc[0]["openapi_config"] == {
+    "spec_url": "https://searxng.example.com/openapi.json",
+    "base_url": "https://searxng.example.com",
+    "security_credentials": {
+        "apiKeyAuth": {"value": "env.SEARXNG_API_KEY"},
+        "basicAuth": {"username": "svc", "password": "env.SEARXNG_PASSWORD"},
+    },
+    "include_deprecated": True,
+    "max_response_bytes": 131072,
+}, "openapi_config changed: %r" % cc[0]["openapi_config"]
+assert cc[1]["openapi_config"] == {"spec": "openapi: 3.0.3\ninfo: {title: Inline, version: \"1\"}\npaths: {}\n"}, "inline spec changed: %r" % cc[1]["openapi_config"]
+assert "auth_type" not in cc[1], "auth_type rendered without being set: %r" % cc[1]
+assert cc[2]["openapi_config"] == {"spec_file": "specs/petstore.yaml", "include_deprecated": False, "max_response_bytes": 0}, "spec_file client changed: %r" % cc[2]["openapi_config"]
+assert cc[2]["auth_type"] == "per_user_headers" and cc[2]["per_user_header_keys"] == ["Authorization"], cc[2]
+for c in cc:
+    for k in ("connection_string", "stdio_config", "tls_config"):
+        assert k not in c, "%s rendered on openapi client %s" % (k, c["name"])' \
+  -f "$VALUES_DIR/mcp-openapi.yaml"
+
+# The values schema refuses what config.schema.json refuses.
+expect_render_failure "mcp openapi: schema requires openapiConfig" "allOf" \
+  "${OPENAPI_CLIENT[@]}"
+expect_render_failure "mcp openapi: schema requires spec, specFile or specUrl" "anyOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://api.example.com'
+expect_render_failure "mcp openapi: schema refuses oauth auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=oauth'
+expect_render_failure "mcp openapi: schema refuses token_exchange auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=token_exchange'
+expect_render_failure "mcp openapi: schema refuses a non-http specUrl" "specUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=ftp://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses a credential userinfo baseUrl" "baseUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://user:pass@api.example.com'
+expect_render_failure "mcp openapi: schema refuses unknown openapiConfig fields" "additional" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.spec_url=https://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses openapiConfig on an http client" "allOf" \
+  --set bifrost.mcp.enabled=true --set 'bifrost.mcp.clientConfigs[0].name=h' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+
 # Every identity provider inherits crossAppAccess, tokenExchangeHosts and
 # accessProfileResolutionStrategy from the enterprise ProvisioningConfig; the chart passes
 # scim.config through, so the values schema is what has to accept them.
@@ -855,6 +951,44 @@ expect_render_failure "scim: schema rejects a crossAppAccess accessTokenTtl unde
 expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenExchangeHosts" \
   "${OKTA_SCIM[@]}" \
   --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
+
+# Workload identity's additional trusted issuers ride on the SSO provider's config, keyed by
+# name: the chart passes them through as declared, and the values schema refuses an issuer the
+# gateway would, so the error shows at render time. Workloads are mapped to service accounts in
+# the dashboard, so there is nothing else to render.
+WI='bifrost.scim.config.workloadIdentity.additionalTrustedIssuers'
+check_config "scim: workload identity trusted issuers render as declared" \
+  'issuers = cfg["scim_config"]["config"]["workloadIdentity"]["additionalTrustedIssuers"]
+assert [i["name"] for i in issuers] == ["AWS prod", "Okta workloads"], "issuers changed: %r" % issuers
+assert issuers[0] == {"name": "AWS prod", "kind": "aws", "issuerUrl": "https://abc.tokens.sts.global.api.aws", "audiences": ["https://bifrost.example"]}, "aws issuer changed: %r" % issuers[0]
+assert issuers[1]["machineCheck"] == {"kind": "claim_prefix", "claim": "preferred_username", "value": "service-account-"}, "machine check changed: %r" % issuers[1]
+assert "workload_identity" not in cfg, "config.json must not carry workload identity mappings"' \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=AWS prod" --set "$WI[0].kind=aws" \
+  --set "$WI[0].issuerUrl=https://abc.tokens.sts.global.api.aws" --set "$WI[0].audiences[0]=https://bifrost.example" \
+  --set "$WI[1].name=Okta workloads" --set "$WI[1].kind=generic" \
+  --set "$WI[1].issuerUrl=https://acme.okta.com/oauth2/default" --set "$WI[1].audiences[0]=api://bifrost" \
+  --set "$WI[1].identityClaim=azp" --set "$WI[1].machineCheck.kind=claim_prefix" \
+  --set "$WI[1].machineCheck.claim=preferred_username" --set "$WI[1].machineCheck.value=service-account-"
+expect_render_failure "scim: schema rejects a trusted issuer with an id, since issuers are known by name" "additional properties 'id' not allowed" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].id=aws-prod" --set "$WI[0].name=AWS prod" --set "$WI[0].kind=aws" \
+  --set "$WI[0].issuerUrl=https://abc.tokens.sts.global.api.aws" --set "$WI[0].audiences[0]=a"
+expect_render_failure "scim: schema rejects an empty claim_prefix, which would match people's tokens" "machineCheck/value" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=Okta" --set "$WI[0].kind=generic" --set "$WI[0].issuerUrl=https://acme.okta.com/oauth2/default" \
+  --set "$WI[0].audiences[0]=a" --set "$WI[0].identityClaim=azp" \
+  --set "$WI[0].machineCheck.kind=claim_prefix" --set "$WI[0].machineCheck.claim=preferred_username" --set "$WI[0].machineCheck.value="
+expect_render_failure "scim: schema rejects a generic trusted issuer without its identity claim" "missing property 'identityClaim'" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=Okta" --set "$WI[0].kind=generic" --set "$WI[0].issuerUrl=https://acme.okta.com/oauth2/default" \
+  --set "$WI[0].audiences[0]=a" --set "$WI[0].machineCheck.kind=any"
+expect_render_failure "scim: schema rejects a trusted issuer URL with a query" "issuerUrl" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=X" --set "$WI[0].kind=aws" --set "$WI[0].issuerUrl=https://idp.example/?" --set "$WI[0].audiences[0]=a"
+expect_render_failure "scim: schema rejects a trusted issuer URL with user info" "issuerUrl" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=X" --set "$WI[0].kind=aws" --set "$WI[0].issuerUrl=https://u:p@idp.example" --set "$WI[0].audiences[0]=a"
 
 # Relays render as top-level relays exactly as declared, and relay_grants reach virtual keys,
 # projects and access profiles, as declared: an explicit relay_grants: [] stays in the rendered key

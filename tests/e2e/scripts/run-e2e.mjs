@@ -29,6 +29,10 @@ const DEFAULT_WORKERS = 4
 // Spec folders that read LLM logs; workers running them get seeded traffic first.
 const SEED_LOG_FEATURES = ['dashboard', 'logs']
 const SEED_LOG_COUNT = 30
+// Specs under features/<BASE_PATH_FEATURE>/ need a server mounted under a URL
+// prefix, so they get a worker of their own started with --base-path.
+const BASE_PATH_FEATURE = 'base-path'
+const E2E_BASE_PATH = '/bifrost'
 const PG_PORT = process.env.BIFROST_E2E_PG_PORT || '55432'
 const ADMIN_USERNAME = process.env.BIFROST_ADMIN_USERNAME || 'admin'
 const ADMIN_PASSWORD = process.env.BIFROST_ADMIN_PASSWORD || 'bifrost-e2e-password'
@@ -101,15 +105,28 @@ function selectFiles(opts) {
 
 // Longest-first greedy bin packing: each file goes to the currently lightest worker.
 // Weights are last run's durations; unseen files are estimated from their test count.
+// Base-path specs go to one extra worker of their own, mounted under E2E_BASE_PATH.
 function schedule(files, requested) {
   const timings = existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
   const weight = (f) => timings[f] ?? Math.max(5000, (readFileSync(join(E2E_ROOT, f), 'utf8').match(/\btest(\.skip|\.fixme)?\(/g)?.length ?? 1) * 6000)
-  const count = Math.max(1, Math.min(requested, files.length))
+  const isBasePath = (f) => f.startsWith(`features/${BASE_PATH_FEATURE}/`)
+  const rootFiles = files.filter((f) => !isBasePath(f))
+  const basePathFiles = files.filter(isBasePath)
+  const count = rootFiles.length ? Math.max(1, Math.min(requested, rootFiles.length)) : 0
   const workers = Array.from({ length: count }, (_, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, files: [], estimateMs: 0 }))
-  for (const file of [...files].sort((a, b) => weight(b) - weight(a))) {
+  for (const file of [...rootFiles].sort((a, b) => weight(b) - weight(a))) {
     const w = workers.reduce((min, cur) => (cur.estimateMs < min.estimateMs ? cur : min))
     w.files.push(file)
     w.estimateMs += weight(file)
+  }
+  if (basePathFiles.length) {
+    workers.push({
+      name: `w${count + 1}`,
+      port: BASE_PORT + count,
+      files: basePathFiles,
+      estimateMs: basePathFiles.reduce((sum, f) => sum + weight(f), 0),
+      basePath: E2E_BASE_PATH,
+    })
   }
   return workers
 }
@@ -189,7 +206,9 @@ async function startWorker(w) {
   copyFileSync(SEED_CONFIG, join(dir, 'config.json'))
   const logFile = join(dir, 'bifrost.log')
   const out = openSync(logFile, 'a')
-  const child = spawn(BINARY, ['--app-dir', dir, '--port', String(w.port), '--log-level', 'info'], {
+  const args = ['--app-dir', dir, '--port', String(w.port), '--log-level', 'info']
+  if (w.basePath) args.push('--base-path', w.basePath)
+  const child = spawn(BINARY, args, {
     stdio: ['ignore', out, out],
     env: {
       ...process.env,
@@ -281,7 +300,7 @@ async function main() {
   if (!Number.isInteger(requested) || requested < 1) fail(`WORKERS must be a positive integer, got ${requested}`)
   const workers = schedule(files, requested)
   log(`${files.length} spec file(s) on ${workers.length} worker(s):`)
-  for (const w of workers) log(`  ${w.name} :${w.port}  ~${Math.round(w.estimateMs / 1000)}s  ${w.files.map((f) => f.replace(/^features\//, '')).join(', ')}`)
+  for (const w of workers) log(`  ${w.name} :${w.port}${w.basePath ?? ''}  ~${Math.round(w.estimateMs / 1000)}s  ${w.files.map((f) => f.replace(/^features\//, '')).join(', ')}`)
 
   const busy = []
   for (const w of workers) if (await portInUse(w.port)) busy.push(w.port)
@@ -307,7 +326,7 @@ async function main() {
 
   if (existsSync(RESULTS_FILE)) copyFileSync(RESULTS_FILE, RESULTS_FILE.replace(/\.json$/, '.prev.json'))
 
-  writeFileSync(PLAN_FILE, JSON.stringify({ workers: workers.map(({ name, port, files }) => ({ name, port, files })) }, null, 2))
+  writeFileSync(PLAN_FILE, JSON.stringify({ workers: workers.map(({ name, port, files, basePath }) => ({ name, port, files, basePath })) }, null, 2))
   const pwArgs = ['playwright', 'test', ...filters]
   if (opts.grep) pwArgs.push('--grep', opts.grep)
   if (opts.headed) pwArgs.push('--headed')

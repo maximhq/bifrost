@@ -64,11 +64,17 @@ func (provider *AzureProvider) LiveHeaders(ctx *schemas.BifrostContext, key sche
 }
 
 // CreateLiveWebRTCSession posts a WebRTC session create to /openai/v1/live/sessions and returns
-// the session id and SDP answer. The body is sent as given.
+// the session id and SDP answer. Azure rejects session.client, the frontend's data-channel
+// permissions, as an unknown parameter, so it is dropped; the gateway, which terminates the
+// browser's data channel, enforces those permissions itself. The rest of the body is sent as given.
 func (provider *AzureProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostContext, key schemas.Key, body []byte) (*schemas.LiveCreateResponse, *schemas.BifrostError) {
 	url, bifrostErr := liveSessionsURL(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+	body, err := providerUtils.DeleteJSONField(body, "session.client")
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to prepare live session create request", err)
 	}
 	headers, bifrostErr := provider.LiveHeaders(ctx, key)
 	if bifrostErr != nil {

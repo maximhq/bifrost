@@ -885,6 +885,82 @@ func TestRefreshOauthTokenFieldsIfActive_StatusGuardStillApplies(t *testing.T) {
 	assert.False(t, updated, "a non-'active' row must reject the write even with a matching expectedPriorRefreshToken")
 }
 
+// MarkOauthTokenNeedsReauthIfUnrenewable flips only an active row with no refresh token whose access
+// token has expired, so a reauthorize that landed in between is never overwritten.
+func TestMarkOauthTokenNeedsReauthIfUnrenewable(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	past, future := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		id, status, refreshToken string
+		expiresAt                *time.Time
+		wantMarked               bool
+	}{
+		{"expired-no-refresh", "active", "", &past, true},
+		{"expired-with-refresh", "active", "rt-1", &past, false},
+		{"reauthorized-in-between", "active", "", &future, false},
+		{"no-expiry", "active", "", nil, false},
+		{"already-needs-reauth", "needs_reauth", "", &past, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+				ID: tc.id, AuthMode: "shared", OauthConfigID: "cfg-" + tc.id, Status: tc.status,
+				AccessToken: "at", RefreshToken: tc.refreshToken, TokenType: "Bearer",
+				ExpiresAt: tc.expiresAt, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}).Error)
+			marked, err := s.MarkOauthTokenNeedsReauthIfUnrenewable(ctx, tc.id, "no refresh token")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantMarked, marked)
+			stored, err := s.GetOauthTokenByID(ctx, tc.id)
+			require.NoError(t, err)
+			if tc.wantMarked {
+				assert.Equal(t, "needs_reauth", stored.Status)
+				assert.Equal(t, "no refresh token", stored.StatusReason)
+			} else {
+				assert.Equal(t, tc.status, stored.Status, "a row that can still be used or renewed is left alone")
+			}
+		})
+	}
+}
+
+// The flip deletes the discovery made with the token, as every other needs_reauth flip does: a caller
+// whose token can no longer be used is offered the client's connect tool, not tools that fail.
+func TestMarkOauthTokenNeedsReauthIfUnrenewable_DeletesTheCallersDiscovery(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	past, future := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		id, user    string
+		expiresAt   *time.Time
+		wantDeleted bool
+	}{
+		{"expired-no-refresh", "alice", &past, true},
+		{"still-usable", "bob", &future, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			user := tc.user
+			require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+				ID: tc.id, AuthMode: string(schemas.MCPAuthModeUser), UserID: &user, MCPClientID: "notes",
+				OauthConfigID: "cfg-" + tc.id, Status: "active", AccessToken: "at", TokenType: "Bearer",
+				ExpiresAt: tc.expiresAt, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}).Error)
+			require.NoError(t, s.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, user, "notes", "search")))
+
+			_, err := s.MarkOauthTokenNeedsReauthIfUnrenewable(ctx, tc.id, "no refresh token")
+			require.NoError(t, err)
+			discovery, err := s.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, user, "notes")
+			require.NoError(t, err)
+			if tc.wantDeleted {
+				assert.Nil(t, discovery, "the discovery goes with the token it was made with")
+			} else {
+				assert.NotNil(t, discovery, "a token left usable keeps its discovery")
+			}
+		})
+	}
+}
+
 // oauth2StoreBackend pairs a backend name with a fresh OAuth2-capable store.
 type oauth2StoreBackend struct {
 	name string

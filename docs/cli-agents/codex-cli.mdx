@@ -63,13 +63,29 @@ long-running Codex session reaches token expiry, exit and relaunch it through
 Bifrost so the CLI can refresh the Enterprise session first.
 </Warning>
 
+## Persist a virtual key for direct Codex launches
+
+```bash
+bifrost configure codex --model openai/gpt-5
+codex
+# Restore the original configuration when finished:
+bifrost unconfigure codex
+```
+
+This writes the current context's Bifrost virtual key as `experimental_bearer_token`
+on the `bifrost` provider in `$CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`). It preserves your OpenAI/ChatGPT login in `auth.json`.
+A virtual key is required; Enterprise SSO tokens are not persisted. See
+[Persistent coding-agent configuration](/quickstart/cli/coding-agents#persist-configuration-for-direct-use).
+
 ## Configure Codex manually with a virtual key
 
-<Warning>
-Codex prefers an existing OpenAI OAuth session over custom API credentials. Run
-`/logout` before using a manually configured Bifrost provider. This is not
-required for `bifrost run codex`, which uses an isolated temporary home.
-</Warning>
+<Note>
+An existing ChatGPT or OpenAI login does not need `/logout`. With
+`requires_openai_auth = false`, Codex authenticates the `bifrost` provider with
+its own key (`env_key` here, or `experimental_bearer_token` when written by
+`bifrost configure codex`) and leaves the login in `auth.json` for other providers.
+</Note>
 
 Export the virtual key in the same terminal used to start Codex:
 
@@ -113,7 +129,7 @@ Bifrost checks the virtual key, drops it, and forwards the request to the
 ChatGPT Codex backend with the ChatGPT headers unchanged. The ChatGPT seat pays
 for the tokens. This follows OpenAI's
 [Sign in with ChatGPT through a gateway](https://learn.chatgpt.com/docs/enterprise/sign-in-with-chatgpt-through-a-gateway)
-guide, using its header option. It works the same in the Codex CLI and in
+guide, using its header option. It works the same way in the Codex CLI and in
 Codex inside the ChatGPT desktop app, since both read the same Codex
 configuration.
 
@@ -142,14 +158,14 @@ unset OPENAI_API_KEY
 codex
 ```
 
-Bifrost forwards two routes under this base URL, `GET /models` for the Codex
+Bifrost forwards two routes under this base URL: `GET /models` for the Codex
 model picker and `POST /responses` for each turn. Bifrost refuses every other
 path and method.
 
 <Note>
 Model names are the ones your ChatGPT plan offers, such as `gpt-5.5`, without
 a provider prefix. Requests go straight to ChatGPT, so Bifrost routing,
-fallbacks and non-OpenAI models do not apply on this path. Use the
+fallbacks, and non-OpenAI models do not apply on this path. Use the
 [virtual key setup](#configure-codex-manually-with-a-virtual-key) for those.
 </Note>
 
@@ -160,8 +176,8 @@ only some OpenAI models can still load the picker. Picking a model the key does
 not allow fails on the first turn.
 
 The ChatGPT token stands in for a Bifrost provider key, so no OpenAI key is
-picked for these requests. Limits set on a provider key, key weights and the
-key column in logs do not apply to them. Bifrost forwards only tokens that
+picked for these requests. Provider-key limits, key weights, and the key column
+in logs do not apply to them. Bifrost forwards only tokens that
 ChatGPT issued. Any other `Authorization` value on this route, such as an
 OpenAI API key or a token from your identity provider, never reaches ChatGPT,
 and Bifrost sends its stored OpenAI key in its place.
@@ -176,17 +192,17 @@ set on the app process itself.
 
 Bifrost Enterprise also supports the guide's native gateway OAuth option. Each
 person signs in to your identity provider from Codex, so requests are
-attributed to them and their user budgets, rate limits and access profile
-apply. No virtual key is needed, and the token expires and refreshes like any
-other sign-in.
+attributed to them and their user budgets, rate limits, and access profile
+apply. No virtual key is needed, and the token expires and refreshes as with
+any other sign-in.
 
 Codex runs the whole sign-in against your identity provider. Bifrost takes no
-part in it and only validates the token Codex sends afterwards, against the
+part in it and only validates the token Codex sends afterwards against the
 SSO provider set up under **Governance → User Provisioning**.
 
 1. In your identity provider, register a public client with PKCE and add the
    loopback redirect `http://127.0.0.1:43127/callback`. Use the port you set as
-   `redirect_port` below. On Okta this is a native app. On Entra, add the
+   `redirect_port` below. On Okta, this is a native app. On Entra, add the
    redirect to the app registration Bifrost already uses for SSO, as described
    below. Codex cannot hold a client secret, so identity providers that require
    one on the token exchange, such as Google, do not work.
@@ -212,22 +228,33 @@ delivery = { kind = "cookie", name = "auth-openid" }
 redirect_port = 43127
 ```
 
-The example uses an Okta custom authorization server. Include the scopes your
-SSO login requests, and `offline_access` where your identity provider needs it
-to issue refresh tokens, so Codex can refresh instead of sending people back to
-the browser.
+The example uses an Okta custom authorization server. `client_id` is the public
+client from step 1. On Okta that is the native app you created for Codex, not
+the app Bifrost uses for SSO. Include the scopes your SSO login requests, and
+`offline_access` where your identity provider needs it to issue refresh
+tokens, so Codex can refresh instead of sending people back to the browser.
 
 Codex sends the identity provider's access token, not the ID token, so it has
-to pass the same checks as the SSO provider configured in Bifrost. The issuer
+to pass the checks of the SSO provider configured in Bifrost. The issuer
 must match the SSO provider's issuer URL, and when the SSO provider sets an
 audience, the token's `aud` must equal it. For an Okta custom authorization
 server that audience is usually `api://default`.
+
+Bifrost then reads the user and their role from that same access token, not
+from the ID token your dashboard login uses. It looks up an existing user by
+`sub`, then by the `email` claim. It resolves the role from the claims your SSO
+provider's role mappings read, and teams from the `groups` claim. A token with
+no role claim keeps the user's current Bifrost role, so a person who already
+signed in to the dashboard only needs `email` in the token. A person with no
+Bifrost role and no role claim in the token gets `403`. Identity providers
+often leave `email`, `groups`, and custom attributes out of access tokens by
+default, so check what yours issues before rolling this out.
 
 <AccordionGroup>
 <Accordion title="Microsoft Entra ID">
 
 Entra issues the access token for whichever API the requested scopes belong
-to. With only `openid`, `email` and `profile`, that API is Microsoft Graph, and
+to. With only `openid`, `email`, and `profile`, that API is Microsoft Graph, and
 Bifrost rejects the token because its audience is Graph and its issuer is the
 v1 `sts.windows.net` one. Codex has to request a scope that Bifrost's own app
 registration defines.
@@ -262,7 +289,7 @@ In the [Microsoft Entra admin center](https://entra.microsoft.com), open
    existing user. Accept the Microsoft Graph permission prompt if one appears.
    Entra fills `email` only for users with a mail address.
 4. Optionally, under **API permissions**, add the delegated `access_as_user`
-   permission from **My APIs** and grant admin consent, so users don't see a
+   permission from **My APIs** and grant admin consent, so users do not see a
    consent prompt on first sign-in.
 
 Then point Codex at Entra with the scope you created:
@@ -300,6 +327,36 @@ The org authorization server (`/oauth2/v1/...`) does not work here, because
 Okta issues its access tokens for Okta's own APIs and does not support
 validating them elsewhere.
 
+A custom authorization server's access token carries only `sub`, `uid`, `cid`,
+and `scp` by default. Claims you added to the SSO app's ID token do not carry
+over. Under **Security → API → Authorization Servers**, open the server, go to
+**Claims**, and add these with **Include in token type** set to
+**Access Token**:
+
+| Name | Value type | Value |
+|------|------------|-------|
+| `email` | Expression | `user.email` |
+| `groups` | Groups | **Matches regex** `.*`, or the filter your SSO app uses |
+| The attribute your Bifrost role mappings read | Expression | For example `user.bifrostRole` |
+
+Set `groups` to the **Groups** value type. With **Expression**, Okta evaluates
+`.*` as an expression that yields nothing and leaves the claim out of the token
+without any error.
+
+The `email` claim matters even when roles come from somewhere else. On a
+custom authorization server, `sub` is the user's login, such as
+`jane@example.com`, while a user created by dashboard SSO is stored under the
+Okta user ID from the ID token. The `sub` lookup misses, and only `email` links
+the Codex sign-in to that user.
+
+Check the result on the server's **Token Preview** tab. Pick the Codex client,
+a user, the **Authorization Code** grant, and the scopes from `requirements.toml`.
+On the **token** tab, not **id_token**, confirm that `iss`, `aud`, `email`,
+`groups`, and your role claim have the values Bifrost expects. If the preview
+reports no matching policy, add a rule under the server's **Access Policies**
+that covers the Codex client with the Authorization Code and Refresh Token
+grants.
+
 </Accordion>
 </AccordionGroup>
 
@@ -312,8 +369,8 @@ inference authentication is enforced, a missing or invalid cookie returns
 `401`. The cookie name must be `auth-openid`.
 
 <Note>
-This option needs a Codex build with native gateway OAuth, a browser and a
-reachable loopback port. It covers model requests only, not MCP, plugins or
+This option needs a Codex build with native gateway OAuth, a browser, and a
+reachable loopback port. It covers model requests only, not MCP, plugins, or
 voice.
 </Note>
 
@@ -377,7 +434,7 @@ model on the command line and verify it with `/status`.
 
 ### The request is routed to the wrong provider key
 
-Bifrost routes from the model actually sent by Codex. Inspect
+Bifrost routes on the model Codex actually sends. Inspect
 `original_model_requested` in the error response or the Bifrost logs. Fixing a
 provider-key error will not change Codex's active model.
 
@@ -393,6 +450,28 @@ bifrost models list
 When configuring Codex manually, confirm that `model_provider = "bifrost"`,
 `requires_openai_auth = false`, and `OPENAI_API_KEY` contains a Bifrost virtual
 key.
+
+When you sign in with your identity provider, a `401` means Bifrost rejected the
+`auth-openid` token. Its issuer or audience does not match the SSO provider
+configured in Bifrost. On Okta, the usual cause is authorize and token URLs
+that point at the org authorization server (`/oauth2/v1/...`) instead of a
+custom one.
+
+### `403 Access denied: no application role or group mapping`
+
+Bifrost validated the identity provider token but found no role for the user.
+The access token has no claim that your role mappings read, and no existing
+Bifrost user with a role matched its `sub` or `email`. Add `email` and your
+role or group claims to the access token, as described for
+[your identity provider](#sign-in-with-your-identity-provider-enterprise), then
+restart Codex and sign in again so it gets a new token.
+
+### Sign-in fails with an `offline_access` or policy error
+
+The identity provider refused the scopes Codex requested. On Okta, give the
+Codex app the **Refresh Token** grant, and make sure the authorization server
+has an access policy rule for that client that allows the Authorization Code
+and Refresh Token grants.
 
 ## Next steps
 

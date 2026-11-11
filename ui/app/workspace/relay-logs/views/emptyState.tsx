@@ -8,6 +8,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, ArrowRight, Copy } from "lucide-react";
 import { useMemo } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 // Same editor options as the MCP logs empty state, so the two pages read alike.
 const EditorOptions = {
@@ -20,13 +21,16 @@ const EditorOptions = {
 	glyphMargin: false,
 } as const;
 
+const codeTag = <code className="bg-muted rounded px-1" />;
+
 function CodeBlock({ code }: { code: string }) {
+	const { t } = useTranslation("observability");
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	return (
 		<div className="relative">
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)} aria-label="Copy to clipboard">
+				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)} aria-label={t("mcpLogs.copyToClipboard")}>
 					<Copy className="size-4" />
 				</Button>
 			</div>
@@ -41,6 +45,7 @@ interface RelayEmptyStateProps {
 
 /** The Relay Logs page before any row exists, laid out like the MCP logs empty state with one example tab. */
 export function RelayEmptyState({ error }: RelayEmptyStateProps) {
+	const { t } = useTranslation("observability");
 	// The Relays page is gated on Relays access, so a logs-only viewer is not sent to a denied page.
 	const canOpenRelays = useRbac(RbacResource.Relays, RbacOperation.View);
 
@@ -67,7 +72,7 @@ curl -X POST "${baseUrl}/relay/<relay-name>/<path>" \\
 				<Alert>
 					<AlertTriangle className="h-4 w-4" />
 					<AlertDescription>
-						{isUnexpectedError ? "Looks like you haven't configured the log store in your config file." : error}
+						{isUnexpectedError ? t("mcpLogs.empty.logStoreNotConfigured") : error}
 					</AlertDescription>
 				</Alert>
 			)}
@@ -75,14 +80,14 @@ curl -X POST "${baseUrl}/relay/<relay-name>/<path>" \\
 			<div className="w-full space-y-6">
 				<div className="flex flex-row items-center gap-2">
 					<div>
-						<h3 className="text-lg font-semibold">Get Started with Relays</h3>
-						<p className="text-muted-foreground text-sm">Relay your first request to an upstream API to see logs appear</p>
+						<h3 className="text-lg font-semibold">{t("relayLogs.empty.title")}</h3>
+						<p className="text-muted-foreground text-sm">{t("relayLogs.empty.subtitle")}</p>
 					</div>
 					{canOpenRelays && (
 						<div className="ml-auto">
 							<Button asChild variant="outline" size="sm" data-testid="relay-logs-empty-open-relays">
 								<Link to="/workspace/relays">
-									Open Relays
+									{t("relayLogs.empty.openRelays")}
 									<ArrowRight className="size-4" />
 								</Link>
 							</Button>
@@ -92,36 +97,34 @@ curl -X POST "${baseUrl}/relay/<relay-name>/<path>" \\
 
 				<Tabs defaultValue="request" className="w-full rounded-lg border">
 					<TabsList className="flex h-10 w-full justify-start rounded-t-lg rounded-b-none">
-						<TabsTrigger value="request">Relay a Request</TabsTrigger>
+						<TabsTrigger value="request">{t("relayLogs.empty.requestTab")}</TabsTrigger>
 					</TabsList>
 
 					<TabsContent value="request" className="px-4">
 						<div className="text-muted-foreground mb-3 text-sm">
-							<p>The request is relayed as-is to the relay&apos;s base URL, with the relay&apos;s credential added.</p>
+							<p>{t("relayLogs.empty.requestDesc")}</p>
 						</div>
 						<CodeBlock code={example} />
 					</TabsContent>
 				</Tabs>
 
 				<div className="bg-muted/50 rounded-lg border p-4">
-					<h4 className="mb-2 text-sm font-semibold">Prerequisites</h4>
+					<h4 className="mb-2 text-sm font-semibold">{t("mcpLogs.empty.prerequisites")}</h4>
 					<ul className="text-muted-foreground space-y-1 text-sm">
 						<li className="flex items-start gap-2">
 							<span className="text-primary">1.</span>
-							<span>Add a relay in Relays with its base URL and credential</span>
+							<span>{t("relayLogs.empty.prereq1")}</span>
 						</li>
 						<li className="flex items-start gap-2">
 							<span className="text-primary">2.</span>
 							<span>
-								Replace <code className="bg-muted rounded px-1">&lt;relay-name&gt;</code> with its name and{" "}
-								<code className="bg-muted rounded px-1">&lt;path&gt;</code> with one of its routes, or turn on Relay Any Path
+								<Trans t={t} i18nKey="relayLogs.empty.prereq2" components={{ code: codeTag }} />
 							</span>
 						</li>
 						<li className="flex items-start gap-2">
 							<span className="text-primary">3.</span>
 							<span>
-								Use a virtual key that grants the relay (or all relays), or drop the <code className="bg-muted rounded px-1">x-bf-vk</code>{" "}
-								header when authentication is disabled
+								<Trans t={t} i18nKey="relayLogs.empty.prereq3" components={{ code: codeTag }} />
 							</span>
 						</li>
 					</ul>

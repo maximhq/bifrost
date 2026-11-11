@@ -363,7 +363,7 @@ func TestAzureOpenAIMountIsAnAzureRequest(t *testing.T) {
 
 	var openAICtx fasthttp.RequestCtx
 	openAICtx.Request.SetRequestURI("/openai/v1/files")
-	require.False(t, isAzureSDKRequest(&openAICtx))
+	require.False(t, IsAzureSDKRequest(&openAICtx))
 }
 
 // TestAzureSpeechRawResponsePreCallbackKeepsRawRequestGated pins that forcing the raw response on the

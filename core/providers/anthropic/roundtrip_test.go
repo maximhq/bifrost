@@ -19,7 +19,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // --- helpers ----------------------------------------------------------------
@@ -569,5 +571,112 @@ func TestAssistantOutputMessagesCarryStatus(t *testing.T) {
 		if user := out[0]; user.Status != nil {
 			t.Errorf("grouped=%v: user input message must not carry status, got %q", keepToolsGrouped, *user.Status)
 		}
+	}
+}
+
+// issue8849Request is the request from issue #8849: three text documents (one empty, one
+// whitespace) and a question, all in one user turn, none with a title.
+const issue8849Request = `{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
+	{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},
+	{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},
+	{"type":"document","source":{"type":"text","media_type":"text/plain","data":"   "},"citations":{"enabled":true}},
+	{"type":"text","text":"Say ok."}]}]}`
+
+// requestRoundTrip runs a raw /v1/messages body through the gateway's request path
+// (ToBifrostResponsesRequest, then ToAnthropicResponsesRequest) and returns the upstream body.
+func requestRoundTrip(t *testing.T, raw string) []byte {
+	t.Helper()
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	out, err := ToAnthropicResponsesRequest(ctx, req.ToBifrostResponsesRequest(ctx))
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	body, err := sonic.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return body
+}
+
+// The #8849 request must reach Anthropic as the client sent it: one user message, every
+// document a text source (the empty one included), and no title the client did not send.
+func TestRoundTrip_DocumentsInOneUserTurn(t *testing.T) {
+	body := requestRoundTrip(t, issue8849Request)
+	messages := gjson.GetBytes(body, "messages").Array()
+	if len(messages) != 1 {
+		t.Fatalf("want the user turn as one message, got %d: %s", len(messages), gjson.GetBytes(body, "messages").Raw)
+	}
+	content := messages[0].Get("content").Array()
+	if len(content) != 4 {
+		t.Fatalf("want 4 blocks in the user turn, got %d: %s", len(content), messages[0].Raw)
+	}
+	for i, want := range []string{"Some text.", "", "   "} {
+		source := content[i].Get("source")
+		if source.Get("type").String() != "text" || !source.Get("data").Exists() || source.Get("data").String() != want {
+			t.Fatalf("document %d: want text source with data %q, got %s", i, want, source.Raw)
+		}
+		if content[i].Get("title").Exists() {
+			t.Fatalf("document %d gained a title the client never sent: %s", i, content[i].Raw)
+		}
+	}
+	if content[3].Get("type").String() != "text" || content[3].Get("text").String() != "Say ok." {
+		t.Fatalf("question block moved or changed: %s", content[3].Raw)
+	}
+}
+
+// Separate turns stay separate, and a tool_result still leads its user turn: only blocks the
+// block converters split out of one turn are put back together.
+func TestRoundTrip_UserTurnMergeKeepsTurnsAndToolResults(t *testing.T) {
+	body := requestRoundTrip(t, `{"model":"claude-haiku-4-5","max_tokens":16,
+		"tools":[{"name":"read","input_schema":{"type":"object"}}],
+		"messages":[
+		{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]},
+		{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"r"},{"type":"text","text":"c"},{"type":"text","text":"d"}]},
+		{"role":"user","content":[{"type":"text","text":"e"}]}]}`)
+	var shape []string
+	for _, m := range gjson.GetBytes(body, "messages").Array() {
+		var types []string
+		for _, b := range m.Get("content").Array() {
+			types = append(types, b.Get("type").String())
+		}
+		shape = append(shape, m.Get("role").String()+":"+strings.Join(types, "+"))
+	}
+	got := strings.Join(shape, " ")
+	// The tool_result and the text after it already went out as two user messages before this
+	// change (egress flushes tool results on their own); that split is unchanged here.
+	want := "user:text+text assistant:tool_use user:tool_result user:text+text user:text"
+	if got != want {
+		t.Fatalf("message shape changed:\n got %s\nwant %s", got, want)
+	}
+}
+
+// BenchmarkRoundTrip_UserTurnDocuments measures the /v1/messages request path (decode, lower to
+// Responses, raise back to Messages) for a single-text turn, the common case the user-turn merge
+// must leave untouched, and for the multi-document #8849 turn it now merges.
+func BenchmarkRoundTrip_UserTurnDocuments(b *testing.B) {
+	for name, raw := range map[string]string{
+		"single_text": `{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"text","text":"Say ok."}]}]}`,
+		"documents":   issue8849Request,
+	} {
+		b.Run(name, func(b *testing.B) {
+			data := []byte(raw)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				var req AnthropicMessageRequest
+				if err := sonic.Unmarshal(data, &req); err != nil {
+					b.Fatal(err)
+				}
+				out, err := ToAnthropicResponsesRequest(ctx, req.ToBifrostResponsesRequest(ctx))
+				if err != nil || out == nil {
+					b.Fatalf("convert request: %v", err)
+				}
+			}
+		})
 	}
 }

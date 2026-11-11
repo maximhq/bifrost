@@ -241,11 +241,13 @@ func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.Bifros
 		}
 		if voice := event.Session.Voice.GetName(); voice != "" {
 			session.SetRealtimeVoice(voice)
+			session.SetRealtimeVoiceType(event.Session.Voice.GetType())
 		} else if audioRaw, ok := event.Session.ExtraParams["audio"]; ok {
 			// New API format nests voice under session.audio.output.voice
 			// instead of the legacy top-level session.voice.
 			if voice := openaiProvider.ExtractNestedVoice(audioRaw); voice != "" {
 				session.SetRealtimeVoice(voice)
+				session.SetRealtimeVoiceType(openaiProvider.ExtractNestedVoiceType(audioRaw))
 			}
 		}
 	}
@@ -340,6 +342,7 @@ func buildRealtimeTurnPostResponse(
 	contentOverride string,
 	latency int64,
 	transcriptionSession bool,
+	interimUsage *schemas.BifrostLLMUsage,
 ) *schemas.BifrostResponse {
 	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
 	resp := &schemas.BifrostResponsesResponse{
@@ -356,7 +359,13 @@ func buildRealtimeTurnPostResponse(
 	if transcriptionSession {
 		resp.ExtraFields.PricingRequestType = schemas.TranscriptionRequest
 	}
-	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
+	usage := extractRealtimeTurnUsage(rtProvider, rawResponse)
+	if interimUsage != nil {
+		// The generations before the one that ended the turn are billed with it.
+		interimUsage.AddTokenCounts(usage)
+		usage = interimUsage
+	}
+	if usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
 	}
 	if strings.TrimSpace(rawRequest) != "" {
@@ -711,6 +720,7 @@ func startRealtimeTurnHooks(
 		// fallback finalization does not emit the same error a second time.
 		session.ConsumeRealtimeTurnInputs()
 		session.ConsumeRealtimeOutputText()
+		session.ConsumeRealtimeInterimUsage()
 		return bifrostErr
 	}
 
@@ -748,6 +758,7 @@ func finalizeRealtimeTurnHooks(
 
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
+	interimUsage := session.ConsumeRealtimeInterimUsage()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -764,7 +775,11 @@ func finalizeRealtimeTurnHooks(
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
 			transcriptionSession,
+			interimUsage,
 		)
+		if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+			applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+		}
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
@@ -801,7 +816,11 @@ func finalizeRealtimeTurnHooks(
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
 		transcriptionSession,
+		interimUsage,
 	)
+	if surface, _ := baseCtx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface); surface == schemas.PricingSurfaceVoiceLive {
+		applyVoiceLivePricing(postResponse, session.RealtimeVoiceType(), model)
+	}
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
@@ -835,6 +854,7 @@ func finalizeRealtimeTurnHooksWithError(
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
 	session.ConsumeRealtimeOutputText()
+	session.ConsumeRealtimeInterimUsage()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -1044,4 +1064,31 @@ func finalizeRealtimeTurnHooksOnTransportError(
 		nil,
 		newRealtimeWireBifrostError(status, code, message),
 	)
+}
+
+// applyVoiceLivePricing marks an Azure Voice Live turn for the model's _voice_live rates and records
+// which audio Azure Speech handled. A realtime model hears and speaks audio natively unless the voice
+// is an Azure voice; any other model hears through Azure speech to text and speaks through Azure
+// text to speech. Custom speech input is not detected and is priced as standard speech.
+func applyVoiceLivePricing(resp *schemas.BifrostResponse, voiceType, model string) {
+	if resp == nil || resp.ResponsesResponse == nil {
+		return
+	}
+	r := resp.ResponsesResponse
+	r.ExtraFields.PricingSurface = schemas.PricingSurfaceVoiceLive
+	if r.Usage == nil {
+		return
+	}
+	nativeAudio := strings.Contains(strings.ToLower(model), "realtime")
+	if d := r.Usage.InputTokensDetails; d != nil && !nativeAudio {
+		d.StandardSpeechAudioTokens = d.AudioTokens
+	}
+	if d := r.Usage.OutputTokensDetails; d != nil {
+		switch {
+		case voiceType == "azure-custom" || voiceType == "azure-personal":
+			d.CustomSpeechAudioTokens = d.AudioTokens
+		case voiceType == "azure-standard" || !nativeAudio:
+			d.StandardSpeechAudioTokens = d.AudioTokens
+		}
+	}
 }

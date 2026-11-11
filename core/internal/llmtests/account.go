@@ -150,6 +150,7 @@ type ComprehensiveTestConfig struct {
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
 	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
+	WebSearchChatModel       string                     // Model for web search via chat completions tests; defaults to ChatModel when empty
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
@@ -206,6 +207,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Wafer,
 		schemas.MiniMax,
 		schemas.BytePlus,
+		schemas.Baseten,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -307,7 +309,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
+				Models: []string{"cohere.embed-v4:0", "us.stability.stable-image-inpaint-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
@@ -552,6 +554,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{
 				Value:          *schemas.NewSecretVar("env.BYTEPLUS_API_KEY"),
 				Models:         []string{"deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "dreamina-seedance-2-5-260628"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Baseten:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.BASETEN_API_KEY"),
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
 			},
@@ -993,6 +1004,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.MiniMax:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Baseten:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

@@ -151,6 +151,7 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/baseten",
                   "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
@@ -175,6 +176,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/typesafe",
@@ -193,6 +195,7 @@
               "providers/custom-providers",
               "providers/self-hosted-decision-models",
               "providers/custom-pricing",
+              "providers/datasheet-editor",
               "providers/request-options",
               "providers/response-headers",
               "providers/test-harness-coverage"
@@ -221,8 +224,10 @@
                   "mcp/auth/cross-app-access"
                 ]
               },
+              "mcp/per-caller-discovery",
               "mcp/sessions",
               "mcp/tool-execution",
+              "mcp/resources-and-prompts",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
@@ -250,15 +255,12 @@
           },
           {
             "group": "Relays",
-            "icon": "waypoints",
+            "icon": "/media/relays-icon.svg",
             "pages": [
               "relays/overview",
               "relays/configuration",
               "relays/routes",
               "relays/pricing",
-              "relays/access",
-              "relays/streaming",
-              "relays/logs",
               "relays/troubleshooting"
             ]
           },
@@ -379,6 +381,16 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+              {
+                "group": "Workload Identity",
+                "icon": "fingerprint",
+                "pages": [
+                  "enterprise/workload-identity/overview",
+                  "enterprise/workload-identity/entra",
+                  "enterprise/workload-identity/aws",
+                  "enterprise/workload-identity/oidc"
+                ]
+              },
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -406,6 +418,7 @@
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
                       "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/noma-security",
                       "integrations/guardrails/a10"
                     ]
                   }
@@ -568,7 +581,8 @@
                 "group": "GenAI SDK",
                 "icon": "diamond",
                 "pages": [
-                  "integrations/genai-sdk/overview"
+                  "integrations/genai-sdk/overview",
+                  "integrations/genai-sdk/files-and-batch"
                 ]
               },
               {
@@ -603,7 +617,8 @@
                 "icon": "microsoft",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-entra/oidc"
+                  "enterprise/setting-up-entra/oidc",
+                  "enterprise/setting-up-entra/scim"
                 ]
               },
               {
@@ -627,7 +642,8 @@
                 "icon": "google",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-google-workspace"
+                  "enterprise/setting-up-google-workspace/oidc",
+                  "enterprise/setting-up-google-workspace/scim"
                 ]
               },
               {
@@ -677,6 +693,7 @@
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
               "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/noma-security",
               "integrations/guardrails/a10"
             ]
           },
@@ -1291,7 +1308,11 @@
                   "GET /api/models/details",
                   "GET /api/models/parameters",
                   "GET /api/models/base",
-                  "GET /api/models/newest"
+                  "GET /api/models/newest",
+                  "GET /api/models/datasheet",
+                  "GET /api/models/datasheet/entry",
+                  "PUT /api/models/datasheet/overrides",
+                  "DELETE /api/models/datasheet/overrides/{id}"
                 ]
               },
               {
@@ -1467,6 +1488,7 @@
                   "GET /api/mcp-logs/filterdata",
                   "GET /api/mcp-logs/histogram",
                   "GET /api/mcp-logs/histogram/cost",
+                  "GET /api/mcp-logs/histogram/latency",
                   "GET /api/mcp-logs/histogram/top-tools"
                 ]
               },
@@ -2050,11 +2072,18 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.3.2",
-              "changelogs/v2.3.1",
-              "changelogs/v2.3.0",
-              "changelogs/v2.2.6",
-              "changelogs/v2.2.5",
+              "changelogs/v2.5.0",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/v2.4.0",
+                  "changelogs/v2.3.2",
+                  "changelogs/v2.3.1",
+                  "changelogs/v2.3.0",
+                  "changelogs/v2.2.6",
+                  "changelogs/v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2284,11 +2313,18 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v2.3.2",
-              "changelogs/ent-v2.3.1",
-              "changelogs/ent-v2.3.0",
-              "changelogs/ent-v2.2.6",
-              "changelogs/ent-v2.2.5",
+              "changelogs/ent-v2.5.0",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/ent-v2.4.0",
+                  "changelogs/ent-v2.3.2",
+                  "changelogs/ent-v2.3.1",
+                  "changelogs/ent-v2.3.0",
+                  "changelogs/ent-v2.2.6",
+                  "changelogs/ent-v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2392,9 +2428,16 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.9.4",
-              "changelogs/edge-v0.9.3",
-              "changelogs/edge-v0.9.2",
+              "changelogs/edge-v1.0.1",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/edge-v1.0.0",
+                  "changelogs/edge-v0.9.4",
+                  "changelogs/edge-v0.9.3",
+                  "changelogs/edge-v0.9.2"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2455,6 +2498,8 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.48",
+              "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
@@ -2560,6 +2605,18 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/relays/access",
+      "destination": "/features/governance/virtual-keys#relay-access"
+    },
+    {
+      "source": "/relays/logs",
+      "destination": "/relays/overview#see-every-call"
+    },
+    {
+      "source": "/relays/streaming",
+      "destination": "/relays/routes#streaming"
+    },
     {
       "source": "/features/governance/complexity-router",
       "destination": "/features/complexity-router"

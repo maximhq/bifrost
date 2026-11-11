@@ -39,7 +39,7 @@ func newTestStore() *Store {
 
 func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -75,9 +75,57 @@ func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	assert.Equal(t, 20.0, *pricing.InputCostPerToken)
 }
 
+func TestGetPricing_OverridePatternsMatchAnyCase(t *testing.T) {
+	s := newTestStore()
+	s.pricingData[makeKeyNormalized("qwen3-coder", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:              "qwen3-coder",
+		Provider:           "openai",
+		Mode:               "chat",
+		InputCostPerToken:  bifrost.Ptr(1.0),
+		OutputCostPerToken: bifrost.Ptr(2.0),
+	}
+
+	providerID := "openai"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "exact-mixed-case",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "Qwen3-Coder",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":20}`,
+		},
+		{
+			ID:               "wildcard-mixed-case",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "QwQ-*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":30}`,
+		},
+	}))
+
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "qwen3-coder"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, pricing)
+	require.NotNil(t, pricing.InputCostPerToken)
+	assert.Equal(t, 20.0, *pricing.InputCostPerToken)
+
+	// No catalog row: the override alone prices the request.
+	pricing = s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "qwq-32b"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, pricing)
+	require.NotNil(t, pricing.InputCostPerToken)
+	assert.Equal(t, 30.0, *pricing.InputCostPerToken)
+
+	catalog := s.CatalogPricingOverrides("QWEN3-CODER", "openai", "chat")
+	assert.Equal(t, "exact-mixed-case", catalog.AppliedID)
+	require.Len(t, catalog.Matching, 1)
+}
+
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "responses",
@@ -119,7 +167,7 @@ func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 
 func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "vertex",
 		Mode:               "chat",
@@ -148,7 +196,7 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 
 func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("dep-gpt4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("dep-gpt4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "dep-gpt4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -179,7 +227,7 @@ func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *test
 
 func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "vertex",
 		Mode:               "chat",
@@ -218,7 +266,7 @@ func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) 
 
 func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("openai/gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("openai/gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "openai/gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -248,7 +296,7 @@ func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T)
 func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 	s := newTestStore()
 	baseCacheRead := 0.4
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:                   "gpt-4o",
 		Provider:                "openai",
 		Mode:                    "chat",
@@ -282,14 +330,14 @@ func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 
 func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o",
 		Provider:           "openai",
 		Mode:               "chat",
 		InputCostPerToken:  bifrost.Ptr(1.0),
 		OutputCostPerToken: bifrost.Ptr(2.0),
 	}
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -340,7 +388,7 @@ func TestDeleteProviderOverrides_StopsApplying(t *testing.T) {
 
 func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -378,7 +426,7 @@ func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 
 func TestGetPricing_FirstInsertionWinsOnTie(t *testing.T) {
 	s := newTestStore()
-	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:              "gpt-4o-mini",
 		Provider:           "openai",
 		Mode:               "chat",
@@ -1093,6 +1141,31 @@ func TestPatchPricing_VideoTokenRate(t *testing.T) {
 	assert.Equal(t, 0.0000077, *patched.OutputCostPerVideoToken)
 }
 
+func TestPatchPricing_CacheCreationAbove12hrFields(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove12hr:                         bifrost.Ptr(0.00001),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokens:          bifrost.Ptr(0.00002),
+		CacheCreationInputTokenCostAbove12hrPriority:                 bifrost.Ptr(0.00002),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  bifrost.Ptr(0.00004),
+		CacheCreationInputTokenCostAbove12hrFlex:                     bifrost.Ptr(0.000005),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex:      bifrost.Ptr(0.00001),
+		CacheCreationInputTokenCostAbove12hrUltrafast:                bifrost.Ptr(0.00015),
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: bifrost.Ptr(0.0003),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove12hrUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast)
+	for name, got := range map[string]*float64{
+		"base":       patched.CacheCreationInputTokenCostAbove12hr,
+		"above_272k": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokens, "priority": patched.CacheCreationInputTokenCostAbove12hrPriority,
+		"above_272k_priority": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, "flex": patched.CacheCreationInputTokenCostAbove12hrFlex,
+		"flex_above_272k": patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+	} {
+		assert.NotNil(t, got, name)
+	}
+	assert.Equal(t, 0.00004, *patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority)
+}
+
 // TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
 // multiplier rides the *float64 loop; PeakHours is patched separately because
 // it is a struct pointer, so both paths need pinning.
@@ -1233,4 +1306,43 @@ func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
 	assert.Equal(t, 0.2, *patched.OutputCostPerTokenDecisions)
 	assert.Equal(t, 1.0, *patched.InputCostPerToken)
 	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
+}
+
+func TestPatchPricing_VoiceLiveRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-realtime",
+		Provider: "azure",
+		Mode:     "responses",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenVoiceLive:                     bifrost.Ptr(0.000004),
+		OutputCostPerTokenVoiceLive:                    bifrost.Ptr(0.000016),
+		CacheReadInputTokenCostVoiceLive:               bifrost.Ptr(0.0000004),
+		InputCostPerAudioTokenVoiceLive:                bifrost.Ptr(0.000032),
+		OutputCostPerAudioTokenVoiceLive:               bifrost.Ptr(0.000064),
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  bifrost.Ptr(0.000017),
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: bifrost.Ptr(0.000031),
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    bifrost.Ptr(0.00004),
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   bifrost.Ptr(0.000055),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.CacheReadInputTokenCostVoiceLive)
+	require.NotNil(t, patched.InputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000004, *patched.InputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.000016, *patched.OutputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.0000004, *patched.CacheReadInputTokenCostVoiceLive)
+	assert.Equal(t, 0.000032, *patched.InputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000064, *patched.OutputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000017, *patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000031, *patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.00004, *patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000055, *patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
 }

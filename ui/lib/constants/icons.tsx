@@ -1,6 +1,7 @@
 import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 type IconSize = "xs" | "sm" | "md" | "lg" | "xl" | number;
 type IconProps = {
@@ -66,7 +67,7 @@ export const ProviderIcons = {
 	azure: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/azure.webp"
+				src={withBasePath("/images/azure.webp")}
 				alt="azure"
 				width={14}
 				height={14}
@@ -492,7 +493,7 @@ export const ProviderIcons = {
 	sgl: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/sgl.webp"
+				src={withBasePath("/images/sgl.webp")}
 				alt="sgl"
 				width={14}
 				height={14}
@@ -697,7 +698,7 @@ export const ProviderIcons = {
 	nebius: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/nebius.webp"
+				src={withBasePath("/images/nebius.webp")}
 				alt="nebius"
 				width={14}
 				height={14}
@@ -713,7 +714,7 @@ export const ProviderIcons = {
 	laya: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/laya.png"
+				src={withBasePath("/images/laya.png")}
 				alt="laya"
 				width={16}
 				height={16}
@@ -726,7 +727,7 @@ export const ProviderIcons = {
 	nimble: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/nimble.png"
+				src={withBasePath("/images/nimble.png")}
 				alt="nimble"
 				width={16}
 				height={16}
@@ -739,7 +740,7 @@ export const ProviderIcons = {
 	clef: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/clef.png"
+				src={withBasePath("/images/clef.png")}
 				alt="clef"
 				width={16}
 				height={16}
@@ -964,12 +965,31 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	baseten: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				fill="currentColor"
+				fillRule="evenodd"
+				style={{ flex: "none", lineHeight: "1" }}
+				viewBox="0 0 24 24"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Baseten</title>
+				<path d="M2.316 4.8h14.682v4.8H7.31a.302.302 0 00-.308.3v4.2c0 .171.14.3.308.3h9.688v4.8h-4.686a.302.302 0 00-.308.3v4.2c0 .171.141.3.308.3h4.378a.297.297 0 00.308-.3v-4.5h4.694a.302.302 0 00.308-.3v-4.2c0-.171-.14-.3-.308-.3h-4.694V9.6h4.694A.302.302 0 0022 9.3V5.1c0-.171-.14-.3-.308-.3h-4.694V.3c0-.171-.14-.3-.308-.3H2.316A.31.31 0 002 .3v4.2c0 .171.14.3.316.3z" />
+			</svg>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
 		return (
 			<img
-				src="/images/databricks.svg"
+				src={withBasePath("/images/databricks.svg")}
 				alt="databricks"
 				width={resolvedSize}
 				height={resolvedSize}
