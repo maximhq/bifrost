@@ -97,6 +97,8 @@ function ModelLimitActionsMenu({
 	// changed by editing its owner — no delete here, and "Edit" just opens the
 	// sheet's read-only view instead of a form.
 	const isManaged = getModelLimitScope(config.scope ?? "global")?.readOnly === true;
+	// Removing this page's limits while others remain is an update of the row, not a delete.
+	const canRemove = hasDeleteAccess && (hasUpdateAccess || budgetsLeftAfterRemoving(config, traffic) === null);
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
@@ -126,12 +128,7 @@ function ModelLimitActionsMenu({
 					{isManaged ? t("modelLimits.view") : tc("edit")}
 				</DisabledReasonMenuItem>
 				<DisabledReasonMenuItem
-					reason={actionDisabledReason(
-						hasDeleteAccess,
-						"delete",
-						"model limits",
-						isManaged ? t("modelLimits.managedCantDelete") : undefined,
-					)}
+					reason={actionDisabledReason(canRemove, "delete", "model limits", isManaged ? t("modelLimits.managedCantDelete") : undefined)}
 					variant="destructive"
 					className="cursor-pointer"
 					data-testid={`${testIdPrefix}-button-delete-${testIdPart}`}

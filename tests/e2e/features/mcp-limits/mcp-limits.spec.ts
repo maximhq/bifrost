@@ -128,32 +128,16 @@ test.describe('MCP Budgets & Limits', () => {
   })
 
   test.describe('global', () => {
-    // The deployment has one holder-level row; whatever it held before the test is put back after it.
-    let saved: ModelConfigRow | undefined
-
+    // The deployment has one holder-level row. These tests create it and remove it, so they leave a
+    // server that already has one alone instead of replacing limits they cannot restore exactly.
     test.beforeEach(async ({ page }) => {
-      saved = await globalHolderLevelRow(page.request)
-      if (saved) {
-        const res = await page.request.delete(`/api/governance/model-configs/${saved.id}`)
-        expect(res.status(), await res.text()).toBe(200)
-      }
+      test.skip(!!(await globalHolderLevelRow(page.request)), 'the server already has global limits; this spec would replace them')
     })
 
     test.afterEach(async ({ page }) => {
       const current = await globalHolderLevelRow(page.request)
       if (current) {
         await page.request.delete(`/api/governance/model-configs/${current.id}`)
-      }
-      if (saved) {
-        const res = await page.request.post('/api/governance/model-configs', {
-          data: {
-            model_name: '*',
-            scope: 'global',
-            budgets: (saved.budgets ?? []).map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, scope: b.scope })),
-            rate_limit: saved.rate_limit,
-          },
-        })
-        expect(res.status(), await res.text()).toBe(200)
       }
     })
 
