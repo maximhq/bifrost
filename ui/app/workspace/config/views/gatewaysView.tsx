@@ -28,7 +28,9 @@ const gatewayURL = (issuer: SecretVar | undefined, fallback: string) => {
 	return value ? `${value.replace(/\/+$/, "")}/gateway/claude-code` : fallback;
 };
 
-export default function ClaudeCodeView() {
+// GatewaysView configures client gateways: the shared issuer URL, then one card
+// per coding client (Claude Code today).
+export default function GatewaysView() {
 	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -41,18 +43,18 @@ export default function ClaudeCodeView() {
 
 	useEffect(() => {
 		if (!config) return;
-		setEnabled(config.oauth2_server_config?.claude_code_gateway?.enabled ?? false);
+		setEnabled(config.oauth2_server_config?.gateways?.claude_code?.enabled ?? false);
 		setIssuerURL(config.oauth2_server_config?.issuer_url);
-		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.claude_code_gateway?.managed_settings));
+		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.gateways?.claude_code?.managed_settings));
 	}, [config]);
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const stored = config.oauth2_server_config;
 		return (
-			enabled !== (stored?.claude_code_gateway?.enabled ?? false) ||
+			enabled !== (stored?.gateways?.claude_code?.enabled ?? false) ||
 			!secretVarEquals(issuerURL, stored?.issuer_url) ||
-			managedSettings !== formatManagedSettings(stored?.claude_code_gateway?.managed_settings)
+			managedSettings !== formatManagedSettings(stored?.gateways?.claude_code?.managed_settings)
 		);
 	}, [config, enabled, issuerURL, managedSettings]);
 
@@ -97,7 +99,10 @@ export default function ClaudeCodeView() {
 					oauth2_server_config: {
 						...clientConfig.oauth2_server_config,
 						issuer_url: issuerURL,
-						claude_code_gateway: { enabled, managed_settings: parsedSettings },
+						gateways: {
+							...clientConfig.oauth2_server_config?.gateways,
+							claude_code: { enabled, managed_settings: parsedSettings },
+						},
 					},
 				},
 			}).unwrap();
@@ -108,91 +113,99 @@ export default function ClaudeCodeView() {
 	}, [bifrostConfig, enabled, issuerURL, managedSettings, updateCoreConfig, t]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="claude-code-view">
-			<PageTitle title={t("claudeCode.title")}>
-				<Trans t={t} i18nKey="claudeCode.description" components={{ code0: <code className="text-xs" /> }} />
+		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="gateways-view">
+			<PageTitle title={t("gateways.title")}>
+				<Trans t={t} i18nKey="gateways.description" components={{ code0: <code className="text-xs" /> }} />
 			</PageTitle>
 
 			<div className="space-y-4">
-				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
-					<div className="space-y-0.5">
-						<label htmlFor="claude-code-gateway-enabled" className="text-sm font-medium">
-							{t("claudeCode.enableLabel")}
-						</label>
-						<p className="text-muted-foreground text-sm">
-							<Trans t={t} i18nKey="claudeCode.enableDescription" components={{ b0: <b />, code1: <code className="text-xs" /> }} />
-						</p>
-					</div>
-					<Switch
-						id="claude-code-gateway-enabled"
-						data-testid="claude-code-gateway-switch"
-						size="md"
-						checked={enabled}
-						onCheckedChange={setEnabled}
-						disabled={!hasSettingsUpdateAccess}
-					/>
-				</div>
-
 				<div className="space-y-1.5 rounded-sm border p-4">
-					<label htmlFor="claude-code-issuer-url" className="text-sm font-medium">
-						{t("claudeCode.issuerLabel")}
+					<label htmlFor="gateways-issuer-url" className="text-sm font-medium">
+						{t("gateways.issuerLabel")}
 					</label>
 					<p className="text-muted-foreground text-sm">
 						<Trans
 							t={t}
-							i18nKey="claudeCode.issuerDescription"
-							components={{ code0: <code className="text-xs">{urlTemplate}</code>, code1: <code className="text-xs" /> }}
+							i18nKey="gateways.issuerDescription"
+							components={{ code0: <code className="text-xs">{t("gateways.urlTemplate")}</code>, code1: <code className="text-xs" /> }}
 						/>
 					</p>
 					<SecretVarInput
-						id="claude-code-issuer-url"
-						data-testid="claude-code-issuer-url-input"
-						placeholder={t("claudeCode.issuerPlaceholder")}
+						id="gateways-issuer-url"
+						data-testid="gateways-issuer-url-input"
+						placeholder={t("gateways.issuerPlaceholder")}
 						value={issuerURL}
 						onChange={setIssuerURL}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
 
-				{enabled && (
-					<div className="space-y-3 rounded-sm border p-4" data-testid="claude-code-connect-instructions">
-						<p className="text-sm font-medium">{t("claudeCode.connectTitle")}</p>
-						<p className="text-muted-foreground text-sm">{t("claudeCode.gatewayURLLabel")}</p>
-						<code className="bg-muted block rounded-sm px-3 py-2 text-xs" data-testid="claude-code-gateway-url">
-							{url}
-						</code>
+				<section className="space-y-4 rounded-sm border p-4" data-testid="claude-code-view">
+					<div className="space-y-0.5">
+						<h2 className="text-base font-semibold">{t("claudeCode.title")}</h2>
 						<p className="text-muted-foreground text-sm">
-							<Trans
-								t={t}
-								i18nKey="claudeCode.connectBody"
-								components={{ code0: <code className="text-xs" />, code1: <code className="text-xs" />, b2: <b /> }}
-							/>
+							<Trans t={t} i18nKey="claudeCode.description" components={{ code0: <code className="text-xs" /> }} />
 						</p>
-						<pre className="bg-muted overflow-x-auto rounded-sm px-3 py-2 text-xs">{mdmSnippet}</pre>
-						<Alert>
-							<AlertDescription>{t("claudeCode.requirements")}</AlertDescription>
-						</Alert>
 					</div>
-				)}
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="claude-code-gateway-enabled" className="text-sm font-medium">
+								{t("claudeCode.enableLabel")}
+							</label>
+							<p className="text-muted-foreground text-sm">
+								<Trans t={t} i18nKey="claudeCode.enableDescription" components={{ b0: <b />, code1: <code className="text-xs" /> }} />
+							</p>
+						</div>
+						<Switch
+							id="claude-code-gateway-enabled"
+							data-testid="claude-code-gateway-switch"
+							size="md"
+							checked={enabled}
+							onCheckedChange={setEnabled}
+							disabled={!hasSettingsUpdateAccess}
+						/>
+					</div>
 
-				<div className="space-y-1.5 rounded-sm border p-4">
-					<label htmlFor="claude-code-managed-settings" className="text-sm font-medium">
-						{t("claudeCode.managedSettingsLabel")}
-					</label>
-					<p className="text-muted-foreground text-sm">
-						<Trans t={t} i18nKey="claudeCode.managedSettingsDescription" components={{ code0: <code className="text-xs" /> }} />
-					</p>
-					<Textarea
-						id="claude-code-managed-settings"
-						data-testid="claude-code-managed-settings-input"
-						className="min-h-40 font-mono text-xs"
-						// i18n-ignore: a JSON example, not prose
-						placeholder={'{\n  "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" }\n}'}
-						value={managedSettings}
-						onChange={(e) => setManagedSettings(e.target.value)}
-						disabled={!hasSettingsUpdateAccess}
-					/>
-				</div>
+					{enabled && (
+						<div className="space-y-3 rounded-sm border p-4" data-testid="claude-code-connect-instructions">
+							<p className="text-sm font-medium">{t("claudeCode.connectTitle")}</p>
+							<p className="text-muted-foreground text-sm">{t("claudeCode.gatewayURLLabel")}</p>
+							<code className="bg-muted block rounded-sm px-3 py-2 text-xs" data-testid="claude-code-gateway-url">
+								{url}
+							</code>
+							<p className="text-muted-foreground text-sm">
+								<Trans
+									t={t}
+									i18nKey="claudeCode.connectBody"
+									components={{ code0: <code className="text-xs" />, code1: <code className="text-xs" />, b2: <b /> }}
+								/>
+							</p>
+							<pre className="bg-muted overflow-x-auto rounded-sm px-3 py-2 text-xs">{mdmSnippet}</pre>
+							<Alert>
+								<AlertDescription>{t("claudeCode.requirements")}</AlertDescription>
+							</Alert>
+						</div>
+					)}
+
+					<div className="space-y-1.5 rounded-sm border p-4">
+						<label htmlFor="claude-code-managed-settings" className="text-sm font-medium">
+							{t("claudeCode.managedSettingsLabel")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="claudeCode.managedSettingsDescription" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+						<Textarea
+							id="claude-code-managed-settings"
+							data-testid="claude-code-managed-settings-input"
+							className="min-h-40 font-mono text-xs"
+							// i18n-ignore: a JSON example, not prose
+							placeholder={'{\n  "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" }\n}'}
+							value={managedSettings}
+							onChange={(e) => setManagedSettings(e.target.value)}
+							disabled={!hasSettingsUpdateAccess}
+						/>
+					</div>
+				</section>
 			</div>
 
 			<div className="flex justify-end pt-2">

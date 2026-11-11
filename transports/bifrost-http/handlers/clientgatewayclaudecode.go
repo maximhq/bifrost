@@ -100,7 +100,7 @@ func (claudeCodeProfile) managedSettingsHandler(store *lib.Config) fasthttp.Requ
 		store.Mu.RLock()
 		var settings map[string]any
 		if cfg := store.ClientConfig.OAuth2ServerConfig; cfg.IsClaudeCodeGatewayEnabled() {
-			settings = cfg.ClaudeCodeGateway.ManagedSettings
+			settings = cfg.ClaudeCodeGateway().ManagedSettings
 		}
 		store.Mu.RUnlock()
 		if settings == nil {
