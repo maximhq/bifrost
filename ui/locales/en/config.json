@@ -1609,9 +1609,6 @@
 		"description": "Let developers sign in to Bifrost from Claude Code with <code0>/login</code0> instead of configuring a virtual key by hand.",
 		"enableLabel": "Enable Claude Code sign-in",
 		"enableDescription": "Developers choose <b0>Cloud gateway</b0> in <code1>/login</code1>, confirm a code in the browser, and pick an identity: a virtual key, their account, or an anonymous session when inference auth is not enforced. Requests then run under that identity with its budgets, rate limits and model access. Sign-ins appear under OAuth grants, where they can be revoked.",
-		"issuerLabel": "Issuer URL",
-		"issuerDescription": "Bifrost's stable public URL. Claude Code signs in at <code0/>. This is the same issuer the MCP OAuth server uses, so changing it also affects MCP clients signed in with OAuth. Supports env var syntax (e.g. <code1>env.BIFROST_ISSUER_URL</code1>).",
-		"issuerPlaceholder": "https://bifrost.example.com or env.BIFROST_ISSUER_URL",
 		"gatewayURLTemplate": "<issuer URL>/gateway/claude-code",
 		"connectTitle": "Connect Claude Code",
 		"gatewayURLLabel": "Gateway URL:",
@@ -1623,5 +1620,13 @@
 		"invalidJSON": "Managed settings must be valid JSON.",
 		"notObject": "Managed settings must be a JSON object.",
 		"updated": "Claude Code settings updated successfully."
+	},
+	"gateways": {
+		"title": "Gateways",
+		"description": "Let coding clients sign in to Bifrost with their own <code0>/login</code0> instead of a hand-configured virtual key. Each client is served under its own URL, and its requests run under the virtual key or account the developer picks.",
+		"issuerLabel": "Issuer URL",
+		"issuerDescription": "Bifrost's stable public URL. Each gateway is served at <code0/>. This is the same issuer the MCP OAuth server uses, so changing it also affects MCP clients signed in with OAuth. Supports env var syntax (e.g. <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com or env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<issuer URL>/gateway/<client>"
 	}
 }

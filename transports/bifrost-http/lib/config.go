@@ -1618,10 +1618,10 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// /.well-known/ routes. Same fail-fast-at-load philosophy as the auth_code_ttl
 	// check above: a config.json or pre-existing DB row that predates this
 	// requirement must not silently run with a Host-derived issuer.
-	// The Claude Code gateway issues the same URLs and tokens from the same
-	// issuer, so it needs one pinned whatever the MCP auth mode.
-	if oc := cc.OAuth2ServerConfig; oc.IsClaudeCodeGatewayEnabled() && (!oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "") {
-		return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when claude_code_gateway is enabled")
+	// Client gateways issue the same URLs and tokens from the same issuer, so
+	// they need one pinned whatever the MCP auth mode.
+	if oc := cc.OAuth2ServerConfig; oc.AnyClientGatewayEnabled() && (!oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "") {
+		return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
 	}
 	if cc.IsMCPOAuthDiscoveryEnabled() {
 		oc := cc.OAuth2ServerConfig

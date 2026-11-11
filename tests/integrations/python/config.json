@@ -2006,11 +2006,13 @@
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
       "issuer_url": "http://localhost:8080",
-      "claude_code_gateway": {
-        "enabled": true,
-        "managed_settings": {
-          "env": {
-            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+      "gateways": {
+        "claude_code": {
+          "enabled": true,
+          "managed_settings": {
+            "env": {
+              "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+            }
           }
         }
       }

@@ -1628,9 +1628,6 @@
 		"description": "仮想キーを手動で設定する代わりに、開発者が Claude Code から <code0>/login</code0> で Bifrost にサインインできるようにします。",
 		"enableLabel": "Claude Code のサインインを有効にする",
 		"enableDescription": "開発者は <code1>/login</code1> で <b0>Cloud gateway</b0> を選び、ブラウザーでコードを確認してから ID を選択します。選べるのは仮想キー、自分のアカウント、または推論の認証が必須でない場合の匿名セッションです。以降のリクエストはその ID の予算、レート制限、モデルアクセスで実行されます。サインインは OAuth グラントに表示され、そこで取り消せます。",
-		"issuerLabel": "発行者 URL",
-		"issuerDescription": "Bifrost の固定の公開 URL です。Claude Code は <code0/> でサインインします。MCP OAuth サーバーと同じ発行者を使うため、変更すると OAuth でサインインした MCP クライアントにも影響します。環境変数構文に対応しています（例: <code1>env.BIFROST_ISSUER_URL</code1>）。",
-		"issuerPlaceholder": "https://bifrost.example.com または env.BIFROST_ISSUER_URL",
 		"gatewayURLTemplate": "<発行者 URL>/gateway/claude-code",
 		"connectTitle": "Claude Code を接続",
 		"gatewayURLLabel": "ゲートウェイ URL:",
@@ -1642,5 +1639,13 @@
 		"invalidJSON": "管理設定は有効な JSON である必要があります。",
 		"notObject": "管理設定は JSON オブジェクトである必要があります。",
 		"updated": "Claude Code の設定を更新しました。"
+	},
+	"gateways": {
+		"title": "ゲートウェイ",
+		"description": "コーディングクライアントが、手動で設定した仮想キーではなく独自の <code0>/login</code0> で Bifrost にサインインできるようにします。クライアントごとに専用の URL があり、そのリクエストは開発者が選んだ仮想キーまたはアカウントで実行されます。",
+		"issuerLabel": "発行者 URL",
+		"issuerDescription": "Bifrost の固定の公開 URL です。各ゲートウェイは <code0/> で提供されます。MCP OAuth サーバーと同じ発行者を使うため、変更すると OAuth でサインインした MCP クライアントにも影響します。環境変数構文に対応しています（例: <code1>env.BIFROST_ISSUER_URL</code1>）。",
+		"issuerPlaceholder": "https://bifrost.example.com または env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<発行者 URL>/gateway/<クライアント>"
 	}
 }

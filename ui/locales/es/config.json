@@ -1614,9 +1614,6 @@
 		"description": "Permite que los desarrolladores inicien sesión en Bifrost desde Claude Code con <code0>/login</code0> en lugar de configurar una clave virtual a mano.",
 		"enableLabel": "Habilitar el inicio de sesión de Claude Code",
 		"enableDescription": "Los desarrolladores eligen <b0>Cloud gateway</b0> en <code1>/login</code1>, confirman un código en el navegador y eligen una identidad: una clave virtual, su cuenta o una sesión anónima cuando no se exige autenticación en la inferencia. Las solicitudes se ejecutan entonces con esa identidad, con sus presupuestos, límites de tasa y acceso a modelos. Los inicios de sesión aparecen en las concesiones OAuth, donde se pueden revocar.",
-		"issuerLabel": "URL del emisor",
-		"issuerDescription": "La URL pública estable de Bifrost. Claude Code inicia sesión en <code0/>. Es el mismo emisor que usa el servidor OAuth de MCP, así que cambiarlo también afecta a los clientes MCP que iniciaron sesión con OAuth. Admite la sintaxis de variables de entorno (p. ej., <code1>env.BIFROST_ISSUER_URL</code1>).",
-		"issuerPlaceholder": "https://bifrost.example.com o env.BIFROST_ISSUER_URL",
 		"gatewayURLTemplate": "<URL del emisor>/gateway/claude-code",
 		"connectTitle": "Conectar Claude Code",
 		"gatewayURLLabel": "URL del gateway:",
@@ -1628,5 +1625,13 @@
 		"invalidJSON": "La configuración administrada debe ser JSON válido.",
 		"notObject": "La configuración administrada debe ser un objeto JSON.",
 		"updated": "La configuración de Claude Code se actualizó correctamente."
+	},
+	"gateways": {
+		"title": "Gateways",
+		"description": "Permite que los clientes de programación inicien sesión en Bifrost con su propio <code0>/login</code0> en lugar de una clave virtual configurada a mano. Cada cliente tiene su propia URL y sus solicitudes se ejecutan con la clave virtual o la cuenta que elija el desarrollador.",
+		"issuerLabel": "URL del emisor",
+		"issuerDescription": "La URL pública estable de Bifrost. Cada gateway se sirve en <code0/>. Es el mismo emisor que usa el servidor OAuth de MCP, así que cambiarlo también afecta a los clientes MCP que iniciaron sesión con OAuth. Admite la sintaxis de variables de entorno (p. ej., <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com o env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<URL del emisor>/gateway/<cliente>"
 	}
 }

@@ -1604,9 +1604,6 @@
 		"description": "让开发者在 Claude Code 中通过 <code0>/login</code0> 登录 Bifrost，而无需手动配置虚拟密钥。",
 		"enableLabel": "启用 Claude Code 登录",
 		"enableDescription": "开发者在 <code1>/login</code1> 中选择 <b0>Cloud gateway</b0>，在浏览器中确认代码，然后选择身份：虚拟密钥、自己的账户，或在未强制推理认证时选择匿名会话。之后的请求将以该身份运行，并适用其预算、速率限制和模型访问权限。登录会显示在 OAuth 授权中，可在那里撤销。",
-		"issuerLabel": "颁发者 URL",
-		"issuerDescription": "Bifrost 的固定公共 URL。Claude Code 在 <code0/> 登录。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
-		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
 		"gatewayURLTemplate": "<颁发者 URL>/gateway/claude-code",
 		"connectTitle": "连接 Claude Code",
 		"gatewayURLLabel": "网关 URL：",
@@ -1618,5 +1615,13 @@
 		"invalidJSON": "托管设置必须是有效的 JSON。",
 		"notObject": "托管设置必须是 JSON 对象。",
 		"updated": "Claude Code 设置已更新。"
+	},
+	"gateways": {
+		"title": "网关",
+		"description": "让编码客户端通过各自的 <code0>/login</code0> 登录 Bifrost，而无需手动配置虚拟密钥。每个客户端都有自己的 URL，其请求以开发者选择的虚拟密钥或账户运行。",
+		"issuerLabel": "颁发者 URL",
+		"issuerDescription": "Bifrost 的固定公共 URL。每个网关都在 <code0/> 提供服务。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
+		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<颁发者 URL>/gateway/<客户端>"
 	}
 }

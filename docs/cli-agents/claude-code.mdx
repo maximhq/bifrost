@@ -265,7 +265,7 @@ Instead of handing every developer a virtual key, you can let them sign in to Bi
 
 <Tabs>
 <Tab title="Web UI">
-Go to **Settings → Claude Code**, set the **Issuer URL** (Bifrost's stable public URL), turn on **Enable Claude Code sign-in** and save. The page shows the URL to give developers.
+Go to **Settings → Gateways**, set the **Issuer URL** (Bifrost's stable public URL), turn on **Enable Claude Code sign-in** and save. The page shows the URL to give developers.
 </Tab>
 <Tab title="config.json">
 ```json
@@ -273,8 +273,10 @@ Go to **Settings → Claude Code**, set the **Issuer URL** (Bifrost's stable pub
   "client": {
     "oauth2_server_config": {
       "issuer_url": "https://bifrost.example.com",
-      "claude_code_gateway": {
-        "enabled": true
+      "gateways": {
+        "claude_code": {
+          "enabled": true
+        }
       }
     }
   }
@@ -319,14 +321,16 @@ Claude Code never receives the virtual key itself. It gets a signed token bound 
 ### Models, managed settings and telemetry
 
 - **Inference** goes to `/gateway/claude-code/v1/messages` and behaves like the [`/anthropic` route](#static-virtual-key), including model resolution and provider-prefixed model IDs. Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` on the client (for example via managed settings below) to fill the `/model` picker from `/gateway/claude-code/v1/models`.
-- **Managed settings**: anything you put in `claude_code_gateway.managed_settings` (or the **Managed settings** editor in the UI) is served to every signed-in Claude Code client as its `managed-settings.json`, and refreshed about hourly:
+- **Managed settings**: anything you put in `gateways.claude_code.managed_settings` (or the **Managed settings** editor in the UI) is served to every signed-in Claude Code client as its `managed-settings.json`, and refreshed about hourly:
 
   ```json
-  "claude_code_gateway": {
-    "enabled": true,
-    "managed_settings": {
-      "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" },
-      "permissions": { "deny": ["WebFetch"] }
+  "gateways": {
+    "claude_code": {
+      "enabled": true,
+      "managed_settings": {
+        "env": { "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" },
+        "permissions": { "deny": ["WebFetch"] }
+      }
     }
   }
   ```

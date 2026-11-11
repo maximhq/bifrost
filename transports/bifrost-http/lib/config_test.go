@@ -2950,7 +2950,7 @@ func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
 // does not depend on MCP OAuth being enabled.
 func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T) {
 	gateway := func(enabled bool, issuerURL string) *configstore.ClientConfig {
-		oc := &tables.OAuth2ServerConfig{ClaudeCodeGateway: &tables.ClaudeCodeGatewayConfig{Enabled: enabled}}
+		oc := &tables.OAuth2ServerConfig{Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: enabled}}}
 		if issuerURL != "" {
 			oc.IssuerURL = schemas.NewSecretVar(issuerURL)
 		}
@@ -2971,7 +2971,7 @@ func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T
 			err := validateClientConfig(tc.cc)
 			if tc.wantErr {
 				require.Error(t, err)
-				require.Contains(t, err.Error(), "claude_code_gateway")
+				require.Contains(t, err.Error(), "oauth2_server_config.gateways")
 				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
 			} else {
 				require.NoError(t, err)

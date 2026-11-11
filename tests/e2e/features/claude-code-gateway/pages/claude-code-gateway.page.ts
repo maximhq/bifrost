@@ -20,7 +20,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.view = page.getByTestId('claude-code-view')
     this.saveBtn = page.getByTestId('claude-code-save-btn')
     this.enabledSwitch = page.getByTestId('claude-code-gateway-switch')
-    this.issuerURLInput = page.getByTestId('claude-code-issuer-url-input')
+    this.issuerURLInput = page.getByTestId('gateways-issuer-url-input')
     this.gatewayURL = page.getByTestId('claude-code-gateway-url')
     this.connectInstructions = page.getByTestId('claude-code-connect-instructions')
     this.managedSettingsInput = page.getByTestId('claude-code-managed-settings-input')
@@ -31,7 +31,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto('/workspace/config/claude-code')
+    await this.page.goto('/workspace/config/gateways')
     await waitForNetworkIdle(this.page)
   }
 
