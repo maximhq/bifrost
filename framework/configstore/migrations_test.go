@@ -5853,3 +5853,323 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
 }
+
+// TestMigrationSplitRequestLimitsFromRateLimits_Schema verifies the full chain leaves
+// governance_rate_limits with the new columns and owner indexes but no owner FK constraint.
+func TestMigrationSplitRequestLimitsFromRateLimits_Schema(t *testing.T) {
+	_, db := setupFullMigrationDB(t)
+
+	mig := db.Migrator()
+	for _, column := range []string{"scope", "model_config_id", "team_id", "customer_id"} {
+		assert.True(t, mig.HasColumn(&tables.TableRateLimit{}, column), "governance_rate_limits.%s should exist", column)
+	}
+	for _, field := range []string{"ModelConfigID", "TeamID", "CustomerID"} {
+		assert.True(t, mig.HasIndex(&tables.TableRateLimit{}, field), "governance_rate_limits index on %s should exist", field)
+	}
+	for _, owner := range []any{&tables.TableModelConfig{}, &tables.TableTeam{}, &tables.TableCustomer{}} {
+		assert.False(t, mig.HasConstraint(owner, "RequestLimits"), "%T -> request limits must carry no FK constraint", owner)
+	}
+}
+
+// TestMigrationSplitRequestLimitsFromRateLimits_MovesRequestLimits verifies the data
+// move: each singly-referenced holder's request limit becomes an owned request limit with its
+// usage, the original keeps only its token limit or goes away, a shared row and a
+// project model config's row are left combined, and a second run changes nothing.
+func TestMigrationSplitRequestLimitsFromRateLimits_MovesRequestLimits(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		store, db := setupFullMigrationDB(t)
+		assertSplitRequestLimits(t, store, db)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		store := setupPostgresDeadlockStore(t)
+		assertSplitRequestLimits(t, store, store.DB())
+	})
+}
+
+func assertSplitRequestLimits(t *testing.T, store *RDBConfigStore, db *gorm.DB) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	lastReset := now.Add(-10 * time.Minute)
+	createdAt := now.Add(-48*time.Hour - 17*time.Minute)
+
+	combined := func(id string, tokens bool) {
+		rl := tables.TableRateLimit{
+			ID: id, RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"),
+			RequestCurrentUsage: 7, RequestLastReset: lastReset, TokenLastReset: lastReset,
+			ConfigHash: "file-hash", CreatedAt: createdAt, UpdatedAt: now,
+		}
+		if tokens {
+			rl.TokenMaxLimit = schemas.Ptr(int64(1000))
+			rl.TokenResetDuration = schemas.Ptr("1d")
+			rl.TokenCurrentUsage = 400
+		}
+		require.NoError(t, db.Create(&rl).Error)
+	}
+	combined("rl-vk-model", true)
+	combined("rl-vk-all", false)
+	combined("rl-team", false)
+	combined("rl-customer", true)
+	combined("rl-shared", true)
+	combined("rl-project", true)
+
+	vkID := "vk-1"
+	projectID := "project-1"
+	require.NoError(t, db.Create(&tables.TableModelConfig{ID: "mc-vk", ModelName: "gpt-4", Scope: tables.ModelConfigScopeVirtualKey, ScopeID: &vkID, RateLimitID: schemas.Ptr("rl-vk-model"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{ID: "mc-vk-all", ModelName: tables.ModelConfigAllModels, Scope: tables.ModelConfigScopeVirtualKey, ScopeID: &vkID, RateLimitID: schemas.Ptr("rl-vk-all"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{ID: "mc-project", ModelName: "gpt-4", Scope: tables.ModelConfigScopeProject, ScopeID: &projectID, RateLimitID: schemas.Ptr("rl-project"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableTeam{ID: "team-1", Name: "team one", RateLimitID: schemas.Ptr("rl-team"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableTeam{ID: "team-shared", Name: "team shared", RateLimitID: schemas.Ptr("rl-shared"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableCustomer{ID: "customer-1", Name: "customer one", RateLimitID: schemas.Ptr("rl-customer"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Exec(`
+		INSERT INTO governance_virtual_keys
+		  (id, name, value, is_active, rate_limit_id, encryption_status, value_hash, config_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'plain_text', ?, '', ?, ?)
+	`, "vk-shared", "shared", "sk-bf-shared", true, "rl-shared", "vk-shared-hash", now, now).Error)
+
+	rerun := func() {
+		require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "split_request_limits_from_rate_limits").Error)
+		require.NoError(t, migrationSplitRequestLimitsFromRateLimits(ctx, db, testMigrationLogger))
+	}
+	rerun()
+
+	load := func(id string) *tables.TableRateLimit {
+		rl, err := store.GetRateLimit(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		require.NoError(t, err)
+		return rl
+	}
+	assertRule := func(id string, scope tables.LimitScope, owner func(*tables.TableRateLimit) *string, ownerID string) {
+		t.Helper()
+		rule := load(tables.LegacyRequestLimitID(id))
+		require.NotNil(t, rule, "request limit for %s should exist", id)
+		assert.Equal(t, scope, rule.Scope)
+		require.NotNil(t, owner(rule))
+		assert.Equal(t, ownerID, *owner(rule))
+		assert.Equal(t, int64(10), *rule.RequestMaxLimit)
+		assert.Equal(t, "1h", *rule.RequestResetDuration)
+		assert.Equal(t, int64(7), rule.RequestCurrentUsage, "request usage is carried over")
+		assert.True(t, rule.RequestLastReset.Equal(lastReset), "request last reset is carried over")
+		assert.True(t, rule.CreatedAt.Equal(createdAt), "the reset-window anchor is carried over")
+		assert.Nil(t, rule.TokenMaxLimit)
+		assert.Nil(t, rule.TokenResetDuration)
+		expected, err := GenerateRateLimitHash(*rule)
+		require.NoError(t, err)
+		assert.Equal(t, expected, rule.ConfigHash)
+	}
+	modelConfigOwner := func(rl *tables.TableRateLimit) *string { return rl.ModelConfigID }
+	assertRule("rl-vk-model", tables.LimitScopeShared, modelConfigOwner, "mc-vk")
+	assertRule("rl-vk-all", tables.LimitScopeShared, modelConfigOwner, "mc-vk-all")
+	assertRule("rl-team", tables.LimitScopeShared, func(rl *tables.TableRateLimit) *string { return rl.TeamID }, "team-1")
+	assertRule("rl-customer", tables.LimitScopeShared, func(rl *tables.TableRateLimit) *string { return rl.CustomerID }, "customer-1")
+
+	// A combined original keeps only its token limit and usage, under a recomputed hash.
+	for _, id := range []string{"rl-vk-model", "rl-customer"} {
+		rl := load(id)
+		require.NotNil(t, rl, "%s keeps its token limit", id)
+		assert.Nil(t, rl.RequestMaxLimit)
+		assert.Nil(t, rl.RequestResetDuration)
+		assert.Zero(t, rl.RequestCurrentUsage)
+		assert.Equal(t, int64(1000), *rl.TokenMaxLimit)
+		assert.Equal(t, int64(400), rl.TokenCurrentUsage)
+		expected, err := GenerateRateLimitHash(*rl)
+		require.NoError(t, err)
+		assert.Equal(t, expected, rl.ConfigHash)
+	}
+	// A request-only original is deleted and its holder no longer references it.
+	assert.Nil(t, load("rl-vk-all"))
+	assert.Nil(t, load("rl-team"))
+	mcAll, err := store.GetModelConfigByID(ctx, "mc-vk-all")
+	require.NoError(t, err)
+	assert.Nil(t, mcAll.RateLimitID)
+	require.Len(t, mcAll.RequestLimits, 1)
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.RateLimitID)
+	require.Len(t, team.RequestLimits, 1)
+	mcVK, err := store.GetModelConfig(ctx, tables.ModelConfigScopeVirtualKey, &vkID, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, mcVK.RateLimit)
+	assert.Equal(t, "rl-vk-model", mcVK.RateLimit.ID)
+	require.Len(t, mcVK.RequestLimits, 1)
+	customer, err := store.GetCustomer(ctx, "customer-1")
+	require.NoError(t, err)
+	require.Len(t, customer.RequestLimits, 1)
+
+	// A row shared by two holders is left combined.
+	shared := load("rl-shared")
+	require.NotNil(t, shared)
+	assert.Equal(t, int64(10), *shared.RequestMaxLimit)
+	assert.Equal(t, "file-hash", shared.ConfigHash)
+	assert.Nil(t, load(tables.LegacyRequestLimitID("rl-shared")))
+
+	// A project model config's combined row is left untouched: other tables reference it.
+	project := load("rl-project")
+	require.NotNil(t, project)
+	assert.Equal(t, int64(10), *project.RequestMaxLimit)
+	assert.Equal(t, int64(7), project.RequestCurrentUsage)
+	assert.Equal(t, int64(1000), *project.TokenMaxLimit)
+	assert.Equal(t, "file-hash", project.ConfigHash)
+	assert.Nil(t, load(tables.LegacyRequestLimitID("rl-project")))
+	mcProject, err := store.GetModelConfigByID(ctx, "mc-project")
+	require.NoError(t, err)
+	require.NotNil(t, mcProject.RateLimitID)
+	assert.Equal(t, "rl-project", *mcProject.RateLimitID)
+	assert.Empty(t, mcProject.RequestLimits)
+
+	var before []tables.TableRateLimit
+	require.NoError(t, db.Order("id").Find(&before).Error)
+	rerun()
+	var after []tables.TableRateLimit
+	require.NoError(t, db.Order("id").Find(&after).Error)
+	assert.Equal(t, before, after, "a second run changes nothing")
+}
+
+// TestMigrationSplitRequestLimitsFromRateLimits_ManyHolders verifies the batched data
+// move handles more holders of each kind than one statement binds, splitting every
+// singly-referenced row exactly as the single-holder case does.
+func TestMigrationSplitRequestLimitsFromRateLimits_ManyHolders(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		_, db := setupFullMigrationDB(t)
+		assertSplitManyRequestLimits(t, db)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		store := setupPostgresDeadlockStore(t)
+		assertSplitManyRequestLimits(t, store.DB())
+	})
+}
+
+func assertSplitManyRequestLimits(t *testing.T, db *gorm.DB) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	perKind := idBatchSize + 50
+
+	var rateLimits []tables.TableRateLimit
+	var modelConfigs []tables.TableModelConfig
+	var teams []tables.TableTeam
+	var customers []tables.TableCustomer
+	for i := 0; i < perKind; i++ {
+		for _, kind := range []string{"mc", "team", "customer"} {
+			id := fmt.Sprintf("rl-%s-%04d", kind, i)
+			rl := tables.TableRateLimit{
+				ID: id, RequestMaxLimit: schemas.Ptr(int64(i + 1)), RequestResetDuration: schemas.Ptr("1h"),
+				RequestCurrentUsage: int64(i), RequestLastReset: now, TokenLastReset: now, ConfigHash: "file-hash", CreatedAt: now, UpdatedAt: now,
+			}
+			if i%2 == 0 {
+				rl.TokenMaxLimit = schemas.Ptr(int64(1000))
+				rl.TokenResetDuration = schemas.Ptr("1d")
+			}
+			rateLimits = append(rateLimits, rl)
+			holderID := fmt.Sprintf("%s-%04d", kind, i)
+			switch kind {
+			case "mc":
+				mc := tables.TableModelConfig{ID: holderID, ModelName: fmt.Sprintf("model-%04d", i), Scope: tables.ModelConfigScopeGlobal, RateLimitID: schemas.Ptr(id), CreatedAt: now, UpdatedAt: now}
+				if i%3 == 0 {
+					scopeID := "vk-" + holderID
+					mc.ModelName, mc.Scope, mc.ScopeID = tables.ModelConfigAllModels, tables.ModelConfigScopeVirtualKey, &scopeID
+				}
+				modelConfigs = append(modelConfigs, mc)
+			case "team":
+				teams = append(teams, tables.TableTeam{ID: holderID, Name: holderID, RateLimitID: schemas.Ptr(id), CreatedAt: now, UpdatedAt: now})
+			case "customer":
+				customers = append(customers, tables.TableCustomer{ID: holderID, Name: holderID, RateLimitID: schemas.Ptr(id), CreatedAt: now, UpdatedAt: now})
+			}
+		}
+	}
+	// Combined and request-only rows go in separate batches: a batch mixing set and unset
+	// default:null columns makes GORM emit DEFAULT, which SQLite rejects.
+	var combined, requestOnly []tables.TableRateLimit
+	for _, rl := range rateLimits {
+		if rl.TokenMaxLimit != nil {
+			combined = append(combined, rl)
+		} else {
+			requestOnly = append(requestOnly, rl)
+		}
+	}
+	require.NoError(t, db.CreateInBatches(&combined, 200).Error)
+	require.NoError(t, db.CreateInBatches(&requestOnly, 200).Error)
+	require.NoError(t, db.CreateInBatches(&modelConfigs, 200).Error)
+	require.NoError(t, db.CreateInBatches(&teams, 200).Error)
+	require.NoError(t, db.CreateInBatches(&customers, 200).Error)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "split_request_limits_from_rate_limits").Error)
+	require.NoError(t, migrationSplitRequestLimitsFromRateLimits(ctx, db, testMigrationLogger))
+
+	var rules []tables.TableRateLimit
+	require.NoError(t, db.Where("model_config_id IS NOT NULL OR team_id IS NOT NULL OR customer_id IS NOT NULL").Find(&rules).Error)
+	require.Len(t, rules, 3*perKind, "every holder's request limit becomes a rule")
+	byID := make(map[string]tables.TableRateLimit, len(rules))
+	for _, rule := range rules {
+		byID[rule.ID] = rule
+	}
+	for _, mc := range modelConfigs {
+		rule, ok := byID[tables.LegacyRequestLimitID(*mc.RateLimitID)]
+		require.True(t, ok, "rule for %s", mc.ID)
+		require.NotNil(t, rule.ModelConfigID)
+		assert.Equal(t, mc.ID, *rule.ModelConfigID)
+		assert.Equal(t, tables.LimitScopeShared, rule.Scope)
+		expected, err := GenerateRateLimitHash(rule)
+		require.NoError(t, err)
+		assert.Equal(t, expected, rule.ConfigHash)
+	}
+
+	// Combined originals keep their tokens under a recomputed hash; request-only ones are gone.
+	var originals []tables.TableRateLimit
+	require.NoError(t, db.Where("model_config_id IS NULL AND team_id IS NULL AND customer_id IS NULL").Find(&originals).Error)
+	require.Len(t, originals, 3*((perKind+1)/2), "only the combined originals remain")
+	for _, rl := range originals {
+		assert.Nil(t, rl.RequestMaxLimit, rl.ID)
+		assert.Zero(t, rl.RequestCurrentUsage, rl.ID)
+		require.NotNil(t, rl.TokenMaxLimit, rl.ID)
+		expected, err := GenerateRateLimitHash(rl)
+		require.NoError(t, err)
+		assert.Equal(t, expected, rl.ConfigHash, rl.ID)
+	}
+	var referencing int64
+	require.NoError(t, db.Table("governance_teams").Where("rate_limit_id IS NOT NULL").Count(&referencing).Error)
+	assert.Equal(t, int64((perKind+1)/2), referencing, "teams with a request-only limit no longer reference it")
+}
+
+// TestMigrationSplitRequestLimitsFromRateLimits_ReferencedOutsideOSS verifies a row an OSS holder
+// and a table added on top of OSS both reference is shared: it is left combined and not deleted,
+// which on Postgres would violate the other table's foreign key and abort the migration.
+func TestMigrationSplitRequestLimitsFromRateLimits_ReferencedOutsideOSS(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		_, db := setupFullMigrationDB(t)
+		assertSplitSkipsRowReferencedOutsideOSS(t, db)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		store := setupPostgresDeadlockStore(t)
+		assertSplitSkipsRowReferencedOutsideOSS(t, store.DB())
+	})
+}
+
+func assertSplitSkipsRowReferencedOutsideOSS(t *testing.T, db *gorm.DB) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, db.Create(&tables.TableRateLimit{ID: "rl-other", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"), RequestCurrentUsage: 7, RequestLastReset: now, TokenLastReset: now, CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableTeam{ID: "team-other", Name: "team other", RateLimitID: schemas.Ptr("rl-other"), CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE other_holders (id VARCHAR(255) PRIMARY KEY, rate_limit_id VARCHAR(255) REFERENCES governance_rate_limits(id))`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO other_holders (id, rate_limit_id) VALUES (?, ?)`, "other-1", "rl-other").Error)
+
+	references, err := CountRateLimitReferences(db, []string{"rl-other", "rl-missing"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"rl-other": 2}, references)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "split_request_limits_from_rate_limits").Error)
+	require.NoError(t, migrationSplitRequestLimitsFromRateLimits(ctx, db, testMigrationLogger))
+
+	var rl tables.TableRateLimit
+	require.NoError(t, db.First(&rl, "id = ?", "rl-other").Error, "the shared request-only row is kept")
+	require.NotNil(t, rl.RequestMaxLimit)
+	assert.Equal(t, int64(10), *rl.RequestMaxLimit)
+	assert.Equal(t, int64(7), rl.RequestCurrentUsage)
+	var rules int64
+	require.NoError(t, db.Model(&tables.TableRateLimit{}).Where("id = ?", tables.LegacyRequestLimitID("rl-other")).Count(&rules).Error)
+	assert.Zero(t, rules, "no rule is split out of a shared row")
+	var team tables.TableTeam
+	require.NoError(t, db.First(&team, "id = ?", "team-other").Error)
+	require.NotNil(t, team.RateLimitID)
+	assert.Equal(t, "rl-other", *team.RateLimitID, "the team still references the shared row")
+}
