@@ -1407,6 +1407,7 @@
 		"requests": "Requests",
 		"currentUsage": "Current Usage",
 		"atLeastOneRequired": "At least one budget or rate limit is required",
+		"mcpBudgetNeedsAllModels": "An MCP budget applies only to all models on all providers. Change its scope or remove it before saving a narrower limit.",
 		"vkRequiredForScope": "Virtual key is required for the Virtual Key scope",
 		"clearFilters": "Clear filters",
 		"noPermission": "You don't have permission to perform this action",

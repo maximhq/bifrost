@@ -1407,6 +1407,7 @@
 		"requests": "Solicitudes",
 		"currentUsage": "Uso actual",
 		"atLeastOneRequired": "Por lo menos se necesita un presupuesto o un límite de tarifas",
+		"mcpBudgetNeedsAllModels": "Un presupuesto MCP solo se aplica a todos los modelos de todos los proveedores. Cambia su alcance o elimínalo antes de guardar un límite más específico.",
 		"vkRequiredForScope": "La clave virtual es necesaria para el alcance de la clave virtual",
 		"clearFilters": "Filtros claros",
 		"noPermission": "No tienes permiso para realizar esta acción",

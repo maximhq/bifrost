@@ -1407,6 +1407,7 @@
 		"requests": "요청사항",
 		"currentUsage": "현재 사용량",
 		"atLeastOneRequired": "예산 또는 비율 한도가 하나 이상 필요해요.",
+		"mcpBudgetNeedsAllModels": "MCP 예산은 모든 공급자의 모든 모델에만 적용돼요. 더 좁은 한도를 저장하기 전에 범위를 변경하거나 삭제해 주세요.",
 		"vkRequiredForScope": "가상 키 범위에는 가상 키가 필요해요.",
 		"clearFilters": "필터 지우기",
 		"noPermission": "이 작업을 수행할 권한이 없어요.",

@@ -1407,6 +1407,7 @@
 		"requests": "Pedidos",
 		"currentUsage": "Utilização atual",
 		"atLeastOneRequired": "É necessário pelo menos um orçamento ou limite de taxa",
+		"mcpBudgetNeedsAllModels": "Um orçamento MCP só se aplica a todos os modelos de todos os provedores. Altere o escopo ou remova-o antes de salvar um limite mais específico.",
 		"vkRequiredForScope": "É necessária uma chave virtual para o âmbito Chave virtual",
 		"clearFilters": "Limpar filtros",
 		"noPermission": "Não tem permissão para realizar esta ação",

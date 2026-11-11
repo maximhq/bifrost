@@ -11,6 +11,8 @@ interface BudgetScopeSelectProps {
 	value?: LimitScope;
 	onChange: (scope: LimitScope) => void;
 	labelClassName?: string;
+	/** The scopes to offer; every scope when omitted. */
+	options?: readonly LimitScope[];
 }
 
 /**
@@ -20,7 +22,14 @@ interface BudgetScopeSelectProps {
  * Period select of NumberAndSelect (same label row, w-40 column), so a budget line reads
  * as amount · period · scope.
  */
-export default function BudgetScopeSelect({ "data-testid": testId, id, value, onChange, labelClassName }: BudgetScopeSelectProps) {
+export default function BudgetScopeSelect({
+	"data-testid": testId,
+	id,
+	value,
+	onChange,
+	labelClassName,
+	options = BUDGET_SCOPE_VALUES,
+}: BudgetScopeSelectProps) {
 	const { t } = useTranslation("common");
 	return (
 		<div className="w-40 shrink-0 space-y-2" data-testid={testId}>
@@ -32,7 +41,7 @@ export default function BudgetScopeSelect({ "data-testid": testId, id, value, on
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					{BUDGET_SCOPE_VALUES.map((scope) => (
+					{options.map((scope) => (
 						<SelectItem key={scope} value={scope} data-testid={testId ? `${testId}-option-${scope}` : undefined}>
 							{t(`budgetScope.${scope}`)}
 						</SelectItem>

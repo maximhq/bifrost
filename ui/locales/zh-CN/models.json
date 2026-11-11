@@ -1407,6 +1407,7 @@
 		"requests": "请求",
 		"currentUsage": "当前用量",
 		"atLeastOneRequired": "至少需要一项预算或速率限制",
+		"mcpBudgetNeedsAllModels": "MCP 预算仅适用于所有提供商的所有模型。保存范围更窄的限制之前，请更改其范围或将其删除。",
 		"vkRequiredForScope": "虚拟密钥作用域需要填写虚拟密钥",
 		"clearFilters": "清除筛选",
 		"noPermission": "你没有执行此操作的权限",

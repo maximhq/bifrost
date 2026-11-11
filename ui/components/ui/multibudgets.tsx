@@ -36,6 +36,8 @@ interface MultiBudgetLinesProps {
 	// executions can be charged against (a key's own budgets, a team, a customer, an all-models
 	// limit); elsewhere every line stays the shared default and no option is shown.
 	showScope?: boolean;
+	// Which scopes the selector offers when shown; every scope when omitted.
+	scopeOptions?: readonly LimitScope[];
 }
 
 export default function MultiBudgetLines({
@@ -48,6 +50,7 @@ export default function MultiBudgetLines({
 	showReset,
 	maxLines,
 	showScope = false,
+	scopeOptions,
 }: MultiBudgetLinesProps) {
 	const { t } = useTranslation("governance");
 	const { t: tModels } = useTranslation("models");
@@ -157,6 +160,7 @@ export default function MultiBudgetLines({
 									labelClassName="font-normal"
 									value={line.scope}
 									onChange={(scope) => updateScope(index, scope)}
+									options={scopeOptions}
 								/>
 							)}
 							<Button

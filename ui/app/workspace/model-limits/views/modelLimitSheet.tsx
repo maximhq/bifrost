@@ -1,5 +1,6 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -239,9 +240,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 			// Full desired set of budgets (kept lines with a max_limit). For updates this is
 			// reconciled server-side; an empty array removes all budgets.
-			// Only an all-models, all-providers limit is charged by MCP tool executions, so only
-			// there can a budget be scoped; anywhere else every budget is sent as the shared default.
-			const scopeApplies = budgetScopeApplies(data.modelName, provider);
+			// Only an all-models, all-providers limit is charged by MCP tool executions, so an MCP budget
+			// cannot stay once the limit is narrowed: it is never turned into a shared one, the operator
+			// resolves it first.
+			if (!budgetScopeApplies(data.modelName, provider) && (data.budgets ?? []).some((b) => b.scope === "mcp")) {
+				form.setError("root", { message: t("modelLimits.mcpBudgetNeedsAllModels") });
+				return;
+			}
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 				.map((b) => ({
@@ -249,8 +254,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					max_limit: b.max_limit as number,
 					reset_duration: b.reset_duration || "1M",
 					reset_config: b.reset_config,
-					// An all-models limit keeps its scope; a narrower one is reached by model requests only, so it keeps "model" and drops "mcp".
-					scope: scopeApplies || b.scope !== "mcp" ? b.scope : undefined,
+					scope: b.scope,
 				}));
 
 			if (isEditing && modelConfig) {
@@ -386,10 +390,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<p className="font-medium">
 												{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 											</p>
-											<p className="text-muted-foreground text-xs">
+											<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
 												{t("modelLimits.resets", {
 													period: resetDurationLabels[b.reset_duration] || b.reset_duration,
 												})}
+												<BudgetScopeBadge scope={b.scope} />
 											</p>
 										</div>
 									))}
@@ -619,7 +624,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										scope: b.scope,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
-									showScope={budgetScopeApplies(form.watch("modelName"), form.watch("provider"))}
+									showScope
+									// A narrower limit is reached by model requests only: Shared and Model, never MCP.
+									scopeOptions={budgetScopeApplies(form.watch("modelName"), form.watch("provider")) ? undefined : ["shared", "model"]}
 								/>
 							</div>
 
@@ -680,8 +687,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 											{(modelConfig?.budgets ?? []).map((b) => (
 												<div key={b.id} className="space-y-1">
-													<p className="text-muted-foreground text-xs">
+													<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
 														{t("modelLimits.budgetWithDuration", { duration: b.reset_duration })}
+														<BudgetScopeBadge scope={b.scope} />
 													</p>
 													<p className="text-sm font-medium">
 														${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}

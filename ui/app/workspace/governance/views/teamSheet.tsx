@@ -465,7 +465,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							{formData.budgets.map((row, idx) => (
 								<div key={row.id} className="space-y-2 rounded-md border p-3" data-testid={`team-budget-row-${idx}`}>
 									{/* Bottom-aligned so amount, reset period, scope and Remove share one baseline. */}
-									<div className="flex items-end gap-2">
+									<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
 										<div className="flex-1">
 											<NumberAndSelect
 												id={`budgetMaxLimit-${idx}`}
@@ -493,7 +493,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 										<button
 											type="button"
 											onClick={() => removeBudgetRow(idx)}
-											className="text-muted-foreground hover:text-destructive mb-2.5 text-xs font-medium"
+											className="text-muted-foreground hover:text-destructive self-end text-xs font-medium sm:mb-2.5 sm:self-auto"
 											data-testid={`team-remove-budget-btn-${idx}`}
 										>
 											{t("plugins.remove")}
