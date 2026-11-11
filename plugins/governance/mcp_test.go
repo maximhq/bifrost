@@ -669,6 +669,31 @@ func TestResolveLimits_MCPAnswersToHolderLevelLimits(t *testing.T) {
 	assert.Equal(t, []string{"global-rl", "vk-rl"}, settledRateLimitIDs(t, model))
 }
 
+// TestResolveLimits_MCPKeepsTheDeploymentLimitsWithoutAnAccessGrant: a call that carries no virtual key
+// and so no access grant still answers to the deployment's holder-level limits, and an exhausted
+// global MCP budget refuses it.
+func TestResolveLimits_MCPKeepsTheDeploymentLimitsWithoutAnAccessGrant(t *testing.T) {
+	globalMC := buildModelConfig("mc-global", "*", nil, nil, nil)
+	spent := buildBudgetWithUsage("global-mcp", 10, 10, "1d")
+	spent.Scope = configstoreTables.LimitScopeMCP
+	spent.ModelConfigID = &globalMC.ID
+	globalMC.Budgets = []configstoreTables.TableBudget{*spent}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*globalMC},
+		Budgets:      []configstoreTables.TableBudget{*spent},
+	}, nil, nil)
+	require.NoError(t, err)
+	ctx := resolverCtx(store, "")
+	require.Nil(t, ctx.Grant().Access(), "the call has no access grant")
+
+	mcp, err := resolveLimits(ctx, store, schemas.MCPToolExecutionRequest, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"global-mcp"}, settledBudgetIDs(t, mcp))
+
+	decision, _ := store.CheckBudgets(context.Background(), mcp.Budgets(), nil)
+	assert.True(t, isBudgetViolation(decision), "the exhausted global MCP budget refuses the call")
+}
+
 // kindRecordingStore records the request kind resolveLimits tells its store.
 type kindRecordingStore struct {
 	*LocalGovernanceStore

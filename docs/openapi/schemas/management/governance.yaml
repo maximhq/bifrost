@@ -148,6 +148,9 @@ CreateBudgetRequest:
     - max_limit
     - reset_duration
   properties:
+    id:
+      type: string
+      description: ID of an existing budget on the owner. Sending it on an update keeps that budget's usage; omit it for a new budget.
     max_limit:
       type: number
     reset_duration:

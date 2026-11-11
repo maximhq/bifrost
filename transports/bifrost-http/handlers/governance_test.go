@@ -621,6 +621,19 @@ func (m *modelConfigTestGovernanceManager) RemoveModelConfig(context.Context, st
 	return nil
 }
 
+// GetGovernanceData is the in-memory view the from_memory listing reads, built from the store.
+func (m *modelConfigTestGovernanceManager) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
+	configs, err := m.store.GetModelConfigs(ctx)
+	if err != nil {
+		return nil
+	}
+	data := &governance.GovernanceData{}
+	for i := range configs {
+		data.ModelConfigs = append(data.ModelConfigs, &configs[i])
+	}
+	return data
+}
+
 // ModelConfigIndexKey mirrors the store: a provider-less config collapses to its base model
 // (here a one-entry alias table stands in for the catalog), a provider-scoped one keeps its
 // canonical spelling.
@@ -6030,6 +6043,31 @@ func TestModelConfigsAppliesToMCPListsHolderLevelRows(t *testing.T) {
 	invalid.Request.SetRequestURI("/api/governance/model-configs?applies_to=model")
 	handler.getModelConfigs(invalid)
 	assert.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), "resp=%s", invalid.Response.Body())
+}
+
+// TestModelConfigsFromMemoryTakesACommaSeparatedScope: the in-memory listing reads scope as a list,
+// as the database path does, so the MCP page's applies_to=mcp&scope=global,virtual_key returns both.
+func TestModelConfigsFromMemoryTakesACommaSeparatedScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	vkHandler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	handler := &GovernanceHandler{configStore: store, governanceManager: &modelConfigTestGovernanceManager{store: store}}
+
+	createVK := newTestRequestCtx(`{"name":"from-memory-key","budgets":[{"max_limit":8,"reset_duration":"1d","scope":"mcp"}]}`)
+	vkHandler.createVirtualKey(createVK)
+	require.Equal(t, fasthttp.StatusOK, createVK.Response.StatusCode(), "resp=%s", createVK.Response.Body())
+
+	global := newTestRequestCtx(`{"model_name":"*","budgets":[{"max_limit":5,"reset_duration":"1M","scope":"mcp"}]}`)
+	handler.createModelConfig(global)
+	require.Equal(t, fasthttp.StatusOK, global.Response.StatusCode(), "resp=%s", global.Response.Body())
+
+	for query, want := range map[string]int{
+		"applies_to=mcp&scope=global,virtual_key&from_memory=true": 2,
+		"applies_to=mcp&scope=global&from_memory=true":             1,
+		"applies_to=mcp&scope=virtual_key&from_memory=true":        1,
+	} {
+		assert.Len(t, listedModelConfigs(t, handler, query), want, query)
+	}
 }
 
 // TestModelConfigAppliesToMCP pins the in-memory listing's filter, which must agree with the store's.

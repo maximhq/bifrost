@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -4381,7 +4382,13 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		search := string(ctx.QueryArgs().Peek("search"))
-		scopeFilter := string(ctx.QueryArgs().Peek("scope"))
+		// scope takes a comma-separated list, as it does on the database path.
+		var scopeFilter []string
+		for _, scope := range strings.Split(string(ctx.QueryArgs().Peek("scope")), ",") {
+			if scope = strings.TrimSpace(scope); scope != "" {
+				scopeFilter = append(scopeFilter, scope)
+			}
+		}
 		scopeIDFilter := string(ctx.QueryArgs().Peek("scope_id"))
 		providerFilter := string(ctx.QueryArgs().Peek("provider"))
 		// Deep-copy into a value slice: top-level struct copy + nested pointer/slice fields
@@ -4394,7 +4401,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			if search != "" && !strings.Contains(strings.ToLower(mc.ModelName), strings.ToLower(search)) {
 				continue
 			}
-			if scopeFilter != "" && mc.Scope != scopeFilter {
+			if len(scopeFilter) > 0 && !slices.Contains(scopeFilter, mc.Scope) {
 				continue
 			}
 			if scopeIDFilter != "" {

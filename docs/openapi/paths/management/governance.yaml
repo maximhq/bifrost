@@ -1237,7 +1237,7 @@ model-configs:
         in: query
         description: >-
           Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Without `limit`, `offset`,
-          `search`, `scope`, `scope_id` or `provider`, every model limit is returned.
+          `search`, `scope`, `scope_id`, `provider` or `applies_to`, every model limit is returned. With any of them the list is paginated, so page through it by `total_count`: the first page can leave matches out.
           With `from_memory=true` the 100 cap does not apply and an omitted `limit`
           returns every match.
         schema:
