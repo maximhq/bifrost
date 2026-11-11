@@ -47,8 +47,8 @@ test.describe('Model Limits', () => {
     expect(exists).toBe(true)
   })
 
-  // The Models page offers Shared and Model on every tier, never MCP. Each case takes the deployment's
-  // limit for its tier out of the way and puts it back afterwards.
+  // The Models page offers Shared and Model on every tier, never MCP. Each case creates the limit for its
+  // tier and removes it afterwards, so it skips a server that already has one instead of replacing it.
   for (const tier of [
     { name: 'all models on all providers', modelName: '*', provider: 'all' },
     { name: 'all models on one provider', modelName: '*', provider: 'openai' },
@@ -57,7 +57,10 @@ test.describe('Model Limits', () => {
     test(`saves Model-scoped budget and request lines on ${tier.name}`, async ({ modelLimitsPage }) => {
       const page = modelLimitsPage.page
       const sheet = modelLimitsPage.sheet
-      const saved = await modelLimitsPage.takeGlobalModelConfig(tier.modelName, tier.provider)
+      test.skip(
+        !!(await modelLimitsPage.getGlobalModelConfig(tier.modelName, tier.provider)),
+        'the server already has this limit; the test would replace it',
+      )
       try {
         await modelLimitsPage.goto()
         await modelLimitsPage.openCreateSheet(tier.modelName, tier.provider)
@@ -97,7 +100,7 @@ test.describe('Model Limits', () => {
         await sheet.getByRole('button', { name: /Cancel/i }).click()
         await expect(sheet).not.toBeVisible({ timeout: 5000 })
       } finally {
-        await modelLimitsPage.restoreGlobalModelConfig(tier.modelName, tier.provider, saved)
+        await modelLimitsPage.removeGlobalModelConfig(tier.modelName, tier.provider)
       }
     })
   }

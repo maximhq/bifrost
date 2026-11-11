@@ -233,41 +233,12 @@ export class ModelLimitsPage extends BasePage {
     return rows.find((mc) => mc.model_name === modelName && (mc.provider || 'all') === provider)
   }
 
-  /** Removes the deployment's model config for a tier so a test can create it, returning what was there. */
-  async takeGlobalModelConfig(modelName: string, provider: string): Promise<ModelConfigRow | undefined> {
-    const saved = await this.getGlobalModelConfig(modelName, provider)
-    if (saved) {
-      const res = await this.page.request.delete(`/api/governance/model-configs/${saved.id}`)
-      expect(res.status(), await res.text()).toBe(200)
-    }
-    return saved
-  }
-
-  /** Puts back what takeGlobalModelConfig removed, dropping whatever the test left on the tier. */
-  async restoreGlobalModelConfig(modelName: string, provider: string, saved: ModelConfigRow | undefined): Promise<void> {
+  /** Removes the deployment's model config for a tier: what a test created there, once it is done with it. */
+  async removeGlobalModelConfig(modelName: string, provider: string): Promise<void> {
     const current = await this.getGlobalModelConfig(modelName, provider)
     if (current) {
       await this.page.request.delete(`/api/governance/model-configs/${current.id}`)
     }
-    if (!saved) return
-    const res = await this.page.request.post('/api/governance/model-configs', {
-      data: {
-        model_name: saved.model_name,
-        provider: saved.provider,
-        scope: 'global',
-        budgets: (saved.budgets ?? []).map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, scope: b.scope })),
-        // Token fields only: the request side is sent as request_limits, and both together are refused.
-        rate_limit: saved.rate_limit?.token_max_limit
-          ? { token_max_limit: saved.rate_limit.token_max_limit, token_reset_duration: saved.rate_limit.token_reset_duration }
-          : undefined,
-        request_limits: (saved.request_limits ?? []).map((r) => ({
-          max_limit: r.request_max_limit,
-          reset_duration: r.request_reset_duration,
-          scope: r.scope,
-        })),
-      },
-    })
-    expect(res.status(), await res.text()).toBe(200)
   }
 
   /** Opens the create sheet on a tier: a provider ('all' keeps All Providers) and a model ('*' keeps All Models). */

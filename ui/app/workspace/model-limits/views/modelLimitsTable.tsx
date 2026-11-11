@@ -100,7 +100,7 @@ function ModelLimitActionsMenu({
 	// sheet's read-only view instead of a form.
 	const isManaged = getModelLimitScope(config.scope ?? "global")?.readOnly === true;
 	// Removing this page's limits while others remain is an update of the row, not a delete.
-	const canRemove = hasDeleteAccess && (hasUpdateAccess || budgetsLeftAfterRemoving(config, traffic) === null);
+	const canRemove = hasDeleteAccess && (hasUpdateAccess || limitsLeftAfterRemoving(config, traffic) === null);
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>

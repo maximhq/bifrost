@@ -44,7 +44,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Lock } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -284,11 +284,16 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 
 	// The permission a save needs is the one of the mutation it will run: an add onto the target's existing
 	// row is an update, and an MCP page save that leaves nothing on the row deletes it.
-	const remainingBudgets =
+	const remainingLines =
 		(watchedBudgets ?? []).filter((b) => b.max_limit !== undefined && b.max_limit !== null).length +
-		rowLines(baseConfig, traffic, false).length;
-	const deletesRow = isMCPPage && !!baseConfig && remainingBudgets === 0 && !baseConfig.rate_limit;
+		rowLines(baseConfig, traffic, false).length +
+		toRequestLimitRequests(form.watch("requestLimits") ?? []).length +
+		rowRequestLines(baseConfig, traffic, false).length;
+	const deletesRow = isMCPPage && !!baseConfig && remainingLines === 0 && baseConfig.rate_limit?.token_max_limit == null;
 	const canSubmit = deletesRow ? hasDeleteAccess : baseConfig ? hasUpdateAccess : hasCreateAccess;
+
+	// The id-less request lines the last target put in the form (a legacy limit has no id).
+	const loadedTargetRequestLines = useRef<ReturnType<typeof rowRequestLines>>([]);
 
 	// Show the target row's lines beside any typed so far; picking another target swaps them.
 	useEffect(() => {
@@ -298,8 +303,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 		if (existing.length > 0 || typed.length !== (form.getValues("budgets") ?? []).length) {
 			form.setValue("budgets", [...existing, ...typed], { shouldDirty: true });
 		}
-		const typedRequestLines = (form.getValues("requestLimits") ?? []).filter((l) => !l.id);
+		// A legacy request limit comes without an id, so the lines loaded from the previous target are
+		// told apart from typed ones by what they say; they are replaced by the new target's lines.
+		const loaded = loadedTargetRequestLines.current;
+		const typedRequestLines = (form.getValues("requestLimits") ?? []).filter(
+			(l) => !l.id && !loaded.some((p) => p.reset_duration === l.reset_duration && p.scope === l.scope && p.max_limit === l.max_limit),
+		);
 		const existingRequestLines = rowRequestLines(targetRow, traffic, true);
+		loadedTargetRequestLines.current = existingRequestLines.filter((l) => !l.id);
 		if (existingRequestLines.length > 0 || typedRequestLines.length !== (form.getValues("requestLimits") ?? []).length) {
 			form.setValue("requestLimits", [...existingRequestLines, ...typedRequestLines], { shouldDirty: true });
 		}
