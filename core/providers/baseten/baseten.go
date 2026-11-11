@@ -4,7 +4,7 @@
 // (https://inference.baseten.co/v1) with chat completions, responses and model
 // listing. A dedicated deployment has its own base URL
 // (https://model-<id>.api.baseten.co/environments/<env>/sync/v1) and adds
-// embeddings and transcription. A request goes to a dedicated deployment when its
+// embeddings, transcription, image generation and rerank. A request goes to a dedicated deployment when its
 // resolved alias carries a BasetenAliasCfg.DeploymentURL.
 package baseten
 
@@ -92,13 +92,16 @@ func (provider *BasetenProvider) baseURL(ctx *schemas.BifrostContext) (string, b
 		return "", false, providerUtils.NewBifrostOperationError("baseten alias deployment_url resolved to an empty value", nil)
 	}
 	if u != "" {
+		if isPredictURL(u) {
+			return "", false, providerUtils.NewBifrostOperationError("baseten alias deployment_url ends in /predict, which only image generation reads; use the deployment's /sync/v1 URL for other operations", nil)
+		}
 		return u, true, nil
 	}
 	return provider.networkConfig.BaseURL, false, nil
 }
 
 // dedicatedURLOrError resolves the base URL for operations that only dedicated
-// deployments serve (embeddings, transcription).
+// deployments serve (embeddings, transcription, image generation, rerank).
 func (provider *BasetenProvider) dedicatedURLOrError(ctx *schemas.BifrostContext, requestType schemas.RequestType) (string, *schemas.BifrostError) {
 	u, dedicated, bifrostErr := provider.baseURL(ctx)
 	if bifrostErr != nil {
@@ -311,16 +314,6 @@ func (provider *BasetenProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
-// Rerank is not supported by the Baseten provider.
-func (provider *BasetenProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
-}
-
-// Decision is not supported by the Baseten provider.
-func (provider *BasetenProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
-}
-
 // OCR is not supported by the Baseten provider.
 func (provider *BasetenProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -331,9 +324,20 @@ func (provider *BasetenProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by the Baseten provider.
+// ImageGeneration calls /images/generations on a dedicated deployment. Baseten's
+// image recipes (FLUX, Krea, Qwen-Image on the SGLang diffusion stack) serve the
+// OpenAI images shape; Model APIs has no image route. A deployment_url ending in
+// /predict, as the dashboard shows it, is called as given, which also reaches
+// FLUX.1-style Trusses that only serve /predict.
 func (provider *BasetenProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	if u, ok := deploymentURL(ctx); ok && isPredictURL(u) {
+		return provider.imageGeneration(ctx, key, u, request)
+	}
+	baseURL, bifrostErr := provider.dedicatedURLOrError(ctx, schemas.ImageGenerationRequest)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.imageGeneration(ctx, key, baseURL+providerUtils.GetPathFromContext(ctx, "/images/generations"), request)
 }
 
 // ImageGenerationStream is not supported by the Baseten provider.

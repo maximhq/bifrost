@@ -57,7 +57,7 @@ export const TimePicker = React.forwardRef<HTMLDivElement, TimePickerProps>((pro
 	return (
 		<div ref={forwardedRef} className={cn("inline-flex h-9 w-full items-center gap-1", className)}>
 			<Select value={hour12.toString()} onValueChange={handleHourChange}>
-				<SelectTrigger size="sm" className="h-9 w-[70px]">
+				<SelectTrigger size="sm" className="h-9 min-w-0 flex-1 md:w-[70px] md:flex-none">
 					<SelectValue placeholder={t("datePicker.hourPlaceholder")} />
 				</SelectTrigger>
 				<SelectContent>
@@ -70,7 +70,7 @@ export const TimePicker = React.forwardRef<HTMLDivElement, TimePickerProps>((pro
 			</Select>
 			<span className="text-muted-foreground">:</span>
 			<Select value={minute.toString()} onValueChange={handleMinuteChange}>
-				<SelectTrigger size="sm" className="h-9 w-[70px]">
+				<SelectTrigger size="sm" className="h-9 min-w-0 flex-1 md:w-[70px] md:flex-none">
 					<SelectValue placeholder={t("datePicker.minutePlaceholder")} />
 				</SelectTrigger>
 				<SelectContent>
@@ -82,7 +82,7 @@ export const TimePicker = React.forwardRef<HTMLDivElement, TimePickerProps>((pro
 				</SelectContent>
 			</Select>
 			<Select value={period} onValueChange={(v) => handlePeriodChange(v as "AM" | "PM")}>
-				<SelectTrigger size="sm" className="h-9 w-[70px]">
+				<SelectTrigger size="sm" className="h-9 min-w-0 flex-1 md:w-[70px] md:flex-none">
 					<SelectValue placeholder={t("datePicker.am")} />
 				</SelectTrigger>
 				<SelectContent>
