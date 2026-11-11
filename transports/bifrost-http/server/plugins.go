@@ -142,6 +142,11 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
+		// The callback is json:"-", so a config decoded from the plugins API carries none. Without
+		// this a reload would refuse free MCP calls over budget until the next restart.
+		if governanceConfig.MCPAllowFreeCallsWhenBudgetExhausted == nil {
+			governanceConfig.MCPAllowFreeCallsWhenBudgetExhausted = bifrostConfig.ShouldAllowFreeMCPCallsWhenBudgetExhausted
+		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
 		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,

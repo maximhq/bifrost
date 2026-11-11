@@ -1,9 +1,11 @@
 package governance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -99,6 +101,14 @@ func BenchmarkPreMCPHook(b *testing.B) {
 	p := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	freeCallsOn := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	freeCallsOn.mcpAllowFreeCallsWhenBudgetExhaustedFn = func() bool { return true }
+	// A catalog entry for the benchmarked tool, so the free-call check takes the price lookup.
+	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+		"local/read": {Server: "local", ToolName: "read", CostPerExecution: 0},
+	}}, NewMockLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	freeCallsOn.mcpCatalog = catalog
 	tool := "local-read"
 	toolCall := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}
 	for _, tc := range []struct {

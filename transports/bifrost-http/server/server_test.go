@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -2406,4 +2407,24 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
 	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
+}
+
+// TestLoadBuiltinPluginGovernanceKeepsTheFreeMCPCallSetting: a governance config decoded from the
+// plugins API carries no callbacks (they are json:"-"), so a reload must wire the free MCP call
+// setting from the live config or free calls over budget are refused until a restart.
+func TestLoadBuiltinPluginGovernanceKeepsTheFreeMCPCallSetting(t *testing.T) {
+	SetLogger(noopTestLogger{})
+	config := &lib.Config{
+		ClientConfig:     &configstore.ClientConfig{MCPAllowFreeCallsWhenBudgetExhausted: true},
+		GovernanceConfig: &configstore.GovernanceConfig{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	plugin, err := loadBuiltinPlugin(ctx, governance.PluginName, map[string]any{}, config)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	field := reflect.ValueOf(plugin).Elem().FieldByName("mcpAllowFreeCallsWhenBudgetExhaustedFn")
+	require.False(t, field.IsNil(), "the reloaded plugin has no free MCP call callback")
 }

@@ -17522,6 +17522,9 @@ func migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn(ctx cont
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
 			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_allow_free_calls_when_budget_exhausted")
 		},
 		Rollback: func(tx *gorm.DB) error {
