@@ -12,6 +12,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -557,9 +558,16 @@ export default function ModelLimitsTable({
 														{budgets.map((b, idx) => (
 															<div key={b.id ?? idx} className="flex flex-col">
 																<span
-																	className={cn("font-mono text-sm", b.max_limit > 0 && b.current_usage >= b.max_limit && "text-red-400")}
+																	className={cn(
+																		"flex items-center gap-1.5 font-mono text-sm",
+																		b.max_limit > 0 && b.current_usage >= b.max_limit && "text-red-400",
+																	)}
 																>
 																	{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																	{/* A Shared line is on both pages; every unmarked line is this page's own traffic only. */}
+																	{isHolderLevelModelConfig(config) && (b.scope || "shared") === "shared" && (
+																		<BudgetScopeBadge scope="shared" />
+																	)}
 																</span>
 																<span className="text-muted-foreground text-xs">
 																	{t("modelLimits.resets", { period: formatResetDuration(b.reset_duration) })}

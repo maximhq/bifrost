@@ -153,7 +153,7 @@ function downloadCSV(content: string) {
 
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { displayBudgets } = useVirtualKeyUsage(vk);
-	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
+	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} showScope />;
 }
 
 // Entity selectors only ever set a value, so a filter built on one needs its own

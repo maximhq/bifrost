@@ -1,3 +1,4 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { BudgetOverrideManagerDialog, type BudgetOverrideSection } from "@/components/budgetOverrideManagerDialog";
 import { CopyableId } from "@/components/copyableId";
@@ -729,7 +730,8 @@ export default function VirtualKeyDetailSheet({
 										{displayBudgets.map((b, bIdx) => (
 											<div key={bIdx} className="space-y-2 rounded-lg border p-4">
 												{b.id ? (
-													<div className="flex justify-end">
+													<div className="flex items-center justify-between">
+														<BudgetScopeBadge scope={b.scope} />
 														<BudgetOverrideDialog
 															budget={b}
 															onSave={(data) => saveBudgetOverride(b.id, data)}

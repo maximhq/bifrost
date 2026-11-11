@@ -13,8 +13,9 @@ interface BudgetScopeBadgeProps {
  * Marks which traffic a budget line is charged by: Shared, Model or MCP.
  *
  * Outlined and small so it reads as a property of the budget line, apart from the filled badges
- * tables use for a limit's governance scope (Global, Virtual Key). Rendered only where budgets can
- * carry a scope; provider- and model-specific budgets are always shared and show none.
+ * tables use for a limit's governance scope (Global, Virtual Key). Rendered only where a line's scope
+ * tells traffic apart; provider- and model-specific budgets are charged by model requests alone and
+ * show none.
  */
 export default function BudgetScopeBadge({ scope, className }: BudgetScopeBadgeProps) {
 	const { t } = useTranslation("common");
