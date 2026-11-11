@@ -163,6 +163,20 @@ Through the API, the MCP page's list is the model-config list filtered with `app
 curl "http://localhost:8080/api/governance/model-configs?applies_to=mcp&scope=global,virtual_key"
 ```
 
+The list is paginated: it returns 25 rows by default and at most 100 per page (`limit`). Read `total_count` from the response and advance `offset` by the page size until you have reached it, or the first page can leave matching rows out:
+
+```bash
+curl "http://localhost:8080/api/governance/model-configs?applies_to=mcp&scope=global,virtual_key&limit=100&offset=100"
+```
+
+The `applies_to=mcp` list holds only rows that already carry a Shared or MCP line, so a holder whose limits are all Model lines is not in it. To find such a holder's row before adding an MCP line, list its model configs without the filter and pick the one for all models with no provider (`model_name` `*`, no `provider`):
+
+```bash
+curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&scope_id={vk_id}&search=*"
+```
+
+If the holder has no such row, create it with `POST /api/governance/model-configs` (`model_name` `*`, the `scope` and `scope_id` of the holder, and the lines to add); otherwise update the row you found.
+
 To change a holder's MCP lines, update its holder-level model config (`PUT /api/governance/model-configs/{id}`) with its full `budgets` list: send the lines you keep with their `id`, including its `model` lines, since a line left out is removed.
 
 ## Rate Limiting
