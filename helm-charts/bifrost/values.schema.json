@@ -68,6 +68,16 @@
             }
           },
           "additionalProperties": false
+        },
+        "licenseCheck": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "type": "boolean",
+              "description": "Create the ClusterRole/ClusterRoleBinding that lets the gateway read the kube-system namespace (and the OpenShift ClusterVersion) for Bifrost Enterprise licenses bound to a cluster. Keep true unless the deploying account cannot create cluster-scoped RBAC."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

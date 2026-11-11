@@ -1255,6 +1255,69 @@ expect_render_failure "serviceMonitor: schema rejects a zero hashmod modulus" \
   --set serviceMonitor.enabled=true \
   --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":0,"targetLabel":"__tmp_hash","action":"hashmod"}]'
 
+# License-check RBAC (rbac.licenseCheck.create). These are the chart's only
+# cluster-scoped objects, so the tests pin both the switch and the exact grant.
+echo ""
+echo -e "${CYAN}🪪 Validating License-check RBAC Rendering...${NC}"
+echo "----------------------------------------------"
+
+# check_docs renders the chart and runs a Python assertion against every rendered
+# document, available to the assertion as `docs`. `by_kind(kind)` returns the
+# documents of one kind.
+check_docs() {
+  local test_name=$1
+  local assertion=$2
+  shift 2
+  if ! helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return
+  fi
+  local reason
+  reason=$(ASSERTION="$assertion" python3 -c '
+import os, yaml
+docs = [d for d in yaml.safe_load_all(open("/tmp/helm-template-output.yaml")) if d]
+def by_kind(kind):
+    return [d for d in docs if d.get("kind") == kind]
+try:
+    exec(os.environ["ASSERTION"])
+except AssertionError as e:
+    print(e or "assertion failed")
+except Exception as e:
+    print("%s: %s" % (type(e).__name__, e))
+' 2>&1 || true)
+  if [ -z "$reason" ]; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  $reason${NC}"
+  fi
+}
+
+check_docs "licenseCheck: create=false renders no ClusterRole or ClusterRoleBinding" \
+  'found = by_kind("ClusterRole") + by_kind("ClusterRoleBinding")
+assert not found, "cluster-scoped RBAC rendered with create=false: %r" % [d["metadata"]["name"] for d in found]' \
+  --set rbac.licenseCheck.create=false
+check_docs "licenseCheck: default ClusterRole grants only get on kube-system and clusterversions/version" \
+  'roles = by_kind("ClusterRole")
+assert len(roles) == 1, "expected one ClusterRole, got %d" % len(roles)
+assert roles[0]["rules"] == [
+    {"apiGroups": [""], "resources": ["namespaces"], "resourceNames": ["kube-system"], "verbs": ["get"]},
+    {"apiGroups": ["config.openshift.io"], "resources": ["clusterversions"], "resourceNames": ["version"], "verbs": ["get"]},
+], "rules: %r" % roles[0]["rules"]'
+check_docs "licenseCheck: ClusterRoleBinding binds the release ServiceAccount in the release namespace" \
+  'role, bindings = by_kind("ClusterRole")[0], by_kind("ClusterRoleBinding")
+assert len(bindings) == 1, "expected one ClusterRoleBinding, got %d" % len(bindings)
+assert bindings[0]["subjects"] == [{"kind": "ServiceAccount", "name": "bifrost", "namespace": "bf-ns"}], "subjects: %r" % bindings[0]["subjects"]
+assert bindings[0]["roleRef"] == {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role["metadata"]["name"]}, "roleRef: %r" % bindings[0]["roleRef"]' \
+  --namespace bf-ns
+check_docs "licenseCheck: binding follows a custom serviceAccount.name" \
+  'subjects = by_kind("ClusterRoleBinding")[0]["subjects"]
+assert subjects == [{"kind": "ServiceAccount", "name": "gateway-sa", "namespace": "bf-ns"}], "subjects: %r" % subjects' \
+  --namespace bf-ns --set serviceAccount.name=gateway-sa
+
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 
