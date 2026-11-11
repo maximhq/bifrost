@@ -1,0 +1,36 @@
+# One public HTTPS endpoint per agent, so a remote Bifrost gateway can reach
+# agents running on this machine. Each agent serves its card at its own root,
+# so the four cannot share one hostname.
+#
+#   cp ngrok.yml.example ngrok.yml
+#   make agents-ngrok      (starts ngrok and the agents together), or by hand:
+#   ngrok start --all --config "<default config>" --config ngrok.yml
+#   (`ngrok config check` prints the default config's path)
+#
+# Then copy each forwarding URL into .env as <AGENT>_PUBLIC_URL, restart
+# `make agents`, and register https://<url>/.well-known/agent-card.json on
+# Bifrost. Random URLs change on every restart; set `url:` to a reserved
+# domain to keep registrations stable.
+version: 3
+
+# Optional: leave unset to use the token in your default ngrok config.
+# agent:
+#   authtoken: <your-ngrok-authtoken>
+
+endpoints:
+  - name: revops-copilot
+    # url: https://revops-copilot-<you>.ngrok.app
+    upstream:
+      url: 9100
+  - name: support-analyst
+    # url: https://support-analyst-<you>.ngrok.app
+    upstream:
+      url: 9101
+  - name: report-writer
+    # url: https://report-writer-<you>.ngrok.app
+    upstream:
+      url: 9102
+  - name: publisher
+    # url: https://publisher-<you>.ngrok.app
+    upstream:
+      url: 9103

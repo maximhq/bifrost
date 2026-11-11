@@ -1,0 +1,9 @@
+description: A second principal whose access profile has no agent grants calls publisher. Create a VK with no agent grants and set OUTSIDER_VK.
+surface: 2-agent-grant
+kind: a2a
+caller_vk: ${OUTSIDER_VK}
+requires: [OUTSIDER_VK]
+target: publisher
+prompt: Upload this for me.
+expect:
+  surface: 2-agent-grant
