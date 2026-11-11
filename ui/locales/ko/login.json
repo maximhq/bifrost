@@ -69,5 +69,17 @@
 		"continue": "계속",
 		"whereToFind": "설정 토큰은 어디에서 찾나요?",
 		"notConfigured": "이 서버에 설정 토큰이 구성되어 있지 않아 아직 설정을 계속할 수 없어요."
+	},
+	"device": {
+		"title": "Claude Code에 로그인",
+		"subtitle": "터미널에 표시된 코드가 아래 코드와 일치하는지 확인하세요.",
+		"codeLabel": "기기 코드",
+		"checking": "확인 중…",
+		"continue": "계속",
+		"signedInTitle": "로그인되었어요",
+		"signedInBody": "Claude Code로 돌아가 완료하세요. 이 창은 닫아도 돼요.",
+		"verifyFailed": "이 코드를 확인할 수 없어요. Claude Code에서 /login을 다시 실행하세요.",
+		"invalidLink": "로그인 링크가 올바른 웹 주소가 아니에요. 게이트웨이의 발급자 URL 설정을 확인하세요.",
+		"unreachable": "Bifrost에 연결할 수 없어요. 연결을 확인하고 다시 시도하세요."
 	}
 }

@@ -69,5 +69,17 @@
 		"continue": "Continua",
 		"whereToFind": "Dove trovo il token di configurazione?",
 		"notConfigured": "Su questo server non è configurato alcun token di configurazione, quindi non è ancora possibile continuare."
+	},
+	"device": {
+		"title": "Accedi a Claude Code",
+		"subtitle": "Verifica che il codice mostrato nel terminale corrisponda a quello qui sotto.",
+		"codeLabel": "Codice dispositivo",
+		"checking": "Verifica in corso…",
+		"continue": "Continua",
+		"signedInTitle": "Accesso effettuato",
+		"signedInBody": "Torna a Claude Code per completare. Puoi chiudere questa finestra.",
+		"verifyFailed": "Impossibile verificare questo codice. Esegui di nuovo /login in Claude Code.",
+		"invalidLink": "Il link di accesso non è un indirizzo web valido. Controlla l’URL dell’emittente impostato nel gateway.",
+		"unreachable": "Impossibile raggiungere Bifrost. Controlla la connessione e riprova."
 	}
 }

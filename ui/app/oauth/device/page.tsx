@@ -4,6 +4,7 @@ import { getEndpointUrl } from "@/lib/utils/port";
 import { CheckCircle2, Loader2, Terminal } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // Same charset and shape the gateway issues (RFC 8628 §6.1 base-20 consonants).
 const USER_CODE_LENGTH = 8;
@@ -18,6 +19,7 @@ function formatUserCode(value: string): string {
 }
 
 export default function ClaudeCodeDevicePage() {
+	const { t } = useTranslation("login");
 	const [approved] = useQueryState("approved");
 	const [prefill] = useQueryState("user_code");
 
@@ -28,8 +30,8 @@ export default function ClaudeCodeDevicePage() {
 					<div className="bg-primary/10 mx-auto mb-4 flex size-14 items-center justify-center rounded-full">
 						<CheckCircle2 className="text-primary size-7" />
 					</div>
-					<h1 className="text-xl font-semibold tracking-tight">You're signed in</h1>
-					<p className="text-muted-foreground mt-2 text-sm">Return to Claude Code to finish. You can close this window.</p>
+					<h1 className="text-xl font-semibold tracking-tight">{t("device.signedInTitle")}</h1>
+					<p className="text-muted-foreground mt-2 text-sm">{t("device.signedInBody")}</p>
 				</div>
 			</Shell>
 		);
@@ -39,6 +41,7 @@ export default function ClaudeCodeDevicePage() {
 }
 
 function CodeEntry({ prefill }: { prefill: string }) {
+	const { t } = useTranslation("login");
 	// Pre-filled from verification_uri_complete but never auto-submitted
 	// (RFC 8628 §5.4): the user confirms the code matches their terminal.
 	const [code, setCode] = useState(() => formatUserCode(prefill));
@@ -59,7 +62,7 @@ function CodeEntry({ prefill }: { prefill: string }) {
 			});
 			const body = (await res.json().catch(() => null)) as { consent_url?: string; error?: { message?: string } } | null;
 			if (!res.ok || !body?.consent_url) {
-				setError(body?.error?.message || "This code could not be verified. Run /login in Claude Code again.");
+				setError(body?.error?.message || t("device.verifyFailed"));
 				return;
 			}
 			// The consent URL is built by the server from the configured issuer, which
@@ -67,12 +70,12 @@ function CodeEntry({ prefill }: { prefill: string }) {
 			// scheme that could execute script when assigned to location.href.
 			const target = new URL(body.consent_url, window.location.origin);
 			if (target.protocol !== "https:" && target.protocol !== "http:") {
-				setError("The sign-in link is not a valid web address. Check the gateway's issuer URL setting.");
+				setError(t("device.invalidLink"));
 				return;
 			}
 			window.location.href = target.toString();
 		} catch {
-			setError("Could not reach Bifrost. Check your connection and try again.");
+			setError(t("device.unreachable"));
 		} finally {
 			setSubmitting(false);
 		}
@@ -84,12 +87,12 @@ function CodeEntry({ prefill }: { prefill: string }) {
 				<div className="bg-primary/10 mx-auto mb-4 flex size-14 items-center justify-center rounded-full">
 					<Terminal className="text-primary size-7" />
 				</div>
-				<h1 className="text-xl font-semibold tracking-tight">Sign in to Claude Code</h1>
-				<p className="text-muted-foreground mt-1.5 text-sm">Confirm the code shown in your terminal matches the one below.</p>
+				<h1 className="text-xl font-semibold tracking-tight">{t("device.title")}</h1>
+				<p className="text-muted-foreground mt-1.5 text-sm">{t("device.subtitle")}</p>
 			</div>
 			<form onSubmit={handleSubmit} className="space-y-3">
 				<label htmlFor="claude-code-user-code" className="text-sm font-medium">
-					Device code
+					{t("device.codeLabel")}
 				</label>
 				<Input
 					id="claude-code-user-code"
@@ -97,7 +100,7 @@ function CodeEntry({ prefill }: { prefill: string }) {
 					autoComplete="off"
 					autoCapitalize="characters"
 					spellCheck={false}
-					placeholder="XXXX-XXXX"
+					placeholder="XXXX-XXXX" // i18n-ignore: the user-code format, not prose
 					className="text-center font-mono text-lg tracking-widest"
 					value={code}
 					onChange={(e) => setCode(formatUserCode(e.target.value))}
@@ -114,10 +117,10 @@ function CodeEntry({ prefill }: { prefill: string }) {
 					{submitting ? (
 						<>
 							<Loader2 className="mr-2 size-4 animate-spin" />
-							Checking…
+							{t("device.checking")}
 						</>
 					) : (
-						"Continue"
+						t("device.continue")
 					)}
 				</Button>
 			</form>

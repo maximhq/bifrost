@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -400,6 +402,62 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
 		})(ctx)
 		assert.True(t, called)
+	})
+}
+
+// TestClaudeCodeGateway_BearerUserMode pins the user-mode bearer path: an
+// active user reaches the inference handlers attributed to that user, with the
+// gateway token recorded as the credential (as /mcp does) and every other
+// credential header stripped; a deactivated user is told to sign in again, and a
+// failed liveness lookup is retriable rather than a sign-out.
+func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
+	h, _, store, _ := newClaudeCodeGateway(t, true)
+	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+	gatewayPriv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
+	require.NoError(t, err)
+	userToken := mintTestToken(t, gatewayPriv, signingKey.KID, func(c jwt.MapClaims) {
+		c["aud"] = jwt.ClaimStrings{testClaudeCodeResource}
+		c["bf_mode"] = string(schemas.MCPAuthModeUser)
+		c["sub"] = "user-42"
+	})
+
+	t.Run("active user is attributed and credentials are stripped", func(t *testing.T) {
+		h.identityResolver = &fakeResolver{userModeAvailable: true}
+		ctx := bearerCtx(userToken)
+		ctx.Request.Header.Set("x-api-key", "sk-ant-someone-else")
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-someone-else")
+		called := false
+		h.BearerMiddleware(func(c *fasthttp.RequestCtx) {
+			called = true
+			assert.Equal(t, "user-42", c.UserValue(schemas.BifrostContextKeyUserID))
+			assert.Equal(t, grant.NewCredential(grant.CredentialMCPToken, "user-42"), c.UserValue(schemas.BifrostContextKeyAuthCredential))
+			assert.Empty(t, string(c.Request.Header.Peek("Authorization")))
+			assert.Empty(t, string(c.Request.Header.Peek("x-api-key")))
+			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
+		})(ctx)
+		assert.True(t, called, string(ctx.Response.Body()))
+	})
+
+	t.Run("deactivated user must sign in again", func(t *testing.T) {
+		h.identityResolver = &fakeResolver{userModeAvailable: true, userInactive: true}
+		ctx := bearerCtx(userToken)
+		called := false
+		h.BearerMiddleware(func(*fasthttp.RequestCtx) { called = true })(ctx)
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, "false", string(ctx.Response.Header.Peek("x-should-retry")))
+		assert.Equal(t, "authentication_error", jsonBody(t, ctx)["error"].(map[string]any)["type"])
+	})
+
+	t.Run("liveness lookup failure is retriable", func(t *testing.T) {
+		h.identityResolver = &fakeResolver{userModeAvailable: true, userActiveErr: errors.New("idp unreachable")}
+		ctx := bearerCtx(userToken)
+		called := false
+		h.BearerMiddleware(func(*fasthttp.RequestCtx) { called = true })(ctx)
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Empty(t, string(ctx.Response.Header.Peek("x-should-retry")))
 	})
 }
 
