@@ -848,6 +848,16 @@ func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
 	return fallback
 }
 
+// StripsUserTurnTrailingWhitespace reports whether the model drops trailing whitespace from the
+// text that ends a user turn while keeping it mid-turn, which decides whether a block an inlined
+// reminder joins is trimmed. Falls back to the caller's name-based answer when the row says nothing.
+func (c ModelCaps) StripsUserTurnTrailingWhitespace(fallback bool) bool {
+	if c.record != nil && c.record.StripsUserTurnTrailingWhitespace != nil {
+		return *c.record.StripsUserTurnTrailingWhitespace
+	}
+	return fallback
+}
+
 // SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
 // includes the Responses API.
 func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {
