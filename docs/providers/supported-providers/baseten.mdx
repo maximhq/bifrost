@@ -1,6 +1,6 @@
 ---
 title: "Baseten"
-description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning and the Responses API, plus dedicated deployments for chat, embeddings and transcription"
+description: "Baseten guide for Model APIs chat, streaming, tool calling, reasoning, the Responses API and decision models, plus dedicated deployments for chat, embeddings, transcription and image generation"
 icon: "b"
 ---
 
@@ -23,12 +23,15 @@ Both take your Baseten API key as a bearer token.
 | Responses API (stream) | ✅ | ✅ (through chat) | `/responses` (Model APIs), `/chat/completions` (deployments) |
 | Embeddings | ❌ | ✅ | `/embeddings` |
 | Transcriptions (STT) | ❌ | ✅ | `/audio/transcriptions` |
+| Rerank | ❌ | ✅ | `/sync/rerank` |
+| Image Generation | ❌ | ✅ | `/images/generations`, or the deployment's `/predict` |
+| Decisions | ✅ | ❌ | `/systemone` |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
-| Speech (TTS), Images, Video | ❌ | ❌ | - |
-| Files, Batch, Count Tokens, Rerank | ❌ | ❌ | - |
+| Speech (TTS), Image Edit, Image Variation, Image streaming, Video | ❌ | ❌ | - |
+| Files, Batch, Count Tokens | ❌ | ❌ | - |
 
-Model APIs has no embeddings or audio routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS, image, rerank and classification deployments use their own `/predict` request shapes, which Bifrost doesn't translate.
+Model APIs has no embeddings, rerank, audio or image routes, so those operations need a dedicated deployment. A request without one fails with an error that names the missing `deployment_url`. Baseten's TTS and classification deployments, and rerankers served on `/predict`, use their own request shapes, which Bifrost doesn't translate. FLUX.1 image Trusses are the exception: see [image generation](#5-image-generation). Baseten has no video generation models.
 
 ## Setup and configuration
 
@@ -236,6 +239,34 @@ curl -X POST http://localhost:8080/v1/embeddings \
 
 `my-embedder` must be an alias with a `deployment_url`. A request for a model without one, including any Model APIs model, fails before reaching Baseten.
 
+## Rerank
+
+Cross-encoder rerankers deployed on BEI with the `/rerank` route, such as the ModernBERT reranker in Baseten's BEI examples, serve it under the deployment's `/sync` base. Set the alias `deployment_url` to the deployment's `/sync/v1` URL, as for embeddings, and Bifrost calls `/sync/rerank` beside it.
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-reranker",
+    "query": "What causes tides?",
+    "documents": ["The Moon pulls on the oceans.", "Clouds form from water vapor."],
+    "top_n": 1,
+    "return_documents": true
+  }'
+```
+
+| Parameter | BEI handling |
+|-----------|--------------|
+| `query` | `query` |
+| `documents` | `texts`, each document's `text` in order |
+| `top_n` | applied by Bifrost to the sorted results, since BEI scores every document |
+| `return_documents` | applied by Bifrost, attaching each request document by `index` |
+| `max_tokens_per_doc`, `priority` | dropped |
+
+Results come back highest `relevance_score` first, with each document's `index` and `id`. BEI fields such as `raw_scores`, `truncate` and `truncation_direction` pass through as extra params with `x-bf-passthrough-extra-params: true`.
+
+Baseten's Qwen3 Reranker and zerank recipes are deployed with `/predict` as their route and take model-specific prompts in `inputs`. Bifrost doesn't build those prompts, so use a `/rerank` cross-encoder for `/v1/rerank`.
+
 ---
 
 # 4. Transcriptions
@@ -244,13 +275,104 @@ Dedicated speech-recognition deployments (for example Qwen3 ASR) serve OpenAI's 
 
 ---
 
-# 5. List Models
+# 5. Image Generation
+
+Baseten's image recipes, such as FLUX.2, Krea 2 Turbo and Qwen-Image, run on the SGLang diffusion stack and serve OpenAI's `/images/generations`, so `/v1/images/generations` works against an alias with `deployment_url`.
+
+```json
+{
+  "providers": {
+    "baseten": {
+      "keys": [
+        {
+          "name": "baseten-key-1",
+          "value": "env.BASETEN_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "my-flux": {
+              "model_id": "black-forest-labs/FLUX.2-dev",
+              "model_name": "black-forest-labs/FLUX.2-dev",
+              "deployment_url": "https://model-def456.api.baseten.co/environments/production/sync/v1"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/my-flux",
+    "prompt": "A lighthouse at dusk",
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+```
+
+Images come back as base64 in `data[].b64_json`. The deployments can't return image URLs, so when a request sets no `response_format`, Bifrost sends `b64_json` instead of leaving OpenAI's `url` default in place. Streaming, edits and variations aren't supported, because the deployments don't serve those routes. A request for a model without a `deployment_url`, including any Model APIs model, fails before reaching Baseten.
+
+## Using the /predict URL from the dashboard
+
+The Baseten dashboard shows each deployment's `/predict` URL, for example `https://model-def456.api.baseten.co/environments/production/predict`. You can use it as `deployment_url` for image generation. Bifrost posts the same OpenAI image body to that URL as given, without appending `/images/generations`:
+
+- FLUX.2, Krea 2 Turbo and Qwen-Image map `/predict` to their `/v1/images/generations` route, so they behave as with the `/sync/v1` URL.
+- FLUX.1 dev and schnell are packaged as a Truss that only serves `/predict`. It reads `prompt`, `seed` and `num_inference_steps` from the body, ignores the other fields, and returns one base64 image. `size` has no effect, so pass `width` and `height` as extra params with `x-bf-passthrough-extra-params: true` for anything other than 1024x1024.
+
+Bifrost reads both reply shapes, the Truss's `{"data": "<base64>"}` and OpenAI's `data[].b64_json`, into `data[].b64_json`. A reply with no image fails rather than returning an empty list. A custom Truss with a different request or reply shape isn't supported.
+
+A `/predict` URL only works for image generation. Chat, embeddings and transcription against that alias fail before any call, with an error that asks for the deployment's `/sync/v1` URL.
+
+---
+
+# 6. Decisions
+
+Baseten's decision models answer [`/v1/decisions`](/quickstart/gateway/decisions) through Model APIs' System One endpoint, `/systemone`. They classify, route and score an input with typed answers instead of generated text.
+
+| Model | Slug | Context limit |
+|-------|------|---------------|
+| joey-1 | `decision-models/baseten-joey-2b-latest` | 16,384 tokens |
+| elephant-1 | `decision-models/baseten-elephant-9b-latest` | 16,384 tokens |
+| mammoth-1 | `decision-models/baseten-mammoth-27b-latest` | 16,384 tokens |
+
+```bash
+curl -X POST http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "baseten/decision-models/baseten-joey-2b-latest",
+    "input": "I was charged twice. Refund me today or I cancel.",
+    "questions": [
+      {"type": "predicate", "name": "wants_refund", "instructions": "Is the customer asking for a refund?"},
+      {"type": "choice", "name": "route", "choices": [
+        {"value": "billing", "description": "Payments and refunds"},
+        {"value": "technical_support", "description": "Software defects"}
+      ]}
+    ]
+  }'
+```
+
+How Bifrost maps the request:
+
+- `predicate`, `choice` and `score` questions become System One's `noul`, `choice` and `score`. `box` questions aren't supported and come back as Baseten's 400. A request can have at most 255 choices per question, 2 to 10 score levels, and 512 options in total, where each predicate counts as two.
+- Text and structured input are sent as the `state` unchanged. A message input is sent as `{"messages": [...]}`, because Baseten reads a top-level array as data rather than a conversation. Only `user` and `assistant` roles are accepted, and a message without a role is sent as `user`. Any other role fails before reaching Baseten.
+- Images go inline as `input_image` parts on user messages, as a base64 PNG, JPEG or WebP data URL or an HTTPS URL on Amazon S3, Google Cloud Storage or Azure Blob Storage, up to 16 per request. An image `detail` other than `auto` is dropped, since Baseten accepts only `auto`. Images on assistant messages, more than 16 images, images sent by reference (with an `id`), and tool calls or outputs in the input fail before reaching Baseten. Bifrost passes images to every decision model, but Baseten trained elephant-1 and mammoth-1 on text only, so they may not read an image reliably.
+- Baseten's `service_tier` (`flex` or `priority`) and `max_len` are sent when the request carries them as extra params with `x-bf-passthrough-extra-params: true`.
+
+Bifrost sends Decisions to Model APIs and ignores an alias `deployment_url`, even though Baseten also offers decision models as dedicated deployments. With the [compat plugin's](/features/compat-plugin) `convert_decision_to_responses` on, `decision-models/` models still go to Baseten's endpoint, and any other Baseten model is emulated through the Responses API.
+
+---
+
+# 7. List Models
 
 Bifrost lists models from Model APIs' `/models` for each key, plus the aliases configured on the key. Dedicated deployments appear through their aliases.
 
 ---
 
-# 6. Errors and retries
+# 8. Errors and retries
 
 Baseten returns 529 when a model is overloaded. Bifrost treats it as transient, so it is retried with the provider's backoff settings when `network_config.max_retries` is above 0. `max_retries` defaults to 0, so set it before relying on retries; see [Retries and fallbacks](/features/retries-and-fallbacks). Other errors keep their status code and message.
 

@@ -225,7 +225,8 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					</Button>
 				</PopoverTrigger>
 				<PopoverContent
-					className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] overflow-auto p-0 sm:w-auto"
+					data-testid="datepicker-popover-content"
+					className="w-screen rounded-none border-x-0 p-0 md:w-auto md:rounded-sm md:border-x"
 					align={props.popupAlignment ? props.popupAlignment : "start"}
 				>
 					<div className="flex flex-col gap-2 md:flex-row">
@@ -260,8 +261,11 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 									}
 								}}
 								numberOfMonths={isMobile ? 1 : 2}
+								// Phones: spread the columns across the full width but keep rows at cell height,
+								// so the day buttons widen instead of growing into tall squares.
+								className="max-md:w-full! max-md:[&_td]:aspect-auto max-md:[&_td]:h-(--cell-size) max-md:[&_td_button]:aspect-auto max-md:[&_td_button]:h-full"
 							/>
-							<div className="-mt-1 flex flex-row items-center px-2 pb-1">
+							<div className="-mt-1 flex flex-col px-2 pb-1 md:flex-row md:items-center">
 								<div className="m-1 flex flex-1 flex-col gap-1">
 									<Label className="ml-0.5">{t("datePicker.fromTime")}</Label>
 									<TimePicker
@@ -306,10 +310,15 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							</div>
 						</div>
 						{props.preDefinedPeriods && (
-							<div className="flex w-full flex-row gap-1 overflow-x-auto border-t p-2 md:w-[150px] md:flex-col md:border-t-0 md:border-l md:py-2 md:pr-3 md:pl-2">
+							<div className="grid w-full grid-cols-2 gap-1 border-t p-2 md:flex md:w-[150px] md:flex-col md:border-t-0 md:border-l md:py-2 md:pr-3 md:pl-2">
 								{props.preDefinedPeriods.map((period) => (
 									<Button
-										className={cn("w-full text-start text-sm", predefinedPeriod === period.value && "bg-primary text-primary-foreground")}
+										data-testid={`datepicker-preset-btn-${period.value}`}
+										// Phones: long labels (fr, de, ru) wrap and the button grows; desktop stays one line.
+										className={cn(
+											"h-auto min-h-7.5 w-full text-start text-sm whitespace-normal md:h-7.5 md:whitespace-nowrap",
+											predefinedPeriod === period.value && "bg-primary text-primary-foreground",
+										)}
 										variant="ghost"
 										key={period.value}
 										onClick={(e) => {

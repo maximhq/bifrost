@@ -344,8 +344,16 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (isRunware) return false;
   // Hugging Face's router reaches Baseten-hosted models ("huggingface/baseten/..."), so those rows
   // contain "baseten" too. They call Hugging Face with a Hugging Face token, never the baseten
-  // provider, so keep them out of the baseten partition.
-  if (provider === "baseten" && haystack.includes("huggingface")) return false;
+  // provider, so keep them out of the baseten partition. A Hugging Face row is known by what it
+  // calls or is named: its model prefix, or its name, URL, description or folder. Prose in a
+  // request body is not identity, so a Baseten prompt that mentions Hugging Face stays a Baseten
+  // row, and the huggingface partition does not claim it either.
+  const bodyRaw = item.request?.body?.raw || "";
+  const isHuggingFace =
+    /"model"\s*:\s*"huggingface\//.test(bodyRaw) ||
+    buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames).includes("huggingface");
+  if (provider === "baseten" && isHuggingFace) return false;
+  if (provider === "huggingface" && !isHuggingFace && /"model"\s*:\s*"baseten\//.test(bodyRaw)) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1445,6 +1446,61 @@ func TestUsesAnthropicInvokePath_ToolSearch(t *testing.T) {
 	})
 }
 
+// Converse drops Claude's computer tools, so a Claude Responses request that
+// carries one must take InvokeModel. Nova has no computer tool and stays on Converse.
+func TestUsesAnthropicInvokePath_ComputerTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	for _, toolType := range []schemas.ResponsesToolType{schemas.ResponsesToolTypeComputer, schemas.ResponsesToolTypeComputerUsePreview} {
+		t.Run(string(toolType)+" on claude routes to invoke", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "us.anthropic.claude-opus-5-5", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+		t.Run(string(toolType)+" on nova stays on converse", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "amazon.nova-pro-v1:0", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+	}
+}
+
+// Bedrock rejects a toolset pair tagged on one half only. The InvokeModel body
+// must carry the toolset bare and toolset_name on both the tool_use and its tool_result.
+func TestInvokeAnthropicBody_ComputerToolsetReplayKeepsToolsetName(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Click the red square."},
+		{"type":"function_call","id":"fc_1","call_id":"toolu_bdrk_01","name":"screenshot","arguments":"{}","toolset_name":"computer","status":"completed"},
+		{"type":"function_call_output","call_id":"toolu_bdrk_01","output":"captured","toolset_name":"computer"}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-opus-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}}},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	tools := gjson.GetBytes(body, "tools").Array()
+	require.Len(t, tools, 1, "body=%s", body)
+	assert.Equal(t, "computer_toolset_20260801", tools[0].Get("type").String(), "body=%s", body)
+	assert.False(t, tools[0].Get("name").Exists(), "a toolset entry rejects name: %s", body)
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta").Exists(), "the toolset needs no beta on InvokeModel: %s", body)
+	call := gjson.GetBytes(body, "messages.1.content.0")
+	assert.Equal(t, "tool_use", call.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "screenshot", call.Get("name").String())
+	assert.Equal(t, "computer", call.Get("toolset_name").String(), "body=%s", body)
+	result := gjson.GetBytes(body, "messages.2.content.0")
+	assert.Equal(t, "tool_result", result.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "computer", result.Get("toolset_name").String(), "body=%s", body)
+}
+
 // A /v1/responses client replays Claude's tool search as the JSON tool_search_call
 // Bifrost returned. The InvokeModel body must carry it back as the server_tool_use +
 // tool_search_tool_result pair (references nested in content), not drop it.
@@ -1961,6 +2017,282 @@ func TestToBedrockConverseRequest_InvokeToolSearchReplay(t *testing.T) {
 	assert.Equal(t, "server_tool_use", roundTripped[0].Get("type").String())
 	assert.Equal(t, "weather", roundTripped[0].Get("input.pattern").String(),
 		"the replayed block lost its search query on the way back out: %s", string(encoded))
+}
+
+const toolReferenceInvokeBody = `{
+	"anthropic_version": "bedrock-2023-05-31",
+	"anthropic_beta": ["tool-search-tool-2025-10-19"],
+	"max_tokens": 400,
+	"tools": [
+		{"name": "tool_search", "description": "Load deferred tool definitions by name.",
+		 "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+		{"name": "fetch_weather_report", "description": "Get weather.", "defer_loading": true,
+		 "input_schema": {"type": "object", "properties": {"zq_city_code_v7": {"type": "string", "description": "IATA city code"}}, "required": ["zq_city_code_v7"]}}
+	],
+	"messages": [
+		{"role": "user", "content": "Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it."},
+		{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "tool_search", "input": {"query": "select:fetch_weather_report"}}]},
+		{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": %s}]}
+	]
+}`
+
+const (
+	toolReferenceOnlyContent     = `[{"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndTextContent  = `[{"type": "text", "text": "Found 1 tool"}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndImageContent = `[{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+)
+
+func toolReferenceResponsesRequest(tb testing.TB, ctx *schemas.BifrostContext, toolResultContent string) *schemas.BifrostResponsesRequest {
+	tb.Helper()
+	var req BedrockInvokeRequest
+	require.NoError(tb, sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, toolResultContent)), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(tb, err)
+	return bifrostReq
+}
+
+func toolReferenceFunctionCallOutput(t *testing.T, req *schemas.BifrostResponsesRequest) *schemas.ResponsesToolMessageOutputStruct {
+	t.Helper()
+	for i := range req.Input {
+		m := &req.Input[i]
+		if m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			m.ResponsesToolMessage != nil && m.ResponsesToolMessage.CallID != nil && *m.ResponsesToolMessage.CallID == "toolu_01" {
+			require.NotNil(t, m.ResponsesToolMessage.Output)
+			return m.ResponsesToolMessage.Output
+		}
+	}
+	t.Fatalf("no function_call_output for toolu_01 in %+v", req.Input)
+	return nil
+}
+
+func TestToBedrockConverseRequest_InvokeToolResultKeepsToolReference(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("reference only", func(t *testing.T) {
+		req := toolReferenceResponsesRequest(t, ctx, toolReferenceOnlyContent)
+		assert.True(t, responsesUsesAnthropicInvokePath(ctx, req), "a defer_loading request must route to InvokeModel")
+		out := toolReferenceFunctionCallOutput(t, req)
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 1, "tool_reference dropped at the invoke ingress: %+v", out)
+		block := out.ResponsesFunctionToolCallOutputBlocks[0]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, block.Type)
+		require.NotNil(t, block.ToolName)
+		assert.Equal(t, "fetch_weather_report", *block.ToolName)
+	})
+
+	t.Run("text and reference keep their order", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, toolReferenceAndTextContent))
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+		text, ref := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeText, text.Type)
+		require.NotNil(t, text.Text)
+		assert.Equal(t, "Found 1 tool", *text.Text)
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
+		require.NotNil(t, ref.ToolName)
+		assert.Equal(t, "fetch_weather_report", *ref.ToolName)
+	})
+
+	t.Run("image and reference keep their order", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, toolReferenceAndImageContent))
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+		image, ref := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeImage, image.Type)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, "data:image/png;base64,iVBORw0KGgo=", *image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
+	})
+
+	t.Run("plain string result stays a string", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, `"no tools found"`))
+		require.NotNil(t, out.ResponsesToolCallOutputStr)
+		assert.Equal(t, "no tools found", *out.ResponsesToolCallOutputStr)
+		assert.Nil(t, out.ResponsesFunctionToolCallOutputBlocks)
+	})
+}
+
+func TestInvokeAnthropicBody_ToolResultKeepsToolReference(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &BedrockProvider{}
+	req := toolReferenceResponsesRequest(t, ctx, toolReferenceOnlyContent)
+	req.Provider = schemas.Bedrock
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	result := gjson.GetBytes(body, "messages.2.content.0")
+	require.Equal(t, "tool_result", result.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "toolu_01", result.Get("tool_use_id").String())
+	require.Len(t, result.Get("content").Array(), 1, "body=%s", body)
+	assert.Equal(t, "tool_reference", result.Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "fetch_weather_report", result.Get("content.0.tool_name").String(), "body=%s", body)
+}
+
+func TestToBedrockResponsesRequest_ToolReferenceResultOnConverse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	toolResultContent := func(t *testing.T, content string) []BedrockContentBlock {
+		converseReq, err := ToBedrockResponsesRequest(ctx, toolReferenceResponsesRequest(t, ctx, content))
+		require.NoError(t, err)
+		for _, msg := range converseReq.Messages {
+			for _, block := range msg.Content {
+				if block.ToolResult != nil && block.ToolResult.ToolUseID == "toolu_01" {
+					return block.ToolResult.Content
+				}
+			}
+		}
+		t.Fatalf("no toolResult for toolu_01 in %+v", converseReq.Messages)
+		return nil
+	}
+
+	t.Run("reference only", func(t *testing.T) {
+		content := toolResultContent(t, toolReferenceOnlyContent)
+		require.Len(t, content, 1)
+		require.NotNil(t, content[0].Text)
+		assert.Empty(t, *content[0].Text)
+	})
+	t.Run("text and reference", func(t *testing.T) {
+		content := toolResultContent(t, toolReferenceAndTextContent)
+		require.Len(t, content, 1)
+		require.NotNil(t, content[0].Text)
+		assert.Equal(t, "Found 1 tool", *content[0].Text)
+	})
+}
+
+func TestResponsesUsesAnthropicInvokePath_ToolReferenceResult(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	withoutTools := func(t *testing.T, content string) *schemas.BifrostResponsesRequest {
+		req := toolReferenceResponsesRequest(t, ctx, content)
+		req.Params.Tools = nil
+		return req
+	}
+
+	t.Run("reference in a tool result routes to invoke", func(t *testing.T) {
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceOnlyContent)))
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceAndTextContent)))
+	})
+	t.Run("plain tool result stays on converse", func(t *testing.T) {
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, `"no tools found"`)))
+	})
+	t.Run("non-anthropic model stays on converse", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Model = "amazon.nova-pro-v1:0"
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("reference with nil params routes to invoke", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Params = nil
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("plain tool result with nil params stays on converse", func(t *testing.T) {
+		req := withoutTools(t, `"no tools found"`)
+		req.Params = nil
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+func TestResponsesIngress_ToolReferenceResultReachesInvokeModel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type": "message", "role": "user", "content": "Use fetch_weather_report for Tokyo."},
+		{"type": "function_call", "call_id": "toolu_01", "name": "tool_search", "arguments": "{\"query\":\"select:fetch_weather_report\"}"},
+		{"type": "function_call_output", "call_id": "toolu_01", "output": [{"type": "tool_reference", "tool_name": "fetch_weather_report"}]}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	result := gjson.GetBytes(body, `messages.#(role=="user")#.content.#(type=="tool_result")`).Array()
+	require.NotEmpty(t, result, "body=%s", body)
+	assert.Equal(t, "tool_reference", result[len(result)-1].Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "fetch_weather_report", result[len(result)-1].Get("content.0.tool_name").String(), "body=%s", body)
+}
+
+func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, bc := range []struct{ name, content string }{
+		{"string_content", `"no tools found"`},
+		{"tool_reference", toolReferenceOnlyContent},
+	} {
+		var req BedrockInvokeRequest
+		if err := sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content)), &req); err != nil {
+			b.Fatal(err)
+		}
+		req.ModelID = "us.anthropic.claude-sonnet-5-5"
+		responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		responsesReq.Params.Tools = nil
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				responsesUsesAnthropicInvokePath(ctx, responsesReq)
+			}
+		})
+	}
+}
+
+// BenchmarkResponsesUsesAnthropicInvokePath_LongConversation pins the per-request cost of
+// the tool_reference input scan on a long agent conversation with no reference in it.
+func BenchmarkResponsesUsesAnthropicInvokePath_LongConversation(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	input := make([]schemas.ResponsesMessage, 0, 200)
+	for i := 0; i < 100; i++ {
+		callID := fmt.Sprintf("call_%d", i)
+		output := strings.Repeat("x", 64)
+		input = append(input,
+			schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("lookup")},
+			},
+			schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output},
+				},
+			},
+		)
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		responsesUsesAnthropicInvokePath(ctx, req)
+	}
+}
+
+func BenchmarkInvokeIngress_ToolResult(b *testing.B) {
+	for _, bc := range []struct{ name, content string }{
+		{"string_content", `"no tools found"`},
+		{"tool_reference", toolReferenceOnlyContent},
+	} {
+		raw := []byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content))
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				var req BedrockInvokeRequest
+				if err := sonic.Unmarshal(raw, &req); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 // --- Regression tests for #7649: the /invoke egress dropped the extended-thinking token
