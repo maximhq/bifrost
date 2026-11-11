@@ -726,6 +726,16 @@ func (h *GovernanceHandler) updateHolderRateLimit(ctx context.Context, tx *gorm.
 			if err := h.configStore.UpdateRateLimitUsage(ctx, row.ID, row.TokenCurrentUsage, row.RequestCurrentUsage, tx); err != nil {
 				return holderRateLimitUpdate{}, err
 			}
+			// The counters belong to the live windows, so their starts are stored with them, never moving
+			// a stored start backward.
+			for column, at := range map[string]time.Time{"token_last_reset": row.TokenLastReset, "request_last_reset": row.RequestLastReset} {
+				if at.IsZero() {
+					continue
+				}
+				if err := tx.Model(&configstoreTables.TableRateLimit{}).Where("id = ? AND "+column+" < ?", row.ID, at).UpdateColumn(column, at).Error; err != nil {
+					return holderRateLimitUpdate{}, fmt.Errorf("failed to store the live %s of rate limit %s: %w", column, row.ID, err)
+				}
+			}
 		}
 		carry := row
 		update.carry = &carry
@@ -3255,15 +3265,21 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err != nil {
 						return err
 					}
+					rlRemove := false
 					var pcRL *configstoreTables.TableRateLimit
-					if pcTokenLimit != nil && !isRateLimitRemovalRequest(pcTokenLimit) {
-						pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
+					if pcTokenLimit != nil {
+						if isRateLimitRemovalRequest(pcTokenLimit) {
+							rlRemove = true
+						} else {
+							pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
+						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
 						budgetsProvided:       true,
 						budgets:               pc.Budgets,
-						rateLimitProvided:     pcRL != nil,
+						rateLimitProvided:     pcTokenLimit != nil,
+						rateLimitRemove:       rlRemove,
 						rateLimit:             pcRL,
 						requestLimitsProvided: true,
 						requestLimits:         pcRequestLimits,

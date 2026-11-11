@@ -6591,6 +6591,45 @@ func TestSplitRateLimitRequest(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyUpdateWithAnIDlessProviderConfigRemovesAnEmptiedTokenLimit: a provider config sent without
+// an id is a full statement of that provider's limits, so an empty rate_limit removes the token limit
+// the key's tier for the provider already holds, as it does on a provider config sent with its id.
+func TestVirtualKeyUpdateWithAnIDlessProviderConfigRemovesAnEmptiedTokenLimit(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	create := newTestRequestCtx(`{"name":"idless-pc","provider_configs":[{"provider":"openai","allowed_models":["*"],"rate_limit":{"token_max_limit":500,"token_reset_duration":"1h"}}]}`)
+	handler.createVirtualKey(create)
+	require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "resp=%s", create.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+	tokenLimitOf := func() *configstoreTables.TableRateLimit {
+		t.Helper()
+		configs, err := store.GetModelConfigs(ctx)
+		require.NoError(t, err)
+		for _, mc := range configs {
+			if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ScopeID != nil && *mc.ScopeID == created.VirtualKey.ID && mc.Provider != nil && *mc.Provider == "openai" {
+				return mc.RateLimit
+			}
+		}
+		return nil // a tier left with nothing is removed, taking its token limit with it
+	}
+	require.NotNil(t, tokenLimitOf(), "the key's openai tier holds the token limit")
+
+	update := newTestRequestCtx(`{"provider_configs":[{"provider":"openai","allowed_models":["*"],"rate_limit":{}}]}`)
+	update.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.updateVirtualKey(update)
+	require.Equal(t, fasthttp.StatusOK, update.Response.StatusCode(), "resp=%s", update.Response.Body())
+	assert.Nil(t, tokenLimitOf(), "an emptied rate_limit removed the tier's token limit")
+}
+
 // TestCombinedRateLimitGivesWayToRequestLimits pins how a holder whose rate_limit_id row an earlier
 // release left combined (token and request limit on one row) moves to request limits: a row only it
 // names drops its request fields, a shared row stays as it is for its other holders while the edited
@@ -6659,6 +6698,8 @@ func TestCombinedRateLimitGivesWayToRequestLimits(t *testing.T) {
 		row := combinedRow("live-combined", 3)
 		live := row
 		live.TokenCurrentUsage, live.RequestCurrentUsage = 450, 17
+		// The token window opened later in memory than in the store; the request window, earlier.
+		live.TokenLastReset, live.RequestLastReset = row.TokenLastReset.Add(time.Minute), row.RequestLastReset.Add(-time.Minute)
 		liveHandler := &GovernanceHandler{configStore: store, governanceManager: requestLimitTestGovernanceManager{store: store, live: map[string]*configstoreTables.TableRateLimit{row.ID: &live}}}
 		team := configstoreTables.TableTeam{ID: "team-live", Name: "team-live", RateLimitID: &row.ID}
 		require.NoError(t, store.CreateTeam(ctx, &team))
@@ -6670,6 +6711,8 @@ func TestCombinedRateLimitGivesWayToRequestLimits(t *testing.T) {
 		stored, err := store.GetRateLimit(ctx, row.ID)
 		require.NoError(t, err)
 		assert.Equal(t, int64(450), stored.TokenCurrentUsage, "the row keeps the live token counter")
+		assert.True(t, stored.TokenLastReset.Equal(live.TokenLastReset), "and the live token window's start")
+		assert.True(t, stored.RequestLastReset.Equal(row.RequestLastReset), "a stored window start is never moved backward")
 		got := getTeam(team.ID)
 		require.Len(t, got.RequestLimits, 1)
 		assert.Equal(t, int64(17), got.RequestLimits[0].RequestCurrentUsage, "the new request limit takes over the live request counter")

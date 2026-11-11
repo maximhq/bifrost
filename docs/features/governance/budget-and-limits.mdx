@@ -197,7 +197,7 @@ Rate limits are checked in hierarchical order:
 4. ✓ Customer Rate Limit (if the customer has one)
 ```
 
-For a model request to be allowed, it must pass every **Shared** and **Model** request limit and every token limit at **all applicable levels**. An MCP tool execution is checked only against the **Shared** and **MCP** request limits of the deployment, its virtual key, team and customer; token limits never apply to it. If a provider config exceeds its rate limits, that provider is excluded from routing, but other providers within the same virtual key remain available.
+For a model request to be allowed, it must pass every **Shared** and **Model** request limit and every token limit at **all applicable levels**. An MCP tool execution is checked only against the **Shared** and **MCP** request limits of the deployment, its virtual key, team and customer; token limits do not apply to it, except on a legacy combined rate limit that also holds a request limit (one an upgrade left whole because several holders share it): the call is checked against that row as a whole, token limit included. If a provider config exceeds its rate limits, that provider is excluded from routing, but other providers within the same virtual key remain available.
 
 ### Request limit scope
 
@@ -215,7 +215,7 @@ A holder's own request limits (**Max Requests**) are a set of limits, each with 
 
 Scopes follow what MCP traffic reaches, as for budgets. `mcp` is accepted on a virtual key's own limits (stored on its holder-level model limit), on the deployment's holder-level model limit (`*` with no provider), and on teams and customers. Model limits for a specific model or provider, provider configs and provider governance take **Shared** and **Model** request limits, which count the same there since only model requests reach them, and refuse **MCP**.
 
-**Max Tokens** is model-only. A token limit counts model requests, and an MCP tool execution is never checked against it.
+**Max Tokens** is model-only. A token limit counts model requests, and an MCP tool execution is not checked against it, except on a legacy combined rate limit that also holds a request limit: that row is checked as a whole.
 
 Request limits created before scopes existed are **Shared**, so they keep counting both kinds of traffic. On upgrade, the request limit of each team, customer and model limit moves into a Shared request limit that keeps its usage and reset timing, and the rate limit it came from keeps only the token limit. A rate limit shared by several holders stays combined.
 
