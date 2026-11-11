@@ -159,7 +159,7 @@ func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MC
 // mintTestToken signs a token with valid defaults (vk mode), applying mutate to
 // override claims/header for negative cases. signMethod and signKey let callers
 // force a non-RS256 algorithm or a wrong signing key.
-func mintTestToken(t *testing.T, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
+func mintTestToken(t testing.TB, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{

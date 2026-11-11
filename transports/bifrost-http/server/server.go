@@ -2911,7 +2911,14 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 			}
 		}
 	}
-	handlers.NewClaudeCodeGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache).RegisterInferenceRoutes(s.Router, s.Client, s, middlewares...)
+	// One Claude Code gateway handler serves every /claude-code route, so the
+	// sign-in limiters and poll tracker are shared and the managed-settings and
+	// telemetry bearer checks use the governance virtual-key cache like inference.
+	// The sign-in, settings and telemetry routes are public by protocol or
+	// bearer-authenticated by the handler itself, so they take no middleware.
+	claudeCodeGateway := handlers.NewClaudeCodeGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache)
+	claudeCodeGateway.RegisterRoutes(s.Router)
+	claudeCodeGateway.RegisterInferenceRoutes(s.Router, s.Client, s, middlewares...)
 	return nil
 }
 
@@ -3138,9 +3145,6 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2IssuanceHandler.RegisterRoutes(s.Router)
 	oauth2SessionsHandler.RegisterRoutes(s.Router, middlewares...)
 	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
-	// Claude Code gateway sign-in, managed settings and telemetry: public by
-	// protocol or bearer-authenticated by the handler itself, so no API auth middleware.
-	handlers.NewClaudeCodeGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, nil).RegisterRoutes(s.Router)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	handlers.NewGithubCopilotSignInHandler().RegisterRoutes(s.Router, middlewares...)

@@ -28,7 +28,7 @@ const testClaudeCodeResource = testIssuer + "/claude-code"
 // migrations, so the device-code columns exist) with the gateway enabled, plus a
 // consent handler sharing the same config. /mcp is left on header auth: the
 // gateway does not depend on the MCP auth mode.
-func newClaudeCodeGateway(t *testing.T, enforceAuth bool) (*ClaudeCodeGatewayHandler, *OAuth2ConsentHandler, configstore.ConfigStore, *lib.Config) {
+func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*ClaudeCodeGatewayHandler, *OAuth2ConsentHandler, configstore.ConfigStore, *lib.Config) {
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
@@ -38,7 +38,7 @@ func newClaudeCodeGateway(t *testing.T, enforceAuth bool) (*ClaudeCodeGatewayHan
 }
 
 // seedGatewayVK stores an active virtual key and returns it.
-func seedGatewayVK(t *testing.T, store configstore.ConfigStore, id, value string) *configtables.TableVirtualKey {
+func seedGatewayVK(t testing.TB, store configstore.ConfigStore, id, value string) *configtables.TableVirtualKey {
 	t.Helper()
 	vk := &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar(value), IsActive: new(true)}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), vk))
@@ -517,6 +517,164 @@ func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {
 	h.handleDeviceAuthorization(ctx)
 	assert.Equal(t, fasthttp.StatusTooManyRequests, ctx.Response.StatusCode())
 	assert.Equal(t, "slow_down", oauthErrorCode(t, ctx))
+}
+
+// TestClaudeCodeGatewayTokenCache pins the verified-token cache: an entry only
+// answers for the resource it was verified against and only until the token
+// expires, tokens without an expiry are not kept, and the cache never grows past
+// its cap.
+func TestClaudeCodeGatewayTokenCache(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	claims := func(exp time.Time) *jwtMCPClaims {
+		return &jwtMCPClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-1", ExpiresAt: jwt.NewNumericDate(exp)}}
+	}
+	c := newGatewayTokenCache(2)
+	c.put("tok-a", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
+
+	assert.NotNil(t, c.get("tok-a", testClaudeCodeResource, now.Add(30*time.Second)))
+	assert.Nil(t, c.get("tok-a", "https://moved.example.com/claude-code", now), "another resource is a miss")
+	assert.Nil(t, c.get("tok-a", testClaudeCodeResource, now.Add(time.Minute)), "an expired token is a miss")
+	assert.Nil(t, c.get("tok-b", testClaudeCodeResource, now))
+
+	c.put("tok-noexp", testClaudeCodeResource, &jwtMCPClaims{}, now)
+	assert.Nil(t, c.get("tok-noexp", testClaudeCodeResource, now), "a token without exp is not cached")
+
+	c.put("tok-b", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
+	c.put("tok-c", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
+	assert.Len(t, c.entries, 2, "a full cache does not grow")
+	assert.Nil(t, c.get("tok-c", testClaudeCodeResource, now))
+
+	later := now.Add(2 * time.Minute)
+	c.put("tok-c", testClaudeCodeResource, claims(later.Add(time.Minute)), later)
+	assert.NotNil(t, c.get("tok-c", testClaudeCodeResource, later), "expired entries are swept to make room")
+	assert.LessOrEqual(t, len(c.entries), 2)
+}
+
+// TestClaudeCodeGateway_CachedTokenStillChecked pins that a token served from
+// the verified-token cache is still refused once the issuer moves (its audience
+// no longer matches) and once the virtual key behind it is deactivated.
+func TestClaudeCodeGateway_CachedTokenStillChecked(t *testing.T) {
+	h, _, store, cfg := newClaudeCodeGateway(t, true)
+	vk := seedGatewayVK(t, store, "vk-cached", "sk-bf-cached")
+	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+	priv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
+	require.NoError(t, err)
+	token := mintTestToken(t, priv, signingKey.KID, func(c jwt.MapClaims) {
+		c["aud"] = jwt.ClaimStrings{testClaudeCodeResource}
+		c["sub"] = vk.ID
+	})
+	run := func() int {
+		ctx := bearerCtx(token)
+		h.BearerMiddleware(func(c *fasthttp.RequestCtx) { c.SetStatusCode(fasthttp.StatusOK) })(ctx)
+		return ctx.Response.StatusCode()
+	}
+
+	require.Equal(t, fasthttp.StatusOK, run())
+	require.NotNil(t, h.tokens.get(token, testClaudeCodeResource, time.Now()), "the verified token is cached")
+	require.Equal(t, fasthttp.StatusOK, run(), "served from the cache")
+
+	t.Run("issuer change", func(t *testing.T) {
+		original := cfg.ClientConfig.OAuth2ServerConfig.IssuerURL
+		cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar("https://moved.example.com")
+		defer func() { cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = original }()
+		assert.Equal(t, fasthttp.StatusUnauthorized, run())
+	})
+
+	t.Run("deactivated virtual key", func(t *testing.T) {
+		require.Equal(t, fasthttp.StatusOK, run())
+		vk.IsActive = new(false)
+		require.NoError(t, store.UpdateVirtualKey(context.Background(), vk))
+		assert.Equal(t, fasthttp.StatusUnauthorized, run())
+	})
+}
+
+// staticVKCache is a warm governance virtual-key cache for the benchmark.
+type staticVKCache map[string]*configtables.TableVirtualKey
+
+func (c staticVKCache) GetVirtualKeyByID(_ context.Context, id string) (*configtables.TableVirtualKey, bool) {
+	vk, ok := c[id]
+	return vk, ok
+}
+
+// BenchmarkClaudeCodeGatewayBearerMiddleware measures what the bearer
+// middleware adds to every gateway request in steady state: the enabled check,
+// RS256 verification against the cached signing key, the identity re-check
+// (a warm virtual-key cache hit, or the user resolver), and the header rewrite.
+func BenchmarkClaudeCodeGatewayBearerMiddleware(b *testing.B) {
+	h, _, store, _ := newClaudeCodeGateway(b, true)
+	vk := seedGatewayVK(b, store, "vk-bench", "sk-bf-bench")
+	h.vkCache = staticVKCache{vk.ID: vk}
+	h.identityResolver = &fakeResolver{userModeAvailable: true}
+	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
+	require.NoError(b, err)
+	priv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
+	require.NoError(b, err)
+	// Warm the process-lifetime signing-key cache, as any running server has.
+	_, err = h.store.GetOAuth2SigningKey(bgCtx())
+	require.NoError(b, err)
+
+	for _, mode := range []struct {
+		name string
+		sub  string
+		bf   schemas.MCPAuthMode
+	}{
+		{"vk", vk.ID, schemas.MCPAuthModeVK},
+		{"user", "user-bench", schemas.MCPAuthModeUser},
+	} {
+		token := "Bearer " + mintTestToken(b, priv, signingKey.KID, func(c jwt.MapClaims) {
+			c["aud"] = jwt.ClaimStrings{testClaudeCodeResource}
+			c["bf_mode"] = string(mode.bf)
+			c["sub"] = mode.sub
+		})
+		b.Run(mode.name, func(b *testing.B) {
+			var req fasthttp.Request
+			req.Header.SetMethod("POST")
+			ctx := initCtx(&req)
+			passed := 0
+			next := h.BearerMiddleware(func(*fasthttp.RequestCtx) { passed++ })
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Header.Set("Authorization", token)
+				next(ctx)
+			}
+			b.StopTimer()
+			require.Equal(b, b.N, passed, string(ctx.Response.Body()))
+		})
+	}
+}
+
+// TestClaudeCodeIPRateLimiter pins the sign-in limiter's per-key window and its
+// memory bound: past maxKeys live windows a new address is refused rather than
+// tracked, existing addresses keep their own counts, and once their windows
+// expire a sweep frees room again.
+func TestClaudeCodeIPRateLimiter(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+
+	t.Run("per-key fixed window", func(t *testing.T) {
+		l := newIPRateLimiter(2, time.Minute)
+		assert.True(t, l.allow("a", start))
+		assert.True(t, l.allow("a", start.Add(time.Second)))
+		assert.False(t, l.allow("a", start.Add(2*time.Second)), "third hit inside the window")
+		assert.True(t, l.allow("b", start.Add(2*time.Second)), "another address has its own window")
+		assert.True(t, l.allow("a", start.Add(time.Minute)), "a new window starts once the old one ends")
+	})
+
+	t.Run("bounded number of tracked addresses", func(t *testing.T) {
+		l := newIPRateLimiter(5, time.Minute)
+		l.maxKeys = 3
+		for _, key := range []string{"a", "b", "c"} {
+			require.True(t, l.allow(key, start))
+		}
+		assert.False(t, l.allow("d", start.Add(time.Second)), "a new address past the cap is refused")
+		assert.True(t, l.allow("a", start.Add(time.Second)), "a tracked address keeps its budget")
+		assert.Len(t, l.windows, 3)
+
+		later := start.Add(time.Minute + time.Second)
+		assert.True(t, l.allow("d", later), "expired windows are swept to make room")
+		assert.LessOrEqual(t, len(l.windows), 3)
+	})
 }
 
 func TestClaudeCodeUserCode(t *testing.T) {

@@ -28,7 +28,7 @@ import (
 // newRealOAuth2Store builds a real sqlite-backed ConfigStore (full migrations,
 // including the OAuth2 issuance tables) so issuance handlers exercise the actual
 // atomic store semantics rather than a hand-rolled mock.
-func newRealOAuth2Store(t *testing.T) configstore.ConfigStore {
+func newRealOAuth2Store(t testing.TB) configstore.ConfigStore {
 	t.Helper()
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
 		Enabled: true,
