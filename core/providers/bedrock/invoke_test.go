@@ -2184,6 +2184,40 @@ func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
 	}
 }
 
+// BenchmarkResponsesUsesAnthropicInvokePath_LongConversation pins the per-request cost of
+// the tool_reference input scan on a long agent conversation with no reference in it.
+func BenchmarkResponsesUsesAnthropicInvokePath_LongConversation(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	input := make([]schemas.ResponsesMessage, 0, 200)
+	for i := 0; i < 100; i++ {
+		callID := fmt.Sprintf("call_%d", i)
+		output := strings.Repeat("x", 64)
+		input = append(input,
+			schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("lookup")},
+			},
+			schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output},
+				},
+			},
+		)
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		responsesUsesAnthropicInvokePath(ctx, req)
+	}
+}
+
 func BenchmarkInvokeIngress_ToolResult(b *testing.B) {
 	for _, bc := range []struct{ name, content string }{
 		{"string_content", `"no tools found"`},

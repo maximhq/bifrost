@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -4621,13 +4620,23 @@ func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model s
 	return false
 }
 
+// responsesInputHasToolReference runs on every Anthropic-family Responses request, so
+// it indexes rather than ranging by value: a by-value range copies each 224-byte
+// ResponsesMessage, which cost ~0.5µs on a 200-message conversation.
 func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
-	return slices.ContainsFunc(input, func(message schemas.ResponsesMessage) bool {
-		return message.ResponsesToolMessage != nil && message.Output != nil &&
-			slices.ContainsFunc(message.Output.ResponsesFunctionToolCallOutputBlocks, func(block schemas.ResponsesMessageContentBlock) bool {
-				return block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
-			})
-	})
+	for i := range input {
+		toolMsg := input[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // invokeIngressThinkingNeedsInvokePath reports whether a request from the
