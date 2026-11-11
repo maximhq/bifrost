@@ -12,8 +12,8 @@ Bifrost CLI starts coding agents with the gateway URL, credential, and model of 
 | --- | --- | --- | --- | --- | --- |
 | Claude Code (`claude`) | `/anthropic` | Yes | Yes | Yes | Automatic, through a temporary token helper |
 | Codex CLI (`codex`) | `/openai/v1` | Yes | Yes | Yes | Restart Codex after the token expires |
-| OpenCode (`opencode`) | `/openai` | Yes | Yes | No | Restart OpenCode after the token expires |
-| Gemini CLI (`gemini`) | `/genai` | No | Yes | No | Not applicable |
+| OpenCode (`opencode`) | `/openai/v1` | Yes | Yes | Yes | Restart OpenCode after the token expires |
+| Gemini CLI (`gemini`) | `/genai` | No | Yes | Yes | Not applicable |
 
 If a harness is not installed, the interactive launcher offers to install it and asks for confirmation first.
 
@@ -48,25 +48,74 @@ Before the harness starts, the CLI prints the endpoint, credential type (`Enterp
 - **OpenCode** receives an owner-readable temporary provider configuration that is removed when OpenCode exits.
 - Inherited provider credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` are removed from the child environment so they cannot override the Bifrost credential.
 
+## Attribute requests to a project
+
+On [Bifrost Enterprise](/enterprise/projects), select one project by ID or name without changing the caller's credential:
+
+```bash
+bifrost claude --project-id PROJECT_ID --model anthropic/claude-sonnet-4-6
+bifrost codex --project-name customer-alpha --model openai/gpt-5
+bifrost run pi --project-name customer-beta --model openai/gpt-5
+```
+
+`--project-id` and `--project-name` are mutually exclusive. Put them before native harness arguments (and before `--`). Each launch gets its own selection; two sessions can use different projects in the same repository. Empty selectors and control characters are rejected. The interactive chooser does not select projects: use direct launch for project-scoped sessions.
+
+| Harness | Project-scoped launch | Persistent project configuration |
+| --- | --- | --- |
+| Claude Code | Temporary `--settings` file and `ANTHROPIC_CUSTOM_HEADERS` | `env.ANTHROPIC_CUSTOM_HEADERS` |
+| Codex | Temporary Bifrost provider `http_headers` | Bifrost provider `http_headers` |
+| OpenCode | Temporary Bifrost provider `options.headers`; requires a model | Bifrost provider `options.headers` |
+| Pi | Temporary Bifrost provider `headers`; requires a model | Bifrost provider `headers` |
+| Gemini | `GEMINI_CLI_CUSTOM_HEADERS` | Not supported by the project flags |
+| Antigravity | Not supported by the project flags | Not supported by the project flags |
+
+An unsupported combination returns an error; it does not launch an unscoped session. Gemini's header format cannot carry a comma in a project selector through this integration; use the project ID instead. Pi selectors must be literal values, not command or environment substitutions.
+
+To make a project the default when running a supported harness directly:
+
+```bash
+bifrost configure claude --project-name customer-alpha
+bifrost configure codex --project-id PROJECT_ID
+bifrost unconfigure claude
+```
+
+Persistent configuration still requires a virtual key. `unconfigure` restores the complete pre-Bifrost configuration, including its original headers. Reconfiguring with another selector replaces both old project selectors. Omitting the flags does not mean “clear my existing project”; restore or edit the native configuration to remove a saved selection.
+
+For Claude launches, the CLI preserves custom headers from the shell and the user/repository settings it reads, then replaces the project selector in session settings. Do not combine the project flags with a native `--settings` override; use repository settings for the other headers. Managed Claude settings retain their higher precedence. For OpenCode, remove `OPENCODE_CONFIG_CONTENT` before using the project flags so a later inline override cannot replace the generated project configuration.
+
+A launcher preflight carries the same project header. Verify actual inference in Bifrost Logs: the resolved `project_id`/`project_name` and caller identity should appear together. A missing or unauthorized project is rejected. The header selects a project; it does not create one or grant membership.
+
+For spend funded by the project instead of the caller, select `project_only` accounting in Bifrost. A plain virtual key without a resolved user requires open project membership; use Enterprise SSO for explicit user membership and per-member shares. Deployment-wide caps still apply.
+
+Claude Desktop on 3P has its own configuration. See [Desktop project attribution](/cli-agents/claude-desktop#attribute-inference-to-a-bifrost-project); `bifrost configure claude` writes Claude Code settings, not Desktop's third-party inference settings.
+
 ## Persist configuration for direct use
 
-`bifrost configure` writes the Bifrost endpoint, virtual key, and optional model into the harness's own configuration so it works when you run the harness directly. It supports Claude Code and Codex CLI, and requires a virtual key: short-lived SSO tokens are never written to long-lived files.
+`bifrost configure` writes the Bifrost endpoint, virtual key, and optional model into the harness's own configuration so it works when you run the harness directly. It supports all four agents and requires a virtual key: short-lived SSO tokens are never written to long-lived files.
 
 ```bash
 bifrost configure claude --model anthropic/claude-sonnet-4-6
 bifrost configure codex --model openai/gpt-5
+bifrost configure opencode --model openai/gpt-5
+bifrost configure gemini --model gemini/gemini-2.5-pro
 ```
 
 | Harness | Files changed |
 | --- | --- |
 | Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
-| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+| Codex CLI | `$CODEX_HOME/config.toml` (defaults to `~/.codex/config.toml`): custom `bifrost` provider and virtual key in `experimental_bearer_token`; preserves `auth.json` |
+| OpenCode | `~/.config/opencode/opencode.json` (honors `XDG_CONFIG_HOME`, `OPENCODE_CONFIG`, and existing `.jsonc`): `bifrost` provider, virtual key, and model |
+| Gemini CLI | `~/.gemini/settings.json`: API-key authentication and model; `~/.gemini/.env`: virtual key, gateway URL, and model |
+
+OpenCode requires `--model` on first configuration. Existing JSON settings are merged; comments and formatting may change, and `unconfigure` restores the original bytes. Environment variables and project settings can override these user settings. Gemini loads the first `.env` it finds, so a project `.env` can take precedence over the home configuration.
 
 Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
 
 ```bash
 bifrost unconfigure claude
 bifrost unconfigure codex
+bifrost unconfigure opencode
+bifrost unconfigure gemini
 ```
 
 `unconfigure` restores the exact files captured before configuration. If you edited a configured file afterwards, `configure` and `unconfigure` refuse to overwrite it; rerun with `--force` to proceed. The receipt contains your original files and the virtual key, so it is written with owner-only permissions.

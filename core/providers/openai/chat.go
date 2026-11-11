@@ -199,6 +199,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBytePlusCompatibility()
 		return openaiReq
+	case schemas.Baseten:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBasetenCompatibility()
+		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
@@ -448,6 +452,63 @@ func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
 	maps.Copy(extraParams, req.ExtraParams)
 	extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
 	req.ExtraParams = extraParams
+}
+
+// applyBasetenCompatibility fits the request to Baseten's chat schema, which sets
+// additionalProperties:false, so any key it does not define is a 400. It defines
+// max_tokens but not max_completion_tokens, so the limit moves there. The OpenAI-
+// and Anthropic-only fields below are not in the schema and are dropped. Its
+// message roles are system, user, assistant and tool, so developer becomes system.
+// Baseten-native fields (min_p, chat_template_args, ...) still reach the wire as
+// extra params.
+func (req *OpenAIChatRequest) applyBasetenCompatibility() {
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
+	}
+	p := &req.ChatParameters
+	p.ServiceTier = nil
+	p.Audio = nil
+	p.Metadata = nil
+	p.Modalities = nil
+	p.SafetyIdentifier = nil
+	p.Prediction = nil
+	p.PromptCacheKey = nil
+	p.PromptCacheRetention = nil
+	p.PromptCacheOptions = nil
+	p.Store = nil
+	p.Verbosity = nil
+	p.WebSearchOptions = nil
+	p.Speed = nil
+	p.InferenceGeo = nil
+	p.MCPServers = nil
+	p.Container = nil
+	p.CacheControl = nil
+	p.TaskBudget = nil
+	p.ContextManagement = nil
+	p.IncludeServerSideToolInvocations = nil
+	req.PromptCacheIsolationKey = nil
+	for i := range req.Messages {
+		if req.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Messages[i].Role = schemas.ChatMessageRoleSystem
+		}
+	}
+}
+
+// clampBasetenResponsesEffort fits an effort to the minimal..high range Baseten's
+// /v1/responses accepts: none becomes minimal, its lowest level, and xhigh or max
+// become high.
+func clampBasetenResponsesEffort(effort *string) *string {
+	if effort == nil {
+		return nil
+	}
+	switch *effort {
+	case schemas.ReasoningEffortNone:
+		return schemas.Ptr(schemas.ReasoningEffortMinimal)
+	case schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax:
+		return schemas.Ptr(schemas.ReasoningEffortHigh)
+	}
+	return effort
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that

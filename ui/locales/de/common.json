@@ -513,6 +513,7 @@
 		"grpcHostPortFormat": "Muss für gRPC im Format <host>:<port> vorliegen (z. B. {{example}})",
 		"invalidInput": "Ungültige Eingabe",
 		"vertexEndpointId": "Gib eine Vertex-Endpunkt-ID ein oder füge eine unterstützte Endpunkt-URL ein",
+		"basetenDeploymentUrl": "Die Deployment-URL muss eine absolute https-URL ohne Anmeldedaten, Query oder Fragment sein",
 		"mcp": {
 			"privateKeyRequired": "Für private_key_jwt ist ein privater Schlüssel erforderlich",
 			"secretRequiredForMethod": "Für die Wahl der Übertragungsart ist ein Client-Secret erforderlich",

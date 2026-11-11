@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "更新仍在进行中。请稍后一分钟重新加载以再次检查。如果仍无法完成，请联系 Bifrost 部署管理员。",
 		"waitingEnterprise": "等待更新完成…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "部分控制台内容无法加载",
+		"bannerDescription": "请检查网络、代理或浏览器扩展，然后重新加载。",
+		"screenTitle": "此页面无法加载",
+		"screenDescription": "浏览器无法下载部分控制台文件，可能是代理、防火墙或浏览器扩展拦截了它们。请检查网络后重新加载。"
+	},
 	"onboarding": {
 		"expandSetupChecklist": "展开设置清单",
 		"setupChecklist": "设置清单",

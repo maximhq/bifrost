@@ -337,7 +337,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'baseten'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -316400,6 +316400,1661 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "332. Image output_format maps to imageOutputOptions mimeType (image output format) (PR #8627)",
+      "description": "output_format was ignored for Gemini image models (gemini-*-image), which always returned PNG. On Vertex it now maps to generationConfig.imageConfig.imageOutputOptions.mimeType (png/jpeg; webp is dropped rather than rejected) and output_compression to compressionQuality for JPEG, on /v1/images/generations, /v1/images/edits and /genai generateContent. The Gemini API (AI Studio) does not accept imageOutputOptions, so the direct provider must omit it and still succeed. Edit cases send the existing PNG fixture as multipart input.",
+      "item": [
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/edits jpeg output_format returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations jpeg output_compression forwards compressionQuality - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini forwards mimeType and compressionQuality', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  var options = imageConfig.imageOutputOptions || {};",
+                  "  pm.expect(options.mimeType, 'mimeType not forwarded: ' + JSON.stringify(imageConfig)).to.equal('image/jpeg');",
+                  "  pm.expect(options.compressionQuality, 'output_compression not forwarded: ' + JSON.stringify(imageConfig)).to.equal(60);",
+                  "  var bytes = Buffer.from(body.data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /v1/images/generations webp output_format is not forwarded and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Vertex Gemini drops the unsupported webp mimeType instead of failing', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'webp must not be sent to Gemini image models: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"webp\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/generations jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"output_compression\": 60,\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image /v1/images/edits jpeg output_format omits imageOutputOptions and still succeeds - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawImageConfig(body, text) {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'raw provider request missing: ' + text.slice(0, 500)).to.exist;",
+                  "  var request = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  return (request.generationConfig || {}).imageConfig || {};",
+                  "}",
+                  "pm.test('Gemini API request omits imageOutputOptions (Vertex-only field)', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var imageConfig = rawImageConfig(body, text);",
+                  "  pm.expect(imageConfig.imageOutputOptions, 'imageOutputOptions is Vertex-only and must not reach the Gemini API: ' + JSON.stringify(imageConfig)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image /genai generateContent imageOutputOptions jpeg returns JPEG bytes - image output format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI imageOutputOptions reaches Vertex and returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var parts = (((pm.response.json().candidates || [])[0] || {}).content || {}).parts || [];",
+                  "  var image = parts.filter(function (p) { return p.inlineData && p.inlineData.data; })[0];",
+                  "  pm.expect(image, 'no inline image in response: ' + text.slice(0, 500)).to.exist;",
+                  "  var bytes = Buffer.from(image.inlineData.data, 'base64');",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A red apple on a white background\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ],\n    \"imageConfig\": {\n      \"imageOutputOptions\": {\n        \"mimeType\": \"image/jpeg\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-2.5-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "336. Claude Code OAuth bare model pinned to the route provider (claude code bare model) (#5792 / PR #5904)",
+      "description": "Claude Code OAuth (Max mode) passthrough with a bare model name was rejected with HTTP 400 'could not auto resolve a provider' whenever the model catalog had no provider for it - which is always the case for the documented zero-key setup (anthropic with \"keys\": []), since a provider without keys contributes nothing to the catalog. checkAnthropicPassthrough sets SkipKeySelection for an OAuth bearer on /anthropic/v1/messages; the model-catalog resolver now pins such a request to the route's provider (anthropic) when the catalog cannot resolve the model, and leaves the catalog pick and fallbacks alone when it can. The shared profile gives anthropic keys, so the case reaches the unresolved branch with a Claude-named model no catalog lists. It sends a deliberately invalid sk-ant-oat bearer: no tokens are spent, and the pin is proven by Anthropic itself answering 401 authentication_error instead of Bifrost answering 400 before dispatch.",
+      "item": [
+        {
+          "name": "Anthropic Claude Code OAuth bare unlisted claude model reaches anthropic instead of failing provider resolution [EXPECT-401] - #5792",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before the fix Bifrost answered 400 'could not auto resolve a provider' without dispatching.",
+                  "// After it the request is pinned to anthropic, which rejects the deliberately invalid OAuth token.",
+                  "pm.test('bare claude model with an OAuth bearer is routed to anthropic - #5792', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text.indexOf('could not auto resolve a provider'), 'provider resolution still fails: ' + text).to.equal(-1);",
+                  "  pm.expect(pm.response.code, 'expected anthropic to reject the invalid OAuth token with 401: ' + text).to.equal(401);",
+                  "  pm.expect(text, 'the 401 did not come from anthropic auth: ' + text).to.include('authentication_error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-ant-oat01-bifrost-harness-invalid-token"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"claude-harness-unlisted-5\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "337. Baseten provider (baseten provider)",
+      "description": "Baseten Model APIs is OpenAI-compatible at https://inference.baseten.co/v1 with chat completions, a stateless native /responses and /models. Its chat schema sets additionalProperties:false, so Bifrost sends max_completion_tokens as max_tokens and drops service_tier; the second case fails with a Baseten 400 without that. Model APIs accepts reasoning effort up to max, which the fallback ladder used to clamp to xhigh. Baseten streams usage on every chunk by default, and Bifrost must report it once. Dedicated deployments (alias deployment_url) need a live deployment that the shared profile does not have, so they are covered by Go stub tests in core/providers/baseten. gpt-oss-120b makes one tool call per turn, so these cases use GLM-5.3.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - GLM answers through Model APIs - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by baseten with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].message.content, 'wrong answer: ' + pm.response.text()).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - max_completion_tokens is sent as max_tokens and service_tier is dropped - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"max_completion_tokens\": 512,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('Baseten accepts the request after Bifrost fits it to its strict chat schema', function () {",
+                  "  pm.expect(pm.response.code, 'Baseten rejected the request: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing; is send_back_raw_request on for baseten? ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.max_tokens, 'raw_request: ' + JSON.stringify(rr)).to.eql(512);",
+                  "  pm.expect(rr, 'max_completion_tokens reached Baseten').to.not.have.property('max_completion_tokens');",
+                  "  pm.expect(rr, 'service_tier reached Baseten').to.not.have.property('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort max reaches Baseten unclamped - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('effort max is sent as max, not clamped to xhigh', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort, 'raw_request: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - OpenAI-only fields are dropped and developer is sent as system - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"metadata\": {\n    \"team\": \"harness\"\n  },\n  \"safety_identifier\": \"harness-user\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('Baseten accepts the request once fields outside its strict chat schema are removed', function () {",
+                  "  pm.expect(pm.response.code, 'Baseten rejected the request: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing; is send_back_raw_request on for baseten? ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr, 'metadata reached Baseten').to.not.have.property('metadata');",
+                  "  pm.expect(rr, 'safety_identifier reached Baseten').to.not.have.property('safety_identifier');",
+                  "  pm.expect(rr.messages[0].role, 'raw_request: ' + JSON.stringify(rr)).to.eql('system');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions stream - usage arrives once despite per-chunk usage upstream - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream finishes and reports usage on exactly one chunk', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var finished = false, usageChunks = 0, last = null;",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var chunk;",
+                  "    try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (chunk.usage) { usageChunks++; last = chunk.usage; }",
+                  "    var choice = chunk.choices && chunk.choices[0];",
+                  "    if (choice && choice.finish_reason) { finished = true; }",
+                  "  });",
+                  "  pm.expect(finished, 'no finish_reason in stream: ' + pm.response.text().slice(0, 800)).to.be.true;",
+                  "  pm.expect(usageChunks, 'Baseten sends usage on every chunk; Bifrost must report it once').to.eql(1);",
+                  "  pm.expect(last.total_tokens, 'usage: ' + JSON.stringify(last)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('model calls get_weather', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var calls = pm.response.json().choices[0].message.tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city, 'arguments: ' + calls[0].function.arguments).to.match(/paris/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses - native Baseten Responses API - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Name one primary color.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses - reasoning effort max is sent as high - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Reply with the word ok.\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('effort max is narrowed to high, the top of the /responses range', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var rr = rawRequest(pm.response.json());",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning && rr.reasoning.effort, 'raw_request: ' + JSON.stringify(rr)).to.eql('high');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/responses stream - native Baseten Responses events - baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"input\": \"Name one primary color.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream ends with response.completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no output text deltas: ' + text.slice(0, 600)).to.include('response.output_text.delta');",
+                  "  pm.expect(text, 'no response.completed event: ' + text.slice(-600)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/anthropic/v1/messages - Anthropic SDK shape routed to baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/zai-org/GLM-5.3\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Anthropic-shaped reply from baseten', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type).to.eql('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; })[0];",
+                  "  pm.expect(text, 'no text block: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  pm.expect(text.text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/models - Model APIs catalog lists baseten/zai-org/GLM-5.3",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=baseten",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "baseten"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GLM-5.3 is listed under the baseten provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  pm.expect(ids, 'ids: ' + JSON.stringify(ids).slice(0, 600)).to.include('baseten/zai-org/GLM-5.3');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - System One typed answers on Model APIs - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": \"I was charged twice for my subscription and nobody answered my emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"route\",\n      \"instructions\": \"Which team should handle this?\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"Payments, charges and refunds\"\n        },\n        {\n          \"value\": \"technical_support\",\n          \"description\": \"Software defects and troubleshooting\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgent is the request?\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"Routine\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"Needs attention today\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"Emergency\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('baseten /v1/systemone answers each question with its own type', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "  var a = j.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'refund request must read as yes: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].type).to.eql('choice');",
+                  "  pm.expect(a[1].choice, 'route: ' + pm.response.text()).to.eql('billing');",
+                  "  pm.expect(a[2].type).to.eql('score');",
+                  "  pm.expect(a[2].score, 'urgency: ' + pm.response.text()).to.be.within(0, 2);",
+                  "  pm.expect(j.usage && j.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - a system message fails before reaching Baseten [EXPECT-400] - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Be strict.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Refund me today.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a system role is refused by Bifrost with a 400 naming the accepted roles', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  var msg = (j.error && j.error.message) || '';",
+                  "  pm.expect(msg, 'error: ' + pm.response.text()).to.include('user and assistant');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - conversation with an inline image is read as messages - baseten/decision-models/baseten-elephant-9b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-elephant-9b-latest\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"My package arrived damaged.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Sorry about that. Can you share a photo?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here it is. I want a refund.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the attached image mostly red?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('conversation goes as state.messages with the image inline, so both are read', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a[0].probability, 'a red image must read as red (a conversation rendered as text cannot see it): ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].probability, 'the refund request in the last turn must be read: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "338. Bedrock computer tools served through InvokeModel (bedrock computer tools) (#9522 / PR #9840)",
+      "description": "Bifrost sent Claude computer tools to Bedrock through Converse, which dropped them, so the model answered in text. Converse also cannot carry the toolset across turns: it drops toolset_name from the toolUse it returns and rejects toolUse/toolResult history without a toolConfig. Claude Responses requests that carry a computer or computer_use_preview tool now take InvokeModel, the route compaction and tool search already use. That covers /v1/responses and /anthropic/v1/messages, whose ingress converts computer_toolset_20260801 to computer and a dated computer_* tool to computer_use_preview. AWS serves both forms, so the toolset is forwarded bare and a dated tool stays dated. The replay case pins the /anthropic/v1/messages ingress keeping toolset_name on the tool_use: before the fix only the tool_result kept it, and Bedrock rejects a half-tagged pair with a 400. Every case asserts the outbound body via x-bf-send-back-raw-request; anthropic_version in it marks the InvokeModel body. Not covered: /v1/chat/completions still sends computer tools through Converse.",
+      "item": [
+        {
+          "name": "Bedrock /v1/messages - computer toolset sent bare via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('served through InvokeModel, not Converse', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'expected the InvokeModel native body: ' + JSON.stringify(raw).slice(0, 600)).to.exist;",
+                  "});",
+                  "var tools = (raw && raw.tools) || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 600);",
+                  "pm.test('toolset entry goes out bare - name and display_* are rejected on it', function () {",
+                  "  var ct = null;",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    if (String(tools[i].type || '').indexOf('computer') === 0) { ct = tools[i]; }",
+                  "  }",
+                  "  pm.expect(ct, 'computer tool dropped from the outbound body: ' + toolsDump).to.exist;",
+                  "  pm.expect(ct.type, 'Bedrock serves the toolset as sent: ' + toolsDump).to.eql('computer_toolset_20260801');",
+                  "  pm.expect(ct.name, 'name is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_width_px, 'display_* is not accepted on a toolset entry').to.be.undefined;",
+                  "});",
+                  "pm.test('member calls come back tagged with their toolset', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < (body.content || []).length; i++) {",
+                  "    if (body.content[i].type === 'tool_use') { calls.push(body.content[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "    pm.expect(calls[j].name, 'member name must be the member, not the family').to.not.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/messages stream - computer toolset member calls carry toolset_name via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('content_block_start for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'content_block_start') { continue; }",
+                  "    var it = ev.content_block || {};",
+                  "    if (it.type !== 'tool_use') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(it.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no tool_use in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/messages - dated computer_20251124 forwarded dated via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('served through InvokeModel, not Converse', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'expected the InvokeModel native body: ' + JSON.stringify(raw).slice(0, 600)).to.exist;",
+                  "});",
+                  "var tools = (raw && raw.tools) || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 600);",
+                  "pm.test('AWS serves the dated tool, so it is forwarded, not upgraded or dropped', function () {",
+                  "  pm.expect(tools.length, 'computer tool dropped from the outbound body: ' + toolsDump).to.eql(1);",
+                  "  pm.expect(tools[0].type, toolsDump).to.eql('computer_20251124');",
+                  "  pm.expect(tools[0].name, toolsDump).to.eql('computer');",
+                  "  pm.expect(tools[0].display_width_px, toolsDump).to.eql(1280);",
+                  "  pm.expect(tools[0].display_height_px, toolsDump).to.eql(800);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1280,\n      \"display_height_px\": 800\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/messages - replayed member call keeps toolset_name on both halves via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('served through InvokeModel, not Converse', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'expected the InvokeModel native body: ' + JSON.stringify(raw).slice(0, 600)).to.exist;",
+                  "});",
+                  "var tools = (raw && raw.tools) || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 600);",
+                  "pm.test('the replayed pair carries toolset_name on the tool_use and the tool_result', function () {",
+                  "  var call = null, result = null;",
+                  "  var msgs = (raw && raw.messages) || [];",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    var c = msgs[i].content;",
+                  "    if (Object.prototype.toString.call(c) !== '[object Array]') { continue; }",
+                  "    for (var j = 0; j < c.length; j++) {",
+                  "      if (c[j].type === 'tool_use') { call = c[j]; }",
+                  "      if (c[j].type === 'tool_result') { result = c[j]; }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(call, 'tool_use missing from the outbound body').to.exist;",
+                  "  pm.expect(result, 'tool_result missing from the outbound body').to.exist;",
+                  "  pm.expect(call.toolset_name, 'half-preserved pair: Bedrock 400s when only the tool_result carries toolset_name').to.eql('computer');",
+                  "  pm.expect(result.toolset_name, 'half-preserved pair: Bedrock 400s when only the tool_use carries toolset_name').to.eql('computer');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01HarnessBedrockShotAAA\",\n          \"name\": \"screenshot\",\n          \"input\": {},\n          \"toolset_name\": \"computer\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01HarnessBedrockShotAAA\",\n          \"toolset_name\": \"computer\",\n          \"content\": \"ok\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/responses - OpenAI computer tool becomes the bare toolset via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('served through InvokeModel, not Converse', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'expected the InvokeModel native body: ' + JSON.stringify(raw).slice(0, 600)).to.exist;",
+                  "});",
+                  "var tools = (raw && raw.tools) || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 600);",
+                  "pm.test('toolset entry goes out bare - name and display_* are rejected on it', function () {",
+                  "  var ct = null;",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    if (String(tools[i].type || '').indexOf('computer') === 0) { ct = tools[i]; }",
+                  "  }",
+                  "  pm.expect(ct, 'computer tool dropped from the outbound body: ' + toolsDump).to.exist;",
+                  "  pm.expect(ct.type, 'Bedrock serves the toolset as sent: ' + toolsDump).to.eql('computer_toolset_20260801');",
+                  "  pm.expect(ct.name, 'name is not accepted on a toolset entry').to.be.undefined;",
+                  "  pm.expect(ct.display_width_px, 'display_* is not accepted on a toolset entry').to.be.undefined;",
+                  "});",
+                  "pm.test('member calls surface with toolset_name on the Responses shape', function () {",
+                  "  var calls = [];",
+                  "  for (var i = 0; i < (body.output || []).length; i++) {",
+                  "    if (body.output[i].type === 'function_call') { calls.push(body.output[i]); }",
+                  "  }",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var j = 0; j < calls.length; j++) {",
+                  "    pm.expect(calls[j].toolset_name, 'member call lost toolset_name: ' + JSON.stringify(calls[j])).to.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_output_tokens\": 512,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/responses stream - OpenAI computer tool member calls carry toolset_name via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completed without an upstream rejection', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "});",
+                  "pm.test('output_item.added for a member call carries toolset_name', function () {",
+                  "  var lines = pm.response.text().split('\\n');",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "    var payload = lines[i].slice(6).trim();",
+                  "    if (!payload || payload === '[DONE]') { continue; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+                  "    if (ev.type !== 'response.output_item.added') { continue; }",
+                  "    var it = ev.item || {};",
+                  "    if (it.type !== 'function_call') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(it.toolset_name, 'streamed member call lost toolset_name: ' + payload).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no function_call in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_output_tokens\": 512,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/responses - computer_use_preview becomes dated computer_20251124 via InvokeModel (bedrock/global.anthropic.claude-sonnet-5-5) - bedrock computer tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('served through InvokeModel, not Converse', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'expected the InvokeModel native body: ' + JSON.stringify(raw).slice(0, 600)).to.exist;",
+                  "});",
+                  "var tools = (raw && raw.tools) || [];",
+                  "var toolsDump = JSON.stringify(tools).slice(0, 600);",
+                  "pm.test('the preview tool keeps its geometry on the dated tool AWS serves', function () {",
+                  "  pm.expect(tools.length, 'computer tool dropped from the outbound body: ' + toolsDump).to.eql(1);",
+                  "  pm.expect(tools[0].type, toolsDump).to.eql('computer_20251124');",
+                  "  pm.expect(tools[0].name, toolsDump).to.eql('computer');",
+                  "  pm.expect(tools[0].display_width_px, toolsDump).to.eql(1280);",
+                  "  pm.expect(tools[0].display_height_px, toolsDump).to.eql(800);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }

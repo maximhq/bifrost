@@ -78,6 +78,8 @@ export interface AliasConfig {
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
+	// Baseten overrides
+	deployment_url?: SecretVar;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
 }

@@ -1,4 +1,6 @@
 - feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS and token_url must be listed in BIFROST_TOKEN_EXCHANGE_URLS
+- fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
+- fix: anthropic - Messages requests routed to Bedrock keep `toolset_name` on replayed `tool_use` blocks, so a computer toolset turn no longer fails with a 400 on its paired `tool_result`
 - fix: chat completion requests with no messages return a 400 instead of crashing the gateway, and a converter that returns a nil request body yields an error on every provider
 - fix: gemini - skip null entries in `parts` and `functionDeclarations` on Gemini and Vertex requests and responses instead of panicking
 - fix: recover panics on provider stream goroutines and in plugin post-hooks; the stream ends with one terminal 500 error chunk, and the remaining post-hooks still run
