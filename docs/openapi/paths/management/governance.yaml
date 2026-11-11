@@ -1276,6 +1276,16 @@ model-configs:
         description: Filter by provider name
         schema:
           type: string
+      - name: applies_to
+        in: query
+        description: >-
+          `mcp` lists only the rows MCP tool executions are charged by: holder-level model configs
+          (`model_name` `*`, no provider), which hold the deployment's or a scope target's own limits,
+          with at least one `shared` or `mcp` budget. Combined with `scope=global,virtual_key` it is the
+          list of the MCP Budgets & Limits page. Any other value is rejected with 400.
+        schema:
+          type: string
+          enum: [mcp]
       - name: from_memory
         in: query
         description: If true, returns data from in-memory cache (faster, may lag DB by one poll cycle)

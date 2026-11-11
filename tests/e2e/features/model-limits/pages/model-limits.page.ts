@@ -120,8 +120,9 @@ export class ModelLimitsPage extends BasePage {
       if (!resetPeriodLabel) {
         throw new Error(`unsupported resetDuration: ${config.resetDuration}`)
       }
+      // An all-models limit with no provider also shows the budget scope select after the reset period.
       const budgetLine = this.page.getByTestId('model-limit-budget-lines-line-0')
-      await budgetLine.getByRole('combobox').click()
+      await budgetLine.getByRole('combobox').first().click()
       await this.page.getByRole('option', { name: resetPeriodLabel }).click()
     }
   }
