@@ -948,6 +948,8 @@ export interface CoreConfig {
 	mcp_max_instructions_total: number;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
+	// MCP calls that cost nothing are not refused by an exhausted budget; rate and request limits still apply.
+	mcp_allow_free_calls_when_budget_exhausted?: boolean;
 	mcp_oauth_private_allowlist?: string[];
 	a2a_private_allowlist?: string[];
 	async_job_result_ttl: number;
@@ -1022,6 +1024,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_max_instructions_per_client: 0,
 	mcp_max_instructions_total: 0,
 	mcp_enable_temp_token_auth: false,
+	mcp_allow_free_calls_when_budget_exhausted: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
