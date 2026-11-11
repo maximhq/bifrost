@@ -28183,6 +28183,52 @@ func TestSQLite_StaleLegacyKeyModelConfigRequestLimitIsRemoved(t *testing.T) {
 	assert.Empty(t, rules(second), "the request limit outlived its declaration on an ungoverned key's model config")
 }
 
+// TestSQLite_StaleLegacyRequestLimitOfALongRateLimitIDIsRemoved: the id a split request limit gets is cut when
+// its source id is too long for the column, so the cleanup finds it from the declared ids, not by stripping a suffix.
+func TestSQLite_StaleLegacyRequestLimitOfALongRateLimitIDIsRemoved(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	limit := func(n int64) *int64 { return &n }
+	longID := strings.Repeat("r", 250)
+	dir := createTempDir(t)
+	declare := func(withRequests bool) *ConfigData {
+		rl := configstoreTables.TableRateLimit{ID: longID, TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h")}
+		if withRequests {
+			rl.RequestMaxLimit, rl.RequestResetDuration = limit(10), bifrost.Ptr("1m")
+		}
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.Governance = &configstore.GovernanceConfig{
+			RateLimits: []configstoreTables.TableRateLimit{rl},
+			Teams:      []configstoreTables.TableTeam{{ID: "team-long", Name: "team-long", RateLimitID: bifrost.Ptr(longID)}},
+		}
+		return cd
+	}
+	rules := func(c *Config) []string {
+		t.Helper()
+		team, err := c.ConfigStore.GetTeam(ctx, "team-long")
+		require.NoError(t, err)
+		ids := []string{}
+		for _, rl := range team.RequestLimits {
+			ids = append(ids, rl.ID)
+		}
+		return ids
+	}
+
+	createConfigFile(t, dir, declare(true))
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	derivedID := configstoreTables.LegacyRequestLimitID(longID)
+	require.Less(t, len(derivedID), 256, "the derived id fits the column")
+	require.Equal(t, []string{derivedID}, rules(first))
+	first.Close(ctx)
+
+	createConfigFile(t, dir, declare(false))
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	assert.Empty(t, rules(second), "the request limit of a long rate limit id outlived its declaration")
+}
+
 // TestSQLite_StaleLegacyHolderRequestLimitIsRemoved pins that a team's request limit split from a
 // legacy rate limit follows the file: when the declared rate limit loses its request fields, or the
 // team is repointed to another rate limit, the derived rule goes, and a request limit the API added

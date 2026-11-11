@@ -8350,6 +8350,19 @@ func writeVirtualKeyTierLimits(ctx context.Context, store configstore.ConfigStor
 // declares) when this load no longer derives them: the rate limit lost its request fields, or the
 // holder now names another one. Only those derived rows go; a request limit the API created has a
 // generated id and is never touched, and skip leaves a governed holder's rows alone.
+// declaredDerivedRequestLimitIDs is the id config.json's split gives the request limit of each rate limit it
+// declares. A derived id cannot be traced back by cutting a suffix off it: a long source id is shortened,
+// so the lookup runs from the declared ids forward.
+func declaredDerivedRequestLimitIDs(fileRateLimitIDs map[string]bool) map[string]bool {
+	ids := make(map[string]bool, len(fileRateLimitIDs))
+	for id, declared := range fileRateLimitIDs {
+		if declared {
+			ids[configstoreTables.LegacyRequestLimitID(id)] = true
+		}
+	}
+	return ids
+}
+
 func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, governanceInConfigJSON *configstore.GovernanceConfig, fileRateLimitIDs map[string]bool, legacyTierRequestLimits map[legacyTierKey][]configstoreTables.TableRateLimit, skip func(configstoreTables.TableRateLimit) bool) error {
 	if governanceInConfigJSON == nil {
 		return nil
@@ -8365,6 +8378,7 @@ func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.Confi
 			derived[rule.ID] = true
 		}
 	}
+	derivedOfDeclared := declaredDerivedRequestLimitIDs(fileRateLimitIDs)
 	var teamIDs, customerIDs, modelConfigIDs []string
 	for _, team := range governanceInConfigJSON.Teams {
 		if team.ID != "" {
@@ -8393,8 +8407,7 @@ func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.Confi
 			return fmt.Errorf("failed to read request limits by %s: %w", owners.column, err)
 		}
 		for _, rule := range held {
-			source, isDerived := strings.CutSuffix(rule.ID, configstoreTables.LegacyRequestLimitID(""))
-			if !isDerived || derived[rule.ID] || !fileRateLimitIDs[source] || skip(rule) {
+			if !derivedOfDeclared[rule.ID] || derived[rule.ID] || skip(rule) {
 				continue
 			}
 			if err := store.DeleteRateLimit(ctx, rule.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
@@ -8427,10 +8440,10 @@ func deleteStaleLegacyTierRequestLimits(ctx context.Context, store configstore.C
 	for _, rule := range state.requestLimits {
 		carried[rule.ID] = true
 	}
+	derivedOfDeclared := declaredDerivedRequestLimitIDs(fileRateLimitIDs)
 	for _, rule := range held {
-		source, derived := strings.CutSuffix(rule.ID, configstoreTables.LegacyRequestLimitID(""))
 		// A rule whose own id the file still declares (a model config's split, say) is not stale.
-		if !derived || carried[rule.ID] || fileRateLimitIDs[rule.ID] || !fileRateLimitIDs[source] {
+		if !derivedOfDeclared[rule.ID] || carried[rule.ID] || fileRateLimitIDs[rule.ID] {
 			continue
 		}
 		if err := store.DeleteRateLimit(ctx, rule.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
