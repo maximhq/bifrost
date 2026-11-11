@@ -2736,3 +2736,85 @@ func BenchmarkToChatMessages(b *testing.B) {
 		_ = ToChatMessages(input)
 	}
 }
+
+// Custom tools in the OpenAI Chat wire shape carry name and description inside
+// "custom"; both must survive ingress and the chat -> responses conversion.
+func TestToResponsesRequest_CustomToolKeepsNameAndDescription(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		wantDesc string
+		wantFmt  bool
+	}{
+		{
+			name:     "nested_with_grammar",
+			tool:     `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"grammar","grammar":{"syntax":"lark","definition":"start: x"}}}}`,
+			wantDesc: "Apply a patch",
+			wantFmt:  true,
+		},
+		{
+			name:     "nested_without_format",
+			tool:     `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch"}}`,
+			wantDesc: "Apply a patch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tool ChatTool
+			if err := json.Unmarshal([]byte(tc.tool), &tool); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			req := &BifrostChatRequest{Params: &ChatParameters{Tools: []ChatTool{tool}}}
+			rt := req.ToResponsesRequest().Params.Tools[0]
+			if rt.Type != ResponsesToolTypeCustom {
+				t.Fatalf("type = %q, want custom", rt.Type)
+			}
+			if rt.Name == nil || *rt.Name != "ApplyPatch" {
+				t.Fatalf("name = %v, want ApplyPatch", rt.Name)
+			}
+			if tc.wantDesc != "" && (rt.Description == nil || *rt.Description != tc.wantDesc) {
+				t.Fatalf("description = %v, want %q", rt.Description, tc.wantDesc)
+			}
+			hasFmt := rt.ResponsesToolCustom != nil && rt.ResponsesToolCustom.Format != nil
+			if hasFmt != tc.wantFmt {
+				t.Fatalf("format present = %v, want %v", hasFmt, tc.wantFmt)
+			}
+		})
+	}
+}
+
+// A chat custom tool forwarded as-is must keep custom.name on the outbound wire.
+func TestChatTool_CustomToolNameSurvivesRoundTrip(t *testing.T) {
+	in := `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"text"}}}`
+	var tool ChatTool
+	if err := json.Unmarshal([]byte(in), &tool); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch","format":{"type":"text"}}}`
+	if string(out) != want {
+		t.Fatalf("round trip:\n got  %s\n want %s", out, want)
+	}
+}
+
+func TestResponsesToolToChatTool_CustomToolKeepsNameAndDescription(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"custom","name":"ApplyPatch","description":"Apply a patch","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}`,
+		`{"type":"custom","name":"ApplyPatch","description":"Apply a patch"}`,
+	} {
+		var rt ResponsesTool
+		if err := json.Unmarshal([]byte(in), &rt); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := json.Marshal(rt.ToChatTool())
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(out), `"name":"ApplyPatch"`) || !strings.Contains(string(out), `"description":"Apply a patch"`) {
+			t.Fatalf("ToChatTool(%s) = %s, want name and description inside custom", in, out)
+		}
+	}
+}
