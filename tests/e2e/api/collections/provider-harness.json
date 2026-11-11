@@ -317413,6 +317413,141 @@
               }
             }
           ]
+        },
+        {
+          "name": "/v1/decisions - System One typed answers on Model APIs - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": \"I was charged twice for my subscription and nobody answered my emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"route\",\n      \"instructions\": \"Which team should handle this?\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"Payments, charges and refunds\"\n        },\n        {\n          \"value\": \"technical_support\",\n          \"description\": \"Software defects and troubleshooting\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgent is the request?\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"Routine\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"Needs attention today\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"Emergency\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('baseten /v1/systemone answers each question with its own type', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('baseten');",
+                  "  var a = j.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'refund request must read as yes: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].type).to.eql('choice');",
+                  "  pm.expect(a[1].choice, 'route: ' + pm.response.text()).to.eql('billing');",
+                  "  pm.expect(a[2].type).to.eql('score');",
+                  "  pm.expect(a[2].score, 'urgency: ' + pm.response.text()).to.be.within(0, 2);",
+                  "  pm.expect(j.usage && j.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - a system message fails before reaching Baseten [EXPECT-400] - baseten/decision-models/baseten-joey-2b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-joey-2b-latest\",\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Be strict.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Refund me today.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a system role is refused by Bifrost with a 400 naming the accepted roles', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  var msg = (j.error && j.error.message) || '';",
+                  "  pm.expect(msg, 'error: ' + pm.response.text()).to.include('user and assistant');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/v1/decisions - conversation with an inline image is read as messages - baseten/decision-models/baseten-elephant-9b-latest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"baseten/decision-models/baseten-elephant-9b-latest\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"My package arrived damaged.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Sorry about that. Can you share a photo?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here it is. I want a refund.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the attached image mostly red?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Is the customer asking for a refund?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('conversation goes as state.messages with the image inline, so both are read', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a[0].probability, 'a red image must read as red (a conversation rendered as text cannot see it): ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].probability, 'the refund request in the last turn must be read: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

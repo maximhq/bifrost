@@ -284,7 +284,7 @@ func (c *BasetenAliasCfg) Validate() error {
 		return nil
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return fmt.Errorf("baseten deployment_url must be an absolute https URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
