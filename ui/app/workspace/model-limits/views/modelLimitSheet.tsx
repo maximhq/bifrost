@@ -16,7 +16,7 @@ import { BUDGET_SCOPE_VALUES, resetDurationLabels, resetDurationOptions } from "
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
 import { budgetSignature } from "@/lib/utils/governance";
-import { shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
+import { hasMCPBudgetOnNarrowLimit, shouldClearModelOnProviderChange } from "./modelLimitSheet.utils";
 // Side-effect import: pulls in downstream scope registrations (e.g. enterprise
 // registers "user" + user picker). The OSS-build fallback is an empty module.
 import { getErrorMessage, useCreateModelConfigMutation, useLazyGetModelsQuery, useUpdateModelConfigMutation } from "@/lib/store";
@@ -243,7 +243,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			// Only an all-models, all-providers limit is charged by MCP tool executions, so an MCP budget
 			// cannot stay once the limit is narrowed: it is never turned into a shared one, the operator
 			// resolves it first.
-			if (!budgetScopeApplies(data.modelName, provider) && (data.budgets ?? []).some((b) => b.scope === "mcp")) {
+			if (hasMCPBudgetOnNarrowLimit(data.modelName, provider, data.budgets)) {
 				form.setError("root", { message: t("modelLimits.mcpBudgetNeedsAllModels") });
 				return;
 			}
