@@ -468,6 +468,9 @@ false
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.usageEstimationTokenizers }}
+{{- $_ := set $client "usage_estimation_tokenizers" .Values.bifrost.client.usageEstimationTokenizers }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpAgentDepth }}
 {{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
 {{- end }}
@@ -1093,6 +1096,12 @@ false
 {{- $seenRelayNames = append $seenRelayNames .name }}
 {{- end }}
 {{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
+{{- end }}
+{{- /* Datasheet overrides. Rendered whenever the key is declared, [] included: with config.json as
+       the source of truth an explicit list removes stored overrides it does not name, and omitting
+       the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "datasheetOverrides" }}
+{{- $_ := set $config "datasheet_overrides" (default (list) .Values.bifrost.datasheetOverrides) }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}

@@ -20,6 +20,12 @@ spec:
       labels:
         {{- include "bifrost.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
+      {{- if .Values.vectorStore.redis.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.vectorStore.redis.metrics.port | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
     spec:
       containers:
         - name: redis
@@ -42,6 +48,13 @@ spec:
                   name: {{ include "bifrost.fullname" . }}-redis
                   key: password
             {{- end }}
+            {{- with .Values.vectorStore.redis.master.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.vectorStore.redis.master.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if .Values.vectorStore.redis.auth.enabled }}
           command:
             {{- if contains "redis-stack" .Values.vectorStore.redis.image.repository }}
@@ -77,6 +90,44 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        {{- with .Values.vectorStore.redis.metrics }}
+        {{- if .enabled }}
+        - name: metrics
+          image: "{{ .image.repository }}:{{ .image.tag }}"
+          imagePullPolicy: {{ .image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ .port }}
+              protocol: TCP
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:6379"
+            - name: REDIS_EXPORTER_WEB_LISTEN_ADDRESS
+              value: {{ printf ":%v" .port | quote }}
+            {{- if $.Values.vectorStore.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bifrost.fullname" $ }}-redis
+                  key: password
+            {{- end }}
+            {{- with .extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- /* No readinessProbe: the pod's readiness gates the Redis Service endpoints, so a
+                 failing exporter must not take Redis out of service. */}}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+        {{- end }}
+        {{- end }}
       volumes:
         - name: data
           {{- if .Values.vectorStore.redis.master.persistence.enabled }}

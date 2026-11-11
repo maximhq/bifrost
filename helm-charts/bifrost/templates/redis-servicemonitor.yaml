@@ -1,0 +1,32 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.enabled (not .Values.vectorStore.redis.external.enabled) .Values.vectorStore.redis.metrics.enabled .Values.vectorStore.redis.metrics.serviceMonitor.enabled }}
+{{- with .Values.vectorStore.redis.metrics.serviceMonitor }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bifrost.fullname" $ }}-redis
+  namespace: {{ .namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: redis
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: redis
+  endpoints:
+    - port: metrics
+      path: /metrics
+      {{- with .interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+{{- end }}
+{{- end }}
