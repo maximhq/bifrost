@@ -24746,6 +24746,28 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	require.True(t, enterprise.IsEnabled(FeatureFlagWarp))
 }
 
+// The phrase suggestions dashboard ships behind a flag that is off in both
+// builds, so a few deployments can try the suggestion APIs first; either build
+// can turn it on.
+func TestRegisterFeatureFlags_PhraseSuggestionsOffByDefault(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+
+	def, ok := featureflags.LookupDef(FeatureFlagPhraseSuggestions)
+	require.True(t, ok, "phrase-suggestions flag must be registered")
+	require.False(t, def.DefaultFor(false), "off by default in OSS")
+	require.False(t, def.DefaultFor(true), "off by default in enterprise")
+	require.False(t, def.EnterpriseOnly, "OSS can turn it on")
+
+	for _, isEnterprise := range []bool{false, true} {
+		store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+		require.NoError(t, err)
+		require.False(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v", isEnterprise)
+		_, err = store.Set(context.Background(), FeatureFlagPhraseSuggestions, true)
+		require.NoError(t, err)
+		require.True(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v: an operator can turn it on", isEnterprise)
+	}
+}
+
 // governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
 // fallback goes through RoutingFallback.UnmarshalJSON.
 func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
