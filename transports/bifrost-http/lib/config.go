@@ -1112,10 +1112,23 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 	return nil
 }
 
-// tierRequestLimitsDiffer reports whether a request limit config.json's split took from the key's legacy
-// rate limit (or a provider config's) differs from the stored one. The key's hash is taken from the file
-// as declared and does not see those limits once they are held aside, so a changed maximum on an
-// otherwise unchanged key would never be written without this.
+// withDeclaredHash stamps a held-aside tier request limit with the hash of what the file declares, the
+// baseline the stored row is compared against on later boots.
+func withDeclaredHash(limit configstoreTables.TableRateLimit) configstoreTables.TableRateLimit {
+	if hash, err := configstore.GenerateRateLimitHash(limit); err == nil {
+		limit.ConfigHash = hash
+	}
+	return limit
+}
+
+// tierRequestLimitsDiffer reports whether config.json declares a request limit for the key's tier (or a
+// provider config's) that it did not declare when the stored limit was last written from the file. The
+// key's hash is taken from the file as declared and does not see those limits once the split holds them
+// aside, so a changed maximum on an otherwise unchanged key would never be written without this.
+//
+// The stored row's config_hash is the baseline, not its current values: a dashboard edit changes the
+// values and leaves the hash alone, so an edited limit is not rewritten on every boot. A row with no
+// hash has no baseline and is left to the dashboard, and a read that fails is not a change.
 func (c *Config) tierRequestLimitsDiffer(ctx context.Context, configData *ConfigData, vk configstoreTables.TableVirtualKey) bool {
 	if c.ConfigStore == nil || len(configData.legacyTierRequestLimits) == 0 {
 		return false
@@ -1126,10 +1139,13 @@ func (c *Config) tierRequestLimitsDiffer(ctx context.Context, configData *Config
 		}
 		for _, rule := range rules {
 			stored, err := c.ConfigStore.GetRateLimit(ctx, rule.ID)
-			if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
 				return true
 			}
-			if !samePointee(stored.RequestMaxLimit, rule.RequestMaxLimit) || !samePointee(stored.RequestResetDuration, rule.RequestResetDuration) {
+			if err != nil || stored == nil || stored.ConfigHash == "" {
+				continue
+			}
+			if rule.ConfigHash != "" && stored.ConfigHash != rule.ConfigHash {
 				return true
 			}
 		}
@@ -1351,13 +1367,13 @@ func splitLegacyVirtualKeyRequestLimits(configData *ConfigData) {
 		}
 		if limit, ok := s.split(vk.RateLimitID); ok {
 			key := legacyTierKey{vkID: vk.ID}
-			tierLimits[key] = append(tierLimits[key], limit)
+			tierLimits[key] = append(tierLimits[key], withDeclaredHash(limit))
 		}
 		for j := range vk.ProviderConfigs {
 			pc := &vk.ProviderConfigs[j]
 			if limit, ok := s.split(pc.RateLimitID); ok {
 				key := legacyTierKey{vkID: vk.ID, provider: pc.Provider}
-				tierLimits[key] = append(tierLimits[key], limit)
+				tierLimits[key] = append(tierLimits[key], withDeclaredHash(limit))
 			}
 		}
 	}
@@ -5171,7 +5187,7 @@ func removeStaleLegacyRequestLimits(ctx context.Context, config *Config, configD
 		return answer
 	}
 	skipOwner := func(rl configstoreTables.TableRateLimit) bool {
-		if rl.ModelConfigID != nil {
+		if rl.ModelConfigID != nil && !sourceOfTruth {
 			if vkID, ok := keyOfModelConfig[*rl.ModelConfigID]; ok && isKeyGoverned(vkID) {
 				return true
 			}
@@ -5179,7 +5195,7 @@ func removeStaleLegacyRequestLimits(ctx context.Context, config *Config, configD
 		return skip(rl)
 	}
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		return deleteStaleLegacyRequestLimits(ctx, config.ConfigStore, tx, configData.Governance, fileRateLimitIDs, configData.legacyTierRequestLimits, skipOwner)
+		return deleteStaleLegacyRequestLimits(ctx, config.ConfigStore, tx, configData.Governance, fileRateLimitIDs, configData.legacyTierRequestLimits, keyOfModelConfig, skipOwner)
 	}); err != nil {
 		logger.Error("failed to remove request limits config.json no longer derives; they stay until the next boot: %v", err)
 	}
@@ -8407,7 +8423,7 @@ func declaredDerivedRequestLimitIDs(fileRateLimitIDs map[string]bool) map[string
 	return ids
 }
 
-func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, governanceInConfigJSON *configstore.GovernanceConfig, fileRateLimitIDs map[string]bool, legacyTierRequestLimits map[legacyTierKey][]configstoreTables.TableRateLimit, skip func(configstoreTables.TableRateLimit) bool) error {
+func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, governanceInConfigJSON *configstore.GovernanceConfig, fileRateLimitIDs map[string]bool, legacyTierRequestLimits map[legacyTierKey][]configstoreTables.TableRateLimit, keyOfModelConfig map[string]string, skip func(configstoreTables.TableRateLimit) bool) error {
 	if governanceInConfigJSON == nil {
 		return nil
 	}
@@ -8437,6 +8453,29 @@ func deleteStaleLegacyRequestLimits(ctx context.Context, store configstore.Confi
 	for _, mc := range governanceInConfigJSON.ModelConfigs {
 		if mc.ID != "" {
 			modelConfigIDs = append(modelConfigIDs, mc.ID)
+		}
+	}
+	// A declared key's own tiers (its model configs, which the file does not name) hold the request
+	// limits split from its rate limits. The key hashes unchanged when only the rate limit lost its
+	// request fields, so nothing else visits those tiers; keyOfModelConfig lets skip tell whose they are.
+	var keyIDs []string
+	for _, vk := range governanceInConfigJSON.VirtualKeys {
+		if vk.ID != "" {
+			keyIDs = append(keyIDs, vk.ID)
+		}
+	}
+	if len(keyIDs) > 0 {
+		var tiers []configstoreTables.TableModelConfig
+		if err := tx.WithContext(ctx).Select("id", "scope_id").
+			Where("scope = ? AND scope_id IN ? AND model_name = ?", configstoreTables.ModelConfigScopeVirtualKey, keyIDs, configstoreTables.ModelConfigAllModels).
+			Find(&tiers).Error; err != nil {
+			return fmt.Errorf("failed to read the tiers of declared virtual keys: %w", err)
+		}
+		for _, tier := range tiers {
+			if tier.ScopeID != nil {
+				keyOfModelConfig[tier.ID] = *tier.ScopeID
+				modelConfigIDs = append(modelConfigIDs, tier.ID)
+			}
 		}
 	}
 	for _, owners := range []struct {

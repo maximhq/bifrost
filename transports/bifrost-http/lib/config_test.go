@@ -28370,3 +28370,88 @@ func TestSQLite_LegacyKeyRequestLimitMaximumChangeIsPersisted(t *testing.T) {
 	defer c2.Close(ctx)
 	assert.Equal(t, int64(20), storedMaximum(c2), "the changed request maximum was not persisted")
 }
+
+// TestSQLite_DashboardEditedTierRequestLimitSurvivesAnUnchangedFile: a request limit edited after the
+// file wrote it (the dashboard leaves its config_hash alone) is not rewritten by a boot whose file has
+// not changed, and the key's own dashboard edits stay.
+func TestSQLite_DashboardEditedTierRequestLimitSurvivesAnUnchangedFile(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	tokens, tokenDur, requests, reqDur := int64(1000), "1h", int64(10), "1m"
+	declare := func() *ConfigData {
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.Governance = &configstore.GovernanceConfig{
+			RateLimits: []tables.TableRateLimit{{
+				ID: "vk-rl", TokenMaxLimit: &tokens, TokenResetDuration: &tokenDur,
+				RequestMaxLimit: &requests, RequestResetDuration: &reqDur,
+			}},
+			VirtualKeys: []tables.TableVirtualKey{{
+				ID: "vk-1", Name: "vk-1", Description: "from file", Value: *schemas.NewSecretVar("sk-bf-vk-1"),
+				IsActive: schemas.Ptr(true), RateLimitID: schemas.Ptr("vk-rl"),
+			}},
+		}
+		return cd
+	}
+
+	createConfigFile(t, dir, declare())
+	c1, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	derived := tables.LegacyRequestLimitID("vk-rl")
+	require.NoError(t, c1.ConfigStore.DB().Model(&tables.TableRateLimit{}).Where("id = ?", derived).UpdateColumn("request_max_limit", 30).Error)
+	require.NoError(t, c1.ConfigStore.DB().Model(&tables.TableVirtualKey{}).Where("id = ?", "vk-1").UpdateColumn("description", "edited in the dashboard").Error)
+	c1.Close(ctx)
+
+	createConfigFile(t, dir, declare())
+	c2, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer c2.Close(ctx)
+	var limit tables.TableRateLimit
+	require.NoError(t, c2.ConfigStore.DB().First(&limit, "id = ?", derived).Error)
+	require.NotNil(t, limit.RequestMaxLimit)
+	assert.Equal(t, int64(30), *limit.RequestMaxLimit, "the dashboard's request limit was overwritten by an unchanged file")
+	var vk tables.TableVirtualKey
+	require.NoError(t, c2.ConfigStore.DB().First(&vk, "id = ?", "vk-1").Error)
+	assert.Equal(t, "edited in the dashboard", vk.Description, "the key's dashboard edit was overwritten")
+}
+
+// TestSQLite_UnchangedKeyDropsTheRequestLimitItsRateLimitLost: a key's request limit split from its
+// legacy rate limit goes when the rate limit loses its request fields, though the key's declaration is
+// byte-identical and nothing else visits its tier.
+func TestSQLite_UnchangedKeyDropsTheRequestLimitItsRateLimitLost(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	tokens, tokenDur, requests, reqDur := int64(1000), "1h", int64(10), "1m"
+	declare := func(withRequests bool) *ConfigData {
+		rl := tables.TableRateLimit{ID: "vk-rl", TokenMaxLimit: &tokens, TokenResetDuration: &tokenDur}
+		if withRequests {
+			rl.RequestMaxLimit, rl.RequestResetDuration = &requests, &reqDur
+		}
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.Governance = &configstore.GovernanceConfig{
+			RateLimits: []tables.TableRateLimit{rl},
+			VirtualKeys: []tables.TableVirtualKey{{
+				ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"),
+				IsActive: schemas.Ptr(true), RateLimitID: schemas.Ptr("vk-rl"),
+			}},
+		}
+		return cd
+	}
+	derived := tables.LegacyRequestLimitID("vk-rl")
+
+	createConfigFile(t, dir, declare(true))
+	c1, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	var count int64
+	require.NoError(t, c1.ConfigStore.DB().Model(&tables.TableRateLimit{}).Where("id = ?", derived).Count(&count).Error)
+	require.Equal(t, int64(1), count, "setup: the request limit was not split off")
+	c1.Close(ctx)
+
+	createConfigFile(t, dir, declare(false))
+	c2, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer c2.Close(ctx)
+	require.NoError(t, c2.ConfigStore.DB().Model(&tables.TableRateLimit{}).Where("id = ?", derived).Count(&count).Error)
+	assert.Zero(t, count, "the request limit stayed after the file dropped it")
+}
