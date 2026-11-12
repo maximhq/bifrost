@@ -16,6 +16,7 @@ import {
 	shouldSeedLLMPrompt,
 	suggestionsFormValues,
 	toAnalyzerPayload,
+	toComplexityConfigPayload,
 	toFormValues,
 	toSuggestionsPayload,
 	withGeneratedTierCriteriaCleared,
@@ -1010,6 +1011,21 @@ describe("tier criteria with the llm tier step", () => {
 		expect(toSuggestionsPayload(values, { enabled: true }, tierDefaults).tier?.criteria).toEqual({
 			SIMPLE: { definition: "hidden edit", signals: [], examples: [] },
 		});
+	});
+});
+
+describe("complexity config payload", () => {
+	test("never sends suggestions, which only model routers make, while a router's payload keeps them", () => {
+		const saved: AnalyzerConfig = {
+			classifier: "semantic",
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			semantic: { provider: "openai", embedding_model: "text-embedding-3-small" },
+			suggestions: { enabled: true, sample_rate: 0.1, lookback_days: 7, provider: "openai", model: "gpt-5" },
+		};
+		const values = toFormValues(saved);
+		expect(toComplexityConfigPayload(values, saved)).not.toHaveProperty("suggestions");
+		expect(toComplexityConfigPayload(values, saved).keywords).toEqual(toAnalyzerPayload(values, saved).keywords);
+		expect(toAnalyzerPayload(values, saved).suggestions?.enabled).toBe(true);
 	});
 });
 

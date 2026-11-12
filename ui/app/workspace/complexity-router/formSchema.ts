@@ -920,6 +920,14 @@ export function toFormValues(
 // Session is additive to the complexity API, and nil already means disabled;
 // omitting it keeps ordinary semantic edits compatible with gateways that
 // predate session-aware routing. Once enabled, the block is sent explicitly.
+// toComplexityConfigPayload is toAnalyzerPayload for the Complexity Router
+// page's config, which makes no phrase suggestions (only model routers do), so
+// its suggestions block is never sent; the gateway refuses one.
+export function toComplexityConfigPayload(values: AnalyzerFormValues, saved?: AnalyzerConfig): AnalyzerConfig {
+	const { suggestions: _suggestions, ...payload } = toAnalyzerPayload(values, saved);
+	return payload;
+}
+
 export function toAnalyzerPayload(
 	values: AnalyzerFormValues,
 	saved?: AnalyzerConfig,

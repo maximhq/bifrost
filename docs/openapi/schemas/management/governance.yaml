@@ -3281,43 +3281,6 @@ ComplexityAnalyzerConfig:
       then:
         required:
           - llm
-    # Enabled suggestions capture the semantic classifier's vectors, so they
-    # need it as the primary classifier.
-    - if:
-        properties:
-          suggestions:
-            properties:
-              enabled:
-                const: true
-            required:
-              - enabled
-        required:
-          - suggestions
-      then:
-        required:
-          - semantic
-        not:
-          required: [classifier]
-          properties:
-            classifier:
-              enum: [decision, llm]
-    # Enabled suggestions need a model: their own provider and model, or the
-    # llm block's.
-    - if:
-        properties:
-          suggestions:
-            properties:
-              enabled:
-                const: true
-            required:
-              - enabled
-            not:
-              required: [provider, model]
-        required:
-          - suggestions
-      then:
-        required:
-          - llm
     # The llm classifier answers with the llm block's model.
     - if:
         properties:
@@ -3346,8 +3309,6 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityLLMConfig'
     session:
       $ref: '#/ComplexitySessionConfig'
-    suggestions:
-      $ref: '#/ComplexitySuggestionsConfig'
 
 ComplexitySuggestionsConfig:
   type: object
@@ -3859,7 +3820,7 @@ ComplexitySuggestionRunEstimate:
 
 ModelRouter:
   type: object
-  description: A model router - an id, a name and a description beside the same settings as ComplexityAnalyzerConfig, phrase suggestions included, sent and returned at the top level; the model each tier gets; and the routing that decides which requests it takes. Routers are separate from the complexity analyzer config, which routing rules read complexity_tier from. The cross-field rules of ComplexityAnalyzerConfig apply.
+  description: A model router - an id, a name and a description beside the same settings as ComplexityAnalyzerConfig, sent and returned at the top level; its phrase suggestions, which only model routers make; the model each tier gets; and the routing that decides which requests it takes. Routers are separate from the complexity analyzer config, which routing rules read complexity_tier from. The cross-field rules of ComplexityAnalyzerConfig apply, and the suggestion rules below.
   additionalProperties: false
   allOf:
     - if:

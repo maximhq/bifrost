@@ -3358,8 +3358,7 @@
                       "additionalProperties": false
                     }
                   ]
-                },
-                "suggestions": { "$ref": "#/$defs/complexitySuggestionsConfig" }
+                }
               },
               "allOf": [
                 {
