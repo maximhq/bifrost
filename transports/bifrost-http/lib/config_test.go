@@ -27435,3 +27435,24 @@ func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
 	// config.json and stored rows reach the runtime through validateClientConfig.
 	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
 }
+
+// TestIgnoreBudgetBusinessUnitIDs pins that business_unit_id on a governance.budgets entry is not
+// read: it is cleared with a warning naming the budget, and every other field and entry is kept.
+func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
+	buID := "bu-1"
+	teamID := "team-1"
+	data := &ConfigData{Governance: &configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+		{ID: "named", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID},
+		{ID: "team", MaxLimit: 20, ResetDuration: "1w", TeamID: &teamID},
+	}}}
+	var warned []string
+	ignoreBudgetBusinessUnitIDs(data, func(format string, args ...any) { warned = append(warned, args[0].(string)) })
+
+	assert.Nil(t, data.Governance.Budgets[0].BusinessUnitID)
+	assert.Equal(t, 10.0, data.Governance.Budgets[0].MaxLimit)
+	assert.Equal(t, &teamID, data.Governance.Budgets[1].TeamID, "other owners are left alone")
+	assert.Equal(t, []string{"named"}, warned)
+
+	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
+	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
+}

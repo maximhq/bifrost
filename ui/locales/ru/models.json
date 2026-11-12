@@ -263,7 +263,11 @@
 			"vertexEndpoint": "ID или URL эндпоинта Vertex",
 			"vertexEndpointHint": "Указанный выше Model ID — это имя модели, передаваемое в теле запроса. Используются учётные данные Google из этого ключа. Поддерживаются Chat Completions и преобразование Responses в Chat.",
 			"vertexEndpointPlaceholder": "2222222222 или https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Укажите ID эндпоинта Vertex или вставьте URL поддерживаемого эндпоинта."
+			"vertexEndpointInvalid": "Укажите ID эндпоинта Vertex или вставьте URL поддерживаемого эндпоинта.",
+			"patternBadge": "Шаблон",
+			"patternHint": "Начните имя с regex:, чтобы охватить много моделей. В ID модели $1 подставляет первую группу захвата: regex:(claude-.*) с global.anthropic.$1 отправляет claude-opus-5 как global.anthropic.claude-opus-5. Разрешённые модели ключа тоже должны включать эти имена.",
+			"canonicalPatternPlaceholder": "например $1",
+			"canonicalModelNamePatternHint": "Каноническое имя для маршрутизации и расчёта стоимости. Можно использовать группы захвата, например $1. Если пусто, используется развёрнутый model ID."
 		},
 		"saveChanges": "Сохранить изменения",
 		"saving": "Сохранение…",
@@ -747,6 +751,7 @@
 			"projectIdOptional": "Project ID (необязательно)",
 			"mantleProjectHelp": "Ограничивает inference и список моделей конкретным проектом Bedrock (заголовок OpenAI-Project / anthropic-workspace-id). Пусто — проект аккаунта по умолчанию.",
 			"oauthM2mHelp": "Databricks рекомендует OAuth machine-to-machine для production. Токены выпускаются из OIDC endpoint workspace и обновляются автоматически.",
+			"databricksScopesHelp": "Оставьте пустым, чтобы запросить all-apis. Если OAuth-секрет сервисного принципала создан со scopes, укажите их здесь. Databricks отклоняет запрос токена, в котором есть scope, отсутствующий у секрета. Для Model Serving нужен model-serving, для Unity AI Gateway нужен ai-gateway, для decisions нужен ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1377,6 +1382,8 @@
 		"deletedAfterExpiry": "· автоматически удаляется после истечения срока",
 		"viewSpend": "Посмотреть расходы",
 		"noAgentsGranted": "Доступ к агентам не предоставлен",
+		"virtualMcps": "Виртуальные MCP",
+		"noVirtualMcpsAssigned": "Виртуальные MCP не назначены",
 		"fiscalYearStarts": "Начало ФГ: {{month}}",
 		"assignedUserEmail": "Электронная почта назначенного пользователя",
 		"leavesGoverningOwner": "Провайдеры, бюджеты и лимит запросов этого ключа унаследованы от профиля доступа владельца; собственных настроек у ключа нет.",
@@ -2207,7 +2214,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Сбросить использование бюджета?",
-		"description": "Вы изменили сумму бюджета или частоту сброса для этого объекта: {{owner}}. Сбросьте текущее использование до 0 или сохраните существующие счётчики. В любом случае окно сброса сохраняет текущие начало и конец."
+		"description": "Вы изменили бюджеты этого {{owner}}. Сброс обнуляет текущее использование каждого бюджета. Сохранение оставляет текущие счётчики. В обоих случаях окно сброса сохраняет текущие начало и конец."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Поиск моделей решений…",

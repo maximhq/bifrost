@@ -7212,3 +7212,30 @@ func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) 
 	require.NoError(t, err)
 	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
 }
+
+// TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite pins that a budget a business unit
+// holds stays the unit's when a write names no owner, as an edit of the budget's limits alone does.
+// Saving that row as given would null the owner, and the unit would silently stop being capped. A
+// write that names an owner is an ownership change and wins.
+func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	buID := "bu-1"
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 100, ResetDuration: "1M", BusinessUnitID: &buID}))
+
+	// The file's edit: a new limit, no owner named.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M"}))
+	edited, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, edited.MaxLimit)
+	require.NotNil(t, edited.BusinessUnitID, "an ownerless write must not detach the budget from its business unit")
+	assert.Equal(t, buID, *edited.BusinessUnitID)
+
+	// Another unit named outright takes it.
+	other := "bu-2"
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M", BusinessUnitID: &other}))
+	moved, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	require.NotNil(t, moved.BusinessUnitID)
+	assert.Equal(t, other, *moved.BusinessUnitID)
+}
