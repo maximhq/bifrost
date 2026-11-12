@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -203,10 +204,8 @@ type complexitySuggestionJobMeta struct {
 	Message       string `json:"message,omitempty"`
 }
 
-// suggestionRouter is one router suggestions are made for: its settings and
-// the classifier serving its phrase bank. A gateway has one today, the
-// default router, built from the plugin's own config and classifier; several
-// routers add entries here and nothing else in this file changes.
+// suggestionRouter is one model router suggestions are made for: its settings
+// and the classifier serving its phrase bank, which captures its requests.
 type suggestionRouter struct {
 	id         string
 	config     *complexity.AnalyzerConfig
@@ -220,19 +219,32 @@ var ErrUnknownComplexityRouter = errors.New("no such model router")
 // ErrComplexitySuggestionWindow is a run window outside what is kept.
 var ErrComplexitySuggestionWindow = errors.New("the run window must be at least one second and no longer than the suggestions lookback")
 
-// suggestionRouters lists the routers suggestions are made for.
+// suggestionRouters lists the routers suggestions are made for: every model
+// router this node serves, by ID. Whether one has suggestions on, and is
+// semantic, is checked where it matters (a run, the schedule), so a router
+// with them off still lists what it had. The Complexity Router page's config
+// is not one: it captures nothing.
 func (p *RoutingPlugin) suggestionRouters() []suggestionRouter {
-	return []suggestionRouter{{id: complexity.DefaultRouterID, config: p.complexityConfig.Load(), classifier: p.semanticClassifier}}
+	routers := p.modelRouters()
+	out := make([]suggestionRouter, 0, len(routers))
+	for _, rt := range routers {
+		out = append(out, suggestionRouterOf(rt))
+	}
+	slices.SortFunc(out, func(a, b suggestionRouter) int { return strings.Compare(a.id, b.id) })
+	return out
 }
 
 // suggestionRouter finds one router by ID.
 func (p *RoutingPlugin) suggestionRouter(id string) (suggestionRouter, bool) {
-	for _, r := range p.suggestionRouters() {
-		if r.id == id {
-			return r, true
-		}
+	rt, ok := p.modelRouter(id)
+	if !ok {
+		return suggestionRouter{}, false
 	}
-	return suggestionRouter{}, false
+	return suggestionRouterOf(rt), true
+}
+
+func suggestionRouterOf(rt *modelRouterRuntime) suggestionRouter {
+	return suggestionRouter{id: rt.id, config: rt.config.Load(), classifier: rt.semantic}
 }
 
 // complexitySuggestionPartition keeps one router's runs in order and apart
