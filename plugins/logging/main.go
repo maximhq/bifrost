@@ -350,6 +350,12 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 		agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
 		entry.AgentCorrelationID = &agentCorrelationID
 	}
+	if link := traceLinkFromContext(ctx, nil); link.TraceID != "" {
+		entry.TraceID = &link.TraceID
+		if link.ParentSpanID != "" {
+			entry.ParentSpanID = &link.ParentSpanID
+		}
+	}
 }
 
 // applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
@@ -1279,6 +1285,10 @@ type InitialLogData struct {
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
 	ClientIP               string // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
+
+	// TraceLink is the pushed trace this request says it belongs to, with the prompt fingerprint
+	// the trace matcher falls back on. Nil fields are left NULL on the row.
+	TraceLink traceLinkData
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -2065,6 +2075,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	initialData.UserAgent = userAgentFromContext(ctx)
 	initialData.ClientIP = p.clientIPFromContext(ctx)
 	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
+	initialData.TraceLink = traceLinkFromContext(ctx, initialData)
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
@@ -2649,6 +2660,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if result != nil {
 				applyUpstreamOverheadToEntry(entry, result.GetExtraFields())
 				applyServedModel(entry, result)
+				applyProviderResponseID(entry, result)
 			}
 		}
 		if entry.ErrorDetailsParsed != nil {
@@ -2716,6 +2728,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			p.applyNonStreamingOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
 		}
 		applyServedModel(entry, result)
+		applyProviderResponseID(entry, result)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = logStatusError
