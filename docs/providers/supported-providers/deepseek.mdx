@@ -81,13 +81,15 @@ HTTP(S), at most 8192 characters, and must not embed credentials.
 
 <Pricing>
 Search and Fetch are billed at a flat **$0.75 per 1,000 successful requests** each,
-counted per request rather than per result, with nothing billed on failure or an empty
-result set. Bifrost reports that cost on each response, so it appears in logs and
-governance budgets without a model catalog entry. Search and Fetch are rate limited
-**separately at 5 QPS per DeepSeek account, across all keys**, and Fetch also answers a `429`
-when it exceeds a target domain's own QPS limit, so a `429` on either route means the caller
-was throttled upstream — by the account cap, or on Fetch by that domain — and a `402` means
-the account needs a top-up rather than a retry.
+counted per request rather than per result. Only a request that produces a result is
+billable, so a failure, an empty search result set, or a Fetch that returns no page
+content is not billed. Bifrost reports that cost on each response, so it appears in
+logs and governance budgets without a model catalog entry. Search and Fetch are rate
+limited **separately, at 100 QPS for Search and 25 QPS for Fetch per DeepSeek account,
+across all keys**, and Fetch also answers a `429` when it exceeds a target domain's own
+QPS limit, so a `429` on either route means the caller was throttled upstream — by the
+account cap, or on Fetch by that domain — and a `402` means the account needs a top-up
+rather than a retry.
 </Pricing>
 
 ## Setup & Configuration

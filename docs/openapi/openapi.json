@@ -2285,7 +2285,7 @@
             }
           },
           "429": {
-            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 above its 5 QPS per-account search cap.",
+            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 above its 100 QPS per-account search cap.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2322,7 +2322,7 @@
       "post": {
         "operationId": "fetchPage",
         "summary": "Fetch a page as Markdown",
-        "description": "Retrieves a single page through the routed provider and returns its content as\nMarkdown. Priced per request from the cost the provider reports when it reports one,\nand from the model catalog otherwise.\n\n`model` selects the provider, on the same rule as Search: a provider name alone routes\nto that provider, and a provider/model pair also names a model a virtual key's allowlist\nis held to. Omit it to route to DeepSeek.\n\nThe page is read by the provider's servers, not by Bifrost, so the gateway's\nprivate-network safeguards do not apply. A URL rejected by the provider's security\npolicy surfaces as a 403.\n",
+        "description": "Retrieves a single page through the routed provider and returns its content as\nMarkdown. Priced per request from the cost the provider reports when it reports one,\nand from the model catalog otherwise. So a fetch that returns no page content is\nfree only where the provider bills nothing for it and reports no cost, as DeepSeek\ndoes; a provider that reports a cost for it is charged it.\n\n`model` selects the provider, on the same rule as Search: a provider name alone routes\nto that provider, and a provider/model pair also names a model a virtual key's allowlist\nis held to. Omit it to route to DeepSeek.\n\nThe page is read by the provider's servers, not by Bifrost, so the gateway's\nprivate-network safeguards do not apply. A URL rejected by the provider's security\npolicy surfaces as a 403.\n",
         "tags": [
           "Web Tools"
         ],
@@ -2408,7 +2408,7 @@
             }
           },
           "429": {
-            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 for its 5 QPS per-account Fetch cap and for a target domain's own limit.",
+            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 for its 25 QPS per-account Fetch cap and for a target domain's own limit.",
             "content": {
               "application/json": {
                 "schema": {

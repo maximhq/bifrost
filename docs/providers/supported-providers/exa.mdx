@@ -70,6 +70,13 @@ a page it could not read with a per-URL status rather than an HTTP error; Bifros
 into an error carrying Exa's status code (a `404` for a page Exa could not find) and its tag
 as the error type.
 
+<Note>
+Bifrost asks Exa for page text with an explicit character bound: 20,000 characters per
+search result with `include_content`, and 1,000,000 characters for a fetched page. A caller
+that needs different bounds can supply Exa's `contents` (Search) or `text` (Fetch) option
+through the extra-params passthrough described above.
+</Note>
+
 <Pricing>
 Exa reports the price of every call in `costDollars.total`, and Bifrost uses that figure as
 the call's cost, so it appears in logs and governance budgets as Exa bills it. Page text

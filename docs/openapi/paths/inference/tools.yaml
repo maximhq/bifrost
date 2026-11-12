@@ -45,7 +45,7 @@ tools-search:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '429':
         description: The provider's rate limit was exceeded. DeepSeek answers 429 above
-          its 5 QPS per-account search cap.
+          its 100 QPS per-account search cap.
         content:
           application/json:
             schema:
@@ -64,7 +64,9 @@ tools-fetch:
     description: |
       Retrieves a single page through the routed provider and returns its content as
       Markdown. Priced per request from the cost the provider reports when it reports one,
-      and from the model catalog otherwise.
+      and from the model catalog otherwise. So a fetch that returns no page content is
+      free only where the provider bills nothing for it and reports no cost, as DeepSeek
+      does; a provider that reports a cost for it is charged it.
 
       `model` selects the provider, on the same rule as Search: a provider name alone routes
       to that provider, and a provider/model pair also names a model a virtual key's allowlist
@@ -123,7 +125,7 @@ tools-fetch:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '429':
         description: The provider's rate limit was exceeded. DeepSeek answers 429 for its
-          5 QPS per-account Fetch cap and for a target domain's own limit.
+          25 QPS per-account Fetch cap and for a target domain's own limit.
         content:
           application/json:
             schema:
