@@ -46,12 +46,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { A2APayloadView } from "./a2aPayloadView";
-import {
-	A2AConversationHistory,
-	A2AOperationConversation,
-	isA2AConversationOperation,
-	isA2APushConversationOperation,
-} from "./agentContextDetailsSheet";
+import { A2AOperationConversation, isA2AConversationOperation, isA2APushConversationOperation } from "./agentContextDetailsSheet";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { getLocale } from "@/lib/i18n";
@@ -1145,7 +1140,6 @@ export function AgentLogDetailSheet({
 						{hasConversation && conversationLog && (
 							<TabsContent value="conversation" className="space-y-4 px-1 py-2">
 								<A2AOperationConversation log={conversationLog} allowPushConversation={isPushConversationOperation} />
-								<A2AConversationHistory responseBody={conversationLog.response_body} />
 							</TabsContent>
 						)}
 
