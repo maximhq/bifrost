@@ -1501,6 +1501,7 @@ test.describe("DeepSeek tools request types", () => {
             responses_input_history: [],
           }],
           pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          has_logs: true,
           stats: {
             total_requests: 1,
             success_rate: 100,
@@ -1511,7 +1512,6 @@ test.describe("DeepSeek tools request types", () => {
             prompt_tokens: 0,
             completion_tokens: 0,
             total_cost: 0.00075,
-            has_logs: true,
           },
         } });
       });
