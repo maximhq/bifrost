@@ -580,6 +580,32 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 	}
 }
 
+// TestClientGateway_BearerRunsInsideOuterMiddlewares pins where the bearer check sits
+// in the inference chain: after the outer middlewares (tracing, recovery), so its own
+// rejections are traced and a panic in it is recovered, and before the auth
+// middlewares, which must see the identity it resolved rather than the raw token.
+func TestClientGateway_BearerRunsInsideOuterMiddlewares(t *testing.T) {
+	h, _, _, _ := newClaudeCodeGateway(t, true)
+	var outerSaw, authSaw bool
+	outer := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { outerSaw = true; next(ctx) }
+	}
+	auth := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { authSaw = true; next(ctx) }
+	}
+	r := router.New()
+	h.ClientGatewayHandler.RegisterInferenceRoutes(r, nil, nil, 1, outer, auth)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(claudeCodeGatewayPathPrefix + "/v1/messages")
+	r.Handler(ctx)
+
+	assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.True(t, outerSaw, "the outer middlewares must see a request the gateway rejects, or its 401s go untraced")
+	assert.False(t, authSaw, "the auth middlewares run after the bearer check, so a rejected request never reaches them")
+}
+
 func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {
 	h, _, _, _ := newClaudeCodeGateway(t, false)
 	for i := 0; i < clientGatewayDeviceAuthorizationLimit; i++ {
