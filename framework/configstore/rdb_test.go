@@ -2758,6 +2758,29 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+// TestUpdateClientConfig_MCPAllowFreeCallsWhenBudgetExhaustedRoundTrip pins that the setting persists
+// both ways and changes the config hash when on.
+func TestUpdateClientConfig_MCPAllowFreeCallsWhenBudgetExhaustedRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	on := off
+	on.MCPAllowFreeCallsWhenBudgetExhausted = true
+	for _, cfg := range []ClientConfig{on, off} {
+		require.NoError(t, store.UpdateClientConfig(ctx, &cfg))
+		result, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, cfg.MCPAllowFreeCallsWhenBudgetExhausted, result.MCPAllowFreeCallsWhenBudgetExhausted)
+	}
+
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, onHash)
+}
+
 // TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip pins that the two
 // access-profile user-key settings persist independently, and that only an opt-in is hashed so a
 // config written before the fields existed keeps its hash.

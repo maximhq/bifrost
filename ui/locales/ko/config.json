@@ -375,6 +375,8 @@
 		"refreshIntervalHelp": "MCP 서버의 도구 목록을 새로 고치는 빈도이에요. 기본값인 10분을 사용하려면 0으로 설정해요.",
 		"disableAutoToolInjectionHelp": "활성화되면 MCP 도구가 모든 요청에 자동으로 포함되지 않어요. 도구는 요청 헤더(<code0>x-bf-mcp-include-tools</code0>)를 통해 명시적으로 지정된 경우에만 삽입되며 여전히 가상 키 MCP 구성에서 허용되어야 해요.",
 		"tempTokenHelp": "활성화되면 사용자별 MCP OAuth 링크에 단기 범위 토큰이 포함될 수 있으므로 활성 Bifrost 대시보드 세션이 없는 사람이 흐름을 완료할 수 있어요. 일반 대시보드 인증을 요구하려면 비활성화된 상태로 유지하세요.",
+		"allowFreeCallsOverBudget": "예산 초과 시에도 무료 도구 호출 허용",
+		"allowFreeCallsOverBudgetHelp": "예산이 소진된 경우에도 비용이 없는 MCP 도구 호출을 실행할 수 있습니다.",
 		"bindingHelp": "VFS에 도구가 노출되는 방식: 서버 수준(서버당 모든 도구) 또는 도구 수준(개별 도구).",
 		"externalClientUrlHelp": "역방향 프록시 뒤에서 실행되는 경우 Bifrost의 공개 기반 URL을 재정의해요. <b0>수신 <code1>Host</code1> 헤더에서 URL</b0>를 파생하려면 공백으로 남겨두세요. <code2>redirect_uri</code2> Bifrost가 MCP 서버에 대한 클라이언트 역할을 할 때 업스트림 OAuth 공급자에 등록하는 데 사용됩니다(예: Notion 또는 Jira가 브라우저를 <code3><URL>/api/oauth/callback</code3> 로그인 후). env var 구문을 지원합니다(예: <code4>env.BIFROST_EXTERNAL_URL</code4>). URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요.",
 		"externalClientUrlWarningHelp": "업스트림 OAuth 공급자는 <code0>redirect_uri</code0>를 처음에 등록된 항목에 잠그므로 이미 OAuth를 완료한 MCP 클라이언트는 <em1>\"잘못된 리디렉션 URI\"</em1>와 함께 실패해요. 복구하려면 영향을 받은 MCP 서버에 대해 저장된 OAuth 클라이언트 자격 증명을 지우고 Bifrost가 새 URL로 동적 클라이언트 등록을 다시 실행하도록 다시 인증하세요.",

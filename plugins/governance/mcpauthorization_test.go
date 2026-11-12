@@ -1,9 +1,11 @@
 package governance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,22 +95,36 @@ func TestMCPExecutionAuthorizationRejectsForgedInjectedMarker(t *testing.T) {
 }
 
 // BenchmarkPreMCPHook measures governing one MCP call: a tool call, the baseline, beside the prompt
-// and resource reads now governed too (identity and limits, no per-tool permit).
+// and resource reads now governed too (identity and limits, no per-tool permit), and a tool call with
+// client.mcp_allow_free_calls_when_budget_exhausted on, which adds the price lookup.
 func BenchmarkPreMCPHook(b *testing.B) {
 	p := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	freeCallsOn := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	freeCallsOn.mcpAllowFreeCallsWhenBudgetExhaustedFn = func() bool { return true }
+	// A catalog entry for the benchmarked tool, so the free-call check takes the price lookup.
+	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+		"local/read": {Server: "local", ToolName: "read", CostPerExecution: 0},
+	}}, NewMockLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	freeCallsOn.mcpCatalog = catalog
 	tool := "local-read"
+	toolCall := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}
 	for _, tc := range []struct {
-		name string
-		req  *schemas.BifrostMCPRequest
+		name   string
+		plugin *GovernancePlugin
+		req    *schemas.BifrostMCPRequest
 	}{
-		{"tool-call", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}},
-		{"prompt-get", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "local", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "local-review"}}},
-		{"resource-read", &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "local", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+		{"tool-call", p, toolCall},
+		{"prompt-get", p, &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "local", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "local-review"}}},
+		{"resource-read", p, &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "local", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"}}},
+		{"tool-call-free-calls-on", freeCallsOn, toolCall},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, _, err := p.PreMCPHook(presentCtx(mcpTestVKValue), tc.req); err != nil {
+				if _, _, err := tc.plugin.PreMCPHook(presentCtx(mcpTestVKValue), tc.req); err != nil {
 					b.Fatal(err)
 				}
 			}

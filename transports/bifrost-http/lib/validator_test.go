@@ -3024,6 +3024,7 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_tool_sync_interval",
 		"mcp_disable_auto_tool_inject",
 		"mcp_enable_temp_token_auth",
+		"mcp_allow_free_calls_when_budget_exhausted",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -3044,7 +3045,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_code_mode_binding_level": "server",
 				"mcp_tool_sync_interval": 10,
 				"mcp_disable_auto_tool_inject": false,
-				"mcp_enable_temp_token_auth": true
+				"mcp_enable_temp_token_auth": true,
+				"mcp_allow_free_calls_when_budget_exhausted": true
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {

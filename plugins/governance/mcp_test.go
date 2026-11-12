@@ -978,6 +978,93 @@ func TestGetBudgetAndRateLimitStatus_IgnoresMCPRequestLimits(t *testing.T) {
 	assert.InDelta(t, 50.0, status.RateLimitRequestPercentUsed, 0.001)
 }
 
+// freeCallPlugin builds a plugin whose key may run sentry's read_file, list and search tools and
+// answers to one MCP budget of 10 with the given spend and one MCP request limit with the given usage
+// of 5 an hour. The MCP catalog prices sentry's search at $0.50 and read_file at $0, and has no entry
+// for list; withCatalog false leaves the plugin without a catalog. allowFree is the live client
+// setting, nil when the transport passed none.
+func freeCallPlugin(t *testing.T, spent float64, requests int64, withCatalog bool, allowFree func() bool) *GovernancePlugin {
+	t.Helper()
+	logger := NewMockLogger()
+	vk := buildVKForMCPStamping([]string{"read_file", "list", "search"})
+	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, nil, nil)
+	budget := buildBudgetWithUsage("budget-mcp", 10, spent, "1d")
+	budget.Scope = configstoreTables.LimitScopeMCP
+	budget.ModelConfigID = &mc.ID
+	mc.Budgets = []configstoreTables.TableBudget{*budget}
+	rule := buildRequestLimit("rule-mcp", 5, requests, "1h", configstoreTables.LimitScopeMCP)
+	rule.ModelConfigID = &mc.ID
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+		RateLimits:   []configstoreTables.TableRateLimit{rule},
+	}, nil, nil)
+	require.NoError(t, err)
+	var catalog *mcpcatalog.MCPCatalog
+	if withCatalog {
+		catalog, err = mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+			"sentry/search":    {Server: "sentry", ToolName: "search", CostPerExecution: 0.5},
+			"sentry/read_file": {Server: "sentry", ToolName: "read_file", CostPerExecution: 0},
+		}}, logger)
+		require.NoError(t, err)
+	}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false), MCPAllowFreeCallsWhenBudgetExhausted: allowFree}, logger, store, nil, nil, catalog, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	return plugin
+}
+
+// TestPreMCPHook_FreeCallsUnderAnExhaustedBudget pins client.mcp_allow_free_calls_when_budget_exhausted:
+// off (the default), an exhausted budget refuses every MCP call; on, it refuses only the calls that
+// would be charged, priced by the same catalog lookup PostMCPHook charges with. Rate and request
+// limits refuse a free call either way.
+func TestPreMCPHook_FreeCallsUnderAnExhaustedBudget(t *testing.T) {
+	on := func() bool { return true }
+	off := func() bool { return false }
+	prompt := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "sentry", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "sentry-triage"}}
+	resource := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeReadResource, ClientName: "sentry", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "sentry://issues/1"}}
+	for _, tc := range []struct {
+		name        string
+		allowFree   func() bool
+		spent       float64
+		requests    int64
+		withCatalog bool
+		req         *schemas.BifrostMCPRequest
+		status      int // 0 when the call is allowed
+	}{
+		{"default config refuses a free call", nil, 10, 0, true, mcpToolCallRequest("sentry", "sentry-read_file"), 402},
+		{"setting off refuses a free call", off, 10, 0, true, mcpToolCallRequest("sentry", "sentry-read_file"), 402},
+		{"setting off refuses a free read", off, 10, 0, true, prompt, 402},
+		{"zero-priced tool runs", on, 10, 0, true, mcpToolCallRequest("sentry", "sentry-read_file"), 0},
+		{"unpriced tool runs", on, 10, 0, true, mcpToolCallRequest("sentry", "sentry-list"), 0},
+		{"prompt read runs", on, 10, 0, true, prompt, 0},
+		{"resource read runs", on, 10, 0, true, resource, 0},
+		{"codemode meta-tool runs", on, 10, 0, true, mcpToolCall("listToolFiles"), 0},
+		{"any tool runs without a catalog", on, 10, 0, false, mcpToolCallRequest("sentry", "sentry-search"), 0},
+		{"priced tool is refused", on, 10, 0, true, mcpToolCallRequest("sentry", "sentry-search"), 402},
+		{"tool of an unresolved client is refused", on, 10, 0, true, mcpToolCall("sentry-read_file"), 402},
+		{"priced tool runs within budget", on, 5, 0, true, mcpToolCallRequest("sentry", "sentry-search"), 0},
+		{"spent request limit refuses a free call", on, 10, 5, true, mcpToolCallRequest("sentry", "sentry-read_file"), 429},
+		{"spent request limit refuses a free read", on, 0, 5, true, resource, 429},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := freeCallPlugin(t, tc.spent, tc.requests, tc.withCatalog, tc.allowFree)
+			_, shortCircuit, err := plugin.PreMCPHook(presentCtx(mcpTestVKValue), tc.req)
+			require.NoError(t, err)
+			if tc.status == 0 {
+				if shortCircuit != nil {
+					t.Fatalf("call refused: %+v", shortCircuit.Error.Error)
+				}
+				return
+			}
+			require.NotNil(t, shortCircuit, "call allowed")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, tc.status, *shortCircuit.Error.StatusCode, shortCircuit.Error.Error.Message)
+		})
+	}
+}
+
 // BenchmarkRateLimitsForRequestKind measures settling a key's rate limits with and without request
 // limits, over the whole hierarchy an MCP tool execution answers to, and the filter alone when nothing
 // is dropped.

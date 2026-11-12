@@ -123,6 +123,7 @@ type ClientConfig struct {
 	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
+	MCPAllowFreeCallsWhenBudgetExhausted    bool                                  `json:"mcp_allow_free_calls_when_budget_exhausted"`    // When true, MCP calls that cost nothing skip the budget check; rate and request limits still apply
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                       int                                   `json:"async_job_result_ttl"`                          // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                         []string                              `json:"required_headers,omitempty"`                    // Headers that must be present on every request (case-insensitive)
@@ -321,6 +322,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPEnableTempTokenAuth {
 		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPAllowFreeCallsWhenBudgetExhausted {
+		hash.Write([]byte("mcpAllowFreeCallsWhenBudgetExhausted:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.

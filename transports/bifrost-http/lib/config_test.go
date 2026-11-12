@@ -21995,6 +21995,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
 	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
 	require.Equal(t, false, cc.MCPEnableTempTokenAuth, "MCPEnableTempTokenAuth should default to false")
+	require.Equal(t, false, cc.MCPAllowFreeCallsWhenBudgetExhausted, "MCPAllowFreeCallsWhenBudgetExhausted should default to false")
 	require.Equal(t, false, cc.Compat.ConvertTextToChat, "Compat.ConvertTextToChat should default to false")
 	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
 	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
@@ -22561,6 +22562,28 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 	// Verify zero-value fields get defaults
 	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,
 		"MaxRequestBodySizeMB should get default when zero in file")
+}
+
+// TestLoadConfig_MCPAllowFreeCallsWhenBudgetExhausted pins that client.mcp_allow_free_calls_when_budget_exhausted
+// in config.json reaches the live getter governance reads and the config store.
+func TestLoadConfig_MCPAllowFreeCallsWhenBudgetExhausted(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Client = &configstore.ClientConfig{EnableLogging: new(true), MCPAllowFreeCallsWhenBudgetExhausted: true}
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	require.True(t, config.ShouldAllowFreeMCPCallsWhenBudgetExhausted())
+	stored, err := config.ConfigStore.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, stored.MCPAllowFreeCallsWhenBudgetExhausted)
 }
 
 // =============================================================================

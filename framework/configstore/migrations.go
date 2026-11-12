@@ -594,6 +594,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_scope_column"}, run: migrationAddBudgetScopeColumn},
 	{IDs: []string{"split_request_limits_from_rate_limits"}, run: migrationSplitRequestLimitsFromRateLimits},
 	{IDs: []string{"add_rate_limit_owner_indexes"}, run: migrationAddRateLimitOwnerIndexes},
+	{IDs: []string{"add_client_config_mcp_allow_free_calls_when_budget_exhausted_column"}, run: migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17502,6 +17503,33 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn adds
+// mcp_allow_free_calls_when_budget_exhausted to config_client. Existing rows default to false, so an
+// exhausted budget keeps refusing every MCP call, as it did before the setting existed.
+func migrationAddClientConfigMCPAllowFreeCallsWhenBudgetExhaustedColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_allow_free_calls_when_budget_exhausted_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_allow_free_calls_when_budget_exhausted")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_allow_free_calls_when_budget_exhausted")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

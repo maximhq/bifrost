@@ -88,6 +88,8 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
+	// Reports the live client.mcp_allow_free_calls_when_budget_exhausted; nil means off
+	MCPAllowFreeCallsWhenBudgetExhausted func() bool `json:"-"`
 }
 
 type InMemoryStore interface {
@@ -191,7 +193,8 @@ type GovernancePlugin struct {
 	isEnterprise          bool
 	disableAutoToolInject *bool
 
-	objectOwnershipEnforcedFn func() bool
+	objectOwnershipEnforcedFn              func() bool
+	mcpAllowFreeCallsWhenBudgetExhaustedFn func() bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -258,11 +261,13 @@ func Init(
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
 	var objectOwnershipEnforcedFn func() bool
+	var mcpAllowFreeCallsWhenBudgetExhaustedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
+		mcpAllowFreeCallsWhenBudgetExhaustedFn = config.MCPAllowFreeCallsWhenBudgetExhausted
 	}
 
 	newStoreStart := time.Now()
@@ -297,7 +302,8 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 
-		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
+		objectOwnershipEnforcedFn:              objectOwnershipEnforcedFn,
+		mcpAllowFreeCallsWhenBudgetExhaustedFn: mcpAllowFreeCallsWhenBudgetExhaustedFn,
 	}
 	return plugin, nil
 }
@@ -341,11 +347,13 @@ func InitFromStore(
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
 	var objectOwnershipEnforcedFn func() bool
+	var mcpAllowFreeCallsWhenBudgetExhaustedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
+		mcpAllowFreeCallsWhenBudgetExhaustedFn = config.MCPAllowFreeCallsWhenBudgetExhausted
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -367,7 +375,8 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 
-		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
+		objectOwnershipEnforcedFn:              objectOwnershipEnforcedFn,
+		mcpAllowFreeCallsWhenBudgetExhaustedFn: mcpAllowFreeCallsWhenBudgetExhaustedFn,
 	}
 	return plugin, nil
 }
@@ -429,6 +438,36 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 // transport's getter reads under the same lock config saves hold, so a save never races a request.
 func (p *GovernancePlugin) objectOwnershipEnforced() bool {
 	return p.objectOwnershipEnforcedFn == nil || p.objectOwnershipEnforcedFn()
+}
+
+// mcpFreeCallsAllowedWhenBudgetExhausted reports client.mcp_allow_free_calls_when_budget_exhausted.
+// It is off unless configured on.
+func (p *GovernancePlugin) mcpFreeCallsAllowedWhenBudgetExhausted() bool {
+	return p.mcpAllowFreeCallsWhenBudgetExhaustedFn != nil && p.mcpAllowFreeCallsWhenBudgetExhaustedFn()
+}
+
+// mcpToolCost is what a successful call to clientName's toolName (unprefixed) is charged: its MCP
+// catalog price, or 0 when the catalog has no entry for it or there is no catalog.
+func (p *GovernancePlugin) mcpToolCost(clientName, toolName string) float64 {
+	if p.mcpCatalog == nil || clientName == "" || toolName == "" {
+		return 0
+	}
+	if pricingEntry, ok := p.mcpCatalog.GetPricingData(clientName, toolName); ok {
+		return pricingEntry.CostPerExecution
+	}
+	return 0
+}
+
+// mcpCallIsFree reports whether a call is free: PostMCPHook would charge it nothing.
+func (p *GovernancePlugin) mcpCallIsFree(req *schemas.BifrostMCPRequest, toolName string, isRead bool) bool {
+	if isRead || bifrost.IsCodemodeTool(toolName) {
+		return true
+	}
+	if req.ClientName == "" {
+		return false
+	}
+	// Client names cannot contain hyphens, so this yields the unprefixed name PostMCPHook prices by.
+	return p.mcpToolCost(req.ClientName, strings.TrimPrefix(toolName, req.ClientName+"-")) == 0
 }
 
 // HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
@@ -1805,6 +1844,10 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	evaluationRequest := &EvaluationRequest{
 		RequestType: schemas.MCPToolExecutionRequest,
 	}
+	// A call that will be charged nothing may run over an exhausted budget when the deployment allows it.
+	if p.mcpFreeCallsAllowedWhenBudgetExhausted() {
+		evaluationRequest.SkipBudgetCheck = p.mcpCallIsFree(req, toolName, isRead)
+	}
 
 	// Evaluate governance using common function
 	_, bifrostError := p.Evaluate(ctx, evaluationRequest)
@@ -1933,10 +1976,9 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 
 	// Calculate MCP tool cost from catalog if available
 	var toolCost float64
-	if success && resp != nil && p.mcpCatalog != nil && resp.ExtraFields.ClientName != "" && resp.ExtraFields.ToolName != "" {
-		// Use separate client name and tool name fields
-		if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
-			toolCost = pricingEntry.CostPerExecution
+	if success && resp != nil {
+		toolCost = p.mcpToolCost(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName)
+		if toolCost != 0 {
 			p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
 		}
 	}

@@ -433,6 +433,11 @@
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
           "default": false
         },
+        "mcp_allow_free_calls_when_budget_exhausted": {
+          "type": "boolean",
+          "description": "When true, an MCP tool call, prompt read or resource read that costs nothing (no MCP tool pricing entry, or a cost per execution of 0) is not refused by an exhausted budget. Rate limits, request limits and access rules still apply, and priced tool calls are still refused.",
+          "default": false
+        },
         "routing_chain_max_depth": {
           "type": "integer",
           "minimum": 1,

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unsafe"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -2406,4 +2408,38 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
 	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
+}
+
+// TestLoadBuiltinPluginGovernanceKeepsTheFreeMCPCallSetting: a governance config decoded from the
+// plugins API carries no callbacks (they are json:"-"), so a reload must wire the free MCP call
+// setting from the live config or free calls over budget are refused until a restart.
+func TestLoadBuiltinPluginGovernanceKeepsTheFreeMCPCallSetting(t *testing.T) {
+	SetLogger(noopTestLogger{})
+	config := &lib.Config{
+		ClientConfig:     &configstore.ClientConfig{MCPAllowFreeCallsWhenBudgetExhausted: true},
+		GovernanceConfig: &configstore.GovernanceConfig{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A map config (the plugins API) and a typed nil config both reach the plugin without callbacks.
+	for name, source := range map[string]any{"map config": map[string]any{}, "typed nil config": (*governance.Config)(nil)} {
+		t.Run(name, func(t *testing.T) {
+			config.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted = true
+			plugin, err := loadBuiltinPlugin(ctx, governance.PluginName, source, config)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = plugin.Cleanup() })
+
+			// The callback is unexported; read it in place to call it.
+			field := reflect.ValueOf(plugin).Elem().FieldByName("mcpAllowFreeCallsWhenBudgetExhaustedFn")
+			require.False(t, field.IsNil(), "the reloaded plugin has no free MCP call callback")
+			allowFree := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(func() bool)
+
+			require.True(t, allowFree(), "the setting is on")
+			config.Mu.Lock()
+			config.ClientConfig.MCPAllowFreeCallsWhenBudgetExhausted = false
+			config.Mu.Unlock()
+			require.False(t, allowFree(), "the callback follows the live setting, not the value at reload")
+		})
+	}
 }
