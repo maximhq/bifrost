@@ -399,14 +399,15 @@ func TestEmulateDecisionListOnlyDetails(t *testing.T) {
 	}
 }
 
-// TestEmulateDecisionRejectsNonTextInput pins that an image, or a part of a
-// type Bifrost does not model such as audio, is refused before the model is
-// called, since emulation sends the input as text and the model would answer
-// without reading it. The audio part is synthetic.
+// TestEmulateDecisionRejectsNonTextInput pins that an image, a file, or a part
+// of a type Bifrost does not model such as audio, is refused before the model
+// is called, since emulation sends the input as text and the model would
+// answer without reading it. The audio part is synthetic.
 func TestEmulateDecisionRejectsNonTextInput(t *testing.T) {
 	for partType, input := range map[string]string{
 		"input_image": `[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
 		"input_audio": `[{"role":"user","content":[{"type":"input_text","text":"listen"},{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]`,
+		"input_file":  `[{"role":"user","content":[{"type":"input_text","text":"read"},{"type":"input_file","url":"https://example.com/call.mp3","mime_type":"audio/mpeg"}]}]`,
 		"untyped":     `[{"role":"user","content":[{"image_url":"data:image/png;base64,AAAA"}]}]`,
 	} {
 		provider := &decisionEmulationProvider{}
