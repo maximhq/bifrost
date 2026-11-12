@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· 만료 후 자동 삭제",
 		"viewSpend": "지출 보기",
 		"noAgentsGranted": "허용된 에이전트 없음",
+		"virtualMcps": "가상 MCP",
+		"noVirtualMcpsAssigned": "할당된 가상 MCP 없음",
 		"fiscalYearStarts": "회계연도 시작 {{month}}",
 		"assignedUserEmail": "할당된 사용자 이메일",
 		"leavesGoverningOwner": "이 키의 공급자, 예산 및 요청 한도는 소유자의 액세스 프로필에서 가져왔으며, 키 자체 설정은 없습니다.",

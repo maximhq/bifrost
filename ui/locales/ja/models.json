@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· 有効期限後に自動削除",
 		"viewSpend": "支出を表示",
 		"noAgentsGranted": "付与されたエージェントはありません",
+		"virtualMcps": "仮想 MCP",
+		"noVirtualMcpsAssigned": "割り当てられた仮想 MCP はありません",
 		"fiscalYearStarts": "会計年度の開始: {{month}}",
 		"assignedUserEmail": "割り当て先ユーザーのメールアドレス",
 		"leavesGoverningOwner": "このキーのプロバイダー、予算、レート制限は所有者のアクセスプロファイルから引き継がれており、このキー固有の設定はありません。",

@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· wird nach Ablauf automatisch gelöscht",
 		"viewSpend": "Ausgaben anzeigen",
 		"noAgentsGranted": "Keine Agenten freigegeben",
+		"virtualMcps": "Virtuelle MCPs",
+		"noVirtualMcpsAssigned": "Keine virtuellen MCPs zugewiesen",
 		"fiscalYearStarts": "Geschäftsjahr beginnt {{month}}",
 		"assignedUserEmail": "E-Mail des zugewiesenen Benutzers",
 		"leavesGoverningOwner": "Die Anbieter, Budgets und Ratenlimits dieses Schlüssels stammen aus dem Zugriffsprofil des Inhabers; eigene Einstellungen hat er nicht.",

@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· 到期後自動刪除",
 		"viewSpend": "檢視花費",
 		"noAgentsGranted": "未授權任何代理",
+		"virtualMcps": "虛擬 MCP",
+		"noVirtualMcpsAssigned": "未指派虛擬 MCP",
 		"listItem": {
 			"copied": "虛擬金鑰已複製",
 			"copyAria": "複製虛擬金鑰",

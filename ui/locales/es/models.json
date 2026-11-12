@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· se elimina automáticamente tras caducar",
 		"viewSpend": "Ver gasto",
 		"noAgentsGranted": "Sin agentes autorizados",
+		"virtualMcps": "MCP virtuales",
+		"noVirtualMcpsAssigned": "No hay MCP virtuales asignados",
 		"fiscalYearStarts": "El año fiscal empieza en {{month}}",
 		"assignedUserEmail": "Correo electrónico del usuario asignado",
 		"leavesGoverningOwner": "Los proveedores, presupuestos y límites de solicitudes de esta clave proceden del perfil de acceso de su propietario; no tiene configuración propia.",

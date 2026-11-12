@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· eliminada automaticamente após a expiração",
 		"viewSpend": "Ver despesa",
 		"noAgentsGranted": "Nenhum agente autorizado",
+		"virtualMcps": "MCPs virtuais",
+		"noVirtualMcpsAssigned": "Nenhum MCP virtual atribuído",
 		"fiscalYearStarts": "Ano fiscal começa em {{month}}",
 		"assignedUserEmail": "E-mail do usuário atribuído",
 		"leavesGoverningOwner": "Os provedores, orçamentos e limite de taxa desta chave vêm do perfil de acesso do proprietário, e ela não tem configurações próprias.",
