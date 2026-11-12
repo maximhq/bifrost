@@ -306,6 +306,11 @@ func (t *TableMCPOauthToken) AfterFind(tx *gorm.DB) error {
 // introduced this struct — it does not alter or extend oauth_user_sessions,
 // this type's predecessor's table. See that migration for why the old table
 // is left in place unused.
+// MCPOauthFlowOriginHome marks a per-user sign-in started from the Home page, so
+// the OAuth callback returns a signed-in caller there. A flow with no origin
+// returns to the default page.
+const MCPOauthFlowOriginHome = "home"
+
 type TableMCPOauthFlow struct {
 	ID            string `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Flow UUID
 	MCPClientID   string `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for
@@ -332,6 +337,8 @@ type TableMCPOauthFlow struct {
 
 	Issuer                string `gorm:"type:text" json:"-"`     // Issuer the authorization response must name; "" when unknown
 	IssParameterSupported bool   `gorm:"default:false" json:"-"` // The response must carry iss (RFC 9207)
+
+	Origin string `gorm:"type:varchar(32);not null;default:''" json:"-"` // Dashboard page the sign-in started on (MCPOauthFlowOrigin*); "" returns to the default page
 
 	// Display-only relations (no DB-level FK constraint; preloaded for
 	// sessions/admin UI). "-:migration" is load-bearing, not decorative — see

@@ -4368,6 +4368,58 @@ func TestMigrationAddOAuth2RefreshTokenClientDisplayNameColumnBoundsLockWait(t *
 	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
 }
 
+// The origin column is added to an existing mcp_oauth_flows table, twice without error, and a
+// flow started before it gets "", so its callback returns to the default page.
+func TestMigrationAddMCPOauthFlowOriginColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_oauth_flows (id VARCHAR(255) PRIMARY KEY, state VARCHAR(255))").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_oauth_flows (id, state) VALUES ('existing', 'state-1')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPOauthFlowOriginColumn(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableMCPOauthFlow{}, "origin"))
+	var origin *string
+	require.NoError(t, db.Raw("SELECT origin FROM mcp_oauth_flows WHERE id = 'existing'").Scan(&origin).Error)
+	require.NotNil(t, origin)
+	assert.Equal(t, "", *origin)
+}
+
+// TestMigrationAddMCPOauthFlowOriginColumnBoundsLockWait pins that on postgres the migration
+// gives up on a held mcp_oauth_flows lock (lock_not_available, which the startup retry handles)
+// instead of queueing every OAuth callback behind it.
+func TestMigrationAddMCPOauthFlowOriginColumnBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE mcp_oauth_flows (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM mcp_oauth_flows")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPOauthFlowOriginColumn(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationWidenOAuth2ClientControlledColumns verifies the upgrade path: an
 // existing deployment whose client-controlled OAuth2 columns are still varchar
 // accepts arbitrarily long values in each once the migration has run. On
