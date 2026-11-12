@@ -746,6 +746,8 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 		// resolve its points against the caller's transcript (see promptCacheChatRequest).
 		ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		// Record our block separately so wire conversion preserves caller instructions.
+		ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
 		if req.ResponsesRequest.Params == nil {
 			req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
 		}

@@ -1065,6 +1065,27 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// xAI rejects instructions with previous_response_id. Move only the exact
+		// MCP-generated block to input; explicit caller instructions stay untouched.
+		if baseProvider == schemas.XAI && ctx != nil && req.PreviousResponseID != nil &&
+			*req.PreviousResponseID != "" && req.Instructions != nil {
+			if injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsText).(*string); ok && injected != nil && *injected != "" {
+				matched := false
+				if *req.Instructions == *injected {
+					req.Instructions = nil
+					matched = true
+				} else if caller, ok := strings.CutSuffix(*req.Instructions, "\n\n"+*injected); ok {
+					req.Instructions = &caller
+					matched = true
+				}
+				if matched {
+					req.Input.OpenAIResponsesRequestInputArray = append([]schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+						Content: &schemas.ResponsesMessageContent{ContentStr: injected},
+					}}, req.Input.OpenAIResponsesRequestInputArray...)
+				}
+			}
+		}
 		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
 		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
 			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {

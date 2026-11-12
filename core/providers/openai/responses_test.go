@@ -5681,3 +5681,105 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 		})
 	}
 }
+
+func TestToOpenAIResponsesRequest_MCPContinuation(t *testing.T) {
+	const block = "<mcp_server name=\"echo\">\nEcho politely.\n</mcp_server>"
+	for _, tc := range []struct {
+		name                           string
+		provider, base                 schemas.ModelProvider
+		previous, text, recorded, want string
+		move                           bool
+	}{
+		{"xai", schemas.XAI, "", "resp_1", block, block, "", true},
+		{"openai", schemas.OpenAI, "", "resp_1", block, block, block, false},
+		{"custom xai", "custom", schemas.XAI, "resp_1", block, block, "", true},
+		{"fallback to xai", schemas.OpenAI, schemas.XAI, "resp_1", block, block, "", true},
+		{"fallback away", schemas.XAI, schemas.OpenAI, "resp_1", block, block, block, false},
+		{"first turn", schemas.XAI, "", "", block, block, block, false},
+		{"caller only", schemas.XAI, "", "resp_1", "Caller", "", "Caller", false},
+		{"caller plus MCP", schemas.XAI, "", "resp_1", "Caller\n\n" + block, block, "Caller", true},
+		{"changed by plugin", schemas.XAI, "", "resp_1", block + " changed", block, block + " changed", false},
+		{"no provenance", schemas.XAI, "", "resp_1", block, "", block, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+			}
+			if tc.recorded != "" {
+				ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, schemas.Ptr(tc.recorded))
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: "grok-4", Input: []schemas.ResponsesMessage{
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Caller system")}},
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Continue")}},
+			}, Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr(tc.previous), Instructions: schemas.Ptr(tc.text)}}
+			before, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			got := ToOpenAIResponsesRequest(ctx, req)
+			require.NotNil(t, got)
+			wire, err := sonic.Marshal(got)
+			require.NoError(t, err)
+			var payload map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wire, &payload))
+			if tc.want == "" {
+				require.NotContains(t, payload, "instructions")
+			} else {
+				var v string
+				require.NoError(t, json.Unmarshal(payload["instructions"], &v))
+				require.Equal(t, tc.want, v)
+			}
+			messages := got.Input.OpenAIResponsesRequestInputArray
+			if tc.move {
+				require.Len(t, messages, 3)
+				require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *messages[0].Role)
+				require.Equal(t, block, *messages[0].Content.ContentStr)
+				messages = messages[1:]
+			} else {
+				require.Len(t, messages, 2)
+			}
+			require.Equal(t, "Caller system", *messages[0].Content.ContentStr)
+			after, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after))
+		})
+	}
+}
+
+func TestToOpenAIResponsesRequest_MCPContinuationInputShapes(t *testing.T) {
+	for _, input := range []string{`"Continue"`, `[]`, `[{"role":"user","content":[{"type":"input_text","text":"Continue"}]}]`} {
+		t.Run(input, func(t *testing.T) {
+			var native OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(`{"model":"grok-4","input":`+input+`,"previous_response_id":"resp_1"}`), &native))
+			req := native.ToBifrostResponsesRequest(nil)
+			req.Provider = schemas.XAI
+			req.Params.Instructions = schemas.Ptr("MCP guidance")
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, schemas.Ptr("MCP guidance"))
+			if req.Input == nil {
+				require.Nil(t, ToOpenAIResponsesRequest(ctx, req))
+				return
+			}
+			got := ToOpenAIResponsesRequest(ctx, req)
+			require.NotNil(t, got)
+			require.Nil(t, got.Instructions)
+			require.Len(t, got.Input.OpenAIResponsesRequestInputArray, len(req.Input)+1)
+			require.Equal(t, "MCP guidance", *got.Input.OpenAIResponsesRequestInputArray[0].Content.ContentStr)
+		})
+	}
+}
+
+func BenchmarkToOpenAIResponsesRequest_MCPContinuation(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.XAI, schemas.OpenAI} {
+		b.Run(string(provider), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			block := "MCP guidance"
+			ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &block)
+			req := &schemas.BifrostResponsesRequest{Provider: provider, Model: "grok-4", Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Continue")}}}, Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("resp_1"), Instructions: &block}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ToOpenAIResponsesRequest(ctx, req)
+			}
+		})
+	}
+}

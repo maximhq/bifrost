@@ -318427,6 +318427,125 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. xAI MCP instructions survive stateful Responses continuations (xai-mcp-continuation) (#9614)",
+      "description": "Requires sse_mcp fixture with nonempty initialize instructions and xAI profile send_back_raw_request=true. Uses paid live provider calls; not run as part of offline unit verification. Explicit caller instructions are intentionally absent. Streaming assertions validate events, not raw wire.",
+      "item": [
+        {
+          "name": "xAI MCP stateful initial (xai-mcp-continuation) #9614",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('h341PreviousResponseId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xAI continuation succeeds', function () { pm.expect(pm.response.code).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('Initial response completes and records state', function () { pm.expect(body.status).to.eql('completed'); pm.expect(body.id).to.be.a('string').and.not.empty; pm.collectionVariables.set('h341PreviousResponseId', body.id); });",
+                  "pm.test('MCP fixture instructions reached initial wire request', function () { var raw = (body.extra_fields || {}).raw_request; if (typeof raw === 'string') raw = JSON.parse(raw); pm.expect(raw).to.be.an('object'); pm.expect(raw.instructions).to.include('sse_mcp'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4\",\n  \"input\": \"Reply with ready.\",\n  \"tool_choice\": \"none\",\n  \"max_output_tokens\": 1024,\n  \"store\": true\n}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "xAI MCP stateful continuation (xai-mcp-continuation) #9614",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xAI continuation succeeds', function () { pm.expect(pm.response.code).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('Continuation completes', function () { pm.expect(body.status).to.eql('completed'); });",
+                  "pm.test('MCP guidance moves to input, not instructions', function () { var raw = (body.extra_fields || {}).raw_request; if (typeof raw === 'string') raw = JSON.parse(raw); pm.expect(raw).to.be.an('object'); pm.expect(raw).not.to.have.property('instructions'); pm.expect(raw.input[0].role).to.eql('system'); pm.expect(JSON.stringify(raw.input[0].content)).to.include('sse_mcp'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4\",\n  \"input\": \"Reply with ready.\",\n  \"tool_choice\": \"none\",\n  \"max_output_tokens\": 1024,\n  \"store\": true,\n  \"previous_response_id\": \"{{h341PreviousResponseId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        },
+        {
+          "name": "xAI MCP stateful stream continuation (xai-mcp-continuation) #9614",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xAI continuation succeeds', function () { pm.expect(pm.response.code).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').map(function (line) { return line.trimEnd(); }).filter(function (line) { return line.startsWith('data: ') && line !== 'data: [DONE]'; }).map(function (line) { return JSON.parse(line.slice(6)); });",
+                  "pm.test('OpenAI-compatible continuation streams to completion without error', function () { pm.expect(events.some(function (e) { return e.type === 'error' || e.type === 'response.failed'; })).to.eql(false); pm.expect(events.some(function (e) { return e.type === 'response.completed'; })).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4\",\n  \"input\": \"Reply with ready.\",\n  \"tool_choice\": \"none\",\n  \"max_output_tokens\": 1024,\n  \"store\": true,\n  \"previous_response_id\": \"{{h341PreviousResponseId}}\",\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/openai/v1/responses"
+          }
+        }
+      ]
     }
   ]
 }

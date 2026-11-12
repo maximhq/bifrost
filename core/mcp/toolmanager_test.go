@@ -1930,3 +1930,17 @@ func TestGetToolPerClient_AppOnlyToolsOfPerUserClients(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only callable from an MCP App")
 }
+
+func TestParseAndAddTools_ResponsesRecordsInstructions(t *testing.T) {
+	for _, kind := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
+		t.Run(string(kind), func(t *testing.T) {
+			m := newInstructionsToolsManager()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostRequest{RequestType: kind, ResponsesRequest: &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Instructions: schemas.Ptr("Caller")}}}
+			m.ParseAndAddToolsToRequest(ctx, req)
+			block, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsText).(*string)
+			require.True(t, ok)
+			require.Equal(t, "<mcp_server name=\"test-client\">\nEcho politely.\n</mcp_server>", *block)
+		})
+	}
+}
