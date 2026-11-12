@@ -1297,6 +1297,32 @@ paths:
   /api/prompt-repo/sessions/{id}/commit:
     $ref: "./paths/management/prompts.yaml#/sessions-commit"
 
+  # Evaluators
+  /api/evals/evaluators:
+    $ref: "./paths/management/evals.yaml#/evaluators"
+  /api/evals/evaluators/validate:
+    $ref: "./paths/management/evals.yaml#/evaluators-validate"
+  /api/evals/evaluators/execute:
+    $ref: "./paths/management/evals.yaml#/evaluators-execute-draft"
+  /api/evals/evaluators/{id}:
+    $ref: "./paths/management/evals.yaml#/evaluators-by-id"
+  /api/evals/evaluators/{id}/duplicate:
+    $ref: "./paths/management/evals.yaml#/evaluators-duplicate"
+  /api/evals/evaluators/{id}/execute:
+    $ref: "./paths/management/evals.yaml#/evaluators-execute"
+  /api/evals/evaluators/{id}/versions:
+    $ref: "./paths/management/evals.yaml#/evaluators-versions"
+  /api/evals/evaluators/{id}/versions/{version}:
+    $ref: "./paths/management/evals.yaml#/evaluators-version"
+  /api/evals/catalog:
+    $ref: "./paths/management/evals.yaml#/catalog"
+  /api/evals/catalog/{key}/install:
+    $ref: "./paths/management/evals.yaml#/catalog-install"
+  /api/evals/executions/{id}:
+    $ref: "./paths/management/evals.yaml#/executions-by-id"
+  /api/evals/keys:
+    $ref: "./paths/management/evals.yaml#/keys"
+
   # Skills Repository
   /api/skills/files/upload:
     $ref: "./paths/management/skills.yaml#/skill-file-upload"

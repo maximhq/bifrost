@@ -569,6 +569,10 @@
 		"keys": {
 			"useForBatch": "Use for Batch APIs",
 			"useForBatchHelp": "Enable this key for batch API operations. Only keys with this enabled will be used for batch requests.",
+			"useForEvals": "Use for evaluations",
+			"useForEvalsHelp": "Let evaluators call models with this key. Evaluations only ever use keys with this enabled, so they never compete with production traffic on your other keys.",
+			"evalConcurrency": "Evaluation concurrency",
+			"evalConcurrencyHelp": "The most evaluations that run on this key at once, counted across every Bifrost instance. Extra evaluations wait in a queue. Leave empty for the default of 4.",
 			"vpcEndpointsOptional": "VPC Endpoints (Optional)",
 			"vpcEndpointsHelp": "Route traffic through interface VPC endpoints instead of the public regional endpoints. Use each endpoint's DNS name from the VPC console, not its ID. Region is still required — it sets the request signing scope.",
 			"vpc": {

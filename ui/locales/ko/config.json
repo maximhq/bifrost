@@ -1627,5 +1627,263 @@
 		"retry": "다시 시도",
 		"externalClientUrl": "외부 클라이언트 URL",
 		"externalClientUrlHelp": "Claude Code 및 Codex 마켓플레이스에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 마켓플레이스 제공과 등록이 비활성화돼요. 스킬 관리와 다운로드는 계속 사용할 수 있어요. 환경 변수와 Vault 참조를 지원해요. URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요."
+	},
+	"evals": {
+		"types": {
+			"ai": "AI 심사",
+			"programmatic": "코드",
+			"statistical": "통계",
+			"api": "API",
+			"human": "사람"
+		},
+		"typeHints": {
+			"ai": "LLM이 지시에 따라 출력을 채점합니다",
+			"programmatic": "직접 작성한 함수를 샌드박스에서 실행합니다",
+			"statistical": "고정된 텍스트 지표입니다",
+			"api": "사용자의 HTTP 엔드포인트가 점수를 반환합니다",
+			"human": "검토자가 각 항목을 직접 채점합니다"
+		},
+		"sources": {
+			"custom": "사용자 지정",
+			"builtin": "기본 제공"
+		},
+		"modelNeeds": {
+			"judge": "심사 모델",
+			"embedding": "임베딩 모델",
+			"none": "모델 불필요"
+		},
+		"suggestions": {
+			"singleTurn": "단일 턴",
+			"multiTurn": "멀티 턴",
+			"variables": {
+				"input": "모델에 보낸 입력",
+				"output": "채점할 모델의 출력",
+				"context": "RAG 또는 데이터셋 열에서 가져온 컨텍스트",
+				"expected_output": "데이터셋의 기대 출력",
+				"history": "최신 입력 이전의 대화 턴",
+				"session": "멀티 턴 대화의 모든 턴",
+				"expected_steps": "에이전트가 따라야 할 단계(데이터셋 기준)",
+				"db_schema": "SQL 쿼리가 실행되는 데이터베이스 스키마",
+				"transcript": "대화 또는 통화의 전체 녹취록"
+			},
+			"custom": "사용자 지정 변수입니다. 이 이름의 데이터셋 열 또는 로그 필드에서 값이 채워집니다."
+		},
+		"statuses": {
+			"ready": "실행 가능",
+			"no_key": "평가용 키 없음"
+		},
+		"filters": {
+			"status": "상태",
+			"type": "유형",
+			"source": "출처",
+			"tags": "태그",
+			"searchTags": "태그 검색 또는 입력",
+			"category": "카테고리",
+			"modelNeeded": "필요한 모델"
+		},
+		"list": {
+			"title": "평가기",
+			"description": "LLM 심사, 직접 작성한 코드, HTTP 엔드포인트 또는 텍스트 지표로 모델 출력을 채점합니다. 모델을 호출하는 평가기는 평가용으로 지정한 프로바이더 키에서만 실행됩니다.",
+			"browseCatalog": "카탈로그 보기",
+			"newEvaluator": "새 평가기",
+			"searchPlaceholder": "평가기 검색",
+			"emptyTitle": "아직 평가기가 없습니다",
+			"emptyDescription": "평가기는 모델 출력을 채점하고 통과 여부를 판정합니다. 기본 제공 평가기로 시작하거나 직접 작성하세요.",
+			"noResults": "이 필터와 일치하는 평가기가 없습니다.",
+			"noEvalKey": "평가용 키 없음",
+			"noEvalKeyAlert_one": "평가용으로 지정된 {{provider}} 키가 없습니다. 이 페이지의 평가기 {{count}}개를 실행할 수 없습니다.",
+			"noEvalKeyAlert_other": "평가용으로 지정된 {{provider}} 키가 없습니다. 이 페이지의 평가기 {{count}}개를 실행할 수 없습니다.",
+			"markKey": "키 지정",
+			"columns": {
+				"name": "이름",
+				"type": "유형",
+				"reads": "읽는 변수",
+				"passesWhen": "통과 조건",
+				"runsOn": "실행 위치",
+				"version": "버전",
+				"updated": "업데이트"
+			},
+			"runsOnSandbox": "Starlark 샌드박스",
+			"runsOnGateway": "게이트웨이 내부",
+			"runsOnReviewer": "검토자",
+			"versionShort": "v{{version}}",
+			"actionsFor": "{{name}} 작업",
+			"duplicate": "복제",
+			"duplicated": "{{name}} 생성됨",
+			"deleted": "{{name}} 삭제됨",
+			"deleteTitle": "{{name}}을(를) 삭제할까요?",
+			"deleteDescription": "이 평가기와 모든 버전을 더 이상 사용할 수 없게 됩니다."
+		},
+		"criteria": {
+			"scoreCompare": "점수 {{symbol}} {{value}}",
+			"scoreIsOneOf": "점수가 {{values}} 중 하나",
+			"entryPassesWhen": "항목이 통과하는 점수 조건",
+			"runPassesWhen": "실행이 통과하는 조건",
+			"operator": "비교",
+			"value": "값",
+			"is": "같음",
+			"isNot": "같지 않음",
+			"yes": "예",
+			"no": "아니요",
+			"labels": "점수가 될 수 있는 레이블",
+			"labelsPlaceholder": "레이블을 입력하고 Enter를 누르세요",
+			"passingLabels": "통과로 처리할 레이블",
+			"runMeasure": "실행 지표",
+			"runNames": {
+				"queries_passed": "통과한 항목 비율(%)",
+				"mean_score": "평균 점수",
+				"median_score": "중앙값 점수",
+				"minimum_score": "최소 점수",
+				"maximum_score": "최대 점수"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "예 / 아니요",
+				"hint": "요건 충족 여부"
+			},
+			"scale": {
+				"label": "척도",
+				"hint": "1에서 5처럼 범위 안의 숫자"
+			},
+			"multiselect": {
+				"label": "다음 중 하나",
+				"hint": "직접 정의한 목록의 레이블"
+			},
+			"number": {
+				"label": "숫자",
+				"hint": "임의의 숫자"
+			}
+		},
+		"model": {
+			"judgeProvider": "심사 프로바이더",
+			"judgeModel": "심사 모델",
+			"embeddingProvider": "임베딩 프로바이더",
+			"embeddingModel": "임베딩 모델",
+			"runsOnKey": "{{provider}} 키 \"{{name}}\"에서 실행됩니다. 평가는 한 번에 최대 {{limit}}개까지 실행됩니다.",
+			"noEvalKey": "평가용으로 지정된 {{provider}} 키가 없어 실행할 수 없습니다.",
+			"onlyEvalKeys": "평가용으로 지정한 키가 있는 프로바이더만 실행할 수 있습니다."
+		},
+		"catalog": {
+			"title": "기본 제공 평가기",
+			"breadcrumb": "카탈로그",
+			"description": "바로 쓸 수 있는 평가기 {{total}}개가 있습니다. 하나를 고르고 필요하면 모델을 선택하면 내 평가기에 추가됩니다.",
+			"searchPlaceholder": "기본 제공 평가기 검색",
+			"showing": "{{total}}개 중 {{shown}}개 표시",
+			"noResults": "이 필터와 일치하는 기본 제공 평가기가 없습니다.",
+			"add": "추가",
+			"addTitle": "{{name}} 추가",
+			"addDescriptionModel": "프롬프트는 고정입니다. 모델과 통과 점수를 선택할 수 있습니다.",
+			"addDescriptionMetric": "지표는 고정입니다. 통과 점수를 선택할 수 있습니다.",
+			"addEvaluator": "평가기 추가",
+			"adding": "추가 중...",
+			"added": "{{name}} 추가됨",
+			"lowerIsBetter": "낮을수록 좋음",
+			"scoreRange": "점수 {{scale}}",
+			"passesAt": "통과 조건",
+			"passesWhenLower": "항목이 통과하는 점수 조건(낮을수록 좋음)",
+			"whatItReads": "읽는 변수",
+			"optionalVariables": "선택: {{variables}}"
+		},
+		"fields": {
+			"name": "이름",
+			"tags": "태그",
+			"tagsPlaceholder": "태그 추가",
+			"description": "설명",
+			"descriptionPlaceholder": "이 평가기가 확인하는 내용",
+			"instructionsPlaceholder": "{{output}}이 {{input}}의 질문에 답하는지 판단하세요.",
+			"scoreType": "점수 유형",
+			"scaleFrom": "최소",
+			"scaleTo": "최대",
+			"scaleMin": "가장 낮은 점수",
+			"scaleMax": "가장 높은 점수",
+			"returnType": "반환 유형",
+			"returnTypeHint": "validate가 반환하는 값: 불리언, 숫자 또는 레이블.",
+			"method": "메서드",
+			"url": "URL",
+			"headerName": "헤더 이름",
+			"headerValue": "헤더 값",
+			"addHeader": "헤더 추가",
+			"removeHeader": "헤더 제거",
+			"scorePath": "점수 경로",
+			"reasoningPath": "근거 경로(선택)",
+			"timeoutMs": "제한 시간(ms)",
+			"concurrency": "동시 실행 수",
+			"concurrencyHint": "이 엔드포인트를 동시에 호출하는 최대 횟수입니다. 기본값은 1입니다."
+		},
+		"sections": {
+			"instructions": "심사 지시",
+			"instructionsHint": "채점 규칙을 작성하세요. 입력은 {{input}} 또는 {{output}}처럼 이중 중괄호로 참조합니다. 각각 변수가 됩니다.",
+			"judge": "심사 모델",
+			"embedding": "임베딩 모델",
+			"passCriteria": "통과 기준",
+			"passCriteriaHint": "항목 하나가 통과하는 조건과 실행 전체가 통과하는 조건입니다.",
+			"code": "코드",
+			"codeHint": "Python 방언인 Starlark로 작성합니다. validate를 정의하세요. 인자 이름이 곧 읽는 변수입니다.",
+			"request": "요청",
+			"requestHint": "게이트웨이가 항목마다 호출하는 엔드포인트입니다. 사설 주소와 루프백 주소는 거부됩니다.",
+			"headers": "헤더",
+			"headersHint": "값 자체를 입력하세요. env.NAME 같은 참조는 허용되지 않습니다. 저장한 값은 다시 표시되지 않습니다.",
+			"payload": "본문",
+			"payloadHint": "요청 본문입니다. 입력은 {{input}} 또는 {{output}}처럼 이중 중괄호로 참조합니다.",
+			"response": "응답",
+			"responseHint": "JSON 응답에서 점수와 근거의 위치를 점으로 구분한 경로로 지정합니다.",
+			"reviewerInstructions": "검토자 지시",
+			"reviewerInstructionsHint": "각 항목을 채점하는 사람에게 표시됩니다."
+		},
+		"editor": {
+			"newTitle": "새 평가기",
+			"entity": "평가기",
+			"version": "버전 {{version}}",
+			"unsaved": "저장되지 않은 변경 사항",
+			"discard": "변경 취소",
+			"save": "저장",
+			"saveAsVersion": "버전 {{version}}(으)로 저장",
+			"create": "평가기 만들기",
+			"saving": "저장 중...",
+			"saved": "저장됨",
+			"savedVersion": "버전 {{version}}(으)로 저장됨",
+			"created": "{{name}} 생성됨",
+			"nameRequired": "이름은 필수입니다",
+			"nameTooLong": "이름은 최대 255자입니다",
+			"variablesFound": "찾은 변수:",
+			"noVariables": "없음",
+			"optionalVariable": "{{name}} (선택)",
+			"builtinPromptFixed": "기본 제공 평가기입니다. 프롬프트는 고정입니다. 심사 모델과 통과 기준은 바꿀 수 있습니다.",
+			"builtinMetricFixed": "기본 제공 지표입니다. 계산식은 고정입니다. 통과 기준은 바꿀 수 있습니다.",
+			"humanNotice": "테스트 실행 중에 검토자가 직접 채점합니다. 여기서는 실행할 수 없습니다."
+		},
+		"test": {
+			"title": "테스트",
+			"description": "저장 여부와 관계없이 지금 상태의 평가기를 실행합니다.",
+			"noVariables": "이 평가기는 변수를 읽지 않습니다.",
+			"optional": "선택",
+			"run": "테스트 실행",
+			"running": "실행 중...",
+			"queued": "평가용 키의 빈 자리를 기다리는 중입니다.",
+			"stillRunning": "아직 실행 중입니다.",
+			"timedOut": "실행이 제시간에 끝나지 않았습니다.",
+			"blockedHuman": "사람 평가기는 여기서 실행할 수 없습니다.",
+			"blockedInvalid": "테스트를 실행하려면 설정을 수정하세요.",
+			"outcomes": {
+				"passed": "통과",
+				"failed": "실패",
+				"scored": "채점됨",
+				"na": "해당 없음",
+				"error": "오류"
+			},
+			"score": "점수: {{score}}",
+			"reasoning": "근거",
+			"cause": "원인",
+			"why": "이유",
+			"logs": "출력",
+			"ranOn": "실행 위치",
+			"ranOnKey": "{{provider}} 키 \"{{name}}\"",
+			"latency": "지연 시간",
+			"latencyMs": "{{ms}} ms",
+			"tokens": "토큰",
+			"tokensInOut": "입력 {{input}} / 출력 {{output}}",
+			"cost": "비용"
+		}
 	}
 }

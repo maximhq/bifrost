@@ -1,0 +1,686 @@
+# Evaluators paths
+
+evaluators:
+  get:
+    operationId: listEvaluators
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List evaluators
+    description: |
+      Returns evaluators, newest first, without their configs.
+    tags:
+      - Evaluators
+    parameters:
+      - name: type
+        in: query
+        required: false
+        description: Only evaluators of this type (ai, programmatic, statistical, api, human). Several types separated by commas match any of them
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        description: Only evaluators written by a user (custom) or installed from the catalog (builtin)
+        schema:
+          type: string
+          enum: [custom, builtin]
+      - name: status
+        in: query
+        required: false
+        description: A provider-level check. `no_key` lists evaluators that call a model whose provider has no key marked for evaluations; `ready` lists the rest. `ready` does not promise that a marked key allows the evaluator's model, which is checked when the evaluator runs.
+        schema:
+          type: string
+          enum: [ready, no_key]
+      - name: search
+        in: query
+        required: false
+        description: Case-insensitive match on name or description
+        schema:
+          type: string
+      - name: tag
+        in: query
+        required: false
+        description: Only evaluators with this exact tag
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: Page size, 1 to 200. Defaults to 50
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        required: false
+        description: Number of evaluators to skip
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create evaluator
+    description: |
+      Creates a custom evaluator with its first version. The config is validated for the given type, and
+      for a programmatic evaluator the code is compiled.
+      
+      Statistical evaluators are not created here: install one from the catalog.
+    tags:
+      - Evaluators
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/EvaluatorInput'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-by-id:
+  get:
+    operationId: getEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get evaluator
+    description: |
+      Returns an evaluator with the config of its current version. Secret header values are redacted.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update evaluator
+    description: |
+      Updates name, description and tags in place. A config that differs from the current one is stored as
+      a new version; sending the current config back changes nothing. The type cannot be changed.
+      
+      A header value sent as `<REDACTED>` keeps the stored secret for that header.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/EvaluatorInput'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete evaluator
+    description: |
+      Deletes an evaluator. Its versions are kept, and its name can be reused.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/MessageResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-duplicate:
+  post:
+    operationId: duplicateEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Duplicate evaluator
+    description: |
+      Copies an evaluator's current config under a new name. Without a name, the copy is named after the original.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/DuplicateRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-versions:
+  get:
+    operationId: listEvaluatorVersions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List evaluator versions
+    description: |
+      Returns every version of an evaluator, newest first.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorVersionListResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-version:
+  get:
+    operationId: getEvaluatorVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get evaluator version
+    description: |
+      Returns an evaluator as of one version.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        description: Version number, starting at 1
+        schema:
+          type: integer
+          minimum: 1
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-validate:
+  post:
+    operationId: validateEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Validate evaluator config
+    description: |
+      Checks a config as a save would, without saving or running it, and reports the variables it reads.
+      An invalid config is a normal 200 response with `valid` set to false.
+    tags:
+      - Evaluators
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/ValidateRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ValidationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-execute:
+  post:
+    operationId: executeEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Execute evaluator
+    description: |
+      Runs a saved evaluator on a set of variables. The run is queued, and the call waits for the result up
+      to `wait_ms`. An evaluator that calls a model runs on a provider key marked for evaluations, within
+      that key's eval concurrency.
+      
+      A missing variable or a failed evaluator is a completed execution whose score status is `na` or
+      `error`, not an HTTP error.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Evaluator ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/ExecuteRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ExecutionResponse'
+      '202':
+        description: The run is still going when the wait ends. Poll the execution for its result.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ExecutionResponse'
+      '422':
+        description: The evaluator calls a model and no provider key is enabled for evaluations on that provider and model.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+evaluators-execute-draft:
+  post:
+    operationId: executeDraftEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Execute unsaved evaluator
+    description: |
+      Runs an evaluator config that has not been saved. An editor's test panel uses this.
+    tags:
+      - Evaluators
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/ExecuteDraftRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ExecutionResponse'
+      '202':
+        description: The run is still going when the wait ends. Poll the execution for its result.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ExecutionResponse'
+      '422':
+        description: The evaluator calls a model and no provider key is enabled for evaluations on that provider and model.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+catalog:
+  get:
+    operationId: listEvaluatorCatalog
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List built-in evaluators
+    description: |
+      Returns the built-in evaluators: what each measures, the variables it reads and its default pass criteria.
+    tags:
+      - Evaluators
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/CatalogResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+catalog-install:
+  post:
+    operationId: installBuiltinEvaluator
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Install built-in evaluator
+    description: |
+      Creates an evaluator from a built-in. A built-in graded by a model needs a judge provider and model;
+      one that embeds text needs an embedding provider and model.
+    tags:
+      - Evaluators
+    parameters:
+      - name: key
+        in: path
+        required: true
+        description: Catalog key of the built-in, for example `faithfulness`
+        schema:
+          type: string
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/evals.yaml#/InstallRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/EvaluatorResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+executions-by-id:
+  get:
+    operationId: getEvaluatorExecution
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get execution
+    description: |
+      Returns an execution and, once it has completed, its result.
+    tags:
+      - Evaluators
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Execution ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ExecutionResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+keys:
+  get:
+    operationId: listEvalKeys
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List evaluation keys
+    description: |
+      Returns the provider keys marked "use for evaluations", sorted by provider and then name.
+      An evaluator that calls a model runs only on one of these keys. The list is empty when no
+      key is marked.
+    tags:
+      - Evaluators
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/evals.yaml#/ListEvalKeysResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

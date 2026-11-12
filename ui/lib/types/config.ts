@@ -445,6 +445,10 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	/** Whether evaluators may call models with this key. Evaluations use no other keys. */
+	use_for_evals?: boolean;
+	/** Most evaluations in flight on this key at once, across all instances. Unset means the default. */
+	eval_concurrency?: number | null;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;

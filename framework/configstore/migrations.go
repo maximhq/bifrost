@@ -591,6 +591,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_evals_evaluator_tables"}, run: migrationAddEvalsEvaluatorTables},
+	{IDs: []string{"add_key_eval_columns"}, run: migrationAddKeyEvalColumns},
+	{IDs: []string{"add_evaluator_version_model_provider_column"}, run: migrationAddEvaluatorVersionModelProviderColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1231,6 +1234,102 @@ func migrationAddDatasheetOverridesTable(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping governance_datasheet_overrides would permanently delete user datasheet edits; the table is additive and older binaries ignore it", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsEvaluatorTables creates the evaluator table, its version table and
+// the execution table. All are additive: older binaries ignore them.
+func migrationAddEvalsEvaluatorTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_evaluator_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			for _, table := range []any{&tables.TableEvaluator{}, &tables.TableEvaluatorVersion{}, &tables.TableEvalExecution{}} {
+				if mgr.HasTable(table) {
+					continue
+				}
+				if err := mgr.CreateTable(table); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the evaluator tables would permanently delete user evaluators, their version history and recorded executions", migrationName)
+		},
+	})
+}
+
+// migrationAddEvaluatorVersionModelProviderColumn adds model_provider to evaluator
+// versions and fills it from each stored config. The column lets a listing filter
+// evaluators by whether their provider has an eval key. A table created by the step
+// above already has the column; this covers one created before the column existed.
+func migrationAddEvaluatorVersionModelProviderColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evaluator_version_model_provider_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableEvaluatorVersion{}, "model_provider"); err != nil {
+				return fmt.Errorf("failed to add model_provider column: %w", err)
+			}
+			// Only rows the column default left empty. An AI judge config names its provider
+			// under "provider", an embedding metric under "embedding_provider"; no other
+			// evaluator type has either field.
+			var rows []struct {
+				ID         string
+				ConfigJSON string
+			}
+			if err := tx.Model(&tables.TableEvaluatorVersion{}).Select("id, config_json").Where("model_provider = ''").Find(&rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				provider := gjson.Get(row.ConfigJSON, "provider").String()
+				if provider == "" {
+					provider = gjson.Get(row.ConfigJSON, "embedding_provider").String()
+				}
+				if provider == "" {
+					continue
+				}
+				if err := tx.Model(&tables.TableEvaluatorVersion{}).Where("id = ?", row.ID).UpdateColumn("model_provider", provider).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableEvaluatorVersion{}, "model_provider")
+		},
+	})
+}
+
+// migrationAddKeyEvalColumns adds use_for_evals and eval_concurrency to config_keys.
+// Existing keys keep the default (not used for evals), so nothing changes until a key is
+// marked.
+func migrationAddKeyEvalColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_eval_columns"
+	columns := []string{"use_for_evals", "eval_concurrency"}
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column: %w", column, err)
+				}
+			}
+			return nil
 		},
 	})
 }

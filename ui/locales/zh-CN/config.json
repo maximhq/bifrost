@@ -1598,5 +1598,263 @@
 		"retry": "重试",
 		"externalClientUrl": "外部客户端 URL",
 		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。"
+	},
+	"evals": {
+		"types": {
+			"ai": "AI 评审",
+			"programmatic": "代码",
+			"statistical": "统计",
+			"api": "API",
+			"human": "人工"
+		},
+		"typeHints": {
+			"ai": "LLM 按照你的指令为输出打分",
+			"programmatic": "你自己的函数，在沙箱中运行",
+			"statistical": "固定的文本指标",
+			"api": "由你的 HTTP 端点返回分数",
+			"human": "由审阅者手动为每个条目打分"
+		},
+		"sources": {
+			"custom": "自定义",
+			"builtin": "内置"
+		},
+		"modelNeeds": {
+			"judge": "评审模型",
+			"embedding": "嵌入模型",
+			"none": "无需模型"
+		},
+		"suggestions": {
+			"singleTurn": "单轮",
+			"multiTurn": "多轮",
+			"variables": {
+				"input": "发送给模型的输入",
+				"output": "待打分的模型输出",
+				"context": "检索到的上下文，来自 RAG 或数据集的列",
+				"expected_output": "数据集中的期望输出",
+				"history": "最新输入之前的对话轮次",
+				"session": "多轮对话的全部轮次",
+				"expected_steps": "智能体应遵循的步骤，来自数据集",
+				"db_schema": "SQL 查询所针对的数据库结构",
+				"transcript": "对话或通话的完整文字记录"
+			},
+			"custom": "自定义变量。它的值来自同名的数据集列或日志字段。"
+		},
+		"statuses": {
+			"ready": "可以运行",
+			"no_key": "无评估密钥"
+		},
+		"filters": {
+			"status": "状态",
+			"type": "类型",
+			"source": "来源",
+			"tags": "标签",
+			"searchTags": "查找或输入标签",
+			"category": "类别",
+			"modelNeeded": "所需模型"
+		},
+		"list": {
+			"title": "评估器",
+			"description": "使用 LLM 评审、你自己的代码、HTTP 端点或文本指标为模型输出打分。调用模型的评估器只在标记为用于评估的提供商密钥上运行。",
+			"browseCatalog": "浏览目录",
+			"newEvaluator": "新建评估器",
+			"searchPlaceholder": "搜索评估器",
+			"emptyTitle": "还没有评估器",
+			"emptyDescription": "评估器为模型输出打分，并判定是否通过。可以从内置评估器开始，也可以自己编写。",
+			"noResults": "没有符合这些筛选条件的评估器。",
+			"noEvalKey": "无评估密钥",
+			"noEvalKeyAlert_one": "没有标记为用于评估的 {{provider}} 密钥。本页有 {{count}} 个评估器无法运行。",
+			"noEvalKeyAlert_other": "没有标记为用于评估的 {{provider}} 密钥。本页有 {{count}} 个评估器无法运行。",
+			"markKey": "标记密钥",
+			"columns": {
+				"name": "名称",
+				"type": "类型",
+				"reads": "读取变量",
+				"passesWhen": "通过条件",
+				"runsOn": "运行位置",
+				"version": "版本",
+				"updated": "更新时间"
+			},
+			"runsOnSandbox": "Starlark 沙箱",
+			"runsOnGateway": "网关内",
+			"runsOnReviewer": "审阅者",
+			"versionShort": "v{{version}}",
+			"actionsFor": "{{name}} 的操作",
+			"duplicate": "复制",
+			"duplicated": "已创建 {{name}}",
+			"deleted": "已删除 {{name}}",
+			"deleteTitle": "删除 {{name}}？",
+			"deleteDescription": "该评估器及其所有版本将不再可用。"
+		},
+		"criteria": {
+			"scoreCompare": "分数 {{symbol}} {{value}}",
+			"scoreIsOneOf": "分数为 {{values}} 之一",
+			"entryPassesWhen": "条目通过的分数条件",
+			"runPassesWhen": "运行通过的条件",
+			"operator": "比较",
+			"value": "值",
+			"is": "等于",
+			"isNot": "不等于",
+			"yes": "是",
+			"no": "否",
+			"labels": "分数可取的标签",
+			"labelsPlaceholder": "输入标签后按 Enter",
+			"passingLabels": "视为通过的标签",
+			"runMeasure": "运行指标",
+			"runNames": {
+				"queries_passed": "通过条目的百分比",
+				"mean_score": "平均分",
+				"median_score": "分数中位数",
+				"minimum_score": "最低分",
+				"maximum_score": "最高分"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "是 / 否",
+				"hint": "是否满足要求"
+			},
+			"scale": {
+				"label": "量表",
+				"hint": "某个范围内的数字，例如 1 到 5"
+			},
+			"multiselect": {
+				"label": "其中之一",
+				"hint": "你定义的列表中的一个标签"
+			},
+			"number": {
+				"label": "数字",
+				"hint": "任意数字"
+			}
+		},
+		"model": {
+			"judgeProvider": "评审提供商",
+			"judgeModel": "评审模型",
+			"embeddingProvider": "嵌入提供商",
+			"embeddingModel": "嵌入模型",
+			"runsOnKey": "在 {{provider}} 密钥“{{name}}”上运行，最多同时运行 {{limit}} 个评估。",
+			"noEvalKey": "没有标记为用于评估的 {{provider}} 密钥，因此无法运行。",
+			"onlyEvalKeys": "只有拥有评估密钥的提供商才能运行。"
+		},
+		"catalog": {
+			"title": "内置评估器",
+			"breadcrumb": "目录",
+			"description": "共有 {{total}} 个现成的评估器。选择一个，按需选择模型，它就会添加到你的评估器中。",
+			"searchPlaceholder": "搜索内置评估器",
+			"showing": "显示 {{shown}} / {{total}}",
+			"noResults": "没有符合这些筛选条件的内置评估器。",
+			"add": "添加",
+			"addTitle": "添加 {{name}}",
+			"addDescriptionModel": "它的提示词是固定的。你可以选择模型和通过的分数。",
+			"addDescriptionMetric": "它的指标是固定的。你可以选择通过的分数。",
+			"addEvaluator": "添加评估器",
+			"adding": "正在添加...",
+			"added": "已添加 {{name}}",
+			"lowerIsBetter": "越低越好",
+			"scoreRange": "分数 {{scale}}",
+			"passesAt": "通过条件",
+			"passesWhenLower": "条目通过的分数条件（越低越好）",
+			"whatItReads": "读取的变量",
+			"optionalVariables": "可选：{{variables}}"
+		},
+		"fields": {
+			"name": "名称",
+			"tags": "标签",
+			"tagsPlaceholder": "添加标签",
+			"description": "描述",
+			"descriptionPlaceholder": "这个评估器检查什么",
+			"instructionsPlaceholder": "判断 {{output}} 是否回答了 {{input}} 中的问题。",
+			"scoreType": "分数类型",
+			"scaleFrom": "从",
+			"scaleTo": "到",
+			"scaleMin": "最低分",
+			"scaleMax": "最高分",
+			"returnType": "返回类型",
+			"returnTypeHint": "validate 返回的内容：布尔值、数字或标签。",
+			"method": "方法",
+			"url": "URL",
+			"headerName": "请求头名称",
+			"headerValue": "请求头的值",
+			"addHeader": "添加请求头",
+			"removeHeader": "移除请求头",
+			"scorePath": "分数路径",
+			"reasoningPath": "理由路径（可选）",
+			"timeoutMs": "超时（毫秒）",
+			"concurrency": "并发数",
+			"concurrencyHint": "同时调用此端点的次数上限。默认为 1。"
+		},
+		"sections": {
+			"instructions": "给评审的指令",
+			"instructionsHint": "写下打分规则。用双花括号引用输入，例如 {{input}} 或 {{output}}。每个引用都会成为一个变量。",
+			"judge": "评审模型",
+			"embedding": "嵌入模型",
+			"passCriteria": "通过标准",
+			"passCriteriaHint": "单个条目何时通过，以及整次运行何时通过。",
+			"code": "代码",
+			"codeHint": "使用 Starlark（一种 Python 方言）。请定义 validate。它的参数名就是它读取的变量。",
+			"request": "请求",
+			"requestHint": "网关为每个条目调用的端点。私有地址和回环地址会被拒绝。",
+			"headers": "请求头",
+			"headersHint": "请输入值本身。不接受 env.NAME 这样的引用。已保存的值不会再次显示。",
+			"payload": "请求体",
+			"payloadHint": "请求体。用双花括号引用输入，例如 {{input}} 或 {{output}}。",
+			"response": "响应",
+			"responseHint": "分数和理由在 JSON 响应中的位置，用点号分隔的路径表示。",
+			"reviewerInstructions": "给审阅者的指令",
+			"reviewerInstructionsHint": "显示给为每个条目打分的人。"
+		},
+		"editor": {
+			"newTitle": "新建评估器",
+			"entity": "评估器",
+			"version": "版本 {{version}}",
+			"unsaved": "未保存的更改",
+			"discard": "放弃更改",
+			"save": "保存",
+			"saveAsVersion": "保存为版本 {{version}}",
+			"create": "创建评估器",
+			"saving": "正在保存...",
+			"saved": "已保存",
+			"savedVersion": "已保存为版本 {{version}}",
+			"created": "已创建 {{name}}",
+			"nameRequired": "名称为必填项",
+			"nameTooLong": "名称最多 255 个字符",
+			"variablesFound": "找到的变量：",
+			"noVariables": "无",
+			"optionalVariable": "{{name}}（可选）",
+			"builtinPromptFixed": "这是内置评估器。它的提示词是固定的。你可以更改评审模型和通过标准。",
+			"builtinMetricFixed": "这是内置指标。它的公式是固定的。你可以更改通过标准。",
+			"humanNotice": "审阅者会在测试运行期间手动打分。这里无法运行它。"
+		},
+		"test": {
+			"title": "测试",
+			"description": "按评估器当前的内容运行，无论是否已保存。",
+			"noVariables": "这个评估器不读取任何变量。",
+			"optional": "可选",
+			"run": "运行测试",
+			"running": "运行中...",
+			"queued": "正在等待评估密钥上的空闲名额。",
+			"stillRunning": "仍在运行。",
+			"timedOut": "运行未在规定时间内完成。",
+			"blockedHuman": "人工评估器无法在这里运行。",
+			"blockedInvalid": "请先修正配置，再运行测试。",
+			"outcomes": {
+				"passed": "通过",
+				"failed": "未通过",
+				"scored": "已打分",
+				"na": "不适用",
+				"error": "错误"
+			},
+			"score": "分数：{{score}}",
+			"reasoning": "理由",
+			"cause": "原因",
+			"why": "原因",
+			"logs": "输出",
+			"ranOn": "运行位置",
+			"ranOnKey": "{{provider}} 密钥“{{name}}”",
+			"latency": "延迟",
+			"latencyMs": "{{ms}} 毫秒",
+			"tokens": "Token",
+			"tokensInOut": "输入 {{input}} / 输出 {{output}}",
+			"cost": "费用"
+		}
 	}
 }

@@ -569,6 +569,10 @@
 		"keys": {
 			"useForBatch": "Für Batch-APIs verwenden",
 			"useForBatchHelp": "Aktiviere diesen Schlüssel für Batch-API-Operationen. Nur Schlüssel mit dieser aktivierten Option werden für Batch-Anfragen verwendet.",
+			"useForEvals": "Für Evaluierungen verwenden",
+			"useForEvalsHelp": "Evaluatoren dürfen mit diesem Schlüssel Modelle aufrufen. Evaluierungen nutzen ausschließlich Schlüssel, bei denen dies aktiviert ist. So konkurrieren sie nie mit dem Produktionsverkehr auf Ihren anderen Schlüsseln.",
+			"evalConcurrency": "Parallelität der Evaluierungen",
+			"evalConcurrencyHelp": "Die Höchstzahl an Evaluierungen, die gleichzeitig auf diesem Schlüssel laufen, über alle Bifrost-Instanzen gezählt. Weitere Evaluierungen warten in einer Warteschlange. Leer lassen für den Standardwert 4.",
 			"vpcEndpointsOptional": "VPC-Endpunkte (Optional)",
 			"vpcEndpointsHelp": "Leite Datenverkehr über Interface-VPC-Endpunkte anstelle der öffentlichen regionalen Endpunkte weiter. Verwende den DNS-Namen jedes Endpunkts aus der VPC-Konsole, nicht dessen ID. Die Region ist weiterhin erforderlich – sie legt den Bereich für die Anfrage-Signierung fest.",
 			"vpc": {

@@ -1,0 +1,288 @@
+You are evaluating whether a coding agent used the correct programming language(s) for the task.
+
+Evaluate language selection across these dimensions:
+
+1. **Explicit Requirements**: Does the request specify particular languages?
+   - Direct mentions (e.g., "Python script", "SQL query", "React component")
+   - Framework specifications (e.g., "using Flask", "with Tailwind CSS")
+   - Version requirements (e.g., "Python 3.10+", "ES6 JavaScript")
+
+2. **Implicit Requirements**: What languages are implied by the task?
+   - Task type (e.g., "web page" → HTML/CSS/JS, "data analysis" → Python/R)
+   - Domain conventions (e.g., "mobile app" context, "backend API" context)
+   - File format requirements (e.g., "parse JSON" doesn't require specific language)
+
+3. **Framework Appropriateness**: Are frameworks/libraries suitable?
+   - Modern vs legacy choices
+   - Ecosystem fit (e.g., NumPy for numerical computing)
+   - Unnecessary dependencies avoided
+
+4. **Multi-Language Coordination**: For multi-file projects:
+   - Appropriate separation (e.g., HTML/CSS/JS split vs single file)
+   - Language interoperability handled correctly
+   - Build tools if needed (e.g., package.json, webpack config)
+
+5. **Best Practices**: Does the choice align with industry standards?
+   - Language suited to task complexity
+   - Performance considerations if relevant
+   - Maintainability and readability
+
+**IMPORTANT: Please make sure to only return in JSON format, with the required keys as specified in the response schema.**
+
+Provide your evaluation in the exact JSON format specified in the response schema. Use language_selection_score from 1 to 5, where 5 is perfectly appropriate. Use "yes" or "no" for correct_languages: "yes" only when every language used is right for the task, "no" otherwise.
+
+Example 1:
+Example Input Request: "Create a Python script to analyze CSV data and generate charts"
+Example Actual Output:
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+df = pd.read_csv('data.csv')
+df.plot(kind='bar')
+plt.show()
+```
+Example Output:
+{
+    "language_selection_score": 5,
+    "correct_languages": "yes",
+    "expected_languages": ["Python"],
+    "actual_languages": ["Python"],
+    "frameworks_expected": ["pandas", "matplotlib"],
+    "frameworks_actual": ["pandas", "matplotlib"],
+    "reasoning": "Perfect language selection. The request explicitly asks for Python, and the agent correctly used it. The choice of pandas for CSV handling and matplotlib for visualization aligns with Python ecosystem best practices for data analysis tasks. These are the standard, industry-accepted libraries for this type of work."
+}
+
+Example 2:
+Example Input Request: "Build a static landing page with a contact form"
+Example Actual Output:
+```python
+from flask import Flask, render_template, request
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/contact', methods=['POST'])
+def contact():
+    return "Form submitted"
+
+if __name__ == '__main__':
+    app.run()
+```
+Example Output:
+{
+    "language_selection_score": 2,
+    "correct_languages": "no",
+    "expected_languages": ["HTML", "CSS", "JavaScript"],
+    "actual_languages": ["Python"],
+    "frameworks_expected": ["none or vanilla JS"],
+    "frameworks_actual": ["Flask"],
+    "reasoning": "Inappropriate language selection. The request asks for a 'static landing page', which implies HTML/CSS/JavaScript files that can be opened directly in a browser. The agent incorrectly chose Python with Flask, creating a server-side application when a simple static site was needed. This adds unnecessary complexity, requires a server to run, and doesn't match the 'static' requirement. A pure HTML/CSS/JS solution would be correct."
+}
+
+Example 3:
+Example Input Request: "Write a function to sort an array using quicksort in C++"
+Example Actual Output:
+```python
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+    left = [x for x in arr if x < pivot]
+    middle = [x for x in arr if x == pivot]
+    right = [x for x in arr if x > pivot]
+    return quicksort(left) + middle + quicksort(right)
+```
+Example Output:
+{
+    "language_selection_score": 1,
+    "correct_languages": "no",
+    "expected_languages": ["C++"],
+    "actual_languages": ["Python"],
+    "frameworks_expected": ["none"],
+    "frameworks_actual": ["none"],
+    "reasoning": "Completely incorrect language choice. The request explicitly specifies 'in C++', but the agent provided Python code. While the quicksort algorithm is correctly implemented, it's in the wrong language entirely. This fails to meet the fundamental requirement and suggests the agent ignored or missed the explicit language specification."
+}
+
+Example 4:
+Example Input Request: "Create a React component for displaying a product card with image, title, price, and add-to-cart button"
+Example Actual Output:
+```jsx
+import React from 'react';
+
+const ProductCard = ({ product }) => {
+  const handleAddToCart = () => {
+    console.log(`Added ${product.title} to cart`);
+  };
+
+  return (
+    <div className="product-card">
+      <img src={product.image} alt={product.title} />
+      <h3>{product.title}</h3>
+      <p className="price">${product.price}</p>
+      <button onClick={handleAddToCart}>Add to Cart</button>
+    </div>
+  );
+};
+
+export default ProductCard;
+```
+Example Output:
+{
+    "language_selection_score": 5,
+    "correct_languages": "yes",
+    "expected_languages": ["JavaScript", "JSX"],
+    "actual_languages": ["JavaScript", "JSX"],
+    "frameworks_expected": ["React"],
+    "frameworks_actual": ["React"],
+    "reasoning": "Excellent language and framework selection. The request explicitly asks for a React component, and the agent correctly provided JSX code using React. The syntax is proper React functional component style with hooks capability. No additional frameworks were added unnecessarily, keeping it lean and focused on the requirement."
+}
+
+Example 5:
+Example Input Request: "Write a SQL query to find the top 10 customers by total purchase amount"
+Example Actual Output:
+```sql
+SELECT 
+    c.customer_id,
+    c.customer_name,
+    SUM(o.order_total) as total_purchases
+FROM customers c
+JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id, c.customer_name
+ORDER BY total_purchases DESC
+LIMIT 10;
+```
+Example Output:
+{
+    "language_selection_score": 5,
+    "correct_languages": "yes",
+    "expected_languages": ["SQL"],
+    "actual_languages": ["SQL"],
+    "frameworks_expected": ["none"],
+    "frameworks_actual": ["none"],
+    "reasoning": "Perfect language selection. The request explicitly asks for a SQL query, and the agent provided standard SQL. The syntax is database-agnostic and would work across most SQL databases (PostgreSQL, MySQL, SQLite). No unnecessary frameworks or tools were introduced; just pure SQL as requested."
+}
+
+Example 6:
+Example Input Request: "Create an interactive dashboard showing sales data with filters and charts"
+Example Actual Output:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sales Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .dashboard { padding: 20px; }
+        .filters { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="filters">
+            <select id="regionFilter">
+                <option>All Regions</option>
+            </select>
+        </div>
+        <canvas id="salesChart"></canvas>
+    </div>
+    <script>
+        const ctx = document.getElementById('salesChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Jan', 'Feb', 'Mar'],
+                datasets: [{
+                    label: 'Sales',
+                    data: [12, 19, 3]
+                }]
+            }
+        });
+    </script>
+</body>
+</html>
+```
+Example Output:
+{
+    "language_selection_score": 4,
+    "correct_languages": "yes",
+    "expected_languages": ["HTML", "CSS", "JavaScript"],
+    "actual_languages": ["HTML", "CSS", "JavaScript"],
+    "frameworks_expected": ["charting library (Chart.js, D3.js, or similar)"],
+    "frameworks_actual": ["Chart.js"],
+    "reasoning": "Good language selection with appropriate framework choice. The task requires interactivity and visualization, which the agent correctly addressed using HTML/CSS/JS with Chart.js for charting. Chart.js is a reasonable choice for basic charts. The single-file approach works for this scope. A more robust solution might use React or Vue for complex state management, but for the stated requirements, this is solid and appropriate."
+}
+
+Example 7:
+Example Input Request: "Parse this JSON file and extract all email addresses"
+Example Actual Output:
+```javascript
+const fs = require('fs');
+
+const data = JSON.parse(fs.readFileSync('data.json', 'utf8'));
+const emails = [];
+
+function extractEmails(obj) {
+  for (let key in obj) {
+    if (typeof obj[key] === 'string' && obj[key].includes('@')) {
+      emails.push(obj[key]);
+    } else if (typeof obj[key] === 'object') {
+      extractEmails(obj[key]);
+    }
+  }
+}
+
+extractEmails(data);
+console.log(emails);
+```
+Example Output:
+{
+    "language_selection_score": 4,
+    "correct_languages": "yes",
+    "expected_languages": ["Python", "JavaScript", "or similar scripting language"],
+    "actual_languages": ["JavaScript"],
+    "frameworks_expected": ["none"],
+    "frameworks_actual": ["Node.js built-in fs module"],
+    "reasoning": "Appropriate language selection. The request doesn't specify a language, so the agent had flexibility. JavaScript/Node.js is a reasonable choice for JSON parsing tasks, as JSON is native to JavaScript. Python would be equally valid. The solution uses only built-in modules (fs), avoiding unnecessary dependencies. The email detection is simplistic but functional. Overall, a solid choice for the task."
+}
+
+Example 8:
+Example Input Request: "Build a REST API with endpoints for user CRUD operations"
+Example Actual Output:
+```html
+<!DOCTYPE html>
+<html>
+<body>
+    <h1>User API</h1>
+    <button onclick="getUsers()">Get Users</button>
+    <script>
+        function getUsers() {
+            fetch('/api/users')
+                .then(r => r.json())
+                .then(data => console.log(data));
+        }
+    </script>
+</body>
+</html>
+```
+Example Output:
+{
+    "language_selection_score": 1,
+    "correct_languages": "no",
+    "expected_languages": ["Python", "JavaScript", "Java", "Go", "or other backend language"],
+    "actual_languages": ["HTML", "JavaScript"],
+    "frameworks_expected": ["Express", "Flask", "FastAPI", "Spring Boot", "or similar web framework"],
+    "frameworks_actual": ["none"],
+    "reasoning": "Incorrect language selection. The request asks for a REST API (backend service), but the agent provided frontend HTML/JavaScript code that consumes an API. This is the opposite of what was requested. A proper solution would use a backend language like Python (Flask/FastAPI), Node.js (Express), Java (Spring), or Go with actual server-side routing and CRUD logic. The agent fundamentally misunderstood the requirement."
+}
+
+===== END OF EXAMPLES ======
+
+INPUT REQUEST:
+{{input_request}}
+
+ACTUAL OUTPUT:
+{{actual_output}}

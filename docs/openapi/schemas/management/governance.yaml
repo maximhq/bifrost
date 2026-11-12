@@ -1568,6 +1568,11 @@ TableKey:
     use_for_batch_api:
       type: [boolean, 'null']
       default: false
+    use_for_evals:
+      type: [boolean, 'null']
+      default: false
+    eval_concurrency:
+      type: [integer, 'null']
     created_at:
       type: string
       format: date-time

@@ -1,0 +1,208 @@
+You are evaluating whether the code provided by an agent is complete and runnable.
+
+Evaluate code completeness across these dimensions:
+
+1. **Runnability**: Can this code run without modifications?
+   - All imports/dependencies present
+   - No placeholder functions (TODO, pass, etc.)
+   - No undefined variables or functions
+
+2. **File Structure**: Are all necessary files included?
+   - Standalone scripts have everything in one file
+   - Multi-file projects have all required files
+   - Configuration files if needed (package.json, requirements.txt)
+
+3. **Dependencies**: Are external dependencies handled?
+   - Imports clearly stated
+   - Installation instructions if needed
+   - No assumed pre-existing setup
+
+4. **Data Handling**: For data-dependent code:
+   - Sample data provided OR graceful handling of missing data
+   - File paths/URLs are valid or configurable
+   - Clear instructions on data requirements
+
+5. **Entry Point**: Is it clear how to run the code?
+   - Main function or execution point defined
+   - Usage examples if needed
+   - Command-line arguments documented if applicable
+
+**IMPORTANT: Please make sure to only return in JSON format, with the required keys as specified in the response schema.**
+
+Provide your evaluation in the exact JSON format specified in the response schema. Use completeness_score from 1 to 5, where 5 is fully complete. For checklist items use "yes", "no", or "not applicable" where allowed.
+
+Example 1:
+Example Input Request: "Create a Python script to fetch weather data from an API"
+Example Code Output:
+```python
+import requests
+
+API_KEY = "your_api_key_here"
+CITY = "London"
+
+def get_weather(city):
+    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}"
+    response = requests.get(url)
+    return response.json()
+
+if __name__ == "__main__":
+    weather = get_weather(CITY)
+    print(f"Temperature: {weather['main']['temp']}K")
+```
+Example Output:
+{
+    "completeness_score": 4,
+    "can_run_without_modifications": "no",
+    "all_files_present": "yes",
+    "dependencies_handled": "yes",
+    "data_handling_appropriate": "yes",
+    "entry_point_clear": "yes",
+    "reasoning": "The code is nearly complete with a clear structure and entry point. However, it requires the user to replace 'your_api_key_here' with an actual API key before running. The requests library is imported but installation instructions (pip install requests) are missing. With these minor modifications, the code would be fully runnable."
+}
+
+Example 2:
+Example Input Request: "Build a simple web scraper for news articles"
+Example Code Output:
+```python
+import requests
+from bs4 import BeautifulSoup
+
+def scrape_news():
+    # TODO: implement scraping logic
+    pass
+
+def parse_article(html):
+    # Parse the article
+    pass
+
+scrape_news()
+```
+Example Output:
+{
+    "completeness_score": 1,
+    "can_run_without_modifications": "no",
+    "all_files_present": "yes",
+    "dependencies_handled": "no",
+    "data_handling_appropriate": "not applicable",
+    "entry_point_clear": "yes",
+    "reasoning": "The code is incomplete and non-functional. Both main functions contain only placeholder 'TODO' and 'pass' statements with no actual implementation. While imports are present, there are no installation instructions for the required libraries (requests, beautifulsoup4). The code will execute without errors but produces no output or functionality. Significant implementation is needed before this code can serve its intended purpose."
+}
+
+Example 3:
+Example Input Request: "Create a data analysis script that reads a CSV file and generates visualizations"
+Example Code Output:
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Read the data
+df = pd.read_csv('data.csv')
+
+# Generate visualizations
+df.plot(kind='bar')
+plt.show()
+```
+Example Output:
+{
+    "completeness_score": 2,
+    "can_run_without_modifications": "no",
+    "all_files_present": "no",
+    "dependencies_handled": "no",
+    "data_handling_appropriate": "no",
+    "entry_point_clear": "yes",
+    "reasoning": "The code has significant completeness issues. It assumes 'data.csv' exists but this file is not provided and there's no graceful handling if it's missing. No sample data or instructions on data format/requirements are included. Dependencies (pandas, matplotlib) are imported but installation instructions are absent. The visualization logic is overly simplistic and assumes the DataFrame structure without validation. The code will immediately fail if run without the expected CSV file."
+}
+
+Example 4:
+Example Input Request: "Write a Flask API with user authentication"
+Example Code Output:
+```python
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import jwt
+import datetime
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+db = SQLAlchemy(app)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    hashed_password = generate_password_hash(data['password'])
+    new_user = User(username=data['username'], password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({'message': 'User created successfully'}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data['username']).first()
+    if user and check_password_hash(user.password, data['password']):
+        token = jwt.encode({'user_id': user.id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)}, 
+                          app.config['SECRET_KEY'], algorithm='HS256')
+        return jsonify({'token': token})
+    return jsonify({'message': 'Invalid credentials'}), 401
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)
+```
+Example Output:
+{
+    "completeness_score": 5,
+    "can_run_without_modifications": "yes",
+    "all_files_present": "yes",
+    "dependencies_handled": "yes",
+    "data_handling_appropriate": "yes",
+    "entry_point_clear": "yes",
+    "reasoning": "The code is fully complete and production-ready. All necessary imports are present, and a requirements.txt file specifies exact dependency versions. The database is automatically created on first run with proper initialization in the app context. The code includes proper password hashing, JWT token generation, and error handling. The entry point is clearly defined with the if __name__ == '__main__' block. No placeholders or TODOs exist. The code can be run immediately after installing dependencies with 'pip install -r requirements.txt' and executing 'python app.py'."
+}
+
+Example 5:
+Example Input Request: "Create a React component for a user profile card"
+Example Code Output:
+```jsx
+import React from 'react';
+import './UserProfile.css';
+
+const UserProfile = ({ user }) => {
+  return (
+    <div className="profile-card">
+      <img src={user.avatar} alt={user.name} />
+      <h2>{user.name}</h2>
+      <p>{user.bio}</p>
+      <button onClick={handleFollow}>Follow</button>
+    </div>
+  );
+};
+
+export default UserProfile;
+```
+Example Output:
+{
+    "completeness_score": 3,
+    "can_run_without_modifications": "no",
+    "all_files_present": "no",
+    "dependencies_handled": "not applicable",
+    "data_handling_appropriate": "no",
+    "entry_point_clear": "yes",
+    "reasoning": "The component has moderate completeness issues. The 'handleFollow' function is referenced but not defined, making the button non-functional. The referenced CSS file 'UserProfile.css' is not provided. No prop validation or default props are defined, so the component will error if user data is missing or malformed. While the basic React structure is correct and it would render if provided with properly formatted user data and the missing function, it requires modifications to be fully functional. Sample usage example or prop type definitions would improve completeness."
+}
+
+===== END OF EXAMPLES ======
+
+INPUT REQUEST:
+{{input_request}}
+
+CODE OUTPUT:
+{{code_output}}

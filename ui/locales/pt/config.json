@@ -1603,5 +1603,263 @@
 		"retry": "Tentar novamente",
 		"externalClientUrl": "URL externo do cliente",
 		"externalClientUrlHelp": "URL base público do Bifrost para os marketplaces do Claude Code e do Codex. Deixe em branco para desativar a disponibilização e o registo do marketplace. A gestão e as transferências de competências continuam disponíveis. Suporta variáveis de ambiente e referências a vault. Atrás de um prefixo de URL (server.base_path), inclua o prefixo, por exemplo https://host/bifrost."
+	},
+	"evals": {
+		"types": {
+			"ai": "Juiz de IA",
+			"programmatic": "Código",
+			"statistical": "Estatístico",
+			"api": "API",
+			"human": "Humano"
+		},
+		"typeHints": {
+			"ai": "Um LLM pontua a saída conforme as suas instruções",
+			"programmatic": "A sua própria função, executada em uma sandbox",
+			"statistical": "Uma métrica de texto fixa",
+			"api": "O seu endpoint HTTP retorna a pontuação",
+			"human": "Um revisor pontua cada entrada manualmente"
+		},
+		"sources": {
+			"custom": "Personalizado",
+			"builtin": "Integrado"
+		},
+		"modelNeeds": {
+			"judge": "Modelo juiz",
+			"embedding": "Modelo de embedding",
+			"none": "Não precisa de modelo"
+		},
+		"suggestions": {
+			"singleTurn": "Turno único",
+			"multiTurn": "Vários turnos",
+			"variables": {
+				"input": "A entrada enviada ao modelo",
+				"output": "A saída do modelo que será pontuada",
+				"context": "O contexto recuperado, de RAG ou de uma coluna do conjunto de dados",
+				"expected_output": "A saída esperada, de um conjunto de dados",
+				"history": "Os turnos anteriores da conversa, antes da última entrada",
+				"session": "Todos os turnos de uma conversa com vários turnos",
+				"expected_steps": "Os passos que o agente deve seguir, de um conjunto de dados",
+				"db_schema": "O esquema do banco de dados em que uma consulta SQL é executada",
+				"transcript": "A transcrição completa de uma conversa ou chamada"
+			},
+			"custom": "Uma variável personalizada. O valor vem da coluna do conjunto de dados ou do campo de log com este nome."
+		},
+		"statuses": {
+			"ready": "Pronto para executar",
+			"no_key": "Sem chave de avaliação"
+		},
+		"filters": {
+			"status": "Status",
+			"type": "Tipo",
+			"source": "Origem",
+			"tags": "Tags",
+			"searchTags": "Busque ou digite uma tag",
+			"category": "Categoria",
+			"modelNeeded": "Modelo necessário"
+		},
+		"list": {
+			"title": "Avaliadores",
+			"description": "Pontue as saídas dos modelos com um juiz LLM, o seu próprio código, um endpoint HTTP ou uma métrica de texto. Avaliadores que chamam um modelo só são executados em chaves de provedor marcadas para avaliações.",
+			"browseCatalog": "Explorar catálogo",
+			"newEvaluator": "Novo avaliador",
+			"searchPlaceholder": "Buscar avaliadores",
+			"emptyTitle": "Ainda não há avaliadores",
+			"emptyDescription": "Um avaliador pontua a saída de um modelo e decide se ela passa. Comece por um integrado ou escreva o seu.",
+			"noResults": "Nenhum avaliador corresponde a estes filtros.",
+			"noEvalKey": "Sem chave de avaliação",
+			"noEvalKeyAlert_one": "Nenhuma chave de {{provider}} está marcada para avaliações. {{count}} avaliador nesta página não pode ser executado.",
+			"noEvalKeyAlert_other": "Nenhuma chave de {{provider}} está marcada para avaliações. {{count}} avaliadores nesta página não podem ser executados.",
+			"markKey": "Marcar uma chave",
+			"columns": {
+				"name": "Nome",
+				"type": "Tipo",
+				"reads": "Lê",
+				"passesWhen": "Passa quando",
+				"runsOn": "Executa em",
+				"version": "Versão",
+				"updated": "Atualizado"
+			},
+			"runsOnSandbox": "Sandbox Starlark",
+			"runsOnGateway": "No gateway",
+			"runsOnReviewer": "Um revisor",
+			"versionShort": "v{{version}}",
+			"actionsFor": "Ações para {{name}}",
+			"duplicate": "Duplicar",
+			"duplicated": "{{name}} criado",
+			"deleted": "{{name}} excluído",
+			"deleteTitle": "Excluir {{name}}?",
+			"deleteDescription": "O avaliador e todas as suas versões deixarão de estar disponíveis."
+		},
+		"criteria": {
+			"scoreCompare": "pontuação {{symbol}} {{value}}",
+			"scoreIsOneOf": "a pontuação é uma de {{values}}",
+			"entryPassesWhen": "Uma entrada passa quando a pontuação",
+			"runPassesWhen": "Uma execução passa quando",
+			"operator": "Comparação",
+			"value": "Valor",
+			"is": "é",
+			"isNot": "não é",
+			"yes": "Sim",
+			"no": "Não",
+			"labels": "Rótulos que a pontuação pode ter",
+			"labelsPlaceholder": "Digite um rótulo e pressione Enter",
+			"passingLabels": "Rótulos que passam",
+			"runMeasure": "Medida da execução",
+			"runNames": {
+				"queries_passed": "% de entradas que passaram",
+				"mean_score": "Pontuação média",
+				"median_score": "Pontuação mediana",
+				"minimum_score": "Pontuação mínima",
+				"maximum_score": "Pontuação máxima"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "Sim / Não",
+				"hint": "Requisito atendido ou não"
+			},
+			"scale": {
+				"label": "Escala",
+				"hint": "Um número em um intervalo, por exemplo de 1 a 5"
+			},
+			"multiselect": {
+				"label": "Um de",
+				"hint": "Um rótulo de uma lista que você define"
+			},
+			"number": {
+				"label": "Número",
+				"hint": "Qualquer número"
+			}
+		},
+		"model": {
+			"judgeProvider": "Provedor do juiz",
+			"judgeModel": "Modelo juiz",
+			"embeddingProvider": "Provedor de embedding",
+			"embeddingModel": "Modelo de embedding",
+			"runsOnKey": "Executa na chave de {{provider}} \"{{name}}\", no máximo {{limit}} avaliações por vez.",
+			"noEvalKey": "Nenhuma chave de {{provider}} está marcada para avaliações, então isto não pode ser executado.",
+			"onlyEvalKeys": "Somente provedores com uma chave marcada para avaliações podem executar isto."
+		},
+		"catalog": {
+			"title": "Avaliadores integrados",
+			"breadcrumb": "Catálogo",
+			"description": "{{total}} avaliadores prontos para uso. Escolha um, escolha o modelo dele se precisar, e ele é adicionado aos seus avaliadores.",
+			"searchPlaceholder": "Buscar avaliadores integrados",
+			"showing": "Mostrando {{shown}} de {{total}}",
+			"noResults": "Nenhum avaliador integrado corresponde a estes filtros.",
+			"add": "Adicionar",
+			"addTitle": "Adicionar {{name}}",
+			"addDescriptionModel": "O prompt dele é fixo. Você escolhe o modelo e quando uma pontuação passa.",
+			"addDescriptionMetric": "A métrica dele é fixa. Você escolhe quando uma pontuação passa.",
+			"addEvaluator": "Adicionar avaliador",
+			"adding": "Adicionando...",
+			"added": "{{name}} adicionado",
+			"lowerIsBetter": "Quanto menor, melhor",
+			"scoreRange": "Pontuação {{scale}}",
+			"passesAt": "Passa quando",
+			"passesWhenLower": "Uma entrada passa quando a pontuação (quanto menor, melhor)",
+			"whatItReads": "O que ele lê",
+			"optionalVariables": "Opcional: {{variables}}"
+		},
+		"fields": {
+			"name": "Nome",
+			"tags": "Tags",
+			"tagsPlaceholder": "Adicione uma tag",
+			"description": "Descrição",
+			"descriptionPlaceholder": "O que este avaliador verifica",
+			"instructionsPlaceholder": "Decida se {{output}} responde à pergunta em {{input}}.",
+			"scoreType": "Tipo de pontuação",
+			"scaleFrom": "De",
+			"scaleTo": "a",
+			"scaleMin": "Menor pontuação",
+			"scaleMax": "Maior pontuação",
+			"returnType": "Tipo de retorno",
+			"returnTypeHint": "O que validate retorna: um booleano, um número ou um rótulo.",
+			"method": "Método",
+			"url": "URL",
+			"headerName": "Nome do cabeçalho",
+			"headerValue": "Valor do cabeçalho",
+			"addHeader": "Adicionar cabeçalho",
+			"removeHeader": "Remover cabeçalho",
+			"scorePath": "Caminho da pontuação",
+			"reasoningPath": "Caminho da justificativa (opcional)",
+			"timeoutMs": "Tempo limite (ms)",
+			"concurrency": "Concorrência",
+			"concurrencyHint": "O máximo de chamadas simultâneas a este endpoint. O padrão é 1."
+		},
+		"sections": {
+			"instructions": "Instruções para o juiz",
+			"instructionsHint": "Escreva a regra de pontuação. Refira-se a uma entrada entre chaves duplas, como {{input}} ou {{output}}. Cada uma vira uma variável.",
+			"judge": "Modelo juiz",
+			"embedding": "Modelo de embedding",
+			"passCriteria": "Critérios de aprovação",
+			"passCriteriaHint": "Quando uma entrada passa e quando uma execução inteira passa.",
+			"code": "Código",
+			"codeHint": "Starlark, um dialeto de Python. Defina validate. Os nomes dos argumentos são as variáveis que ele lê.",
+			"request": "Requisição",
+			"requestHint": "O endpoint que o gateway chama para cada entrada. Endereços privados e de loopback são recusados.",
+			"headers": "Cabeçalhos",
+			"headersHint": "Insira o próprio valor. Referências como env.NAME não são aceitas. Um valor salvo nunca é exibido de novo.",
+			"payload": "Corpo",
+			"payloadHint": "O corpo da requisição. Refira-se a uma entrada entre chaves duplas, como {{input}} ou {{output}}.",
+			"response": "Resposta",
+			"responseHint": "Onde ficam a pontuação e a justificativa na resposta JSON, como caminhos com pontos.",
+			"reviewerInstructions": "Instruções para os revisores",
+			"reviewerInstructionsHint": "Exibidas para a pessoa que pontua cada entrada."
+		},
+		"editor": {
+			"newTitle": "Novo avaliador",
+			"entity": "avaliador",
+			"version": "Versão {{version}}",
+			"unsaved": "Alterações não salvas",
+			"discard": "Descartar",
+			"save": "Salvar",
+			"saveAsVersion": "Salvar como versão {{version}}",
+			"create": "Criar avaliador",
+			"saving": "Salvando...",
+			"saved": "Salvo",
+			"savedVersion": "Salvo como versão {{version}}",
+			"created": "{{name}} criado",
+			"nameRequired": "O nome é obrigatório",
+			"nameTooLong": "O nome tem no máximo 255 caracteres",
+			"variablesFound": "Variáveis encontradas:",
+			"noVariables": "nenhuma",
+			"optionalVariable": "{{name}} (opcional)",
+			"builtinPromptFixed": "Este é um avaliador integrado. O prompt dele é fixo. Você pode mudar o modelo juiz e os critérios de aprovação.",
+			"builtinMetricFixed": "Esta é uma métrica integrada. A fórmula dela é fixa. Você pode mudar os critérios de aprovação.",
+			"humanNotice": "Um revisor pontua isto manualmente durante uma execução de teste. Não pode ser executado aqui."
+		},
+		"test": {
+			"title": "Teste",
+			"description": "Executa o avaliador como ele está agora, salvo ou não.",
+			"noVariables": "Este avaliador não lê variáveis.",
+			"optional": "opcional",
+			"run": "Executar teste",
+			"running": "Executando...",
+			"queued": "Aguardando uma vaga livre na chave de avaliação.",
+			"stillRunning": "Ainda em execução.",
+			"timedOut": "A execução não terminou a tempo.",
+			"blockedHuman": "Um avaliador humano não pode ser executado aqui.",
+			"blockedInvalid": "Corrija a configuração para executar um teste.",
+			"outcomes": {
+				"passed": "Passou",
+				"failed": "Não passou",
+				"scored": "Pontuado",
+				"na": "Não aplicável",
+				"error": "Erro"
+			},
+			"score": "pontuação: {{score}}",
+			"reasoning": "Justificativa",
+			"cause": "Causa",
+			"why": "Por quê",
+			"logs": "Saída",
+			"ranOn": "Executou em",
+			"ranOnKey": "chave de {{provider}} \"{{name}}\"",
+			"latency": "Latência",
+			"latencyMs": "{{ms}} ms",
+			"tokens": "Tokens",
+			"tokensInOut": "{{input}} de entrada / {{output}} de saída",
+			"cost": "Custo"
+		}
 	}
 }

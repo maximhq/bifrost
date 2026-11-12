@@ -1627,5 +1627,263 @@
 			"withMinimum": "{{pricing}}，最少 {{min}}",
 			"reportedCost": "回報成本"
 		}
+	},
+	"evals": {
+		"types": {
+			"ai": "AI 評審",
+			"programmatic": "程式碼",
+			"statistical": "統計",
+			"api": "API",
+			"human": "人工"
+		},
+		"typeHints": {
+			"ai": "LLM 依照你的指示為輸出評分",
+			"programmatic": "你自己的函式，在沙箱中執行",
+			"statistical": "固定的文字指標",
+			"api": "由你的 HTTP 端點回傳分數",
+			"human": "由審閱者手動為每個項目評分"
+		},
+		"sources": {
+			"custom": "自訂",
+			"builtin": "內建"
+		},
+		"modelNeeds": {
+			"judge": "評審模型",
+			"embedding": "嵌入模型",
+			"none": "不需要模型"
+		},
+		"suggestions": {
+			"singleTurn": "單輪",
+			"multiTurn": "多輪",
+			"variables": {
+				"input": "傳送給模型的輸入",
+				"output": "待評分的模型輸出",
+				"context": "擷取到的上下文，來自 RAG 或資料集的欄位",
+				"expected_output": "資料集中的預期輸出",
+				"history": "最新輸入之前的對話輪次",
+				"session": "多輪對話的所有輪次",
+				"expected_steps": "代理應遵循的步驟，來自資料集",
+				"db_schema": "SQL 查詢所針對的資料庫結構描述",
+				"transcript": "對話或通話的完整逐字稿"
+			},
+			"custom": "自訂變數。它的值來自同名的資料集欄位或日誌欄位。"
+		},
+		"statuses": {
+			"ready": "可以執行",
+			"no_key": "無評估金鑰"
+		},
+		"filters": {
+			"status": "狀態",
+			"type": "類型",
+			"source": "來源",
+			"tags": "標籤",
+			"searchTags": "尋找或輸入標籤",
+			"category": "類別",
+			"modelNeeded": "所需模型"
+		},
+		"list": {
+			"title": "評估器",
+			"description": "使用 LLM 評審、你自己的程式碼、HTTP 端點或文字指標為模型輸出評分。會呼叫模型的評估器只在標記為用於評估的供應商金鑰上執行。",
+			"browseCatalog": "瀏覽目錄",
+			"newEvaluator": "新增評估器",
+			"searchPlaceholder": "搜尋評估器",
+			"emptyTitle": "尚無評估器",
+			"emptyDescription": "評估器會為模型輸出評分，並判定是否通過。可以從內建評估器開始，也可以自行撰寫。",
+			"noResults": "沒有符合這些篩選條件的評估器。",
+			"noEvalKey": "無評估金鑰",
+			"noEvalKeyAlert_one": "沒有標記為用於評估的 {{provider}} 金鑰。本頁有 {{count}} 個評估器無法執行。",
+			"noEvalKeyAlert_other": "沒有標記為用於評估的 {{provider}} 金鑰。本頁有 {{count}} 個評估器無法執行。",
+			"markKey": "標記金鑰",
+			"columns": {
+				"name": "名稱",
+				"type": "類型",
+				"reads": "讀取變數",
+				"passesWhen": "通過條件",
+				"runsOn": "執行位置",
+				"version": "版本",
+				"updated": "更新時間"
+			},
+			"runsOnSandbox": "Starlark 沙箱",
+			"runsOnGateway": "閘道內",
+			"runsOnReviewer": "審閱者",
+			"versionShort": "v{{version}}",
+			"actionsFor": "{{name}} 的操作",
+			"duplicate": "複製",
+			"duplicated": "已建立 {{name}}",
+			"deleted": "已刪除 {{name}}",
+			"deleteTitle": "要刪除 {{name}} 嗎？",
+			"deleteDescription": "此評估器及其所有版本將無法再使用。"
+		},
+		"criteria": {
+			"scoreCompare": "分數 {{symbol}} {{value}}",
+			"scoreIsOneOf": "分數為 {{values}} 其中之一",
+			"entryPassesWhen": "項目通過的分數條件",
+			"runPassesWhen": "執行通過的條件",
+			"operator": "比較",
+			"value": "值",
+			"is": "等於",
+			"isNot": "不等於",
+			"yes": "是",
+			"no": "否",
+			"labels": "分數可用的標籤",
+			"labelsPlaceholder": "輸入標籤後按 Enter",
+			"passingLabels": "視為通過的標籤",
+			"runMeasure": "執行指標",
+			"runNames": {
+				"queries_passed": "通過項目的百分比",
+				"mean_score": "平均分數",
+				"median_score": "分數中位數",
+				"minimum_score": "最低分數",
+				"maximum_score": "最高分數"
+			}
+		},
+		"scoreTypes": {
+			"yes_no": {
+				"label": "是 / 否",
+				"hint": "是否符合要求"
+			},
+			"scale": {
+				"label": "量表",
+				"hint": "某個範圍內的數字，例如 1 到 5"
+			},
+			"multiselect": {
+				"label": "其中之一",
+				"hint": "你定義的清單中的一個標籤"
+			},
+			"number": {
+				"label": "數字",
+				"hint": "任意數字"
+			}
+		},
+		"model": {
+			"judgeProvider": "評審供應商",
+			"judgeModel": "評審模型",
+			"embeddingProvider": "嵌入供應商",
+			"embeddingModel": "嵌入模型",
+			"runsOnKey": "在 {{provider}} 金鑰「{{name}}」上執行，最多同時執行 {{limit}} 個評估。",
+			"noEvalKey": "沒有標記為用於評估的 {{provider}} 金鑰，因此無法執行。",
+			"onlyEvalKeys": "只有擁有評估金鑰的供應商才能執行。"
+		},
+		"catalog": {
+			"title": "內建評估器",
+			"breadcrumb": "目錄",
+			"description": "共有 {{total}} 個現成的評估器。選擇一個，視需要選擇模型，它就會加入你的評估器。",
+			"searchPlaceholder": "搜尋內建評估器",
+			"showing": "顯示 {{shown}} / {{total}}",
+			"noResults": "沒有符合這些篩選條件的內建評估器。",
+			"add": "新增",
+			"addTitle": "新增 {{name}}",
+			"addDescriptionModel": "它的提示詞是固定的。你可以選擇模型和通過的分數。",
+			"addDescriptionMetric": "它的指標是固定的。你可以選擇通過的分數。",
+			"addEvaluator": "新增評估器",
+			"adding": "正在新增...",
+			"added": "已新增 {{name}}",
+			"lowerIsBetter": "越低越好",
+			"scoreRange": "分數 {{scale}}",
+			"passesAt": "通過條件",
+			"passesWhenLower": "項目通過的分數條件（越低越好）",
+			"whatItReads": "讀取的變數",
+			"optionalVariables": "選用：{{variables}}"
+		},
+		"fields": {
+			"name": "名稱",
+			"tags": "標籤",
+			"tagsPlaceholder": "新增標籤",
+			"description": "說明",
+			"descriptionPlaceholder": "這個評估器檢查什麼",
+			"instructionsPlaceholder": "判斷 {{output}} 是否回答了 {{input}} 中的問題。",
+			"scoreType": "分數類型",
+			"scaleFrom": "從",
+			"scaleTo": "到",
+			"scaleMin": "最低分數",
+			"scaleMax": "最高分數",
+			"returnType": "回傳類型",
+			"returnTypeHint": "validate 回傳的內容：布林值、數字或標籤。",
+			"method": "方法",
+			"url": "URL",
+			"headerName": "標頭名稱",
+			"headerValue": "標頭的值",
+			"addHeader": "新增標頭",
+			"removeHeader": "移除標頭",
+			"scorePath": "分數路徑",
+			"reasoningPath": "理由路徑（選用）",
+			"timeoutMs": "逾時（毫秒）",
+			"concurrency": "並行數",
+			"concurrencyHint": "同時呼叫此端點的次數上限。預設為 1。"
+		},
+		"sections": {
+			"instructions": "給評審的指示",
+			"instructionsHint": "寫下評分規則。用雙大括號引用輸入，例如 {{input}} 或 {{output}}。每個引用都會成為一個變數。",
+			"judge": "評審模型",
+			"embedding": "嵌入模型",
+			"passCriteria": "通過標準",
+			"passCriteriaHint": "單一項目何時通過，以及整次執行何時通過。",
+			"code": "程式碼",
+			"codeHint": "使用 Starlark（一種 Python 方言）。請定義 validate。它的參數名稱就是它讀取的變數。",
+			"request": "請求",
+			"requestHint": "閘道為每個項目呼叫的端點。私有位址和回送位址會被拒絕。",
+			"headers": "標頭",
+			"headersHint": "請輸入值本身。不接受 env.NAME 這類參照。已儲存的值不會再次顯示。",
+			"payload": "請求主體",
+			"payloadHint": "請求主體。用雙大括號引用輸入，例如 {{input}} 或 {{output}}。",
+			"response": "回應",
+			"responseHint": "分數和理由在 JSON 回應中的位置，以點號分隔的路徑表示。",
+			"reviewerInstructions": "給審閱者的指示",
+			"reviewerInstructionsHint": "顯示給為每個項目評分的人。"
+		},
+		"editor": {
+			"newTitle": "新增評估器",
+			"entity": "評估器",
+			"version": "版本 {{version}}",
+			"unsaved": "未儲存的變更",
+			"discard": "捨棄變更",
+			"save": "儲存",
+			"saveAsVersion": "儲存為版本 {{version}}",
+			"create": "建立評估器",
+			"saving": "正在儲存...",
+			"saved": "已儲存",
+			"savedVersion": "已儲存為版本 {{version}}",
+			"created": "已建立 {{name}}",
+			"nameRequired": "名稱為必填",
+			"nameTooLong": "名稱最多 255 個字元",
+			"variablesFound": "找到的變數：",
+			"noVariables": "無",
+			"optionalVariable": "{{name}}（選用）",
+			"builtinPromptFixed": "這是內建評估器。它的提示詞是固定的。你可以變更評審模型和通過標準。",
+			"builtinMetricFixed": "這是內建指標。它的公式是固定的。你可以變更通過標準。",
+			"humanNotice": "審閱者會在測試執行期間手動評分。這裡無法執行它。"
+		},
+		"test": {
+			"title": "測試",
+			"description": "依評估器目前的內容執行，無論是否已儲存。",
+			"noVariables": "這個評估器不讀取任何變數。",
+			"optional": "選用",
+			"run": "執行測試",
+			"running": "執行中...",
+			"queued": "正在等待評估金鑰上的空位。",
+			"stillRunning": "仍在執行。",
+			"timedOut": "執行未在時限內完成。",
+			"blockedHuman": "人工評估器無法在這裡執行。",
+			"blockedInvalid": "請先修正設定，再執行測試。",
+			"outcomes": {
+				"passed": "通過",
+				"failed": "未通過",
+				"scored": "已評分",
+				"na": "不適用",
+				"error": "錯誤"
+			},
+			"score": "分數：{{score}}",
+			"reasoning": "理由",
+			"cause": "原因",
+			"why": "原因",
+			"logs": "輸出",
+			"ranOn": "執行位置",
+			"ranOnKey": "{{provider}} 金鑰「{{name}}」",
+			"latency": "延遲",
+			"latencyMs": "{{ms}} 毫秒",
+			"tokens": "Token",
+			"tokensInOut": "輸入 {{input}} / 輸出 {{output}}",
+			"cost": "費用"
+		}
 	}
 }

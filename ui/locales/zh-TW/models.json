@@ -569,6 +569,10 @@
 		"keys": {
 			"useForBatch": "用於 Batch API",
 			"useForBatchHelp": "為此金鑰啟用 batch API 操作。只有啟用此項的金鑰才會用於 batch 請求。",
+			"useForEvals": "用於評估",
+			"useForEvalsHelp": "允許評估器使用此金鑰呼叫模型。評估只會使用開啟此選項的金鑰，因此不會與其他金鑰上的正式流量競爭。",
+			"evalConcurrency": "評估並行數",
+			"evalConcurrencyHelp": "此金鑰上同時執行的評估數量上限，以所有 Bifrost 執行個體合計。超出的評估會在佇列中等待。留空則使用預設值 4。",
 			"vpcEndpointsOptional": "VPC Endpoints（可選）",
 			"vpcEndpointsHelp": "透過介面 VPC endpoints 而不是公網區域端點路由流量。請使用 VPC 控制台中每個 endpoint 的 DNS 名稱，而不是其 ID。仍須填寫 Region——它決定請求籤名範圍。",
 			"vpc": {
