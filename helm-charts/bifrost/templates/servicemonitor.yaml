@@ -63,7 +63,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "bifrost.fullname" . }}
-  namespace: {{ $serviceMonitorNamespace }}
+  namespace: {{ $serviceMonitorNamespace | quote }}
   labels:
     {{- include "bifrost.labels" . | nindent 4 }}
     {{- with .Values.serviceMonitor.additionalLabels }}
@@ -89,11 +89,11 @@ spec:
       {{- if $basicAuth.enabled }}
       basicAuth:
         username:
-          name: {{ $basicAuthSecret }}
-          key: {{ $basicAuthUsernameKey }}
+          name: {{ $basicAuthSecret | quote }}
+          key: {{ $basicAuthUsernameKey | quote }}
         password:
-          name: {{ $basicAuthSecret }}
-          key: {{ $basicAuthPasswordKey }}
+          name: {{ $basicAuthSecret | quote }}
+          key: {{ $basicAuthPasswordKey | quote }}
       {{- end }}
       {{- with .Values.serviceMonitor.authorization }}
       authorization:
@@ -112,7 +112,7 @@ spec:
       {{- end }}
   namespaceSelector:
     matchNames:
-      - {{ .Release.Namespace }}
+      - {{ .Release.Namespace | quote }}
   selector:
     matchLabels:
       {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}

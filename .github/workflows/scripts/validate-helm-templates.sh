@@ -1168,6 +1168,20 @@ assert a["password"] == {"name": "monitoring-secret", "key": "scrape-password"},
   --set serviceMonitor.basicAuth.usernameKey=scrape-username \
   --set serviceMonitor.basicAuth.passwordKey=scrape-password
 
+check_service_monitor "serviceMonitor: numeric-looking Secret names, keys and namespaces stay strings" \
+  'a = sm["spec"]["endpoints"][0]["basicAuth"]
+assert a["username"] == {"name": "123", "key": "456"}, "username: %r" % a["username"]
+assert a["password"] == {"name": "123", "key": "789"}, "password: %r" % a["password"]
+assert sm["metadata"]["namespace"] == "2024", "namespace: %r" % sm["metadata"]["namespace"]
+assert sm["spec"]["namespaceSelector"]["matchNames"] == ["42"], "namespaceSelector: %r" % sm["spec"]["namespaceSelector"]' \
+  --namespace 42 \
+  --set serviceMonitor.enabled=true \
+  --set-string serviceMonitor.namespace=2024 \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set-string serviceMonitor.basicAuth.existingSecret=123 \
+  --set-string serviceMonitor.basicAuth.usernameKey=456 \
+  --set-string serviceMonitor.basicAuth.passwordKey=789
+
 expect_render_failure "serviceMonitor: cross-namespace basicAuth requires an explicit Secret" \
   "serviceMonitor.basicAuth.existingSecret must be set explicitly" \
   --set serviceMonitor.enabled=true \
