@@ -1,4 +1,13 @@
 {{- if .Values.serviceMonitor.enabled }}
+{{/*
+  An absent telemetry plugin entry still serves /metrics (the gateway registers telemetry by
+  default), so only an explicitly rendered metrics_enabled: false makes every scrape a 404.
+*/}}
+{{- $telemetry := .Values.bifrost.plugins.telemetry | default dict }}
+{{- $telemetryConfig := $telemetry.config | default dict }}
+{{- if and $telemetry.enabled (hasKey $telemetryConfig "metrics_enabled") (not $telemetryConfig.metrics_enabled) }}
+{{- fail "ERROR: serviceMonitor.enabled is true but bifrost.plugins.telemetry.config.metrics_enabled is false, so /metrics returns 404 and the target would sit at up=0. Set metrics_enabled to true, or disable the ServiceMonitor." }}
+{{- end }}
 {{- $serviceMonitorNamespace := default .Release.Namespace .Values.serviceMonitor.namespace }}
 {{- $basicAuth := .Values.serviceMonitor.basicAuth | default dict }}
 {{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}

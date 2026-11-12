@@ -1128,6 +1128,33 @@ assert a["password"] == {"name": "admin-secret", "key": "admin-password"}, "pass
   --set bifrost.authConfig.usernameKey=admin-username \
   --set bifrost.authConfig.passwordKey=admin-password
 
+check_service_monitor "serviceMonitor: governance auth Secret wins over the top-level auth Secret" \
+  'a = sm["spec"]["endpoints"][0]["basicAuth"]
+assert a["username"] == {"name": "governance-secret", "key": "gov-username"}, "username: %r" % a["username"]
+assert a["password"] == {"name": "governance-secret", "key": "gov-password"}, "password: %r" % a["password"]' \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.governance.authConfig.isEnabled=true \
+  --set bifrost.governance.authConfig.existingSecret=governance-secret \
+  --set bifrost.governance.authConfig.usernameKey=gov-username \
+  --set bifrost.governance.authConfig.passwordKey=gov-password \
+  --set bifrost.authConfig.isEnabled=true \
+  --set bifrost.authConfig.existingSecret=top-level-secret \
+  --set bifrost.authConfig.usernameKey=top-username \
+  --set bifrost.authConfig.passwordKey=top-password
+
+expect_render_failure "serviceMonitor: telemetry metrics_enabled=false is refused" \
+  "metrics_enabled is false" \
+  --set serviceMonitor.enabled=true \
+  --set bifrost.plugins.telemetry.enabled=true \
+  --set bifrost.plugins.telemetry.config.metrics_enabled=false
+
+check_service_monitor "serviceMonitor: telemetry metrics_enabled=true renders" \
+  'assert sm["spec"]["endpoints"][0]["path"] == "/metrics", "endpoint: %r" % sm["spec"]["endpoints"][0]' \
+  --set serviceMonitor.enabled=true \
+  --set bifrost.plugins.telemetry.enabled=true \
+  --set bifrost.plugins.telemetry.config.metrics_enabled=true
+
 check_service_monitor "serviceMonitor: cross-namespace basicAuth accepts an explicit Secret" \
   'a = sm["spec"]["endpoints"][0]["basicAuth"]
 assert sm["metadata"]["namespace"] == "monitoring", "namespace: %r" % sm["metadata"]["namespace"]

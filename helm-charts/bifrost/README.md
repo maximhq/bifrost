@@ -4,7 +4,7 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.48
+**Latest Version:** 2.1.49
 
 ## Changelog
 
@@ -12,6 +12,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Added `serviceMonitor`: renders a Prometheus Operator `ServiceMonitor` that scrapes `/metrics` on the `http` port. Disabled by default; the `monitoring.coreos.com/v1` CRDs must exist when the manifest is applied, not when it is rendered.
 - Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` to authenticate the scrape when auth is enabled. `basicAuth` inherits the Secret and keys of the active `bifrost.governance.authConfig` or `bifrost.authConfig`; rendering fails if no Secret can be resolved.
+- `serviceMonitor.enabled: true` is refused at render time when `bifrost.plugins.telemetry.config.metrics_enabled` is `false`, since `/metrics` would return `404`.
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
 
 ### 2.1.48
@@ -1436,6 +1437,10 @@ serviceMonitor:
 ```
 
 The Secret must exist in the `ServiceMonitor`'s namespace. Auth-config Secret inheritance is available only when the `ServiceMonitor` uses the Helm release namespace; if you set `serviceMonitor.namespace` to another namespace, set `serviceMonitor.basicAuth.existingSecret` explicitly to a Secret there. If `basicAuth.enabled` is true and no Secret can be resolved, the render fails rather than producing a `ServiceMonitor` that would quietly scrape 401s.
+
+Prometheus picks up a changed Secret on its next scrape, but Bifrost reads the admin credentials as environment variables when the pod starts. After rotating the Secret, restart the pods (`kubectl rollout restart`); until they restart, scrapes send the new password and get `401`.
+
+The render also fails if `bifrost.plugins.telemetry.config.metrics_enabled` is `false`: `/metrics` then returns `404`, so the target would sit at `up=0` all the same.
 
 To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. Bifrost accepts a session token or a base64-encoded `username:password` as the bearer token. Session tokens expire, so a static Secret holding one needs rotating, or scrapes start returning `401`; `basicAuth` has no such expiry. To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
 
