@@ -343,8 +343,9 @@ func geminiDecisionLevel(index int, level schemas.DecisionLevel) string {
 
 // geminiDecisionInstructions renders a question's instructions as the text the
 // API takes. Instructions written as input_text and input_json parts are
-// joined in order; an input_image part is rejected, since the API's
-// instructions are text only. Any other value is rendered as text.
+// joined in order; a list carrying an input_image part anywhere is rejected,
+// since the API's instructions are text only. Any other value is rendered as
+// text.
 func geminiDecisionInstructions(index int, instructions *schemas.DecisionText) (string, error) {
 	if instructions != nil {
 		if parts, ok := instructions.Structured.([]interface{}); ok && len(parts) > 0 {
@@ -357,38 +358,48 @@ func geminiDecisionInstructions(index int, instructions *schemas.DecisionText) (
 	return providerUtils.DecisionTextString(instructions), nil
 }
 
-// geminiDecisionInstructionParts joins instructions written as parts. isParts
-// is false when an element is not a text, JSON, or image part, so the value is
-// rendered as structured text instead.
+// geminiDecisionInstructionParts joins instructions written as parts. Every
+// element is checked for an image first, so one after an unrecognized element
+// is still rejected. isParts is false when an element is not a text or JSON
+// part, so the value is rendered as structured text instead.
 func geminiDecisionInstructionParts(index int, parts []interface{}) (string, bool, error) {
-	var out strings.Builder
+	isParts := true
 	for _, part := range parts {
 		object, ok := part.(map[string]interface{})
 		if !ok {
-			return "", false, nil
+			isParts = false
+			continue
 		}
 		switch object["type"] {
-		case schemas.DecisionInputPartTypeText:
-			if text, ok := object["text"].(string); ok {
-				out.WriteString(text)
-			} else if object["text"] != nil {
-				encoded, err := providerUtils.MarshalSorted(object["text"])
-				if err != nil {
-					return "", true, providerUtils.InvalidRequestErrorf("question %d instructions could not be encoded as text: %v", index, err)
-				}
-				out.Write(encoded)
-			}
-		case schemas.DecisionInputPartTypeJSON:
-			encoded, err := providerUtils.MarshalSorted(object["data"])
-			if err != nil {
-				return "", true, providerUtils.InvalidRequestErrorf("question %d instructions could not be encoded as text: %v", index, err)
-			}
-			out.Write(encoded)
 		case schemas.DecisionInputPartTypeImage:
 			return "", true, providerUtils.InvalidRequestErrorf("question %d instructions carry an image; Gemini decision instructions are text only", index)
+		case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeJSON:
 		default:
-			return "", false, nil
+			isParts = false
 		}
+	}
+	if !isParts {
+		return "", false, nil
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		object := part.(map[string]interface{})
+		value := object["data"]
+		if object["type"] == schemas.DecisionInputPartTypeText {
+			if text, ok := object["text"].(string); ok {
+				out.WriteString(text)
+				continue
+			}
+			value = object["text"]
+		}
+		if value == nil {
+			continue
+		}
+		encoded, err := providerUtils.MarshalSorted(value)
+		if err != nil {
+			return "", true, providerUtils.InvalidRequestErrorf("question %d instructions could not be encoded as text: %v", index, err)
+		}
+		out.Write(encoded)
 	}
 	return out.String(), true, nil
 }

@@ -359,6 +359,19 @@ func TestGeminiDecisionRejectsUnsupported(t *testing.T) {
 			message: "instructions are text only",
 		},
 		{
+			name:  "image in instructions after an unrecognized part",
+			input: textInput,
+			questions: []schemas.DecisionQuestion{{
+				Type: schemas.DecisionTypePredicate,
+				Name: schemas.Ptr("q"),
+				Instructions: &schemas.DecisionText{Structured: []interface{}{
+					map[string]interface{}{"note": "not a part"},
+					map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64,iVBO"},
+				}},
+			}},
+			message: "instructions are text only",
+		},
+		{
 			name:      "choice without choices",
 			input:     textInput,
 			questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Which?")}},
