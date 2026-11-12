@@ -27697,7 +27697,7 @@ func TestSplitLegacyGovernanceRequestLimits(t *testing.T) {
 	projectLimit := int64(50)
 	configData.Governance.RateLimits = append(configData.Governance.RateLimits, configstoreTables.TableRateLimit{ID: "project-rl", RequestMaxLimit: &projectLimit, RequestResetDuration: bifrost.Ptr("1h")})
 	configData.Governance.ModelConfigs = append(configData.Governance.ModelConfigs, configstoreTables.TableModelConfig{ID: "mc-project", ModelName: "*", Scope: configstoreTables.ModelConfigScopeProject, ScopeID: bifrost.Ptr("project-1"), RateLimitID: bifrost.Ptr("project-rl")})
-	splitLegacyGovernanceRequestLimits(configData)
+	splitLegacyGovernanceRequestLimits(configData, nil)
 	byID := map[string]configstoreTables.TableRateLimit{}
 	for _, rl := range configData.Governance.RateLimits {
 		byID[rl.ID] = rl
@@ -27880,6 +27880,67 @@ func TestSQLite_LegacyRequestLimitsFromConfigSplitStably(t *testing.T) {
 		defer loaded.Close(ctx)
 		assert.Equal(t, before, governanceRowStamps(t, loaded.ConfigStore.DB()), "the legacy file disagreed with the migrated store")
 	})
+}
+
+// TestSQLite_LegacyRateLimitSharedWithAStoredHolderStaysCombined pins that config.json splits a combined
+// row only when no other stored holder references it. The file first declares a key and a team on one
+// row, then only one of them: the other still references the row in the store, so the row keeps its
+// request limit and usage and no request limit is split off it, through the key's merge and the
+// team's load alike.
+func TestSQLite_LegacyRateLimitSharedWithAStoredHolderStaysCombined(t *testing.T) {
+	ctx := context.Background()
+	limit := func(n int64) *int64 { return &n }
+	declare := func(key, team bool) *configstore.GovernanceConfig {
+		gov := &configstore.GovernanceConfig{RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "rl-shared", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h"), RequestMaxLimit: limit(5), RequestResetDuration: bifrost.Ptr("1h")},
+		}}
+		if key {
+			gov.VirtualKeys = []configstoreTables.TableVirtualKey{{ID: "vk-d", Name: "vk-d", Value: *schemas.NewSecretVar("sk-bf-shared-row-key"), IsActive: schemas.Ptr(true), RateLimitID: bifrost.Ptr("rl-shared")}}
+		}
+		if team {
+			gov.Teams = []configstoreTables.TableTeam{{ID: "team-x", Name: "team-x", RateLimitID: bifrost.Ptr("rl-shared")}}
+		}
+		return gov
+	}
+	for _, tc := range []struct {
+		name      string
+		key, team bool
+	}{
+		{name: "the file keeps only the key", key: true},
+		{name: "the file keeps only the team", team: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			dir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(nil, dir)
+			configData.Governance = declare(true, true)
+			createConfigFile(t, dir, configData)
+			first, err := LoadConfig(ctx, dir)
+			require.NoError(t, err)
+			require.NoError(t, first.ConfigStore.DB().Model(&configstoreTables.TableRateLimit{}).Where("id = ?", "rl-shared").Update("request_current_usage", 3).Error)
+			first.Close(ctx)
+
+			configData.Governance = declare(tc.key, tc.team)
+			createConfigFile(t, dir, configData)
+			second, err := LoadConfig(ctx, dir)
+			require.NoError(t, err)
+			defer second.Close(ctx)
+			db := second.ConfigStore.DB()
+
+			var row configstoreTables.TableRateLimit
+			require.NoError(t, db.First(&row, "id = ?", "rl-shared").Error)
+			require.NotNil(t, row.RequestMaxLimit, "the shared row lost its request limit")
+			assert.EqualValues(t, 5, *row.RequestMaxLimit)
+			assert.EqualValues(t, 3, row.RequestCurrentUsage, "the shared row's request usage changed")
+			var split int64
+			require.NoError(t, db.Model(&configstoreTables.TableRateLimit{}).Where("id = ?", configstoreTables.LegacyRequestLimitID("rl-shared")).Count(&split).Error)
+			assert.Zero(t, split, "a request limit was split off the shared row")
+			var team configstoreTables.TableTeam
+			require.NoError(t, db.First(&team, "id = ?", "team-x").Error)
+			require.NotNil(t, team.RateLimitID)
+			assert.Equal(t, "rl-shared", *team.RateLimitID)
+		})
+	}
 }
 
 // TestSQLite_RequestLimitsFromConfig pins the config.json form: governance.rate_limits[] items naming
@@ -28070,7 +28131,7 @@ func TestLegacyVirtualKeyRequestLimitsStayCombinedWithoutConfigStore(t *testing.
 			}},
 		}},
 	}}
-	splitLegacyGovernanceRequestLimits(configData)
+	splitLegacyGovernanceRequestLimits(configData, nil)
 	require.NoError(t, validateGovernanceRequestLimits(configData))
 	config := &Config{}
 	loadGovernanceConfig(context.Background(), config, configData)
@@ -28311,7 +28372,7 @@ func TestSplitLegacyGovernanceRequestLimitsKeepsCollidingAndNonSharedRows(t *tes
 			{ID: "team-bad", Name: "bad", RateLimitID: bifrost.Ptr("bad-rl")},
 		},
 	}}
-	splitLegacyGovernanceRequestLimits(configData)
+	splitLegacyGovernanceRequestLimits(configData, nil)
 
 	byID := map[string]configstoreTables.TableRateLimit{}
 	for _, rl := range configData.Governance.RateLimits {

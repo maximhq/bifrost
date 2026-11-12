@@ -1172,17 +1172,26 @@ func newLegacyTierKey(vkID string, provider *string) legacyTierKey {
 }
 
 // legacyRequestLimitSplit holds what splitting a config.json's combined rate limits needs: how many
-// holders reference each row, so only a singly referenced one is split.
+// holders reference each row, so only a singly referenced one is split. db is the config store's
+// database, nil without one; with it, a row another stored holder references stays combined too.
 type legacyRequestLimitSplit struct {
 	configData *ConfigData
 	gov        *configstore.GovernanceConfig
 	references map[string]int
 	indexOf    map[string]int
 	dropped    map[string]bool
+	db         *gorm.DB
+}
+
+// holderRow selects, in table, the stored rows of the holder a split is for.
+type holderRow struct {
+	table string
+	where string
+	args  []any
 }
 
 // newLegacyRequestLimitSplit returns nil when config.json declares no rate limits to split.
-func newLegacyRequestLimitSplit(configData *ConfigData) *legacyRequestLimitSplit {
+func newLegacyRequestLimitSplit(configData *ConfigData, db *gorm.DB) *legacyRequestLimitSplit {
 	if configData == nil || configData.Governance == nil || len(configData.Governance.RateLimits) == 0 {
 		return nil
 	}
@@ -1219,11 +1228,41 @@ func newLegacyRequestLimitSplit(configData *ConfigData) *legacyRequestLimitSplit
 	if dropped == nil {
 		dropped = make(map[string]bool)
 	}
-	return &legacyRequestLimitSplit{configData: configData, gov: gov, references: references, indexOf: indexOf, dropped: dropped}
+	return &legacyRequestLimitSplit{configData: configData, gov: gov, references: references, indexOf: indexOf, dropped: dropped, db: db}
 }
 
-// split takes the request limit off the row rateLimitID names, when that row can be split.
-func (s *legacyRequestLimitSplit) split(rateLimitID *string) (configstoreTables.TableRateLimit, bool) {
+// referencedElsewhere reports whether a stored row other than the holder's own (own) references the
+// rate limit id. The file counts only its own holders, and a holder the dashboard manages may name
+// the row too: splitting it would take that holder's request limit away. References are counted as
+// the migration counts them (configstore.CountRateLimitReferences); on an error the row stays combined.
+func (s *legacyRequestLimitSplit) referencedElsewhere(id string, own []holderRow) bool {
+	if s.db == nil {
+		return false
+	}
+	references, err := configstore.CountRateLimitReferences(s.db, []string{id})
+	if err != nil {
+		logger.Warn("failed to count the references of rate limit %s; it stays combined: %v", id, err)
+		return true
+	}
+	others := int64(references[id])
+	for _, row := range own {
+		var n int64
+		if err := s.db.Table(row.table).Where("rate_limit_id = ?", id).Where(row.where, row.args...).Count(&n).Error; err != nil {
+			logger.Warn("failed to count the references of rate limit %s; it stays combined: %v", id, err)
+			return true
+		}
+		others -= n
+	}
+	if others > 0 {
+		logger.Warn("rate limit %s is referenced by another holder in the database; its request limit stays combined", id)
+		return true
+	}
+	return false
+}
+
+// split takes the request limit off the row rateLimitID names, when that row can be split. own
+// selects the holder's stored rows, which may reference the row without making it shared.
+func (s *legacyRequestLimitSplit) split(rateLimitID *string, own ...holderRow) (configstoreTables.TableRateLimit, bool) {
 	if rateLimitID == nil || s.references[*rateLimitID] != 1 {
 		return configstoreTables.TableRateLimit{}, false
 	}
@@ -1244,6 +1283,9 @@ func (s *legacyRequestLimitSplit) split(rateLimitID *string) (configstoreTables.
 	// collision policy applies, and this one stays combined.
 	derivedID := configstoreTables.LegacyRequestLimitID(rl.ID)
 	if _, taken := s.indexOf[derivedID]; taken {
+		return configstoreTables.TableRateLimit{}, false
+	}
+	if s.referencedElsewhere(rl.ID, own) {
 		return configstoreTables.TableRateLimit{}, false
 	}
 	limit := configstoreTables.TableRateLimit{
@@ -1297,8 +1339,11 @@ func (s *legacyRequestLimitSplit) finish(limits []configstoreTables.TableRateLim
 // Holder references to a dropped row are left in place here: model config hashes include them, and
 // the stored hash was computed from the file as declared. The merge clears them after hashing (see
 // clearSplitRateLimitRefs). A dropped row's id is kept in configData.splitRequestOnlyRateLimitIDs.
-func splitLegacyGovernanceRequestLimits(configData *ConfigData) {
-	s := newLegacyRequestLimitSplit(configData)
+//
+// db is the config store's database, nil without one. With it, a row a stored holder other than the
+// file's one also references stays combined, as the migration leaves it.
+func splitLegacyGovernanceRequestLimits(configData *ConfigData, db *gorm.DB) {
+	s := newLegacyRequestLimitSplit(configData, db)
 	if s == nil {
 		return
 	}
@@ -1315,7 +1360,7 @@ func splitLegacyGovernanceRequestLimits(configData *ConfigData) {
 		if mc.ID == "" {
 			continue
 		}
-		if limit, ok := s.split(mc.RateLimitID); ok {
+		if limit, ok := s.split(mc.RateLimitID, holderRow{configstoreTables.TableModelConfig{}.TableName(), "id = ?", []any{mc.ID}}); ok {
 			limit.ModelConfigID = &mc.ID
 			limits = append(limits, limit)
 		}
@@ -1325,7 +1370,7 @@ func splitLegacyGovernanceRequestLimits(configData *ConfigData) {
 		if team.ID == "" {
 			continue
 		}
-		if limit, ok := s.split(team.RateLimitID); ok {
+		if limit, ok := s.split(team.RateLimitID, holderRow{configstoreTables.TableTeam{}.TableName(), "id = ?", []any{team.ID}}); ok {
 			limit.TeamID = &team.ID
 			limits = append(limits, limit)
 		}
@@ -1335,7 +1380,7 @@ func splitLegacyGovernanceRequestLimits(configData *ConfigData) {
 		if customer.ID == "" {
 			continue
 		}
-		if limit, ok := s.split(customer.RateLimitID); ok {
+		if limit, ok := s.split(customer.RateLimitID, holderRow{configstoreTables.TableCustomer{}.TableName(), "id = ?", []any{customer.ID}}); ok {
 			limit.CustomerID = &customer.ID
 			limits = append(limits, limit)
 		}
@@ -1350,9 +1395,10 @@ func splitLegacyGovernanceRequestLimits(configData *ConfigData) {
 //
 // A key's own rate limit (and a provider config's) belongs to the key's tier model config, whose id
 // is only known once the store is read, so its request limit is kept aside in
-// configData.legacyTierRequestLimits and written onto the tier with the key.
-func splitLegacyVirtualKeyRequestLimits(configData *ConfigData) {
-	s := newLegacyRequestLimitSplit(configData)
+// configData.legacyTierRequestLimits and written onto the tier with the key. The key's stored rows
+// are its own row (or provider config's) and that tier, which the earlier migration moved it onto.
+func splitLegacyVirtualKeyRequestLimits(configData *ConfigData, db *gorm.DB) {
+	s := newLegacyRequestLimitSplit(configData, db)
 	if s == nil {
 		return
 	}
@@ -1365,13 +1411,19 @@ func splitLegacyVirtualKeyRequestLimits(configData *ConfigData) {
 		if vk.ID == "" {
 			continue
 		}
-		if limit, ok := s.split(vk.RateLimitID); ok {
+		if limit, ok := s.split(vk.RateLimitID,
+			holderRow{configstoreTables.TableVirtualKey{}.TableName(), "id = ?", []any{vk.ID}},
+			holderRow{configstoreTables.TableModelConfig{}.TableName(), "scope = ? AND scope_id = ? AND model_name = ? AND (provider IS NULL OR provider = '')",
+				[]any{configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels}}); ok {
 			key := legacyTierKey{vkID: vk.ID}
 			tierLimits[key] = append(tierLimits[key], withDeclaredHash(limit))
 		}
 		for j := range vk.ProviderConfigs {
 			pc := &vk.ProviderConfigs[j]
-			if limit, ok := s.split(pc.RateLimitID); ok {
+			if limit, ok := s.split(pc.RateLimitID,
+				holderRow{configstoreTables.TableVirtualKeyProviderConfig{}.TableName(), "virtual_key_id = ? AND provider = ?", []any{vk.ID, pc.Provider}},
+				holderRow{configstoreTables.TableModelConfig{}.TableName(), "scope = ? AND scope_id = ? AND model_name = ? AND provider = ?",
+					[]any{configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels, pc.Provider}}); ok {
 				key := legacyTierKey{vkID: vk.ID, provider: pc.Provider}
 				tierLimits[key] = append(tierLimits[key], withDeclaredHash(limit))
 			}
@@ -1710,10 +1762,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if err := validateGovernanceBudgetScopes(&configData, logger.Warn); err != nil {
 			return nil, err
 		}
-		splitLegacyGovernanceRequestLimits(&configData)
-		if err := validateGovernanceRequestLimits(&configData); err != nil {
-			return nil, err
-		}
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
@@ -1731,6 +1779,15 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	config.SetupToken = resolveSetupToken(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
+		return nil, err
+	}
+	// 2a. config.json's legacy request limits, split once the store can show which rows other holders share
+	var configDB *gorm.DB
+	if config.ConfigStore != nil {
+		configDB = config.ConfigStore.DB()
+	}
+	splitLegacyGovernanceRequestLimits(&configData, configDB)
+	if err := validateGovernanceRequestLimits(&configData); err != nil {
 		return nil, err
 	}
 	// 3. KV store
@@ -4500,7 +4557,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	forceFileSync := configData.isConfigJSONSourceOfTruth()
 	// A key's legacy request limit moves onto its tier, which only a config store holds.
 	if config.ConfigStore != nil {
-		splitLegacyVirtualKeyRequestLimits(configData)
+		splitLegacyVirtualKeyRequestLimits(configData, config.ConfigStore.DB())
 	}
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
