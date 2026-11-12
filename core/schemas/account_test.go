@@ -584,6 +584,12 @@ func TestKeyAliasesValidate(t *testing.T) {
 			wantErr:  "baseten deployment_url must be an absolute https URL",
 		},
 		{
+			name:     "baseten deployment_url with a port but no hostname — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://:443/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
 			name:     "baseten sub-config on openai key — error",
 			provider: OpenAI,
 			ka:       KeyAliases{"k": {ModelID: "v", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/sync/v1")}}},

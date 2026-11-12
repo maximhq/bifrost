@@ -4590,27 +4590,53 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 }
 
 func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
-	if request == nil || request.Params == nil {
+	if request == nil {
 		return false
 	}
-	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+	if request.Params != nil && usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
 		return true
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input)
+}
+
+func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	if extraParamsHasSafeguards(params.ExtraParams) && safeguardsSurviveStrip(ctx, model) {
 		return true
 	}
-	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+	if invokeIngressThinkingNeedsInvokePath(ctx, params.Reasoning) {
 		return true
 	}
-	for _, tool := range request.Params.Tools {
+	for _, tool := range params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
 		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
 			return true
+		}
+	}
+	return false
+}
+
+// responsesInputHasToolReference runs on every Anthropic-family Responses request, so
+// it indexes rather than ranging by value: a by-value range copies each 224-byte
+// ResponsesMessage, which cost ~0.5µs on a 200-message conversation.
+func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		toolMsg := input[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
 		}
 	}
 	return false
