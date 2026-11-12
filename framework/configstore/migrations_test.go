@@ -5853,3 +5853,26 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
 }
+
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added where it is missing, left alone where it is there, and never tied to a business
+// unit row by a constraint, since the config loader may write the budget first. The column's index
+// is its own migration (TestMigrationAddBudgetBusinessUnitIDIndex).
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	db := setupCalendarAlignedPreMigrationDB(t)
+	mig := db.Migrator()
+	require.NoError(t, mig.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "BusinessUnitID"))
+	require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+	assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the owner column to a business unit row")
+
+	// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+	buID := "bu-elsewhere"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+}
