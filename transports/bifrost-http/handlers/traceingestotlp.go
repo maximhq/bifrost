@@ -92,7 +92,14 @@ var otlpProjectAttributes = []string{"openinference.project.name", "arize.projec
 // ingestOTLP stores decoded resources. Each resource goes to the project it names. explicitProject,
 // from a request header, overrides every resource and must resolve. A name taken from a resource
 // attribute is a hint: when the key cannot use it, the next hint is tried, then the key's default.
-func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool) error {
+//
+// experimentID, when given, is the experiment the spans were logged to (Braintrust's x-bt-parent).
+// It is set on every span that names none of its own.
+func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool, experimentID ...string) error {
+	experiment := ""
+	if len(experimentID) > 0 {
+		experiment = experimentID[0]
+	}
 	storeCtx, cancel := ingestContext()
 	defer cancel()
 	byProject := make(map[string][]*traceingest.SpanPart)
@@ -133,7 +140,11 @@ func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source
 		}
 		for _, span := range resource.Spans {
 			span.Resource = resource.Attributes
-			byProject[projectID] = append(byProject[projectID], traceingest.MapOTelSpan(span))
+			part := traceingest.MapOTelSpan(span)
+			if part.ExperimentID == "" {
+				part.ExperimentID = experiment
+			}
+			byProject[projectID] = append(byProject[projectID], part)
 		}
 	}
 	// The whole export is charged once against the rate limit, then stored project by project.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -171,14 +172,23 @@ func (h *TraceIngestHandler) newUpload(ctx *fasthttp.RequestCtx, project *tables
 	if !store.TraceUploadsAvailable() {
 		return nil, "", logstore.ErrTraceUploadsUnavailable
 	}
+	// A random id is the credential itself. An id derived from the content (a Braintrust attachment
+	// key, a Langfuse media hash) can be computed by others, so its URL also carries a random token.
+	token := ""
 	if id == "" {
 		raw := make([]byte, 24)
 		if _, err := rand.Read(raw); err != nil {
 			return nil, "", err
 		}
 		id = hex.EncodeToString(raw)
+	} else {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, "", err
+		}
+		token = hex.EncodeToString(raw)
 	}
-	upload := &logstore.TraceUpload{ID: id, ProjectID: project.ID, Source: source, ContentType: contentType, Filename: filename, Status: logstore.TraceUploadStatusPending}
+	upload := &logstore.TraceUpload{ID: id, ProjectID: project.ID, Source: source, ContentType: contentType, Filename: filename, Status: logstore.TraceUploadStatusPending, Token: token}
 	if project.RetentionDays != nil && *project.RetentionDays > 0 {
 		upload.ExpiresAt = new(time.Now().UTC().AddDate(0, 0, *project.RetentionDays))
 	}
@@ -187,7 +197,11 @@ func (h *TraceIngestHandler) newUpload(ctx *fasthttp.RequestCtx, project *tables
 	if err := store.CreateTraceUpload(storeCtx, upload); err != nil {
 		return nil, "", err
 	}
-	return upload, h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + id, nil
+	uploadURL := h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + id
+	if token != "" {
+		uploadURL += "?token=" + token
+	}
+	return upload, uploadURL, nil
 }
 
 // receiveUpload stores the bytes of an upload an SDK was handed a URL for. The URL is the
@@ -198,7 +212,8 @@ func (h *TraceIngestHandler) receiveUpload(ctx *fasthttp.RequestCtx) {
 	storeCtx, cancel := ingestContext()
 	defer cancel()
 	upload, err := store.FindTraceUpload(storeCtx, id)
-	if err != nil || upload.Status != logstore.TraceUploadStatusPending || time.Since(upload.CreatedAt) > traceUploadWindow {
+	if err != nil || upload.Status != logstore.TraceUploadStatusPending || time.Since(upload.CreatedAt) > traceUploadWindow ||
+		(upload.Token != "" && subtle.ConstantTimeCompare([]byte(upload.Token), ctx.QueryArgs().Peek("token")) != 1) {
 		SendError(ctx, fasthttp.StatusNotFound, "upload not found or no longer open")
 		return
 	}
