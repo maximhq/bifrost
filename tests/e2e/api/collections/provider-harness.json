@@ -318491,6 +318491,19 @@
                   "  var text = pm.response.text();",
                   "  pm.expect(text, 'no SSE data lines').to.include('data:');",
                   "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});",
+                  "pm.test('stream carries nonempty answer text', function () {",
+                  "  var answer = '';",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var event = JSON.parse(data);",
+                  "    (event.choices || []).forEach(function (choice) {",
+                  "      if (choice.delta && typeof choice.delta.content === 'string') { answer += choice.delta.content; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(answer.trim(), 'no answer text in stream: ' + pm.response.text().slice(0, 2000)).to.not.be.empty;",
                   "});"
                 ]
               }
@@ -318708,6 +318721,17 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
                   "  pm.expect(pm.response.text()).to.include('response.completed');",
+                  "});",
+                  "pm.test('Wally Responses stream carries nonempty answer text', function () {",
+                  "  var answer = '';",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var event = JSON.parse(data);",
+                  "    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') { answer += event.delta; }",
+                  "  });",
+                  "  pm.expect(answer.trim(), 'no output_text delta in stream: ' + pm.response.text().slice(0, 2000)).to.not.be.empty;",
                   "});"
                 ]
               }

@@ -643,6 +643,7 @@ jobs:
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
+            inference.runanywhere.ai:443
             iojs.org:443
             login.microsoftonline.com:443
             maxim-o1.openai.azure.com:443
