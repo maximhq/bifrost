@@ -110,6 +110,10 @@
           "        hasContent = j.status === 'completed'",
           "            ? (Array.isArray(j.steps) && j.steps.some(function (s) { return s && s.type === 'model_output' && Array.isArray(s.content) && s.content.length > 0; }))",
           "            : (typeof j.id === 'string' && j.id.length > 0 && (j.status === 'in_progress' || j.status === 'cancelled'));",
+          "    } else if (typeof j.audio_base64 === 'string') {",
+          "        // ElevenLabs speech with with_timestamps answers JSON (audio_base64 plus alignment) instead of audio bytes.",
+          "        shape = 'speech-with-timestamps';",
+          "        hasContent = j.audio_base64.length > 0;",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -319229,7 +319233,74 @@
       ]
     },
     {
-      "name": "342. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway)",
+      "name": "342. ElevenLabs speech with_timestamps returns character times (elevenlabs with timestamps) (#9788 / PR #9789)",
+      "description": "POST /v1/audio/speech with an elevenlabs/ model and with_timestamps: true used to return alignment.characters with char_start_times_ms and char_end_times_ms null, in both alignment and normalized_alignment. ElevenLabs' /v1/text-to-speech/{voice_id}/with-timestamps reports the times as character_start_times_seconds and character_end_times_seconds; ElevenlabsAlignment (core/providers/elevenlabs/types.go) decoded names ElevenLabs never sends. Fix: decode ElevenLabs' fields and pass them through; SpeechAlignment (core/schemas/speech.go) now carries character_start_times_seconds and character_end_times_seconds. 342.1 pins the native /v1/audio/speech route: both alignments carry one start and one end time per character, in seconds, non-decreasing. /v1/async/audio/speech reaches the same ElevenlabsProvider.Speech and is not pinned separately. The /openai drop-in has no with_timestamps parameter in the OpenAI API. SpeechStream never calls the stream-with-timestamps endpoint, so streaming is out of scope here.",
+      "item": [
+        {
+          "name": "elevenlabs eleven_turbo_v2_5 /v1/audio/speech with_timestamps character times non-streaming - #9788",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hi there.\",\n  \"voice\": \"nPczCjzI2devNBz1zQrb\",\n  \"response_format\": \"mp3\",\n  \"with_timestamps\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('342.1 status 200 JSON (with_timestamps returns JSON, not audio bytes)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.include('application/json');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('342.1 audio_base64 present', function () {",
+                  "  pm.expect(body.audio_base64, 'audio_base64: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "['alignment', 'normalized_alignment'].forEach(function (field) {",
+                  "  pm.test('342.1 ' + field + ' carries character times in seconds (were null)', function () {",
+                  "    var a = body[field];",
+                  "    pm.expect(a, field + ' missing: ' + JSON.stringify(body[field])).to.be.an('object');",
+                  "    pm.expect(a.characters, field + '.characters').to.be.an('array').and.not.empty;",
+                  "    pm.expect(a.character_start_times_seconds, field + '.character_start_times_seconds: ' + JSON.stringify(a)).to.be.an('array').with.lengthOf(a.characters.length);",
+                  "    pm.expect(a.character_end_times_seconds, field + '.character_end_times_seconds: ' + JSON.stringify(a)).to.be.an('array').with.lengthOf(a.characters.length);",
+                  "    for (var i = 0; i < a.characters.length; i++) {",
+                  "      pm.expect(a.character_start_times_seconds[i], field + ' start[' + i + ']').to.be.a('number');",
+                  "      pm.expect(a.character_end_times_seconds[i], field + ' end[' + i + ']').to.be.at.least(a.character_start_times_seconds[i]);",
+                  "      if (i > 0) { pm.expect(a.character_start_times_seconds[i], field + ' start[' + i + '] goes backwards').to.be.at.least(a.character_start_times_seconds[i - 1]); }",
+                  "    }",
+                  "    // Seconds, not milliseconds: a two-word line ends after 0.1 s and well before 30 s.",
+                  "    pm.expect(a.character_end_times_seconds[a.characters.length - 1], field + ' last end (s)').to.be.within(0.1, 30);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "343. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway)",
       "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /claude-code route is unrouted, so each case fails.",
       "item": [
         {

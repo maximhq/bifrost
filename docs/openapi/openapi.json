@@ -125135,13 +125135,13 @@
           "alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -125158,13 +125158,13 @@
           "normalized_alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
