@@ -45,6 +45,20 @@ type OAuth2IdentityResolver interface {
 	IsUserActive(ctx context.Context, userID string) (active bool, err error)
 }
 
+// OAuth2UserAccessChecker is optionally implemented by an OAuth2IdentityResolver
+// that can tell whether a user holds any access (enterprise access profiles).
+// The consent page asks it on client gateway sign-ins in user mode: a user with
+// no access would otherwise get a session whose every request is refused, with
+// an error that sends the client back to sign in again.
+type OAuth2UserAccessChecker interface {
+	// UserHasAccess reports whether anything grants userID access. An error is
+	// reserved for transient lookup failures that should be retried.
+	UserHasAccess(ctx context.Context, userID string) (bool, error)
+}
+
+// clientGatewayNoAccessMessage is the consent refusal for a user with no access.
+const clientGatewayNoAccessMessage = "your account has no access configured in Bifrost yet. Ask an administrator to assign you an access profile, then sign in again"
+
 // OAuth2ConsentHandler serves the two consent flow APIs:
 //
 //   - GET  /api/oauth2/consent/flows/{id} — flow detail + available modes
@@ -230,6 +244,20 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	// an authorization code: consent alone completes it, and the device's next
 	// token poll consumes the row. Every other flow mints a code.
 	isDeviceFlow := req.DeviceCodeHash != nil
+	if isDeviceFlow && bfMode == schemas.MCPAuthModeUser {
+		if checker, ok := h.identityResolver.(OAuth2UserAccessChecker); ok {
+			hasAccess, err := checker.UserHasAccess(ctx, bfSub)
+			if err != nil {
+				logger.Error("consent: failed to check access for user %s: %v", bfSub, err)
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "failed to check your access; try again")
+				return
+			}
+			if !hasAccess {
+				SendError(ctx, fasthttp.StatusForbidden, clientGatewayNoAccessMessage)
+				return
+			}
+		}
+	}
 	var code string
 	if !isDeviceFlow {
 		// Mint the authorization code. Only the SHA256 hash is stored — the

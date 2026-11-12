@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -354,6 +355,86 @@ func TestConsentFlowSubmit_DeviceFlow(t *testing.T) {
 	assert.Nil(t, got.CodeHash, "a device grant carries no authorization code")
 	assert.Equal(t, "vk", got.BfMode)
 	assert.Equal(t, "vk-row-1", got.BfSub)
+}
+
+// accessCheckingResolver is a fakeResolver that also answers whether a user holds any access,
+// as the enterprise resolver does.
+type accessCheckingResolver struct {
+	fakeResolver
+	hasAccess bool
+	accessErr error
+}
+
+func (r *accessCheckingResolver) UserHasAccess(context.Context, string) (bool, error) {
+	return r.hasAccess, r.accessErr
+}
+
+// TestConsentFlowSubmit_DeviceFlowUserWithoutAccess pins the client gateway sign-in check:
+// a user with no access is refused at consent, with a message saying what to do, instead of
+// being issued a session whose every request governance would refuse. Authorization-code
+// flows (/mcp) and resolvers that cannot answer keep today's behaviour.
+func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
+	seedDevice := func(store *mockOAuth2Store) {
+		deviceHash := "device-hash"
+		store.authReqs["flow-device"] = &configtables.TableOAuth2AuthorizeRequest{
+			ID:             "flow-device",
+			ClientID:       claudeCodeClientID,
+			Status:         configtables.OAuth2AuthorizeRequestStatusPending,
+			DeviceCodeHash: &deviceHash,
+			ExpiresAt:      time.Now().Add(time.Minute),
+		}
+	}
+	signedIn := fakeResolver{userModeAvailable: true, userID: "user-1", name: "Alice"}
+
+	t.Run("no access is refused with guidance and the sign-in stays pending", func(t *testing.T) {
+		store := newConsentStore()
+		seedDevice(store)
+		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
+		ctx := consentCtx("flow-device", `{"mode":"user"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "access profile")
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-device"].Status)
+	})
+
+	t.Run("access lookup failure is retriable", func(t *testing.T) {
+		store := newConsentStore()
+		seedDevice(store)
+		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, accessErr: errors.New("store unavailable")}, false)
+		ctx := consentCtx("flow-device", `{"mode":"user"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-device"].Status)
+	})
+
+	t.Run("a user with access signs in", func(t *testing.T) {
+		store := newConsentStore()
+		seedDevice(store)
+		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: true}, false)
+		ctx := consentCtx("flow-device", `{"mode":"user"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Equal(t, "user", store.authReqs["flow-device"].BfMode)
+	})
+
+	t.Run("a resolver that cannot check access keeps today's behaviour", func(t *testing.T) {
+		store := newConsentStore()
+		seedDevice(store)
+		resolver := signedIn
+		h := newConsentHandler(store, &resolver, false)
+		ctx := consentCtx("flow-device", `{"mode":"user"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	})
+
+	t.Run("an /mcp authorization-code flow is not checked", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, &accessCheckingResolver{fakeResolver: signedIn, hasAccess: false}, false)
+		ctx := consentCtx("flow-1", `{"mode":"user"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	})
 }
 
 func TestConsentFlowSubmit_User(t *testing.T) {
