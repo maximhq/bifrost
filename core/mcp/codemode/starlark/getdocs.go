@@ -66,6 +66,8 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
+	serverName, toolName = normalizeDocsArgs(serverName, toolName, s.codeModeServers(availableToolsPerClient))
+
 	// Find matching client
 	var matchedClientName string
 	var matchedTool *schemas.ChatTool
@@ -134,6 +136,24 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
+}
+
+// normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
+// "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
+// "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
+func normalizeDocsArgs(server, tool string, servers []string) (string, string) {
+	parsedServer, _, _ := parseVFSFilePath(server, servers)
+	if parsedServer == "" {
+		parsedServer = strings.TrimSpace(server)
+	}
+	tool = normalizeVFSPath(tool)
+	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
+		tool = tool[i+1:]
+	}
+	if len(tool) > len(parsedServer)+1 && tool[len(parsedServer)] == '.' && strings.EqualFold(tool[:len(parsedServer)], parsedServer) {
+		tool = tool[len(parsedServer)+1:]
+	}
+	return parsedServer, tool
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
