@@ -1352,6 +1352,8 @@
 		"deletedAfterExpiry": "· supprimée automatiquement après expiration",
 		"viewSpend": "Voir les dépenses",
 		"noAgentsGranted": "Aucun agent autorisé",
+		"virtualMcps": "MCP virtuels",
+		"noVirtualMcpsAssigned": "Aucun MCP virtuel attribué",
 		"fiscalYearStarts": "Début de l’exercice : {{month}}",
 		"assignedUserEmail": "E-mail de l’utilisateur assigné",
 		"leavesGoverningOwner": "Les fournisseurs, budgets et limites de débit de cette clé proviennent du profil d’accès de son propriétaire ; elle n’en possède aucun en propre.",

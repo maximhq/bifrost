@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· 到期后自动删除",
 		"viewSpend": "查看支出",
 		"noAgentsGranted": "未授予任何 Agent",
+		"virtualMcps": "虚拟 MCP",
+		"noVirtualMcpsAssigned": "未分配虚拟 MCP",
 		"fiscalYearStarts": "财年始于 {{month}}",
 		"assignedUserEmail": "分配用户邮箱",
 		"leavesGoverningOwner": "此密钥的供应商、预算和速率限制来自所有者的访问配置文件，且自身没有这些设置。",

@@ -1349,6 +1349,8 @@
 		"deletedAfterExpiry": "· eliminata automaticamente dopo la scadenza",
 		"viewSpend": "Visualizza la spesa",
 		"noAgentsGranted": "Nessun agente autorizzato",
+		"virtualMcps": "MCP virtuali",
+		"noVirtualMcpsAssigned": "Nessun MCP virtuale assegnato",
 		"fiscalYearStarts": "Anno fiscale da {{month}}",
 		"listItem": {
 			"copied": "Chiave virtuale copiata",

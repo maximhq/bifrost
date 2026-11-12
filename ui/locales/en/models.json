@@ -1354,6 +1354,8 @@
 		"deletedAfterExpiry": "· deleted automatically after expiry",
 		"viewSpend": "View spend",
 		"noAgentsGranted": "No agents granted",
+		"virtualMcps": "Virtual MCPs",
+		"noVirtualMcpsAssigned": "No Virtual MCPs assigned",
 		"listItem": {
 			"copied": "Virtual key copied",
 			"copyAria": "Copy virtual key",
