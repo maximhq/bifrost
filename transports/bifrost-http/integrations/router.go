@@ -3708,9 +3708,11 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 }
 
-func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
-	cfg := g.passthroughCfg
-
+// PassthroughSafeHeaders returns the client headers a passthrough call may send upstream, lowercased,
+// and the caller's Authorization value separately: the caller's credentials, cookies, hop-by-hop
+// headers and Bifrost's own x-bf-* headers never leave the gateway. Authorization is returned on its
+// own because whether it is forwarded depends on the upstream (applyPassthroughCallerAuth).
+func PassthroughSafeHeaders(ctx *fasthttp.RequestCtx) (map[string]string, string) {
 	safeHeaders := make(map[string]string)
 	var callerAuth string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
@@ -3728,6 +3730,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		}
 		return true
 	})
+	return safeHeaders, callerAuth
+}
+
+func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
+	cfg := g.passthroughCfg
+
+	safeHeaders, callerAuth := PassthroughSafeHeaders(ctx)
 
 	passthroughErr := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 		return err

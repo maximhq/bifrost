@@ -136,6 +136,7 @@ func TestChatGPTPassthroughRouterRegistersOnlyCodexRoutes(t *testing.T) {
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0", fasthttp.StatusNoContent},
 		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusNoContent},
 		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/models", fasthttp.StatusMethodNotAllowed},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusMethodNotAllowed}, // the upgrade is the Codex WebSocket relay's route, not this router's
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/conversations", fasthttp.StatusNotFound},
 		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models/gpt-5.5", fasthttp.StatusNotFound},
 	}
@@ -1656,6 +1657,39 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 			require.Equal(t, tc.want, registered)
 		})
 	}
+}
+
+// TestNewChatGPTCodexTurn pins what one Codex websocket turn is built as: the frame forwarded
+// byte for byte, the model read from it, key selection skipped for the caller's ChatGPT token, and
+// the Responses text rewriter registered so a redacting plugin can rewrite the turn. A frame that
+// is not valid JSON is refused, as the HTTP route refuses the same body.
+func TestNewChatGPTCodexTurn(t *testing.T) {
+	frame := []byte(`{"type":"response.create","model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"mail alice@example.com"}]}]}`)
+	headers := map[string]string{"chatgpt-account-id": "acct"}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req, err := NewChatGPTCodexTurn(ctx, frame, headers)
+	require.NoError(t, err)
+	require.Equal(t, string(frame), string(req.Body))
+	require.Equal(t, "gpt-5-codex", req.Model)
+	require.Equal(t, fasthttp.MethodPost, req.Method)
+	require.Equal(t, chatGPTCodexResponsesPath, req.Path)
+	require.Equal(t, chatGPTUpstreamURL, req.UpstreamURL)
+	require.Equal(t, schemas.OpenAI, req.Provider)
+	require.Equal(t, headers, req.SafeHeaders)
+
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	require.True(t, skip, "the caller's ChatGPT token is the upstream credential, so key selection must be skipped")
+
+	rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	require.NotNil(t, rewriter, "a Codex turn must carry the Responses text rewriter")
+	rewritten, err := rewriter(bytes.Clone(frame), map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	require.Contains(t, string(rewritten), "mail [EMAIL]")
+	require.Equal(t, string(frame), string(req.Body), "rewriting must not touch the forwarded frame")
+
+	_, err = NewChatGPTCodexTurn(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), []byte(`{"type":"response.create"`), headers)
+	require.Error(t, err)
 }
 
 // passthroughRewriteCustom is a custom provider based on Anthropic that may forward every passthrough route.
