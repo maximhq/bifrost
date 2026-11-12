@@ -2212,6 +2212,26 @@ func classifyAgentGrantReplacementError(err error) error {
 	return err
 }
 
+// validateVirtualKeyProviders refuses provider configs that name one provider more than once. A
+// virtual key holds one config per provider: its per-provider budgets and rate limits are keyed by
+// the provider, and access answers for a provider from that one config's models and keys. Names are
+// compared as the configs are stored, with surrounding whitespace trimmed; a blank name is left to
+// the provider check that refuses it.
+func validateVirtualKeyProviders(providers []string) error {
+	seen := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider)
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("provider_configs names provider %q more than once: a virtual key holds one config per provider", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2267,6 +2287,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	createProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		createProviders = append(createProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(createProviders); err != nil {
 		SendError(ctx, 400, err.Error())
 		return
 	}
@@ -2681,6 +2709,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
+	}
+	// provider_configs is the full desired set (configs it leaves out are deleted), so checking the
+	// request alone covers what the key will hold.
+	updateProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		updateProviders = append(updateProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(updateProviders); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
