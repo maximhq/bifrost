@@ -133,7 +133,7 @@ type GovernanceReader interface {
 func describeVirtualKeyTool() Tool {
 	return Tool{
 		name: "describe_virtual_key",
-		description: "Look up one virtual key's budget, rate limit and allowed providers/models - its configured room, not its traffic. " +
+		description: "Look up one virtual key's budget, rate limit, request limits and allowed providers/models - its configured room, not its traffic. " +
 			"Use query_usage_by with dimension virtual_key for what it has actually spent; use this for what it is allowed to spend or call before it is throttled. " +
 			"Takes the key's id (from describe_filter_space's virtual_keys list, or a ranking row) or its exact name. " +
 			"This reads configuration, not traffic: a key that exists but has never been used is not in describe_filter_space and is still found here by name, so a name missing from that list is not proof the key does not exist. " +
@@ -265,7 +265,7 @@ func annotateVirtualKeyGovernance(out map[string]any, vk *tables.TableVirtualKey
 	if len(vk.Budgets) == 0 {
 		missing = append(missing, "budget")
 	}
-	if vk.RateLimit == nil {
+	if vk.RateLimit == nil && len(vk.RequestLimits) == 0 {
 		missing = append(missing, "rate limit")
 	}
 	if len(missing) == 0 {
@@ -323,6 +323,7 @@ func describeVirtualKey(vk *tables.TableVirtualKey) map[string]any {
 	} else {
 		out["rate_limit"] = nil
 	}
+	out["request_limits"] = requestLimitSummaries(vk.RequestLimits)
 	if len(vk.ProviderConfigs) > 0 {
 		providers := make([]map[string]any, len(vk.ProviderConfigs))
 		for i, config := range vk.ProviderConfigs {
@@ -390,6 +391,18 @@ func rateLimitSummary(limit tables.TableRateLimit) map[string]any {
 	return out
 }
 
+// requestLimitSummaries reports request limits: a max-requests limit each, with
+// the traffic it counts (scope: shared, model or mcp). Never nil, like
+// budgetSummaries.
+func requestLimitSummaries(rules []tables.TableRateLimit) []map[string]any {
+	out := make([]map[string]any, len(rules))
+	for i, rule := range rules {
+		out[i] = rateLimitSummary(rule)
+		out[i]["scope"] = string(rule.Scope.Normalize())
+	}
+	return out
+}
+
 // providerConfigSummary reports which models a provider is scoped to under
 // this key. Keys is deliberately never touched: even the narrower preload
 // used elsewhere (id, name, key_id, provider) is more than a chat tool needs
@@ -411,6 +424,27 @@ func providerConfigSummary(config tables.TableVirtualKeyProviderConfig) map[stri
 	}
 	if config.RateLimit != nil {
 		out["rate_limit"] = rateLimitSummary(*config.RateLimit)
+	}
+	if len(config.RequestLimits) > 0 {
+		out["request_limits"] = requestLimitSummaries(config.RequestLimits)
+	}
+	// A model's own caps under this provider, so a key limited only for one model is not read as uncapped.
+	if len(config.ModelBudgets) > 0 {
+		models := make([]map[string]any, len(config.ModelBudgets))
+		for i, mb := range config.ModelBudgets {
+			m := map[string]any{"model": mb.ModelName}
+			if len(mb.Budgets) > 0 {
+				m["budgets"] = budgetSummaries(mb.Budgets)
+			}
+			if mb.RateLimit != nil {
+				m["rate_limit"] = rateLimitSummary(*mb.RateLimit)
+			}
+			if len(mb.RequestLimits) > 0 {
+				m["request_limits"] = requestLimitSummaries(mb.RequestLimits)
+			}
+			models[i] = m
+		}
+		out["model_budgets"] = models
 	}
 	return out
 }

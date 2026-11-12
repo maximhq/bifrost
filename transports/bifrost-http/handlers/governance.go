@@ -43,6 +43,9 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
+	// LoadRateLimit returns the governance store's live copy of one rate limit, or nil when the
+	// store does not hold it. Read only; it does not clone the store as GetGovernanceData does.
+	LoadRateLimit(ctx context.Context, id string) *configstoreTables.TableRateLimit
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the store that
 	// enforces spend, leaving each reset boundary untouched. Enterprise also
@@ -260,7 +263,8 @@ type ExternalQuotaBudgetResult struct {
 	// RateLimits lists every rate limit RateLimit was merged from, each tagged with
 	// its source, so a caller can see which one is actually binding instead of only
 	// the merged result. Empty when there's at most one source.
-	RateLimits []SourcedRateLimit
+	RateLimits    []SourcedRateLimit
+	RequestLimits []configstoreTables.TableRateLimit // Request limits that govern the key, each with its scope and live usage
 	// Managed reports that the VK is access-profile-managed. Set independently of
 	// Budgets/RateLimit so the flag reaches the response even when the profile has
 	// neither — it drives the managed-key UI (lock + notice).
@@ -379,6 +383,7 @@ type CreateVirtualKeyRequest struct {
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		RequestLimits     []RequestLimitRequest   `json:"request_limits,omitempty"`     // Provider-level request limits (scope shared or model)
 		ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
 		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
@@ -393,6 +398,7 @@ type CreateVirtualKeyRequest struct {
 	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits     []RequestLimitRequest   `json:"request_limits,omitempty"` // One per reset period and scope, on the key's holder-level model config
 	IsActive          *bool                   `json:"is_active,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; provider_configs remain optional overrides
@@ -421,16 +427,18 @@ type relayGrantBody struct {
 // on VK create. model_name must be a concrete model (not the "*" wildcard, which is the
 // provider-level tier).
 type vkModelBudgetRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
-	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName     string                  `json:"model_name" validate:"required"`
+	Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits []RequestLimitRequest   `json:"request_limits,omitempty"`
 }
 
 // vkModelBudgetUpdateRequest mirrors vkModelBudgetRequest for VK update (removable rate limit).
 type vkModelBudgetUpdateRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName     string                  `json:"model_name" validate:"required"`
+	Budgets       []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits []RequestLimitRequest   `json:"request_limits,omitempty"`
 }
 
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
@@ -445,6 +453,7 @@ type UpdateVirtualKeyRequest struct {
 		BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
 		Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		RequestLimits     []RequestLimitRequest        `json:"request_limits,omitempty"`     // Provider-level request limits; omitted leaves them unchanged unless rate_limit is sent
 		ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
 		KeyIDs            schemas.WhiteList            `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
@@ -458,6 +467,7 @@ type UpdateVirtualKeyRequest struct {
 	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
+	RequestLimits     []RequestLimitRequest        `json:"request_limits,omitempty"` // [] removes all; omitted leaves them unchanged unless rate_limit is sent
 	IsActive          *bool                        `json:"is_active,omitempty"`
 	CalendarAligned   *bool                        `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
 	AllowAllProviders *bool                        `json:"allow_all_providers,omitempty"` // When true, all providers are allowed; nil means leave unchanged
@@ -605,6 +615,315 @@ func duplicateBudgetPeriodError(b CreateBudgetRequest) error {
 	return &badRequestError{err: fmt.Errorf("duplicate reset_duration %s for scope %s in budgets", b.ResetDuration, b.Scope.Normalize())}
 }
 
+// RequestLimitRequest is one request limit: at most MaxLimit requests per ResetDuration, counted
+// for the traffic Scope selects. A holder may carry several, one per reset period and scope.
+type RequestLimitRequest struct {
+	ID            string                       `json:"id,omitempty"`
+	MaxLimit      int64                        `json:"max_limit"`
+	ResetDuration string                       `json:"reset_duration"`
+	Scope         configstoreTables.LimitScope `json:"scope,omitempty"` // "shared" (default), "model" or "mcp"
+}
+
+// validateRequestLimitScope is validateBudgetRequestScope for request limits: the scope must be known
+// and, on an owner MCP tool executions never reach, not "mcp".
+func validateRequestLimitScope(r RequestLimitRequest, mcpApplicable bool) error {
+	if !r.Scope.IsValid() {
+		return &badRequestError{err: fmt.Errorf("invalid request limit scope: %s (must be one of shared, model, mcp)", r.Scope)}
+	}
+	if !mcpApplicable && r.Scope.Normalize() == configstoreTables.LimitScopeMCP {
+		return &badRequestError{err: fmt.Errorf("request limit scope %s is only supported on request limits that apply to all models and providers", r.Scope)}
+	}
+	return nil
+}
+
+// splitLegacyRateLimitRequest separates the request fields of a rate_limit payload from its token fields,
+// since rate_limit now carries the token limit only and request limits live in request_limits.
+//
+// A client that predates request_limits keeps working: a rate_limit sent without request_limits is
+// read as the full combined state it used to be, so its request fields become one request limit of
+// the default scope and, when it names none, the holder's request limits are removed. Sending both
+// forms is refused, since they would disagree. The returned rate limit is nil when rl is nil, and
+// empty (a removal) when no token limit is left. requestLimits stays nil, leaving the holder's
+// request limits untouched, only when neither rate_limit nor request_limits is sent.
+func splitLegacyRateLimitRequest(rl *UpdateRateLimitRequest, requestLimits []RequestLimitRequest) (*UpdateRateLimitRequest, []RequestLimitRequest, error) {
+	if rl == nil {
+		return nil, requestLimits, nil
+	}
+	if requestLimits != nil && (rl.RequestMaxLimit != nil || rl.RequestResetDuration != nil) {
+		return nil, nil, &badRequestError{err: errors.New("rate_limit.request_max_limit and rate_limit.request_reset_duration cannot be combined with request_limits; send request limits in request_limits")}
+	}
+	tokens := &UpdateRateLimitRequest{}
+	if rl.TokenMaxLimit != nil {
+		tokens.TokenMaxLimit, tokens.TokenResetDuration = rl.TokenMaxLimit, rl.TokenResetDuration
+	}
+	switch {
+	case requestLimits != nil:
+	case rl.RequestMaxLimit != nil:
+		if rl.RequestResetDuration == nil {
+			return nil, nil, &badRequestError{err: errors.New("rate limit request reset duration is required")}
+		}
+		requestLimits = []RequestLimitRequest{{MaxLimit: *rl.RequestMaxLimit, ResetDuration: *rl.RequestResetDuration}}
+	default:
+		requestLimits = []RequestLimitRequest{}
+	}
+	return tokens, requestLimits, nil
+}
+
+// splitLegacyCreateRateLimitRequest is splitLegacyRateLimitRequest for a create payload, where a rate limit with
+// no token limit left is no rate limit at all.
+func splitLegacyCreateRateLimitRequest(rl *CreateRateLimitRequest, requestLimits []RequestLimitRequest) (*CreateRateLimitRequest, []RequestLimitRequest, error) {
+	tokens, requestLimits, err := splitLegacyRateLimitRequest((*UpdateRateLimitRequest)(rl), requestLimits)
+	if err != nil || tokens == nil || tokens.TokenMaxLimit == nil {
+		return nil, requestLimits, err
+	}
+	return (*CreateRateLimitRequest)(tokens), requestLimits, nil
+}
+
+// holderRateLimitUpdate is how updateHolderRateLimit left a holder's rate_limit_id.
+type holderRateLimitUpdate struct {
+	rateLimitID *string                           // the holder's rate_limit_id from now on
+	rateLimit   *configstoreTables.TableRateLimit // the row it names
+	deleteID    string                            // a row to delete once the holder no longer names it
+	carry       *configstoreTables.TableRateLimit // a combined row's request part; see reconcileRequestLimits
+	sharedID    string                            // a shared combined row the holder moved off; see restoreSharedRateLimit
+}
+
+// updateHolderRateLimit applies an update that sets a holder's rate limit or request limits to the
+// row its rate_limit_id names. tokens is the token-only rate_limit, or nil when only request_limits
+// were sent, which leaves the token limit as it is.
+//
+// A combined row, carrying a request limit an earlier release left on it (a row several holders
+// share, which the migration could not split, or one propagated so), stops speaking for this holder's
+// requests: the holder's request limits are exactly its request limits from now on. A row only this
+// holder names drops its request fields; a shared row is left as it is for its other holders, and
+// this holder moves to a token-only copy of it. Either way the row's request part is returned as
+// carry, so a new request limit of the same period takes over its counter, and its live usage is
+// written to the store first so the other holders reload it intact. A row left with no limit at all
+// is deleted, or for a shared row simply not copied.
+func (h *GovernanceHandler) updateHolderRateLimit(ctx context.Context, tx *gorm.DB, rateLimitID string, tokens *UpdateRateLimitRequest) (holderRateLimitUpdate, error) {
+	row := configstoreTables.TableRateLimit{}
+	if err := tx.First(&row, "id = ?", rateLimitID).Error; err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	combined := row.RequestMaxLimit != nil && !row.IsRequestLimit()
+	if !combined && tokens == nil {
+		return holderRateLimitUpdate{rateLimitID: &row.ID, rateLimit: &row}, nil
+	}
+	tokenMax, tokenDur := row.TokenMaxLimit, row.TokenResetDuration
+	if tokens != nil {
+		tokenMax, tokenDur = nil, nil
+		if tokens.TokenMaxLimit != nil {
+			tokenMax, tokenDur = tokens.TokenMaxLimit, tokens.TokenResetDuration
+		}
+	}
+	var update holderRateLimitUpdate
+	shared := false
+	if combined {
+		// Without a live copy the stored usage stands.
+		if live := h.governanceManager.LoadRateLimit(ctx, row.ID); live != nil {
+			row.TokenCurrentUsage, row.TokenLastReset = live.TokenCurrentUsage, live.TokenLastReset
+			row.RequestCurrentUsage, row.RequestLastReset = live.RequestCurrentUsage, live.RequestLastReset
+			if err := h.configStore.UpdateRateLimitUsage(ctx, row.ID, row.TokenCurrentUsage, row.RequestCurrentUsage, tx); err != nil {
+				return holderRateLimitUpdate{}, err
+			}
+			// The counters belong to the live windows, so their starts are stored with them, never moving
+			// a stored start backward.
+			for column, at := range map[string]time.Time{"token_last_reset": row.TokenLastReset, "request_last_reset": row.RequestLastReset} {
+				if at.IsZero() {
+					continue
+				}
+				if err := tx.Model(&configstoreTables.TableRateLimit{}).Where("id = ? AND "+column+" < ?", row.ID, at).UpdateColumn(column, at).Error; err != nil {
+					return holderRateLimitUpdate{}, fmt.Errorf("failed to store the live %s of rate limit %s: %w", column, row.ID, err)
+				}
+			}
+		}
+		carry := row
+		update.carry = &carry
+		// Counted as the migration split_request_limits_from_rate_limits counts them: across every
+		// table with a rate_limit_id column, so a row any other table names is shared.
+		references, err := configstore.CountRateLimitReferences(tx, []string{row.ID})
+		if err != nil {
+			return holderRateLimitUpdate{}, fmt.Errorf("failed to count the holders of rate limit %s: %w", row.ID, err)
+		}
+		shared = references[row.ID] > 1
+	}
+	if shared {
+		update.sharedID = row.ID
+		if tokenMax == nil {
+			return update, nil
+		}
+		tokenCopy := configstoreTables.TableRateLimit{
+			ID:                 uuid.NewString(),
+			TokenMaxLimit:      tokenMax,
+			TokenResetDuration: tokenDur,
+			TokenCurrentUsage:  row.TokenCurrentUsage,
+			TokenLastReset:     row.TokenLastReset,
+			RequestLastReset:   time.Now(),
+			CreatedAt:          row.CreatedAt, // the window's lattice anchor, so an aligned copy keeps its boundaries
+		}
+		if err := validateRateLimit(&tokenCopy); err != nil {
+			return holderRateLimitUpdate{}, err
+		}
+		if err := h.configStore.CreateRateLimit(ctx, &tokenCopy, tx); err != nil {
+			return holderRateLimitUpdate{}, err
+		}
+		update.rateLimitID, update.rateLimit = &tokenCopy.ID, &tokenCopy
+		return update, nil
+	}
+	row.TokenMaxLimit, row.TokenResetDuration = tokenMax, tokenDur
+	row.RequestMaxLimit, row.RequestResetDuration = nil, nil
+	if tokenMax == nil {
+		update.deleteID = row.ID
+		return update, nil
+	}
+	if err := validateRateLimit(&row); err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	if err := h.configStore.UpdateRateLimit(ctx, &row, tx); err != nil {
+		return holderRateLimitUpdate{}, err
+	}
+	update.rateLimitID, update.rateLimit = &row.ID, &row
+	return update, nil
+}
+
+// restoreSharedRateLimit puts a shared rate limit back in the governance store after a holder moved
+// off it: reloading a team or customer evicts the row it no longer names, though the row's other
+// holders still name it. Each of them is reloaded, which reads the row (with the usage
+// updateHolderRateLimit stored) back in. A failed reload is logged; the row returns on the next reload.
+func (h *GovernanceHandler) restoreSharedRateLimit(ctx context.Context, rateLimitID string) {
+	ids := func(model any, column string) []string {
+		var out []string
+		if err := h.configStore.DB().WithContext(ctx).Model(model).Where("rate_limit_id = ?", rateLimitID).Pluck(column, &out).Error; err != nil {
+			logger.Error("failed to read the holders of shared rate limit %s: %v", rateLimitID, err)
+		}
+		return out
+	}
+	for _, id := range ids(&configstoreTables.TableTeam{}, "id") {
+		if _, err := h.governanceManager.ReloadTeam(ctx, id); err != nil {
+			logger.Error("failed to reload team %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, id := range ids(&configstoreTables.TableCustomer{}, "id") {
+		if _, err := h.governanceManager.ReloadCustomer(ctx, id); err != nil {
+			logger.Error("failed to reload customer %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, id := range ids(&configstoreTables.TableModelConfig{}, "id") {
+		if _, err := h.governanceManager.ReloadModelConfig(ctx, id); err != nil {
+			logger.Error("failed to reload model config %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	vkIDs := append(ids(&configstoreTables.TableVirtualKey{}, "id"), ids(&configstoreTables.TableVirtualKeyProviderConfig{}, "virtual_key_id")...)
+	for _, id := range vkIDs {
+		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
+			logger.Error("failed to reload virtual key %s sharing rate limit %s: %v", id, rateLimitID, err)
+		}
+	}
+	for _, name := range ids(&configstoreTables.TableProvider{}, "name") {
+		if _, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(name), false); err != nil {
+			logger.Error("failed to reload provider %s sharing rate limit %s: %v", name, rateLimitID, err)
+		}
+	}
+}
+
+// reconcileRequestLimits makes a holder's request limits the requested set, the way the budget
+// reconcilers do for budgets: each request is validated and scoped (mcpApplicable says whether the holder's limits reach MCP traffic, see validateRequestLimitScope), two requests
+// sharing a reset period and scope are refused, and a request matches an existing rule by ID, else
+// by reset period and scope. A matched rule is updated in place, which keeps its counter; an
+// unmatched request creates a rule, owned through setOwner; an existing rule nothing matched is
+// deleted. A created rule of the same reset period as carry, the request part of a combined rate
+// limit the holder just left (see updateHolderRateLimit), and scope shared takes over its counter.
+// It returns the reconciled rules for the caller to set on the holder before saving it.
+func (h *GovernanceHandler) reconcileRequestLimits(ctx context.Context, tx *gorm.DB, existing []configstoreTables.TableRateLimit, requests []RequestLimitRequest, mcpApplicable bool, setOwner func(*configstoreTables.TableRateLimit), carry *configstoreTables.TableRateLimit) ([]configstoreTables.TableRateLimit, error) {
+	requests = append([]RequestLimitRequest(nil), requests...)
+	seen := make(map[string]bool, len(requests))
+	claimedIDs := make(map[string]bool, len(requests))
+	for i := range requests {
+		r := &requests[i]
+		if err := validateRequestLimitScope(*r, mcpApplicable); err != nil {
+			return nil, err
+		}
+		r.Scope = r.Scope.Normalize()
+		if r.MaxLimit <= 0 {
+			return nil, &badRequestError{err: fmt.Errorf("request limit max_limit must be greater than zero: %d", r.MaxLimit)}
+		}
+		if d, err := configstoreTables.ParseDuration(r.ResetDuration); err != nil || d <= 0 {
+			return nil, &badRequestError{err: fmt.Errorf("invalid request limit reset duration (must be a positive duration): %s", r.ResetDuration)}
+		}
+		key := configstoreTables.LimitPeriodKey(r.ResetDuration, r.Scope)
+		if seen[key] {
+			return nil, &badRequestError{err: fmt.Errorf("duplicate reset_duration %s for scope %s in request_limits", r.ResetDuration, r.Scope)}
+		}
+		seen[key] = true
+		if r.ID != "" {
+			claimedIDs[r.ID] = true
+		}
+	}
+	// As in buildBudgetLookup, a rule claimed by ID is never matched by period.
+	byID := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	byPeriod := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	for _, rl := range existing {
+		byID[rl.ID] = rl
+		if !claimedIDs[rl.ID] {
+			byPeriod[rl.RequestPeriodKey()] = rl
+		}
+	}
+	reconciled := make([]configstoreTables.TableRateLimit, 0, len(requests))
+	matched := make(map[string]bool, len(existing))
+	now := time.Now()
+	for _, r := range requests {
+		maxLimit, duration := r.MaxLimit, r.ResetDuration
+		var row configstoreTables.TableRateLimit
+		found := false
+		if r.ID != "" {
+			if row, found = byID[r.ID]; !found {
+				return nil, &badRequestError{err: fmt.Errorf("request limit %s does not belong to this entity", r.ID)}
+			}
+		} else {
+			row, found = byPeriod[configstoreTables.LimitPeriodKey(r.ResetDuration, r.Scope)]
+		}
+		if found {
+			delete(byID, row.ID)
+			delete(byPeriod, row.RequestPeriodKey())
+			row.RequestMaxLimit, row.RequestResetDuration, row.Scope = &maxLimit, &duration, r.Scope
+			if err := h.configStore.UpdateRateLimit(ctx, &row, tx); err != nil {
+				return nil, err
+			}
+			matched[row.ID] = true
+		} else {
+			row = configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				RequestMaxLimit:      &maxLimit,
+				RequestResetDuration: &duration,
+				Scope:                r.Scope,
+				TokenLastReset:       now,
+				RequestLastReset:     now,
+			}
+			setOwner(&row)
+			if carry != nil && carry.RequestResetDuration != nil && r.Scope == configstoreTables.LimitScopeShared && *carry.RequestResetDuration == r.ResetDuration {
+				row.RequestCurrentUsage, row.RequestLastReset = carry.RequestCurrentUsage, carry.RequestLastReset
+				// CreatedAt anchors the reset windows, so the rule keeps the combined row's.
+				if !carry.CreatedAt.IsZero() {
+					row.CreatedAt = carry.CreatedAt
+				}
+				carry = nil
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &row, tx); err != nil {
+				return nil, err
+			}
+		}
+		reconciled = append(reconciled, row)
+	}
+	for _, rl := range existing {
+		if !matched[rl.ID] {
+			if err := h.configStore.DeleteRateLimit(ctx, rl.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+				return nil, fmt.Errorf("failed to delete removed request limit: %w", err)
+			}
+		}
+	}
+	return reconciled, nil
+}
+
 // UpdateBudgetRequest represents the request body for updating a budget
 type UpdateBudgetRequest struct {
 	MaxLimit      *float64                             `json:"max_limit,omitempty"`
@@ -648,7 +967,7 @@ type UpdateRateLimitRequest struct {
 // what an operator sends to take a team off its own limits, usually just before attaching an access
 // profile, so it must not be read as setting one.
 func teamUpdateSetsOwnLimits(req *UpdateTeamRequest) bool {
-	if len(req.Budgets) > 0 {
+	if len(req.Budgets) > 0 || len(req.RequestLimits) > 0 {
 		return true
 	}
 	return req.RateLimit != nil && (req.RateLimit.TokenMaxLimit != nil || req.RateLimit.RequestMaxLimit != nil)
@@ -662,7 +981,7 @@ func teamUpdateSetsOwnLimits(req *UpdateTeamRequest) bool {
 // deprecated budget carrying neither field. A deprecated budget that names just one field is not a
 // removal: coerceLegacyBudget merges it with the stored budget and keeps the maximum already there.
 func customerUpdateSetsOwnLimits(req *UpdateCustomerRequest) bool {
-	if req.Budgets != nil && len(*req.Budgets) > 0 {
+	if (req.Budgets != nil && len(*req.Budgets) > 0) || len(req.RequestLimits) > 0 {
 		return true
 	}
 	if req.Budget != nil && !isBudgetRemovalRequest(req.Budget) {
@@ -923,7 +1242,7 @@ func (r *budgetUsageReset) apply(ctx context.Context, store configstore.ConfigSt
 //
 // Runs after the in-memory reload, for the same reason the usage reset does: the
 // reload carries cached values forward and would otherwise overwrite the change.
-func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switchedOn bool, owner BudgetUsageResetOwner, budgets []configstoreTables.TableBudget, rateLimitID *string) error {
+func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switchedOn bool, owner BudgetUsageResetOwner, budgets []configstoreTables.TableBudget, rateLimitID *string, requestLimits []configstoreTables.TableRateLimit) error {
 	if !switchedOn {
 		return nil
 	}
@@ -934,6 +1253,9 @@ func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switched
 	var rateLimitIDs []string
 	if rateLimitID != nil && *rateLimitID != "" {
 		rateLimitIDs = append(rateLimitIDs, *rateLimitID)
+	}
+	for _, rl := range requestLimits {
+		rateLimitIDs = append(rateLimitIDs, rl.ID)
 	}
 	return h.governanceManager.AdoptCalendarAlignmentInMemory(ctx, owner, budgetIDs, rateLimitIDs)
 }
@@ -1013,6 +1335,19 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		}
 	}
 	mc.Budgets = reconciled
+	return nil
+}
+
+// reconcileModelConfigRequestLimits makes a model config's request limits the requested set, scoped
+// by the config's tier (any scope on the holder-level row, shared or model elsewhere). The model config row
+// must already exist. It mutates mc.RequestLimits to the reconciled set.
+func (h *GovernanceHandler) reconcileModelConfigRequestLimits(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []RequestLimitRequest, carry *configstoreTables.TableRateLimit) error {
+	reconciled, err := h.reconcileRequestLimits(ctx, tx, mc.RequestLimits, requests, mc.IsHolderLevel(),
+		func(rl *configstoreTables.TableRateLimit) { rl.ModelConfigID = &mc.ID }, carry)
+	if err != nil {
+		return err
+	}
+	mc.RequestLimits = reconciled
 	return nil
 }
 
@@ -1098,12 +1433,14 @@ type vkModelConfigDesired struct {
 	provider *string
 	// modelName is the model tier this config governs. Empty defaults to the "*" all-models
 	// tier (VK top-level / per-provider); a concrete model name targets a per-model budget.
-	modelName         string
-	budgetsProvided   bool
-	budgets           []CreateBudgetRequest
-	rateLimitProvided bool
-	rateLimitRemove   bool
-	rateLimit         *configstoreTables.TableRateLimit
+	modelName             string
+	budgetsProvided       bool
+	budgets               []CreateBudgetRequest
+	rateLimitProvided     bool
+	rateLimitRemove       bool
+	rateLimit             *configstoreTables.TableRateLimit
+	requestLimitsProvided bool // like budgetsProvided: false leaves the request limits unchanged
+	requestLimits         []RequestLimitRequest
 	// reconcileModelBudgets applies to a provider's "*" tier entry: when true the request's
 	// per-model budgets for this provider are authoritative and configs absent from them are
 	// pruned; when false (model_budgets omitted) existing per-model configs are left untouched.
@@ -1157,7 +1494,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	// model_budgets set was supplied. Per-model configs of a still-configured provider whose
 	// model_budgets were omitted are left untouched (e.g. ones set via the model-config API).
 	var existing []configstoreTables.TableModelConfig
-	if err := tx.Preload("Budgets").
+	if err := tx.Preload("Budgets").Preload("RequestLimits").
 		Where("scope = ? AND scope_id = ? AND provider IS NOT NULL",
 			configstoreTables.ModelConfigScopeVirtualKey, vk.ID).
 		Find(&existing).Error; err != nil {
@@ -1182,7 +1519,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
 func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired, usageReset *budgetUsageReset) error {
 	modelName := d.modelNameOrAll()
-	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
+	q := tx.Preload("Budgets").Preload("RequestLimits").Where("scope = ? AND scope_id = ? AND model_name = ?",
 		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, modelName)
 	if d.provider == nil {
 		q = q.Where("provider IS NULL")
@@ -1214,60 +1551,52 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 
 	// Rate limit (mc references it via RateLimitID, so resolve before persisting the mc).
 	var rateLimitIDToDelete string
-	if d.rateLimitProvided {
-		switch {
-		case d.rateLimitRemove:
-			if mc.RateLimitID != nil {
-				rateLimitIDToDelete = *mc.RateLimitID
-				mc.RateLimitID = nil
-				mc.RateLimit = nil
+	var requestLimitCarry *configstoreTables.TableRateLimit
+	if mc.RateLimitID != nil && (d.rateLimitProvided || d.requestLimitsProvided) {
+		// The token limit lands on the existing row; see updateHolderRateLimit.
+		var tokens *UpdateRateLimitRequest
+		if d.rateLimitProvided {
+			tokens = &UpdateRateLimitRequest{}
+			if !d.rateLimitRemove {
+				tokens.TokenMaxLimit, tokens.TokenResetDuration = d.rateLimit.TokenMaxLimit, d.rateLimit.TokenResetDuration
 			}
-		case mc.RateLimitID != nil:
+		}
+		update, err := h.updateHolderRateLimit(ctx, tx, *mc.RateLimitID, tokens)
+		if err != nil {
+			return err
+		}
+		mc.RateLimitID, mc.RateLimit = update.rateLimitID, update.rateLimit
+		rateLimitIDToDelete, requestLimitCarry = update.deleteID, update.carry
+	} else if d.rateLimitProvided && !d.rateLimitRemove {
+		// Adopt the VK's existing rate limit (config.json flow) instead of creating a duplicate.
+		if isNew && vk.RateLimitID != nil {
 			rl := configstoreTables.TableRateLimit{}
-			if err := tx.First(&rl, "id = ?", *mc.RateLimitID).Error; err != nil {
-				return err
-			}
-			rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
-			rl.TokenResetDuration = d.rateLimit.TokenResetDuration
-			rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
-			rl.RequestResetDuration = d.rateLimit.RequestResetDuration
-			if err := validateRateLimit(&rl); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
-				return err
-			}
-			mc.RateLimit = &rl
-		default:
-			// Adopt the VK's existing rate limit (config.json flow) instead of creating a duplicate.
-			if isNew && vk.RateLimitID != nil {
-				rl := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rl, "id = ?", *vk.RateLimitID).Error; err != nil {
-					if !errors.Is(err, gorm.ErrRecordNotFound) {
-						return err
-					}
-				} else {
-					rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
-					rl.TokenResetDuration = d.rateLimit.TokenResetDuration
-					rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
-					rl.RequestResetDuration = d.rateLimit.RequestResetDuration
-					if err := validateRateLimit(&rl); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
-						return err
-					}
-					if err := tx.Model(&configstoreTables.TableVirtualKey{}).
-						Where("id = ?", vk.ID).
-						Update("rate_limit_id", nil).Error; err != nil {
-						return fmt.Errorf("failed to clear VK rate limit reference: %w", err)
-					}
-					vk.RateLimitID = nil
-					mc.RateLimitID = &rl.ID
-					mc.RateLimit = &rl
-					break
+			if err := tx.First(&rl, "id = ?", *vk.RateLimitID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
 				}
+			} else {
+				rl.TokenMaxLimit = d.rateLimit.TokenMaxLimit
+				rl.TokenResetDuration = d.rateLimit.TokenResetDuration
+				rl.RequestMaxLimit = d.rateLimit.RequestMaxLimit
+				rl.RequestResetDuration = d.rateLimit.RequestResetDuration
+				if err := validateRateLimit(&rl); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rl, tx); err != nil {
+					return err
+				}
+				if err := tx.Model(&configstoreTables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("rate_limit_id", nil).Error; err != nil {
+					return fmt.Errorf("failed to clear VK rate limit reference: %w", err)
+				}
+				vk.RateLimitID = nil
+				mc.RateLimitID = &rl.ID
+				mc.RateLimit = &rl
 			}
+		}
+		if mc.RateLimitID == nil {
 			rl := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
 				TokenMaxLimit:        d.rateLimit.TokenMaxLimit,
@@ -1293,13 +1622,22 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	if d.budgetsProvided {
 		finalBudgetCount = len(d.budgets)
 	}
-	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0
+	finalRequestLimitCount := len(mc.RequestLimits)
+	if d.requestLimitsProvided {
+		finalRequestLimitCount = len(d.requestLimits)
+	}
+	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0 || finalRequestLimitCount > 0
 
 	if !hasGovernance {
-		// No governance left → drop the model config (and its budgets) if it existed.
+		// No governance left → drop the model config (and its budgets and request limits) if it existed.
 		if !isNew {
 			for i := range mc.Budgets {
 				if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
+					return err
+				}
+			}
+			for i := range mc.RequestLimits {
+				if err := h.configStore.DeleteRateLimit(ctx, mc.RequestLimits[i].ID, tx); err != nil {
 					return err
 				}
 			}
@@ -1350,6 +1688,11 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			return err
 		}
 	}
+	if d.requestLimitsProvided {
+		if err := h.reconcileModelConfigRequestLimits(ctx, tx, &mc, d.requestLimits, requestLimitCarry); err != nil {
+			return err
+		}
+	}
 
 	if rateLimitIDToDelete != "" {
 		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
@@ -1367,6 +1710,11 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 			return err
 		}
 	}
+	for i := range mc.RequestLimits {
+		if err := h.configStore.DeleteRateLimit(ctx, mc.RequestLimits[i].ID, tx); err != nil {
+			return err
+		}
+	}
 	rlID := mc.RateLimitID
 	if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 		return err
@@ -1379,14 +1727,12 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 	return nil
 }
 
-// rateLimitFromRequestFields builds a transient TableRateLimit (limit/duration fields only)
-// for the VK governance sync, from the shared rate-limit request field shape.
-func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64, reqDur *string) *configstoreTables.TableRateLimit {
+// tokenRateLimit builds a transient TableRateLimit carrying a token limit only (limit and duration
+// fields only), for the VK governance sync: request limits live in request_limits, not on the rate limit.
+func tokenRateLimit(tokenMax *int64, tokenDur *string) *configstoreTables.TableRateLimit {
 	return &configstoreTables.TableRateLimit{
-		TokenMaxLimit:        tokenMax,
-		TokenResetDuration:   tokenDur,
-		RequestMaxLimit:      reqMax,
-		RequestResetDuration: reqDur,
+		TokenMaxLimit:      tokenMax,
+		TokenResetDuration: tokenDur,
 	}
 }
 
@@ -1429,17 +1775,23 @@ func buildVKCreateModelBudgets(provider *string, providerName string, mbs []vkMo
 	}
 	out := make([]vkModelConfigDesired, 0, len(mbs))
 	for _, mb := range mbs {
+		tokenLimit, requestLimits, err := splitLegacyCreateRateLimitRequest(mb.RateLimit, mb.RequestLimits)
+		if err != nil {
+			return nil, err
+		}
 		var rl *configstoreTables.TableRateLimit
-		if mb.RateLimit != nil {
-			rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+		if tokenLimit != nil {
+			rl = tokenRateLimit(tokenLimit.TokenMaxLimit, tokenLimit.TokenResetDuration)
 		}
 		out = append(out, vkModelConfigDesired{
-			provider:          provider,
-			modelName:         strings.TrimSpace(mb.ModelName),
-			budgetsProvided:   true,
-			budgets:           mb.Budgets,
-			rateLimitProvided: mb.RateLimit != nil,
-			rateLimit:         rl,
+			provider:              provider,
+			modelName:             strings.TrimSpace(mb.ModelName),
+			budgetsProvided:       true,
+			budgets:               mb.Budgets,
+			rateLimitProvided:     tokenLimit != nil,
+			rateLimit:             rl,
+			requestLimitsProvided: true,
+			requestLimits:         requestLimits,
 		})
 	}
 	return out, nil
@@ -1458,23 +1810,33 @@ func buildVKUpdateModelBudgets(provider *string, providerName string, mbs []vkMo
 	}
 	out := make([]vkModelConfigDesired, 0, len(mbs))
 	for _, mb := range mbs {
+		tokenLimit, requestLimits, err := splitLegacyRateLimitRequest(mb.RateLimit, mb.RequestLimits)
+		if err != nil {
+			return nil, err
+		}
 		rlRemove := false
 		var rl *configstoreTables.TableRateLimit
-		if mb.RateLimit != nil {
-			if isRateLimitRemovalRequest(mb.RateLimit) {
+		if tokenLimit != nil {
+			if isRateLimitRemovalRequest(tokenLimit) {
 				rlRemove = true
 			} else {
-				rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+				rl = tokenRateLimit(tokenLimit.TokenMaxLimit, tokenLimit.TokenResetDuration)
 			}
 		}
+		// The supplied entry is the model's full desired state, as its budgets are.
+		if requestLimits == nil {
+			requestLimits = []RequestLimitRequest{}
+		}
 		out = append(out, vkModelConfigDesired{
-			provider:          provider,
-			modelName:         strings.TrimSpace(mb.ModelName),
-			budgetsProvided:   true,
-			budgets:           mb.Budgets,
-			rateLimitProvided: mb.RateLimit != nil,
-			rateLimitRemove:   rlRemove,
-			rateLimit:         rl,
+			provider:              provider,
+			modelName:             strings.TrimSpace(mb.ModelName),
+			budgetsProvided:       true,
+			budgets:               mb.Budgets,
+			rateLimitProvided:     tokenLimit != nil,
+			rateLimitRemove:       rlRemove,
+			rateLimit:             rl,
+			requestLimitsProvided: true,
+			requestLimits:         requestLimits,
 		})
 	}
 	return out, nil
@@ -1498,6 +1860,7 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
 		vk.RateLimitID = mc.RateLimitID
+		vk.RequestLimits = mc.RequestLimits
 	}
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
@@ -1505,6 +1868,7 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 			pc.Budgets = mc.Budgets
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
+			pc.RequestLimits = mc.RequestLimits
 		}
 		pc.ModelBudgets = perModelByKey[vkModelConfigIndexKey(vk.ID, &pc.Provider)]
 	}
@@ -1523,9 +1887,10 @@ func buildVKModelBudgetsIndex(mcs []*configstoreTables.TableModelConfig) map[str
 		}
 		key := vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)
 		byKey[key] = append(byKey[key], configstoreTables.VKProviderModelBudget{
-			ModelName: mc.ModelName,
-			Budgets:   mc.Budgets,
-			RateLimit: mc.RateLimit,
+			ModelName:     mc.ModelName,
+			Budgets:       mc.Budgets,
+			RateLimit:     mc.RateLimit,
+			RequestLimits: mc.RequestLimits,
 		})
 	}
 	for key := range byKey {
@@ -1675,6 +2040,8 @@ func applyExternalQuotaBudgets(ctx context.Context, resolver ExternalQuotaBudget
 	}
 	vk.Budgets = budgets
 	vk.RateLimit = ext.RateLimit
+	// The key's own request limits are mirrors too; the resolver's request limits are what govern it.
+	vk.RequestLimits = ext.RequestLimits
 	return ext, nil
 }
 
@@ -1786,6 +2153,7 @@ type CreateTeamRequest struct {
 	CustomerID      *string                 `json:"customer_id,omitempty"`      // Team can belong to a customer
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
+	RequestLimits   []RequestLimitRequest   `json:"request_limits,omitempty"`   // One per reset period and scope
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
 }
 
@@ -1795,6 +2163,7 @@ type UpdateTeamRequest struct {
 	CustomerID      *string                 `json:"customer_id,omitempty"`
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits   []RequestLimitRequest   `json:"request_limits,omitempty"`   // [] removes all; omitted leaves them unchanged unless rate_limit is sent
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // Team-wide setting; nil means "leave unchanged"
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	// The reset boundary is left alone; only accumulated spend is cleared.
@@ -1807,6 +2176,7 @@ type CreateCustomerRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	Budget          *CreateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits   []RequestLimitRequest   `json:"request_limits,omitempty"` // One per reset period and scope
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
 
@@ -1816,6 +2186,7 @@ type UpdateCustomerRequest struct {
 	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
 	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits   []RequestLimitRequest   `json:"request_limits,omitempty"` // [] removes all; omitted leaves them unchanged unless rate_limit is sent
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
@@ -1829,6 +2200,8 @@ type CreateModelConfigRequest struct {
 	ScopeID   *string                 `json:"scope_id,omitempty"` // Required for non-global scopes (e.g. the virtual key ID)
 	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // A model config may carry multiple budgets (distinct reset windows)
 	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	// RequestLimits are the config's request limits, one per reset period and scope.
+	RequestLimits []RequestLimitRequest `json:"request_limits,omitempty"`
 }
 
 // UpdateModelConfigRequest represents the request body for updating a model config.
@@ -1839,6 +2212,8 @@ type UpdateModelConfigRequest struct {
 	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
 	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // Full desired set of budgets (reconciled against existing)
 	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	// RequestLimits is the full desired set of request limits; [] removes all, omitted leaves them unchanged unless rate_limit is sent.
+	RequestLimits []RequestLimitRequest `json:"request_limits,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
@@ -1848,6 +2223,7 @@ type UpdateProviderGovernanceRequest struct {
 	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // deprecated; use budgets
 	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	RequestLimits   []RequestLimitRequest   `json:"request_limits,omitempty"` // []=remove all, nil=no change unless rate_limit is sent; scope shared or model
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
@@ -2207,6 +2583,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyCreateRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Virtual key name is required")
@@ -2361,16 +2742,22 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				// Provider-config budgets/rate-limit are stored in the VK-scoped model config
 				// for this provider (written by syncVKGovernanceToModelConfigs).
 				providerNameStr := string(providerName)
+				pcTokenLimit, pcRequestLimits, err := splitLegacyCreateRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+				if err != nil {
+					return err
+				}
 				var pcRateLimit *configstoreTables.TableRateLimit
-				if pc.RateLimit != nil {
-					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+				if pcTokenLimit != nil {
+					pcRateLimit = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
 				}
 				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 					provider:              &providerNameStr,
 					budgetsProvided:       true,
 					budgets:               pc.Budgets,
-					rateLimitProvided:     pc.RateLimit != nil,
+					rateLimitProvided:     pcTokenLimit != nil,
 					rateLimit:             pcRateLimit,
+					requestLimitsProvided: true,
+					requestLimits:         pcRequestLimits,
 					reconcileModelBudgets: true,
 				})
 				modelDesired, err := buildVKCreateModelBudgets(&providerNameStr, providerNameStr, pc.ModelBudgets)
@@ -2383,13 +2770,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		// Fold VK top-level + per-provider governance into VK-scoped model configs.
 		var topRateLimit *configstoreTables.TableRateLimit
 		if req.RateLimit != nil {
-			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+			topRateLimit = tokenRateLimit(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration)
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkModelConfigDesired{
-			budgetsProvided:   true,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
-			rateLimit:         topRateLimit,
+			budgetsProvided:       true,
+			budgets:               req.Budgets,
+			rateLimitProvided:     req.RateLimit != nil,
+			rateLimit:             topRateLimit,
+			requestLimitsProvided: true,
+			requestLimits:         req.RequestLimits,
 		}, vkGovProviders, true, nil); err != nil {
 			return err
 		}
@@ -2663,6 +3052,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	tokenLimit, requestLimits, err := splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	req.RateLimit, req.RequestLimits = tokenLimit, requestLimits
 	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
 	// is read or written; applyVirtualKeyOwnershipUpdate enforces the same rule where it applies it.
 	if namedVirtualKeyOwners(&req) > 1 {
@@ -2866,16 +3261,28 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					// Provider-config governance is stored in the VK-scoped model config for this provider.
 					pName := string(providerName)
+					pcTokenLimit, pcRequestLimits, err := splitLegacyRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+					if err != nil {
+						return err
+					}
+					rlRemove := false
 					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+					if pcTokenLimit != nil {
+						if isRateLimitRemovalRequest(pcTokenLimit) {
+							rlRemove = true
+						} else {
+							pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
+						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
 						budgetsProvided:       true,
 						budgets:               pc.Budgets,
-						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimitProvided:     pcTokenLimit != nil,
+						rateLimitRemove:       rlRemove,
 						rateLimit:             pcRL,
+						requestLimitsProvided: true,
+						requestLimits:         pcRequestLimits,
 						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
 					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
@@ -2938,22 +3345,28 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
 					// leaves existing budgets unchanged; an explicit set reconciles them.
 					pName := string(providerName)
+					pcTokenLimit, pcRequestLimits, err := splitLegacyRateLimitRequest(pc.RateLimit, pc.RequestLimits)
+					if err != nil {
+						return err
+					}
 					rlRemove := false
 					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						if isRateLimitRemovalRequest(pc.RateLimit) {
+					if pcTokenLimit != nil {
+						if isRateLimitRemovalRequest(pcTokenLimit) {
 							rlRemove = true
 						} else {
-							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+							pcRL = tokenRateLimit(pcTokenLimit.TokenMaxLimit, pcTokenLimit.TokenResetDuration)
 						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
 						provider:              &pName,
 						budgetsProvided:       pc.Budgets != nil,
 						budgets:               pc.Budgets,
-						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimitProvided:     pcTokenLimit != nil,
 						rateLimitRemove:       rlRemove,
 						rateLimit:             pcRL,
+						requestLimitsProvided: pcRequestLimits != nil,
+						requestLimits:         pcRequestLimits,
 						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
 					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
@@ -2989,15 +3402,17 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		// (provided-aware); per-provider configs are reconciled only when the request supplied
 		// provider_configs (else they're left untouched).
 		top := vkModelConfigDesired{
-			budgetsProvided:   req.Budgets != nil,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
+			budgetsProvided:       req.Budgets != nil,
+			budgets:               req.Budgets,
+			rateLimitProvided:     req.RateLimit != nil,
+			requestLimitsProvided: req.RequestLimits != nil,
+			requestLimits:         req.RequestLimits,
 		}
 		if req.RateLimit != nil {
 			if isRateLimitRemovalRequest(req.RateLimit) {
 				top.rateLimitRemove = true
 			} else {
-				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+				top.rateLimit = tokenRateLimit(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration)
 			}
 		}
 		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil, usageReset); err != nil {
@@ -3182,7 +3597,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			adoptBudgets, adoptRateLimitID = preloadedVk.Budgets, preloadedVk.RateLimitID
 		}
 		if err := h.adoptCalendarAlignment(ctx, true,
-			BudgetUsageResetOwner{Kind: BudgetOwnerVirtualKey, ID: vk.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+			BudgetUsageResetOwner{Kind: BudgetOwnerVirtualKey, ID: vk.ID}, adoptBudgets, adoptRateLimitID, nil); err != nil {
 			logger.Error("failed to adopt calendar alignment for virtual key: %v", err)
 			SendError(ctx, 500, "Virtual key updated but calendar alignment did not take effect")
 			return
@@ -3195,7 +3610,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		for i := range modelConfigs {
 			if err := h.adoptCalendarAlignment(ctx, true,
-				BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: modelConfigs[i].ID}, modelConfigs[i].Budgets, modelConfigs[i].RateLimitID); err != nil {
+				BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: modelConfigs[i].ID}, modelConfigs[i].Budgets, modelConfigs[i].RateLimitID, modelConfigs[i].RequestLimits); err != nil {
 				logger.Error("failed to adopt calendar alignment for model config %s: %v", modelConfigs[i].ID, err)
 				SendError(ctx, 500, "Virtual key updated but calendar alignment did not take effect")
 				return
@@ -3427,6 +3842,11 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyCreateRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Team name is required")
@@ -3500,6 +3920,14 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			}
 			team.Budgets = append(team.Budgets, budget)
 		}
+		if len(req.RequestLimits) > 0 {
+			requestLimits, err := h.reconcileRequestLimits(ctx, tx, nil, req.RequestLimits, true,
+				func(rl *configstoreTables.TableRateLimit) { rl.TeamID = &team.ID }, nil)
+			if err != nil {
+				return err
+			}
+			team.RequestLimits = requestLimits
+		}
 		return nil
 	}); err != nil {
 		var badReqErr *badRequestError
@@ -3566,6 +3994,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if req.RateLimit, req.RequestLimits, err = splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// The operator's explicit "reset usage" choice. Carried into budget
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
@@ -3603,10 +4035,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	before := auditTeam(team)
+	var sharedRateLimitID string
 	// Updating team in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Track rate-limit ID to delete after updating the team (to avoid FK constraint)
 		var rateLimitIDToDelete string
+		var requestLimitCarry *configstoreTables.TableRateLimit
 
 		// Update fields if provided
 		if req.Name != nil {
@@ -3709,34 +4143,16 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			team.Budgets = reconciledBudgets
 		}
 		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if team.RateLimitID != nil {
-					rateLimitIDToDelete = *team.RateLimitID
-					team.RateLimitID = nil
-					team.RateLimit = nil
-				}
-			} else if team.RateLimitID != nil {
-				// Update existing rate limit
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
+		if req.RateLimit != nil || req.RequestLimits != nil {
+			if team.RateLimitID != nil {
+				// The token limit lands on the existing row; see updateHolderRateLimit.
+				update, err := h.updateHolderRateLimit(ctx, tx, *team.RateLimitID, req.RateLimit)
+				if err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				team.RateLimit = &rateLimit
-			} else {
+				team.RateLimitID, team.RateLimit = update.rateLimitID, update.rateLimit
+				rateLimitIDToDelete, requestLimitCarry, sharedRateLimitID = update.deleteID, update.carry, update.sharedID
+			} else if req.RateLimit != nil && req.RateLimit.TokenMaxLimit != nil {
 				// Create new rate limit
 				rateLimit := configstoreTables.TableRateLimit{
 					ID:                   uuid.NewString(),
@@ -3756,6 +4172,14 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.RateLimitID = &rateLimit.ID
 				team.RateLimit = &rateLimit
 			}
+		}
+		if req.RequestLimits != nil {
+			requestLimits, err := h.reconcileRequestLimits(ctx, tx, team.RequestLimits, req.RequestLimits, true,
+				func(rl *configstoreTables.TableRateLimit) { rl.TeamID = &team.ID }, requestLimitCarry)
+			if err != nil {
+				return err
+			}
+			team.RequestLimits = requestLimits
 		}
 
 		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {
@@ -3794,6 +4218,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Team updated in database but failed to reload in-memory state")
 		return
 	}
+	if sharedRateLimitID != "" {
+		h.restoreSharedRateLimit(ctx, sharedRateLimitID)
+	}
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would
 	// otherwise undo the reset. Enterprise propagates it to cluster peers.
@@ -3805,12 +4232,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Reload is allowed to return no entity; fall back to the row already held.
-	adoptBudgets, adoptRateLimitID := team.Budgets, team.RateLimitID
+	adoptBudgets, adoptRateLimitID, adoptRequestLimits := team.Budgets, team.RateLimitID, team.RequestLimits
 	if preloadedTeam != nil {
-		adoptBudgets, adoptRateLimitID = preloadedTeam.Budgets, preloadedTeam.RateLimitID
+		adoptBudgets, adoptRateLimitID, adoptRequestLimits = preloadedTeam.Budgets, preloadedTeam.RateLimitID, preloadedTeam.RequestLimits
 	}
 	if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
-		BudgetUsageResetOwner{Kind: BudgetOwnerTeam, ID: team.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+		BudgetUsageResetOwner{Kind: BudgetOwnerTeam, ID: team.ID}, adoptBudgets, adoptRateLimitID, adoptRequestLimits); err != nil {
 		logger.Error("failed to adopt calendar alignment for Team: %v", err)
 		SendError(ctx, 500, "Team updated but calendar alignment did not take effect")
 		return
@@ -3918,6 +4345,11 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyCreateRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	if len(req.Budgets) > 0 && req.Budget != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -3962,6 +4394,14 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			if err := h.reconcileCustomerBudgets(ctx, tx, &customer, budgetRequests, nil); err != nil {
 				return err
 			}
+		}
+		if len(req.RequestLimits) > 0 {
+			requestLimits, err := h.reconcileRequestLimits(ctx, tx, nil, req.RequestLimits, true,
+				func(rl *configstoreTables.TableRateLimit) { rl.CustomerID = &customer.ID }, nil)
+			if err != nil {
+				return err
+			}
+			customer.RequestLimits = requestLimits
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -4032,6 +4472,11 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// The operator's explicit "reset usage" choice. Carried into budget
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
@@ -4072,9 +4517,11 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	before := auditCustomer(customer)
+	var sharedRateLimitID string
 	// Updating customer in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		var rateLimitIDToDelete string
+		var requestLimitCarry *configstoreTables.TableRateLimit
 
 		// Update fields if provided
 		if req.Name != nil {
@@ -4105,34 +4552,16 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if customer.RateLimitID != nil {
-					rateLimitIDToDelete = *customer.RateLimitID
-					customer.RateLimitID = nil
-					customer.RateLimit = nil
-				}
-			} else if customer.RateLimitID != nil {
-				// Update existing rate limit
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
+		if req.RateLimit != nil || req.RequestLimits != nil {
+			if customer.RateLimitID != nil {
+				// The token limit lands on the existing row; see updateHolderRateLimit.
+				update, err := h.updateHolderRateLimit(ctx, tx, *customer.RateLimitID, req.RateLimit)
+				if err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				customer.RateLimit = &rateLimit
-			} else {
+				customer.RateLimitID, customer.RateLimit = update.rateLimitID, update.rateLimit
+				rateLimitIDToDelete, requestLimitCarry, sharedRateLimitID = update.deleteID, update.carry, update.sharedID
+			} else if req.RateLimit != nil && req.RateLimit.TokenMaxLimit != nil {
 				// Create new rate limit
 				rateLimit := configstoreTables.TableRateLimit{
 					ID:                   uuid.NewString(),
@@ -4152,6 +4581,14 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				customer.RateLimitID = &rateLimit.ID
 				customer.RateLimit = &rateLimit
 			}
+		}
+		if req.RequestLimits != nil {
+			requestLimits, err := h.reconcileRequestLimits(ctx, tx, customer.RequestLimits, req.RequestLimits, true,
+				func(rl *configstoreTables.TableRateLimit) { rl.CustomerID = &customer.ID }, requestLimitCarry)
+			if err != nil {
+				return err
+			}
+			customer.RequestLimits = requestLimits
 		}
 
 		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
@@ -4184,6 +4621,9 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Customer updated in database but failed to reload in-memory state")
 		return
 	}
+	if sharedRateLimitID != "" {
+		h.restoreSharedRateLimit(ctx, sharedRateLimitID)
+	}
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would
 	// otherwise undo the reset. Enterprise propagates it to cluster peers.
@@ -4196,12 +4636,12 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	// Read the windows off the reload when it produced one, else off the row this
 	// handler already holds: ReloadCustomer is allowed to return no entity.
-	adoptBudgets, adoptRateLimitID := customer.Budgets, customer.RateLimitID
+	adoptBudgets, adoptRateLimitID, adoptRequestLimits := customer.Budgets, customer.RateLimitID, customer.RequestLimits
 	if preloadedCustomer != nil {
-		adoptBudgets, adoptRateLimitID = preloadedCustomer.Budgets, preloadedCustomer.RateLimitID
+		adoptBudgets, adoptRateLimitID, adoptRequestLimits = preloadedCustomer.Budgets, preloadedCustomer.RateLimitID, preloadedCustomer.RequestLimits
 	}
 	if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
-		BudgetUsageResetOwner{Kind: BudgetOwnerCustomer, ID: customer.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+		BudgetUsageResetOwner{Kind: BudgetOwnerCustomer, ID: customer.ID}, adoptBudgets, adoptRateLimitID, adoptRequestLimits); err != nil {
 		logger.Error("failed to adopt calendar alignment for Customer: %v", err)
 		SendError(ctx, 500, "Customer updated but calendar alignment did not take effect")
 		return
@@ -4435,6 +4875,9 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			if mc.RateLimit != nil {
 				rl := *mc.RateLimit
 				clone.RateLimit = &rl
+			}
+			if len(mc.RequestLimits) > 0 {
+				clone.RequestLimits = append([]configstoreTables.TableRateLimit(nil), mc.RequestLimits...)
 			}
 			all = append(all, clone)
 		}
@@ -4735,6 +5178,11 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	var err error
+	if req.RateLimit, req.RequestLimits, err = splitLegacyCreateRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Validate required fields
 	if req.ModelName == "" {
 		SendError(ctx, 400, "Model name is required")
@@ -4867,8 +5315,18 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			}
 			mc.Budgets = append(mc.Budgets, budget)
 		}
+		if len(req.RequestLimits) > 0 {
+			if err := h.reconcileModelConfigRequestLimits(ctx, tx, &mc, req.RequestLimits, nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}); err != nil {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		logger.Error("failed to create model config: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to create model config: %v", err))
 		return
@@ -4910,6 +5368,10 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	before := lib.AuditSnapshot(mc)
+	if req.RateLimit, req.RequestLimits, err = splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	if req.ModelName != nil || req.Provider != nil {
 		nextName, nextProvider := mc.ModelName, mc.Provider
 		if req.ModelName != nil {
@@ -4925,6 +5387,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).
 		var rateLimitIDToDelete string
+		var requestLimitCarry *configstoreTables.TableRateLimit
 
 		// Update fields if provided
 		if req.ModelName != nil {
@@ -4951,35 +5414,16 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if mc.RateLimitID != nil {
-					rateLimitIDToDelete = *mc.RateLimitID
-					mc.RateLimitID = nil
-					mc.RateLimit = nil
-				}
-			} else if mc.RateLimitID != nil {
-				// Update existing rate limit - set ALL fields from request (nil means clear)
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+		if req.RateLimit != nil || req.RequestLimits != nil {
+			if mc.RateLimitID != nil {
+				// The token limit lands on the existing row; see updateHolderRateLimit.
+				update, err := h.updateHolderRateLimit(ctx, tx, *mc.RateLimitID, req.RateLimit)
+				if err != nil {
 					return err
 				}
-				// Set all fields from request - nil values will clear the field
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimit = &rateLimit
-			} else {
+				mc.RateLimitID, mc.RateLimit = update.rateLimitID, update.rateLimit
+				rateLimitIDToDelete, requestLimitCarry = update.deleteID, update.carry
+			} else if req.RateLimit != nil && req.RateLimit.TokenMaxLimit != nil {
 				// Create new rate limit
 				rateLimit := configstoreTables.TableRateLimit{
 					ID:                   uuid.NewString(),
@@ -4998,6 +5442,18 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 				}
 				mc.RateLimitID = &rateLimit.ID
 				mc.RateLimit = &rateLimit
+			}
+		}
+		if req.RequestLimits != nil {
+			if err := h.reconcileModelConfigRequestLimits(ctx, tx, mc, req.RequestLimits, requestLimitCarry); err != nil {
+				return err
+			}
+		} else if !mc.IsHolderLevel() {
+			// As with budgets: kept request limits must still suit a narrowed tier.
+			for _, rl := range mc.RequestLimits {
+				if err := validateRequestLimitScope(RequestLimitRequest{Scope: rl.Scope}, false); err != nil {
+					return err
+				}
 			}
 		}
 		mc.UpdatedAt = time.Now()
@@ -5091,11 +5547,12 @@ func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
 
 // ProviderGovernanceResponse represents a provider with its governance settings
 type ProviderGovernanceResponse struct {
-	Provider        string                            `json:"provider"`
-	Budget          *configstoreTables.TableBudget    `json:"budget,omitempty"` // deprecated: use budgets
-	Budgets         []configstoreTables.TableBudget   `json:"budgets,omitempty"`
-	RateLimit       *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
-	CalendarAligned bool                              `json:"calendar_aligned"`
+	Provider        string                             `json:"provider"`
+	Budget          *configstoreTables.TableBudget     `json:"budget,omitempty"` // deprecated: use budgets
+	Budgets         []configstoreTables.TableBudget    `json:"budgets,omitempty"`
+	RateLimit       *configstoreTables.TableRateLimit  `json:"rate_limit,omitempty"`
+	RequestLimits   []configstoreTables.TableRateLimit `json:"request_limits,omitempty"`
+	CalendarAligned bool                               `json:"calendar_aligned"`
 }
 
 // modelConfigToProviderGovernance converts a model config to a ProviderGovernanceResponse.
@@ -5117,6 +5574,7 @@ func modelConfigToProviderGovernance(mc *configstoreTables.TableModelConfig) (Pr
 		Budget:          budget,
 		Budgets:         budgets,
 		RateLimit:       mc.RateLimit,
+		RequestLimits:   append([]configstoreTables.TableRateLimit(nil), mc.RequestLimits...),
 		CalendarAligned: mc.CalendarAligned,
 	}, true
 }
@@ -5166,6 +5624,10 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	var req UpdateProviderGovernanceRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if req.RateLimit, req.RequestLimits, err = splitLegacyRateLimitRequest(req.RateLimit, req.RequestLimits); err != nil {
+		SendError(ctx, 400, err.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget
@@ -5229,6 +5691,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	deleted := false
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		var rateLimitIDToDelete string
+		var requestLimitCarry *configstoreTables.TableRateLimit
 
 		// Apply CalendarAligned if provided.
 		if req.CalendarAligned != nil {
@@ -5238,30 +5701,16 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 		// Rate limit lifecycle (mc references it via RateLimitID, so resolve it before
 		// persisting the model config below).
-		if req.RateLimit != nil {
-			if isRateLimitRemovalRequest(req.RateLimit) {
-				if mc.RateLimitID != nil {
-					rateLimitIDToDelete = *mc.RateLimitID
-					mc.RateLimitID = nil
-					mc.RateLimit = nil
-				}
-			} else if mc.RateLimitID != nil {
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+		if req.RateLimit != nil || req.RequestLimits != nil {
+			if mc.RateLimitID != nil {
+				// The token limit lands on the existing row; see updateHolderRateLimit.
+				update, err := h.updateHolderRateLimit(ctx, tx, *mc.RateLimitID, req.RateLimit)
+				if err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimit = &rateLimit
-			} else {
+				mc.RateLimitID, mc.RateLimit = update.rateLimitID, update.rateLimit
+				rateLimitIDToDelete, requestLimitCarry = update.deleteID, update.carry
+			} else if req.RateLimit != nil && req.RateLimit.TokenMaxLimit != nil {
 				rateLimit := configstoreTables.TableRateLimit{
 					ID:                   uuid.NewString(),
 					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
@@ -5300,7 +5749,12 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			willHaveBudget = len(*effectiveBudgets) > 0
 		}
 
-		hasGovernance := mc.RateLimitID != nil || willHaveBudget
+		willHaveRequestLimits := len(mc.RequestLimits) > 0
+		if req.RequestLimits != nil {
+			willHaveRequestLimits = len(req.RequestLimits) > 0
+		}
+
+		hasGovernance := mc.RateLimitID != nil || willHaveBudget || willHaveRequestLimits
 		switch {
 		case !hasGovernance && isNew:
 			// Nothing to persist (removal request on a provider with no governance).
@@ -5309,6 +5763,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			// All governance removed → delete the model config and its owned budgets.
 			for _, b := range mc.Budgets {
 				if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", b.ID).Error; err != nil {
+					return err
+				}
+			}
+			for _, rl := range mc.RequestLimits {
+				if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rl.ID).Error; err != nil {
 					return err
 				}
 			}
@@ -5330,6 +5789,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		// Budget reconciliation (mc row exists at this point for create cases).
 		if !deleted && effectiveBudgets != nil {
 			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets, usageReset); err != nil {
+				return err
+			}
+		}
+		if !deleted && req.RequestLimits != nil {
+			if err := h.reconcileModelConfigRequestLimits(ctx, tx, &mc, req.RequestLimits, requestLimitCarry); err != nil {
 				return err
 			}
 		}
@@ -5358,7 +5822,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to remove provider governance from memory: %v", err)
 		}
-	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil {
+	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil || len(mc.RequestLimits) > 0 {
 		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to reload provider governance in memory: %v", err)
 			if r, ok := modelConfigToProviderGovernance(&mc); ok {
@@ -5384,7 +5848,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	}
 	if !deleted {
 		if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
-			BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, mc.Budgets, mc.RateLimitID); err != nil {
+			BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, mc.Budgets, mc.RateLimitID, mc.RequestLimits); err != nil {
 			logger.Error("failed to adopt calendar alignment for provider governance: %v", err)
 			SendError(ctx, 500, "Provider governance updated but calendar alignment did not take effect")
 			return
@@ -5832,14 +6296,15 @@ func normalizeOptionalString(value *string) *string {
 	return &trimmed
 }
 
-// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets
-// and rate limit (with their current usage) for a specific model governed under this VK.
-// Mirrors how provider_configs surface per-provider governance.
+// quotaModelUsage is one entry in the quota endpoint's per-model breakdown: the budgets,
+// token rate limit and request limits (with their current usage) for a specific model
+// governed under this VK. Mirrors how provider_configs surface per-provider governance.
 type quotaModelUsage struct {
-	ModelName string                            `json:"model_name"`
-	Provider  *string                           `json:"provider,omitempty"` // nil means all providers
-	Budgets   []configstoreTables.TableBudget   `json:"budgets,omitempty"`
-	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+	ModelName     string                             `json:"model_name"`
+	Provider      *string                            `json:"provider,omitempty"` // nil means all providers
+	Budgets       []configstoreTables.TableBudget    `json:"budgets,omitempty"`
+	RateLimit     *configstoreTables.TableRateLimit  `json:"rate_limit,omitempty"`
+	RequestLimits []configstoreTables.TableRateLimit `json:"request_limits,omitempty"`
 }
 
 // collectVKModelUsage loads the VK-scoped model configs for vk in a single query, then
@@ -5870,10 +6335,11 @@ func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configs
 			continue // wildcard configs are the VK-/provider-level governance handled above
 		}
 		models = append(models, quotaModelUsage{
-			ModelName: mc.ModelName,
-			Provider:  mc.Provider,
-			Budgets:   mc.Budgets,
-			RateLimit: mc.RateLimit,
+			ModelName:     mc.ModelName,
+			Provider:      mc.Provider,
+			Budgets:       mc.Budgets,
+			RateLimit:     mc.RateLimit,
+			RequestLimits: mc.RequestLimits,
 		})
 	}
 	return models, nil
@@ -6003,10 +6469,19 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 	for i := range vk.Budgets {
 		budgetRows[i] = SourcedBudget{TableBudget: vk.Budgets[i]}
 	}
+	// rate_limit carries the key's token limit only; its request limits are separate rules, so
+	// rate_limits lists both and request_limits lists the rules on their own.
 	rateLimit := vk.RateLimit
-	rateLimits := []SourcedRateLimit{}
+	rateLimits := make([]SourcedRateLimit, 0, 1+len(vk.RequestLimits))
 	if vk.RateLimit != nil {
-		rateLimits = []SourcedRateLimit{{TableRateLimit: *vk.RateLimit}}
+		rateLimits = append(rateLimits, SourcedRateLimit{TableRateLimit: *vk.RateLimit})
+	}
+	for _, rule := range vk.RequestLimits {
+		rateLimits = append(rateLimits, SourcedRateLimit{TableRateLimit: rule})
+	}
+	requestLimits := vk.RequestLimits
+	if requestLimits == nil {
+		requestLimits = []configstoreTables.TableRateLimit{}
 	}
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
@@ -6017,12 +6492,17 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		}
 		if ext != nil {
 			// AP-managed VK: surface the AP's governance verbatim in place of the VK's own
-			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
+			// untracked mirror rows, request limits included. Empty budgets / nil rate limit
+			// mean the AP has none.
 			budgetRows = ext.Budgets
 			rateLimit = ext.RateLimit
 			rateLimits = ext.RateLimits
 			if rateLimits == nil {
 				rateLimits = []SourcedRateLimit{}
+			}
+			requestLimits = ext.RequestLimits
+			if requestLimits == nil {
+				requestLimits = []configstoreTables.TableRateLimit{}
 			}
 			usageUserID = ext.UsageUserID
 		}
@@ -6042,6 +6522,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"budgets":          budgets,
 		"rate_limit":       rateLimit,
 		"rate_limits":      rateLimits,
+		"request_limits":   requestLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

@@ -318840,6 +318840,436 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Scoped request limits on the governance API (request limit scopes)",
+      "description": "Max requests is a list of request limits per holder, each with a reset period and a scope (shared, model, mcp), sent as request_limits on teams, customers, virtual keys, model configs and provider governance; rate_limit now carries the token limit only. These rows pin the management API on a team: a create with two limits of one period but different scopes is accepted and echoed by the GET with their scopes; two limits sharing a period and scope are refused with 400; and a client that still sends rate_limit.request_max_limit / request_reset_duration without request_limits gets one shared (scope shared) request limit, with no request fields left on rate_limit. Red before the change: request_limits is ignored (the echo checks fail, the duplicate is a 200) and the legacy payload is stored on rate_limit. The seed names its team harness-request-limit-scopes-run-<ms>-<rand>; only that team is deleted (by the cleanup row, or by the duplicate row should a regression create one). The two inference rows pin enforcement on the wire: each creates a virtual key (harness-request-limit-scopes-vk-<scope>-run-<ms>-<rand>) whose only request limit is 1 per hour, sends two openai/gpt-4o-mini chat completions through it and deletes the key. An mcp request limit never counts inference, so both calls are 200; a model request limit refuses the second with 429. Red before the change: request_limits is ignored on the key (the setup echo fails and the model row's second call is a 200). Attributed to the openai fork by name.",
+      "item": [
+        {
+          "name": "openai request limit scopes seed: create a team with a shared and an mcp request limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh run id per seed, so the team name never collides with a parallel or earlier run.",
+                  "pm.collectionVariables.set('requestLimitScopesRun', 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Each rule as \"<max>/<reset>/<scope>\", sorted, so the assertion does not depend on row order.",
+                  "function rules(team) {",
+                  "  return ((team && team.request_limits) || []).map(function (r) { return r.request_max_limit + '/' + r.request_reset_duration + '/' + r.scope; }).sort();",
+                  "}",
+                  "pm.test('request limit scopes seed: create succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var team = (pm.response.json() || {}).team || {};",
+                  "if (team.id) { pm.collectionVariables.set('requestLimitScopesTeamId', team.id); } else { pm.collectionVariables.unset('requestLimitScopesTeamId'); }",
+                  "pm.test('request limit scopes seed: the created team carries both request limits', function () {",
+                  "  pm.expect(rules(team), 'team: ' + pm.response.text()).to.eql(['10/1h/shared', '5/1h/mcp']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "raw": "{\"name\":\"harness-request-limit-scopes-{{requestLimitScopesRun}}\",\"request_limits\":[{\"max_limit\":10,\"reset_duration\":\"1h\"},{\"max_limit\":5,\"reset_duration\":\"1h\",\"scope\":\"mcp\"}]}",
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/teams"
+          }
+        },
+        {
+          "name": "openai request limit scopes: GET echoes both request limits with their scopes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Each rule as \"<max>/<reset>/<scope>\", sorted, so the assertion does not depend on row order.",
+                  "function rules(team) {",
+                  "  return ((team && team.request_limits) || []).map(function (r) { return r.request_max_limit + '/' + r.request_reset_duration + '/' + r.scope; }).sort();",
+                  "}",
+                  "pm.test('request limit scopes get: team responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var team = (pm.response.json() || {}).team || {};",
+                  "pm.test('request limit scopes get: one shared and one mcp request limit on the same period', function () {",
+                  "  pm.expect(rules(team), 'team: ' + pm.response.text()).to.eql(['10/1h/shared', '5/1h/mcp']);",
+                  "  (team.request_limits || []).forEach(function (r) {",
+                  "    pm.expect(r.team_id, 'owner: ' + pm.response.text()).to.equal(team.id);",
+                  "    pm.expect(r.token_max_limit, 'a request limit carries no token limit: ' + pm.response.text()).to.equal(undefined);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/teams/{{requestLimitScopesTeamId}}"
+          }
+        },
+        {
+          "name": "openai request limit scopes [EXPECT-400]: the same period and scope twice is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request limit scopes duplicate: refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('duplicate reset_duration 1h for scope shared in request_limits');",
+                  "});",
+                  "// A regression that accepts the body creates a team; delete it so the run leaves nothing behind.",
+                  "if (pm.response.code === 200) {",
+                  "  var created = (pm.response.json() || {}).team || {};",
+                  "  if (created.id) { pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/teams/' + encodeURIComponent(created.id), method: 'DELETE' }, function () {}); }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "raw": "{\"name\":\"harness-request-limit-scopes-dup-{{requestLimitScopesRun}}\",\"request_limits\":[{\"max_limit\":10,\"reset_duration\":\"1h\"},{\"max_limit\":20,\"reset_duration\":\"1h\",\"scope\":\"shared\"}]}",
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/teams"
+          }
+        },
+        {
+          "name": "openai request limit scopes legacy: rate_limit request fields become one shared request limit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Each rule as \"<max>/<reset>/<scope>\", sorted, so the assertion does not depend on row order.",
+                  "function rules(team) {",
+                  "  return ((team && team.request_limits) || []).map(function (r) { return r.request_max_limit + '/' + r.request_reset_duration + '/' + r.scope; }).sort();",
+                  "}",
+                  "pm.test('request limit scopes legacy: update succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var team = (pm.response.json() || {}).team || {};",
+                  "pm.test('request limit scopes legacy: the request fields are one shared request limit', function () {",
+                  "  pm.expect(rules(team), 'team: ' + pm.response.text()).to.eql(['20/1m/shared']);",
+                  "});",
+                  "pm.test('request limit scopes legacy: rate_limit keeps the token limit only', function () {",
+                  "  var rl = team.rate_limit || {};",
+                  "  pm.expect(rl.token_max_limit, 'rate_limit: ' + pm.response.text()).to.equal(1000);",
+                  "  pm.expect(rl.request_max_limit, 'rate_limit: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(rl.request_reset_duration, 'rate_limit: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "raw": "{\"rate_limit\":{\"token_max_limit\":1000,\"token_reset_duration\":\"1h\",\"request_max_limit\":20,\"request_reset_duration\":\"1m\"}}",
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/teams/{{requestLimitScopesTeamId}}"
+          }
+        },
+        {
+          "name": "openai request limit scopes cleanup: delete the seeded team",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request limit scopes cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('requestLimitScopesTeamId');",
+                  "pm.collectionVariables.unset('requestLimitScopesRun');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/teams/{{requestLimitScopesTeamId}}"
+          }
+        },
+        {
+          "name": "openai request limit scopes inference: an mcp request limit of 1 lets two gpt-4o-mini calls through",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Self-contained: create a virtual key whose only request limit is mcp-scoped, 1 per hour.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.unset('requestLimitScopesVkId');",
+                  "pm.collectionVariables.set('requestLimitScopesVk', 'missing');",
+                  "var body = { name: 'harness-request-limit-scopes-vk-mcp-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], request_limits: [{ max_limit: 1, reset_duration: '1h', scope: 'mcp' }, { max_limit: 1000, reset_duration: '1h', scope: 'model' }] };",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "  var text = res ? res.text() : String(err || 'no response');",
+                  "  pm.test('request limit scopes inference setup: the virtual key is created', function () {",
+                  "    pm.expect(res && res.code, 'failed: ' + text).to.equal(200);",
+                  "  });",
+                  "  var vk = {}; try { vk = (res.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "  if (vk.id) { pm.collectionVariables.set('requestLimitScopesVkId', vk.id); }",
+                  "  var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "  if (value) { pm.collectionVariables.set('requestLimitScopesVk', value); }",
+                  "  pm.test('request limit scopes inference setup: the key carries an mcp request limit and a model one to watch', function () {",
+                  "    var rules = (vk.request_limits || []).map(function (r) { return r.request_max_limit + '/' + r.request_reset_duration + '/' + r.scope; });",
+                  "    pm.expect(rules.sort(), 'virtual key: ' + text).to.eql(['1/1h/mcp', '1000/1h/model']);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var vkId = pm.collectionVariables.get('requestLimitScopesVkId');",
+                  "var vkValue = pm.collectionVariables.get('requestLimitScopesVk');",
+                  "pm.test('request limit scopes inference: the first call is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var first = {}; try { first = pm.response.json() || {}; } catch (e) { first = {}; }",
+                  "  pm.expect((first.choices || []).length, 'no chat completion choices: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "function cleanup() {",
+                  "  pm.collectionVariables.unset('requestLimitScopesVk');",
+                  "  pm.collectionVariables.unset('requestLimitScopesVkId');",
+                  "  if (!vkId) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(vkId), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('request limit scopes inference cleanup: the virtual key is deleted', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + (res ? res.text() : String(err || 'no response'))).to.equal(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function whenSettled(cb, min) {",
+                  "  var deadline = Date.now() + 30000;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(vkId) + '?from_memory=true', method: 'GET' }, function (err, res) {",
+                  "      pm.test('request limit scopes inference: the key is readable while waiting for its usage', function () { pm.expect(res && res.code, 'GET key: ' + (res ? res.code + ' ' + res.text() : String(err))).to.equal(200); });",
+                  "      if (!res || res.code !== 200) { return cleanup(); }",
+                  "      var vk = {}; try { vk = (res.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "      var rules = vk.request_limits || [];",
+                  "      if (rules.some(function (r) { return r.scope === 'model' && r.request_current_usage >= (min || 1); })) { return cb(rules); }",
+                  "      if (Date.now() > deadline) { pm.test('request limit scopes inference: the first call was counted within 30s', function () { pm.expect.fail('no model request limit usage after 30s: ' + (res ? res.text() : String(err))); }); return cleanup(); }",
+                  "      setTimeout(poll, 500);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "// Usage is settled after the response, so the second call waits until the model request limit has counted the first.",
+                  "whenSettled(function (rules) {",
+                  "  var body = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': vkValue }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "    var text = res ? res.text() : String(err || 'no response');",
+                  "    pm.test('request limit scopes inference: the second call is served, inference never counts an mcp request limit', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + text).to.equal(200);",
+                  "      var second = {}; try { second = res.json() || {}; } catch (e) { second = {}; }",
+                  "      pm.expect((second.choices || []).length, 'no chat completion choices: ' + text).to.be.above(0);",
+                  "    });",
+                  "    // The second call settles asynchronously too, so the mcp limit is read once both are counted.",
+                  "    whenSettled(function (counted) {",
+                  "      pm.test('request limit scopes inference: both calls were counted by the model limit and the mcp limit stayed unspent', function () {",
+                  "        pm.expect(counted.some(function (r) { return r.scope === 'mcp'; }), 'the key carries no mcp request limit: ' + JSON.stringify(counted)).to.equal(true);",
+                  "        pm.expect(counted.filter(function (r) { return r.scope === 'mcp'; }).every(function (r) { return !r.request_current_usage; }), 'inference counted the mcp request limit: ' + JSON.stringify(counted)).to.equal(true);",
+                  "      });",
+                  "      cleanup();",
+                  "    }, 2);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{requestLimitScopesVk}}"
+              }
+            ],
+            "body": {
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}",
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai request limit scopes inference: a model request limit of 1 refuses the second gpt-4o-mini call with 429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Self-contained: create a virtual key whose only request limit is model-scoped, 1 per hour.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.unset('requestLimitScopesVkId');",
+                  "pm.collectionVariables.set('requestLimitScopesVk', 'missing');",
+                  "var body = { name: 'harness-request-limit-scopes-vk-model-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], request_limits: [{ max_limit: 1, reset_duration: '1h', scope: 'model' }] };",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "  var text = res ? res.text() : String(err || 'no response');",
+                  "  pm.test('request limit scopes inference setup: the virtual key is created', function () {",
+                  "    pm.expect(res && res.code, 'failed: ' + text).to.equal(200);",
+                  "  });",
+                  "  var vk = {}; try { vk = (res.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "  if (vk.id) { pm.collectionVariables.set('requestLimitScopesVkId', vk.id); }",
+                  "  var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "  if (value) { pm.collectionVariables.set('requestLimitScopesVk', value); }",
+                  "  pm.test('request limit scopes inference setup: the key carries one model request limit', function () {",
+                  "    var rules = (vk.request_limits || []).map(function (r) { return r.request_max_limit + '/' + r.request_reset_duration + '/' + r.scope; });",
+                  "    pm.expect(rules, 'virtual key: ' + text).to.eql(['1/1h/model']);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var vkId = pm.collectionVariables.get('requestLimitScopesVkId');",
+                  "var vkValue = pm.collectionVariables.get('requestLimitScopesVk');",
+                  "pm.test('request limit scopes inference: the first call is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var first = {}; try { first = pm.response.json() || {}; } catch (e) { first = {}; }",
+                  "  pm.expect((first.choices || []).length, 'no chat completion choices: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "function cleanup() {",
+                  "  pm.collectionVariables.unset('requestLimitScopesVk');",
+                  "  pm.collectionVariables.unset('requestLimitScopesVkId');",
+                  "  if (!vkId) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(vkId), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('request limit scopes inference cleanup: the virtual key is deleted', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + (res ? res.text() : String(err || 'no response'))).to.equal(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function whenSettled(cb, min) {",
+                  "  var deadline = Date.now() + 30000;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + encodeURIComponent(vkId) + '?from_memory=true', method: 'GET' }, function (err, res) {",
+                  "      pm.test('request limit scopes inference: the key is readable while waiting for its usage', function () { pm.expect(res && res.code, 'GET key: ' + (res ? res.code + ' ' + res.text() : String(err))).to.equal(200); });",
+                  "      if (!res || res.code !== 200) { return cleanup(); }",
+                  "      var vk = {}; try { vk = (res.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "      var rules = vk.request_limits || [];",
+                  "      if (rules.some(function (r) { return r.scope === 'model' && r.request_current_usage >= (min || 1); })) { return cb(rules); }",
+                  "      if (Date.now() > deadline) { pm.test('request limit scopes inference: the first call was counted within 30s', function () { pm.expect.fail('no model request limit usage after 30s: ' + (res ? res.text() : String(err))); }); return cleanup(); }",
+                  "      setTimeout(poll, 500);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "// Usage is settled after the response, so the second call waits until the model request limit has counted the first.",
+                  "whenSettled(function (rules) {",
+                  "  var body = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': vkValue }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "    var text = res ? res.text() : String(err || 'no response');",
+                  "    pm.test('request limit scopes inference: the second call is refused with 429 by the model request limit', function () {",
+                  "      pm.expect(res && res.code, 'failed: ' + text).to.equal(429);",
+                  "      pm.expect(text).to.include('request limit exceeded');",
+                  "    });",
+                  "    cleanup();",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{requestLimitScopesVk}}"
+              }
+            ],
+            "body": {
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}",
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }

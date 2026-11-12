@@ -1281,7 +1281,7 @@ model-configs:
         description: >-
           `mcp` lists only the rows MCP tool executions are charged by: holder-level model configs
           (`model_name` `*`, no provider), which hold the deployment's or a scope target's own limits,
-          with at least one `shared` or `mcp` budget. Combined with `scope=global,virtual_key` it is the
+          with at least one `shared` or `mcp` budget or request limit. Combined with `scope=global,virtual_key` it is the
           list of the MCP Budgets & Limits page. Any other value is rejected with 400.
         schema:
           type: string
