@@ -1235,6 +1235,7 @@
 		"staticAdminHeadersHelp": "這些請求頭由管理員在 MCP 客戶端上設定，會與你提交的值一起隨每次請求傳送。你無法在此處編輯它們。",
 		"noKeys": "此 MCP 客戶端尚未宣告任何請求頭鍵名。",
 		"previouslySubmitted": "先前已提交",
+		"newKey": "新增",
 		"overwritePlaceholder": "••••••（輸入新值以覆蓋）",
 		"valuePlaceholder": "{{key}} 的值",
 		"hideValue": "隱藏值",

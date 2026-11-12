@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "Questi header sono impostati dall'amministratore sul client MCP e accompagnano ogni richiesta insieme ai valori che invii. Non puoi modificarli qui.",
 		"noKeys": "Su questo client MCP non sono state dichiarate chiavi header.",
 		"previouslySubmitted": "Inviato in precedenza",
+		"newKey": "Nuovo",
 		"overwritePlaceholder": "•••••• (inserisci un nuovo valore per sovrascrivere)",
 		"valuePlaceholder": "Valore per {{key}}",
 		"hideValue": "Nascondi valore",

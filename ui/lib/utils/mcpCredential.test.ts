@@ -4,6 +4,7 @@ import {
 	formatRelativePast,
 	formatTokenExpiry,
 	missingHeaderKeys,
+	sessionRowRights,
 	providerRejectedTheClient,
 	shouldSuggestReplacementClient,
 	supportsClientReregistration,
@@ -161,5 +162,24 @@ describe("shouldSuggestReplacementClient", () => {
 			false,
 		);
 		expect(shouldSuggestReplacementClient("oauth", undefined)).toBe(false);
+	});
+});
+describe("sessionRowRights", () => {
+	const none = { canDelete: false, canCreate: false };
+
+	test("lets a caller revoke and refresh their own sign-in without any permission", () => {
+		expect(sessionRowRights({ owned_by_caller: true, can_refresh: true }, none)).toEqual({ revoke: true, refresh: true });
+	});
+
+	test("needs the delete permission to revoke and the create permission to refresh anyone else's", () => {
+		const row = { owned_by_caller: false, can_refresh: true };
+		expect(sessionRowRights(row, none)).toEqual({ revoke: false, refresh: false });
+		expect(sessionRowRights(row, { canDelete: true, canCreate: false })).toEqual({ revoke: true, refresh: false });
+		expect(sessionRowRights(row, { canDelete: false, canCreate: true })).toEqual({ revoke: false, refresh: true });
+	});
+
+	test("never offers a refresh the server would not accept", () => {
+		expect(sessionRowRights({ owned_by_caller: true, can_refresh: false }, { canDelete: true, canCreate: true }).refresh).toBe(false);
+		expect(sessionRowRights({}, { canDelete: true, canCreate: true })).toEqual({ revoke: true, refresh: false });
 	});
 });

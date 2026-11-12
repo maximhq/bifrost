@@ -1,6 +1,27 @@
 import i18n from "@/lib/i18n";
-import { MCPClient } from "@/lib/types/mcp";
+import { MCPClient, type MCPAuthType } from "@/lib/types/mcp";
 import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
+
+export type MCPAuthScope = "shared" | "per_user";
+
+/** Resolve the wire `auth_type` into the auth scope dropdown's value. */
+export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
+	return authType === "per_user_oauth" || authType === "per_user_headers" ? "per_user" : "shared";
+}
+
+// authScopeLabel is how the servers table and the server view name a scope.
+// token_exchange carries the caller's own token on every call, so it is
+// per-user even though the form does not expose a scope dropdown for it.
+// Everything else, including "none", resolves through authScopeOf so the
+// label agrees with the form.
+export function authScopeLabel(authType: MCPAuthType | undefined): string {
+	if (authType === "token_exchange") {
+		return i18n.t("registry.form.perUser", { ns: "mcp" });
+	}
+	return authScopeOf(authType) === "per_user"
+		? i18n.t("registry.form.perUser", { ns: "mcp" })
+		: i18n.t("registry.form.shared", { ns: "mcp" });
+}
 
 /**
  * exchangeVerifyCopy is the text of the token_exchange "Verify as me" dialog

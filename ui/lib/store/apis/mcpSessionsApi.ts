@@ -4,6 +4,8 @@
 import {
 	MCPFlowDetail,
 	MCPFlowStartResponse,
+	MCPSessionConnectRequest,
+	MCPSessionConnectResponse,
 	MCPSessionReauthResponse,
 	MCPSessionRefreshResponse,
 	MCPSessionsListResponse,
@@ -63,6 +65,12 @@ export const mcpSessionsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["MCPSessions"],
 		}),
 
+		// Starts the caller's own sign-in to an MCP server they can reach. Nothing changes in the
+		// list until the sign-in completes, which a later list query picks up.
+		connectMCPSession: builder.mutation<MCPSessionConnectResponse, MCPSessionConnectRequest>({
+			query: (body) => ({ url: "/mcp/sessions/connect", method: "POST", body }),
+		}),
+
 		// Best-effort upstream revoke + hard-delete the row. Invalidates the
 		// MCPSessions tag so all keyed cache entries (per filter combo)
 		// refetch. The previous optimistic patch only worked when the cache
@@ -93,6 +101,7 @@ export const mcpSessionsApi = baseApi.injectEndpoints({
 
 export const {
 	useGetMCPSessionsQuery,
+	useConnectMCPSessionMutation,
 	useReauthMCPSessionMutation,
 	useRefreshMCPSessionMutation,
 	useRevokeMCPSessionMutation,

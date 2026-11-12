@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "Ces en-têtes sont définis par l’administrateur sur le client MCP et accompagnent chaque requête avec les valeurs que vous soumettez. Vous ne pouvez pas les modifier ici.",
 		"noKeys": "Aucune clé d’en-tête n’a été déclarée sur ce client MCP.",
 		"previouslySubmitted": "Soumis précédemment",
+		"newKey": "Nouveau",
 		"overwritePlaceholder": "•••••• (saisissez une nouvelle valeur pour écraser)",
 		"valuePlaceholder": "Valeur pour {{key}}",
 		"hideValue": "Masquer la valeur",

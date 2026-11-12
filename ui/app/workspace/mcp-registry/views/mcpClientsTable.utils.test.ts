@@ -1,9 +1,33 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import i18n from "@/lib/i18n";
-import { canReconnectMCPClient, exchangeVerifyCopy } from "./mcpClientsTable.utils";
+import { authScopeLabel, authScopeOf, canReconnectMCPClient, exchangeVerifyCopy } from "./mcpClientsTable.utils";
 
 beforeAll(async () => {
 	await i18n.changeLanguage("en");
+});
+
+describe("authScopeOf", () => {
+	it("puts per-user OAuth and per-user headers per user, and every other auth type shared", () => {
+		expect(authScopeOf("per_user_oauth")).toBe("per_user");
+		expect(authScopeOf("per_user_headers")).toBe("per_user");
+		for (const authType of ["none", "headers", "oauth", "token_exchange", undefined] as const) {
+			expect(authScopeOf(authType), String(authType)).toBe("shared");
+		}
+	});
+});
+
+describe("authScopeLabel", () => {
+	it("names per-user OAuth, per-user headers and token exchange Per-User, since each call carries the caller's own credential", () => {
+		for (const authType of ["per_user_oauth", "per_user_headers", "token_exchange"] as const) {
+			expect(authScopeLabel(authType), authType).toBe("Per-User");
+		}
+	});
+
+	it("names every other auth type Shared, including none and a missing auth type", () => {
+		for (const authType of ["none", "headers", "oauth", undefined] as const) {
+			expect(authScopeLabel(authType), String(authType)).toBe("Shared");
+		}
+	});
 });
 
 describe("exchangeVerifyCopy", () => {

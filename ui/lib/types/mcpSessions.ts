@@ -96,6 +96,9 @@ export interface MCPSessionRow {
 	// credential of a user or virtual-key caller on a server with per_user_discovery on, refreshable
 	// by the same callers as can_reauth. The UI offers Refresh tools only when true.
 	can_refresh?: boolean;
+	// owned_by_caller: the row is bound to the calling user's own identity (user mode, their user
+	// ID), which they manage end to end.
+	owned_by_caller?: boolean;
 	// discovery: token and header rows of user and virtual-key callers on a
 	// server with per_user_discovery on, when the binding holds one.
 	discovery?: MCPSessionDiscovery | null;
@@ -175,3 +178,17 @@ export interface MCPFlowDetail {
 export interface MCPFlowStartResponse {
 	authorize_url: string;
 }
+
+// The page a sign-in starts from, which the OAuth callback returns a signed-in caller to.
+export type MCPSessionConnectOrigin = "home";
+
+export interface MCPSessionConnectRequest {
+	mcp_client_id: string;
+	origin?: MCPSessionConnectOrigin;
+}
+
+// POST /mcp/sessions/connect: an OAuth sign-in answers the provider's authorize URL to open;
+// a header submission answers the flow to submit to and the header names it needs.
+export type MCPSessionConnectResponse =
+	| { kind: "oauth"; flow_id: string; authorize_url: string }
+	| { kind: "headers"; flow_id: string; required_header_keys: string[]; missing_header_keys: string[] };

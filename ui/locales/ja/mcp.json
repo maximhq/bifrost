@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "これらのヘッダーは管理者が MCP クライアントに設定したもので、送信した値とともにすべてのリクエストに付与されます。ここでは編集できません。",
 		"noKeys": "この MCP クライアントにはヘッダーキーが宣言されていません。",
 		"previouslySubmitted": "送信済み",
+		"newKey": "新規",
 		"overwritePlaceholder": "•••••• (上書きするには新しい値を入力)",
 		"valuePlaceholder": "{{key}}の値",
 		"hideValue": "値を非表示",

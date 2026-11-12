@@ -1319,6 +1319,7 @@
 		"staticAdminHeadersHelp": "이 헤더는 관리자가 MCP 클라이언트에 설정한 것으로, 제출한 값과 함께 모든 요청에 포함돼요. 여기서는 편집할 수 없어요.",
 		"noKeys": "이 MCP 클라이언트에는 선언된 헤더 키가 없어요.",
 		"previouslySubmitted": "이전에 제출됨",
+		"newKey": "신규",
 		"overwritePlaceholder": "•••••• (덮어쓰려면 새 값을 입력하세요)",
 		"valuePlaceholder": "{{key}}의 값",
 		"hideValue": "값 숨기기",
