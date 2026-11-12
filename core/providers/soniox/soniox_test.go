@@ -899,7 +899,7 @@ func dialRealtime(t *testing.T, provider *soniox.SonioxProvider, key schemas.Key
 	conn, _, err := ws.DefaultDialer.Dial(url, header)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	translator, bifrostErr := provider.NewRealtimeTranslator(key, "stt-rt-v5")
+	translator, bifrostErr := provider.NewRealtimeTranslator(ctx, key, "stt-rt-v5")
 	require.Nil(t, bifrostErr, "%v", bifrostErr)
 
 	c := &realtimeClient{t: t, conn: conn, translator: translator, events: make(chan gjson.Result, 512), done: make(chan struct{})}

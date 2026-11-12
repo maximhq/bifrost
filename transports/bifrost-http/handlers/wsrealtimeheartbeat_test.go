@@ -835,9 +835,11 @@ type translatingRealtimeProvider struct {
 	*openaiProvider.OpenAIProvider
 	translator schemas.RealtimeTranslator
 	err        *schemas.BifrostError
+	gotCtx     *schemas.BifrostContext // the context the relay gave the factory
 }
 
-func (p *translatingRealtimeProvider) NewRealtimeTranslator(schemas.Key, string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+func (p *translatingRealtimeProvider) NewRealtimeTranslator(ctx *schemas.BifrostContext, _ schemas.Key, _ string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+	p.gotCtx = ctx
 	return p.translator, p.err
 }
 
@@ -854,7 +856,7 @@ func readRealtimeTestFrame(t *testing.T, conn *ws.Conn) string {
 func TestRealtimeClientProtocolAndTranslatorFactory(t *testing.T) {
 	plain := &azure.AzureProvider{}
 	require.Same(t, plain, realtimeClientProtocol(plain, "model", ""))
-	translator, bifrostErr := newRealtimeTranslator(plain, schemas.Key{}, "model", "")
+	translator, bifrostErr := newRealtimeTranslator(nil, plain, schemas.Key{}, "model", "")
 	require.Nil(t, translator)
 	require.Nil(t, bifrostErr)
 
@@ -862,16 +864,18 @@ func TestRealtimeClientProtocolAndTranslatorFactory(t *testing.T) {
 	translating := &translatingRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, translator: scripted}
 	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(translating, "model", ""))
 	require.Equal(t, "realtime", realtimeClientProtocol(translating, "model", "").RealtimeWebSocketSubprotocol())
-	translator, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
+	ctx := liveCallerCtx(t, "")
+	translator, bifrostErr = newRealtimeTranslator(ctx, translating, schemas.Key{}, "model", "")
 	require.Nil(t, bifrostErr)
 	require.Same(t, scripted, translator)
+	require.Same(t, ctx, translating.gotCtx, "the factory is given the connection's context, which carries what a model alias resolved to")
 
 	translating.translator = nil
-	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
+	_, bifrostErr = newRealtimeTranslator(nil, translating, schemas.Key{}, "model", "")
 	require.NotNil(t, bifrostErr, "a provider that asks for a translator and returns none must fail the connection, not fall back to relaying its native frames")
 
 	translating.err = newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported model")
-	_, bifrostErr = newRealtimeTranslator(translating, schemas.Key{}, "model", "")
+	_, bifrostErr = newRealtimeTranslator(nil, translating, schemas.Key{}, "model", "")
 	require.Same(t, translating.err, bifrostErr)
 }
 
@@ -1621,13 +1625,13 @@ func TestRealtimeTranslationSelectorPicksPerModelAndIntent(t *testing.T) {
 
 	for _, session := range []struct{ model, intent string }{{"agent", ""}, {"agent", "transcription"}, {"scribe", ""}} {
 		require.Same(t, provider, realtimeClientProtocol(provider, session.model, session.intent), "%+v keeps the provider's protocol", session)
-		translator, bifrostErr := newRealtimeTranslator(provider, schemas.Key{}, session.model, session.intent)
+		translator, bifrostErr := newRealtimeTranslator(nil, provider, schemas.Key{}, session.model, session.intent)
 		require.Nil(t, bifrostErr)
 		require.Nil(t, translator, "%+v is relayed as it is", session)
 	}
 
 	require.Same(t, openAIRealtimeWire, realtimeClientProtocol(provider, "scribe", "transcription"))
-	translator, bifrostErr := newRealtimeTranslator(provider, schemas.Key{}, "scribe", "transcription")
+	translator, bifrostErr := newRealtimeTranslator(nil, provider, schemas.Key{}, "scribe", "transcription")
 	require.Nil(t, bifrostErr)
 	require.Same(t, scripted, translator)
 

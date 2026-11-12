@@ -1054,3 +1054,53 @@ func BenchmarkLiveTranslatorAudioAppend(b *testing.B) {
 		}
 	}
 }
+
+// A trimmed capture from gemini-3.8-live on Vertex AI (location us). Vertex names the response token fields
+// candidates*, where the Gemini API names them response*.
+const liveVertexTurnDoneUsage = `{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":60,"totalTokenCount":142,"promptTokensDetails":[{"modality":"TEXT","tokenCount":6}],"candidatesTokensDetails":[{"modality":"AUDIO","tokenCount":60}],"thoughtsTokenCount":76}}`
+
+func TestLiveTranslatorReadsVertexUsageFieldNames(t *testing.T) {
+	t.Parallel()
+	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+
+	events := liveReceiveAll(t, tr, liveAudioFrame, liveGenerationDone, liveVertexTurnDoneUsage)
+
+	usage := liveFind(t, events, "response.done").Get("response.usage")
+	require.Equal(t, int64(6), usage.Get("input_tokens").Int())
+	require.Equal(t, int64(136), usage.Get("output_tokens").Int(), "the response and the thinking, as the Gemini API frame counts them")
+	require.Equal(t, int64(142), usage.Get("total_tokens").Int())
+	require.Equal(t, int64(6), usage.Get("input_token_details.text_tokens").Int())
+	require.Equal(t, int64(60), usage.Get("output_token_details.audio_tokens").Int())
+	require.Equal(t, int64(76), usage.Get("output_token_details.reasoning_tokens").Int())
+}
+
+func TestLiveTranslatorNamesTheModelByItsPath(t *testing.T) {
+	t.Parallel()
+	const path = "projects/p/locations/us/publishers/google/models/gemini-3.8-live"
+	const update = `{"type":"session.update","session":{"type":"realtime","instructions":"Be brief."}}`
+	tr, err := newLiveTranslatorWithModelPath("gemini-3.8-live", path)
+	require.NoError(t, err)
+
+	created := gjson.ParseBytes(tr.Open().Client[0])
+	require.Equal(t, "gemini-3.8-live", created.Get("session.model").String(), "the client sees the model by its short name")
+
+	out := liveSend(t, tr, update)
+	require.Len(t, out.Provider, 1)
+	require.Equal(t, path, gjson.ParseBytes(out.Provider[0]).Get("setup.model").String())
+	liveReceive(t, tr, liveSetupComplete)
+
+	repeated := liveSend(t, tr, update)
+	require.Empty(t, repeated.Provider, "repeating the settings is acknowledged, which compares the setup the path built")
+	require.Equal(t, []string{"session.updated"}, liveEventTypes(repeated.Client))
+
+	_, err = NewLiveTranslatorForModelPath("", path)
+	require.Error(t, err)
+	_, err = NewLiveTranslatorForModelPath("gemini-3.8-live", " ")
+	require.Error(t, err)
+	exported, err := NewLiveTranslatorForModelPath("gemini-3.8-live", path)
+	require.NoError(t, err)
+	require.NotNil(t, exported)
+
+	plain := newLiveTestTranslator(t)
+	require.Equal(t, "models/gemini-3.8-live", gjson.ParseBytes(liveSend(t, plain, update).Provider[0]).Get("setup.model").String(), "without a path the Gemini API form is kept")
+}

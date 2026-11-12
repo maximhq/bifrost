@@ -27,7 +27,7 @@ func isRealtimeModel(model string) bool {
 }
 
 // NewRealtimeTranslator builds the translator of a transcription session.
-func (provider *SonioxProvider) NewRealtimeTranslator(_ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+func (provider *SonioxProvider) NewRealtimeTranslator(_ *schemas.BifrostContext, _ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
 	if !isRealtimeModel(model) {
 		return nil, providerUtils.NewBifrostBadRequestError("soniox serves realtime sessions with its stt-rt models, not " + model)
 	}

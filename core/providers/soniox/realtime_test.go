@@ -143,7 +143,7 @@ func TestSonioxRealtimeProvider(t *testing.T) {
 		_, bifrostErr := provider.RealtimeWebSocketURL(nil, schemas.Key{}, "stt-async-v5", "transcription")
 		require.NotNil(t, bifrostErr)
 		assert.Contains(t, bifrostErr.Error.Message, "stt-rt")
-		_, bifrostErr = provider.NewRealtimeTranslator(schemas.Key{}, "stt-async-v5")
+		_, bifrostErr = provider.NewRealtimeTranslator(nil, schemas.Key{}, "stt-async-v5")
 		require.NotNil(t, bifrostErr)
 		assert.Contains(t, bifrostErr.Error.Message, "stt-rt")
 	})

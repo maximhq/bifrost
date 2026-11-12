@@ -86,13 +86,13 @@ func TestGeminiNewRealtimeTranslator(t *testing.T) {
 	t.Parallel()
 	provider := newLiveTestProvider(schemas.ProviderConfig{})
 
-	translator, bifrostErr := provider.NewRealtimeTranslator(schemas.Key{}, "gemini-3.8-live")
+	translator, bifrostErr := provider.NewRealtimeTranslator(nil, schemas.Key{}, "gemini-3.8-live")
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, translator)
-	other, _ := provider.NewRealtimeTranslator(schemas.Key{}, "gemini-3.8-live")
+	other, _ := provider.NewRealtimeTranslator(nil, schemas.Key{}, "gemini-3.8-live")
 	require.NotSame(t, translator, other, "every connection needs its own translator, it holds the session's state")
 
-	_, bifrostErr = provider.NewRealtimeTranslator(schemas.Key{}, "  ")
+	_, bifrostErr = provider.NewRealtimeTranslator(nil, schemas.Key{}, "  ")
 	require.NotNil(t, bifrostErr)
 }
 
