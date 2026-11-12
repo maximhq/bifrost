@@ -190,14 +190,18 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 	// Generate compact Python signatures
 	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	// Every line ends in "\n", so counting newlines counts lines. strings.Split would also return
+	// an empty element after the final "\n" and overcount by one.
+	contentLines := strings.Count(fileContent, "\n")
+	if fileContent != "" && !strings.HasSuffix(fileContent, "\n") {
+		contentLines++
+	}
+
+	// Prepend total lines info so LLM knows the file size upfront (+1 for the header line itself)
+	fileContent = fmt.Sprintf("# Total lines: %d (this is the complete file, no need to paginate)\n%s", contentLines+1, fileContent)
+	// Split the full file for startLine/endLine slicing below
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
-
-	// Prepend total lines info so LLM knows the file size upfront
-	fileContent = fmt.Sprintf("# Total lines: %d (this is the complete file, no need to paginate)\n%s", totalLines+1, fileContent)
-	// Recalculate lines after prepending
-	lines = strings.Split(fileContent, "\n")
-	totalLines = len(lines)
 
 	// Handle line slicing if provided
 	var startLine, endLine *int

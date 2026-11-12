@@ -1787,6 +1787,46 @@ func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
 	}
 }
 
+// The "# Total lines: N" header is what a model uses to decide whether it already holds the
+// whole file, so N must equal the number of lines readToolFile actually returns (#9841).
+func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
+	cases := []struct {
+		name     string
+		level    schemas.CodeModeBindingLevel
+		fileName string
+	}{
+		{name: "server with instructions", level: schemas.CodeModeBindingLevelServer, fileName: "servers/codey.pyi"},
+		{name: "server without instructions", level: schemas.CodeModeBindingLevelServer, fileName: "servers/plain.pyi"},
+		{name: "single tool file", level: schemas.CodeModeBindingLevelTool, fileName: "servers/codey/add.pyi"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := newInstructionsCodeMode(tc.level)
+			msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("tool-call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"` + tc.fileName + `"}`},
+			})
+			content := instructionsToolResponse(t, msg, err)
+
+			header, _, _ := strings.Cut(content, "\n")
+			countText, ok := strings.CutPrefix(header, "# Total lines: ")
+			if !ok {
+				t.Fatalf("first line is not the Total lines header, got:\n%s", content)
+			}
+			countText, _, _ = strings.Cut(countText, " ")
+			claimed, err := strconv.Atoi(countText)
+			if err != nil {
+				t.Fatalf("header %q does not carry a line count: %v", header, err)
+			}
+
+			returned := len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+			if claimed != returned {
+				t.Fatalf("header claims %d lines but readToolFile returned %d, got:\n%s", claimed, returned, content)
+			}
+		})
+	}
+}
+
 // A per-call client (per-user OAuth, per-user headers, token exchange) gets its tools back from
 // the config store after a restart instead of from a live tools/list. That decode turns every
 // nested schema object into *OrderedMap, where live discovery keeps plain maps, and the stubs
