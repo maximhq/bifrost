@@ -1644,6 +1644,8 @@
 		"urlTemplate": "<URL dell’emittente>/gateway/<client>",
 		"accessTokenTtlLabel": "Durata del token di accesso (secondi)",
 		"accessTokenTtlDescription": "Per quanto tempo resta valido il token di accesso di ogni accesso (predefinito 600, minimo 60). Disconnettersi o revocare un accesso ne impedisce il rinnovo, ma il token di accesso già emesso continua a funzionare fino alla scadenza. Per bloccare subito l’accesso, disattiva la chiave virtuale o l’utente. Questa impostazione è condivisa con MCP OAuth.",
-		"accessTokenTtlInvalid": "La durata del token di accesso deve essere un numero intero di almeno 60 secondi."
+		"accessTokenTtlInvalid": "La durata del token di accesso deve essere un numero intero di almeno 60 secondi.",
+		"allowTempTokenLabel": "Consenti agli sviluppatori senza account Bifrost di approvare gli accessi",
+		"allowTempTokenDescription": "Se attivo, uno sviluppatore senza account nella dashboard di Bifrost può approvare il proprio accesso nella pagina di consenso con una chiave virtuale, tramite un token di collegamento di breve durata. Se disattivo (predefinito), solo chi ha effettuato l’accesso a Bifrost può approvare, quindi ogni approvazione è legata a un account. È la stessa impostazione di «Consenti link di autenticazione con token temporaneo» nella pagina MCP, quindi vale anche per il consenso MCP OAuth."
 	}
 }

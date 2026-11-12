@@ -1673,6 +1673,8 @@
 		"urlTemplate": "<Issuer-URL>/gateway/<Client>",
 		"accessTokenTtlLabel": "Lebensdauer des Zugriffstokens (Sekunden)",
 		"accessTokenTtlDescription": "Wie lange das Zugriffstoken einer Anmeldung gültig bleibt (Standard 600, mindestens 60). Abmelden oder Widerrufen einer Anmeldung verhindert die nächste Aktualisierung, das bereits ausgestellte Zugriffstoken funktioniert aber bis zu seinem Ablauf weiter. Um den Zugriff sofort zu sperren, deaktiviere den virtuellen Schlüssel oder den Benutzer. Diese Einstellung wird mit MCP OAuth geteilt.",
-		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss eine ganze Zahl von mindestens 60 Sekunden sein."
+		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss eine ganze Zahl von mindestens 60 Sekunden sein.",
+		"allowTempTokenLabel": "Entwicklern ohne Bifrost-Konto erlauben, Anmeldungen zu bestätigen",
+		"allowTempTokenDescription": "Wenn aktiviert, kann ein Entwickler ohne Bifrost-Dashboard-Konto seine eigene Anmeldung auf der Zustimmungsseite mit einem virtuellen Schlüssel bestätigen, über ein kurzlebiges Link-Token. Wenn deaktiviert (Standard), kann nur jemand bestätigen, der bei Bifrost angemeldet ist, sodass jede Bestätigung einem Konto zugeordnet ist. Dies ist dieselbe Einstellung wie „Temp-Token-Auth-Links erlauben“ auf der MCP-Seite und gilt daher auch für die MCP-OAuth-Zustimmung."
 	}
 }

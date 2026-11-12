@@ -1644,6 +1644,8 @@
 		"urlTemplate": "<issuer URL>/gateway/<client>",
 		"accessTokenTtlLabel": "Access token lifetime (seconds)",
 		"accessTokenTtlDescription": "How long each sign-in's access token stays valid (default 600, minimum 60). Signing out or revoking a sign-in stops it from refreshing, but the access token it already holds keeps working until it expires. To cut access off immediately, deactivate the virtual key or the user. This setting is shared with MCP OAuth.",
-		"accessTokenTtlInvalid": "The access token lifetime must be a whole number of at least 60 seconds."
+		"accessTokenTtlInvalid": "The access token lifetime must be a whole number of at least 60 seconds.",
+		"allowTempTokenLabel": "Let developers without a Bifrost account approve sign-ins",
+		"allowTempTokenDescription": "When on, a developer who has no Bifrost dashboard account can approve their own sign-in on the consent page with a virtual key, using a short-lived link token. When off (the default), only someone signed in to Bifrost can approve, so every approval is tied to an account. This is the same setting as \"Allow Temp Token Auth Links\" on the MCP page, so it applies to MCP OAuth consent too."
 	}
 }

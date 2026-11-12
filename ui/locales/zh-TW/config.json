@@ -1668,6 +1668,8 @@
 		"urlTemplate": "<簽發者 URL>/gateway/<用戶端>",
 		"accessTokenTtlLabel": "存取權杖有效期（秒）",
 		"accessTokenTtlDescription": "每次登入的存取權杖保持有效的時間（預設 600，最小 60）。登出或撤銷登入會停止重新整理，但已簽發的存取權杖在到期前仍可使用。若要立即切斷存取，請停用虛擬金鑰或該使用者。此設定與 MCP OAuth 共用。",
-		"accessTokenTtlInvalid": "存取權杖有效期必須是不小於 60 秒的整數。"
+		"accessTokenTtlInvalid": "存取權杖有效期必須是不小於 60 秒的整數。",
+		"allowTempTokenLabel": "允許沒有 Bifrost 帳戶的開發者核准登入",
+		"allowTempTokenDescription": "開啟後，沒有 Bifrost 主控台帳戶的開發者也能憑短時效的連結權杖，在同意頁面使用虛擬金鑰核准自己的登入。關閉時（預設），只有已登入 Bifrost 的人才能核准，因此每次核准都與一個帳戶關聯。此設定與 MCP 頁面上的「允許暫時權杖驗證連結」相同，因此也適用於 MCP OAuth 同意。"
 	}
 }

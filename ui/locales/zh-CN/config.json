@@ -1639,6 +1639,8 @@
 		"urlTemplate": "<颁发者 URL>/gateway/<客户端>",
 		"accessTokenTtlLabel": "访问令牌有效期（秒）",
 		"accessTokenTtlDescription": "每次登录的访问令牌保持有效的时长（默认 600，最小 60）。退出登录或撤销登录会停止刷新，但已签发的访问令牌在过期前仍可使用。要立即切断访问，请停用虚拟密钥或该用户。此设置与 MCP OAuth 共用。",
-		"accessTokenTtlInvalid": "访问令牌有效期必须是不小于 60 秒的整数。"
+		"accessTokenTtlInvalid": "访问令牌有效期必须是不小于 60 秒的整数。",
+		"allowTempTokenLabel": "允许没有 Bifrost 账户的开发者批准登录",
+		"allowTempTokenDescription": "开启后，没有 Bifrost 控制台账户的开发者也可以凭短时有效的链接令牌，在同意页面使用虚拟密钥批准自己的登录。关闭时（默认），只有已登录 Bifrost 的人才能批准，因此每次批准都与一个账户关联。此设置与 MCP 页面上的“允许临时令牌认证链接”相同，因此也适用于 MCP OAuth 同意。"
 	}
 }

@@ -1673,6 +1673,8 @@
 		"urlTemplate": "<URL de l’émetteur>/gateway/<client>",
 		"accessTokenTtlLabel": "Durée de vie du jeton d’accès (secondes)",
 		"accessTokenTtlDescription": "Durée de validité du jeton d’accès de chaque connexion (600 par défaut, 60 minimum). Se déconnecter ou révoquer une connexion empêche son renouvellement, mais le jeton d’accès déjà émis reste valable jusqu’à son expiration. Pour couper l’accès immédiatement, désactivez la clé virtuelle ou l’utilisateur. Ce paramètre est partagé avec MCP OAuth.",
-		"accessTokenTtlInvalid": "La durée de vie du jeton d’accès doit être un nombre entier d’au moins 60 secondes."
+		"accessTokenTtlInvalid": "La durée de vie du jeton d’accès doit être un nombre entier d’au moins 60 secondes.",
+		"allowTempTokenLabel": "Autoriser les développeurs sans compte Bifrost à approuver les connexions",
+		"allowTempTokenDescription": "Si activé, un développeur sans compte sur le tableau de bord Bifrost peut approuver sa propre connexion sur la page de consentement avec une clé virtuelle, grâce à un jeton de lien de courte durée. Si désactivé (par défaut), seule une personne connectée à Bifrost peut approuver, et chaque approbation est donc liée à un compte. C’est le même paramètre que « Autoriser les liens d’authentification par jeton temporaire » sur la page MCP : il s’applique donc aussi au consentement MCP OAuth."
 	}
 }

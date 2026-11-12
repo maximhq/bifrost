@@ -1649,6 +1649,8 @@
 		"urlTemplate": "<URL del emisor>/gateway/<cliente>",
 		"accessTokenTtlLabel": "Duración del token de acceso (segundos)",
 		"accessTokenTtlDescription": "Cuánto tiempo sigue siendo válido el token de acceso de cada inicio de sesión (predeterminado 600, mínimo 60). Cerrar sesión o revocar un inicio de sesión impide que se renueve, pero el token de acceso que ya tiene sigue funcionando hasta que caduca. Para cortar el acceso de inmediato, desactiva la clave virtual o el usuario. Esta opción se comparte con MCP OAuth.",
-		"accessTokenTtlInvalid": "La duración del token de acceso debe ser un número entero de al menos 60 segundos."
+		"accessTokenTtlInvalid": "La duración del token de acceso debe ser un número entero de al menos 60 segundos.",
+		"allowTempTokenLabel": "Permitir que desarrolladores sin cuenta de Bifrost aprueben inicios de sesión",
+		"allowTempTokenDescription": "Si está activado, un desarrollador sin cuenta en el panel de Bifrost puede aprobar su propio inicio de sesión en la página de consentimiento con una clave virtual, mediante un token de enlace de corta duración. Si está desactivado (predeterminado), solo alguien que haya iniciado sesión en Bifrost puede aprobar, de modo que cada aprobación queda vinculada a una cuenta. Es la misma opción que «Permitir enlaces de autenticación con token temporal» en la página de MCP, así que también se aplica al consentimiento de MCP OAuth."
 	}
 }
