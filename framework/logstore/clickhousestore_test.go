@@ -2652,6 +2652,70 @@ func TestClickHouseTraceStore(t *testing.T) {
 	links, err := store.FindTraceSpanLinksByLog(ctx, TraceLinkedLogKindLLM, []string{"log-1"})
 	require.NoError(t, err)
 	assert.Len(t, links, 1)
+	require.NoError(t, store.CreateTraceSpanLinks(ctx, []*TraceSpanLink{{ProjectID: "p1", TraceID: "t1", SpanID: "replaced", LogKind: TraceLinkedLogKindLLM, LogID: "log-2", Method: "fingerprint"}}))
+	require.NoError(t, store.DeleteTraceSpanLinks(ctx, "p1", "t1", "replaced"))
+	links, err = store.ListTraceSpanLinks(ctx, "p1", "t1")
+	require.NoError(t, err)
+	require.Len(t, links, 1, "only the deleted span's links are gone")
+	assert.Equal(t, "llm", links[0].SpanID)
+
+	// The matcher's gateway lookups and its column-only span update.
+	gateway := chTestLog("trace-linked-log", now)
+	gateway.Status, gateway.TraceID, gateway.ParentSpanID, gateway.ProviderResponseID, gateway.InputFingerprint = "success", new("t1"), new("llm"), new("chatcmpl-ch"), new("fp-1")
+	require.NoError(t, store.CreateIfNotExists(ctx, gateway))
+	calls, err := store.FindGatewayCallsByTraceID(ctx, "t1")
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	assert.Equal(t, TraceLinkedLogKindLLM, calls[0].LogKind)
+	assert.Equal(t, "llm", *calls[0].ParentSpanID)
+	calls, err = store.FindGatewayCallsByProviderResponseIDs(ctx, []string{"chatcmpl-ch"})
+	require.NoError(t, err)
+	assert.Len(t, calls, 1)
+	calls, err = store.FindGatewayCallsByFingerprint(ctx, "fp-1", now.Add(-time.Minute), now.Add(time.Minute), nil)
+	require.NoError(t, err)
+	assert.Len(t, calls, 1)
+	// The window is bound at millisecond precision: a bound inside a second is not moved to that
+	// second's start, which would drop a row before the upper bound or admit one before the lower.
+	second := now.Truncate(time.Second).Add(-time.Hour)
+	late := chTestLog("trace-fp-late", second.Add(500*time.Millisecond))
+	late.InputFingerprint = new("fp-subsecond-upper")
+	early := chTestLog("trace-fp-early", second.Add(200*time.Millisecond))
+	early.InputFingerprint = new("fp-subsecond-lower")
+	require.NoError(t, store.CreateIfNotExists(ctx, late))
+	require.NoError(t, store.CreateIfNotExists(ctx, early))
+	calls, err = store.FindGatewayCallsByFingerprint(ctx, "fp-subsecond-upper", second.Add(-10*time.Second), second.Add(900*time.Millisecond), nil)
+	require.NoError(t, err)
+	assert.Len(t, calls, 1, "a row before the upper bound is found")
+	calls, err = store.FindGatewayCallsByFingerprint(ctx, "fp-subsecond-lower", second.Add(400*time.Millisecond), second.Add(10*time.Second), nil)
+	require.NoError(t, err)
+	assert.Empty(t, calls, "a row before the lower bound is not found")
+	calls, err = store.FindGatewayCallChain(ctx, TraceLinkedLogKindLLM, []string{"trace-linked-log"})
+	require.NoError(t, err)
+	assert.Len(t, calls, 1)
+	require.NoError(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "t1", "llm", TraceSpanEnrichment{LinkMethod: new("header"), LinkSnapshot: &TraceLinkSnapshot{TotalTokens: 77}}))
+	enriched, err := store.FindTraceSpans(ctx, "p1", []TraceSpanKey{{TraceID: "t1", SpanID: "llm"}})
+	require.NoError(t, err)
+	require.Len(t, enriched, 1)
+	assert.Equal(t, "header", enriched[0].LinkMethod)
+	assert.Equal(t, 77, enriched[0].LinkSnapshotParsed.TotalTokens)
+	assert.Equal(t, 30, enriched[0].TotalTokens, "the rest of the span is untouched")
+	assert.Equal(t, map[string]any{"k": "v"}, enriched[0].MetadataParsed)
+
+	// An estimate is written only for the usage it priced.
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "t1", SpanID: "estimated", Kind: TraceSpanKindLLM, Source: TraceSourceOTel, StartTime: now, Model: "gpt-4o", TotalTokens: 100}}))
+	staleEstimate := TraceSpanEnrichment{Cost: new(0.1), CostEstimated: new(true), PricedFrom: &TraceSpanPricingInputs{Model: "gpt-4o", TotalTokens: 10}}
+	require.ErrorIs(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "t1", "estimated", staleEstimate), ErrTraceSpanChanged)
+	estimated, err := store.FindTraceSpans(ctx, "p1", []TraceSpanKey{{TraceID: "t1", SpanID: "estimated"}})
+	require.NoError(t, err)
+	require.Len(t, estimated, 1)
+	assert.Nil(t, estimated[0].Cost, "a price for other usage is not written")
+	currentEstimate := TraceSpanEnrichment{Cost: new(1.0), CostEstimated: new(true), PricedFrom: new(TraceSpanPricingInputsOf(estimated[0]))}
+	require.NoError(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "t1", "estimated", currentEstimate))
+	estimated, err = store.FindTraceSpans(ctx, "p1", []TraceSpanKey{{TraceID: "t1", SpanID: "estimated"}})
+	require.NoError(t, err)
+	require.Len(t, estimated, 1)
+	require.NotNil(t, estimated[0].Cost)
+	assert.Equal(t, 1.0, *estimated[0].Cost)
 
 	require.NoError(t, store.CreateTraceComment(ctx, &TraceComment{ID: "c1", ProjectID: "p1", TraceID: "t1", Text: "note", Source: TraceAuthorHuman}))
 	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "u1", ProjectID: "p1", Source: TraceSourceBraintrust}))
@@ -2693,6 +2757,93 @@ func TestClickHouseTraceStore(t *testing.T) {
 func TestClickHouseFirstRollupGivesAnnotationsItsExpiry(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	assertFirstRollupGivesAnnotationsItsExpiry(t, store.RDBLogStore)
+}
+
+// TestClickHouseGatewayCallLookupsPruneParts covers the matcher's trace_id and
+// provider_response_id lookups, which run for every dirty trace. Neither
+// column is in the (timestamp, id) sort key, so without a skip index a lookup
+// reads every retained part. The connection reads under FINAL, which ignores
+// skip indexes on 24.x and cannot use one on a mutable column safely, so the
+// lookup must still return a row whose provider_response_id was set only by
+// its newest version.
+func TestClickHouseGatewayCallLookupsPruneParts(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	for idx, table := range map[string]string{"idx_logs_trace_id": "logs", "idx_logs_provider_response_id": "logs", "idx_mcp_logs_trace_id": "mcp_tool_logs"} {
+		var n int64
+		require.NoError(t, store.db.Raw("SELECT count() FROM system.data_skipping_indices WHERE database = currentDatabase() AND table = ? AND name = ?", table, idx).Scan(&n).Error)
+		assert.Equal(t, int64(1), n, "migration must create skip index %s on %s", idx, table)
+	}
+
+	// Anchored mid-month: the fillers sit up to an hour before each anchor, and an anchor in the
+	// first hour of a month would spill a batch into the previous month's partition.
+	now := time.Now().UTC()
+	base := time.Date(now.Year(), now.Month(), 15, 12, 0, 0, 0, time.UTC)
+	months := []time.Time{base.AddDate(0, -2, 0), base.AddDate(0, -1, 0), base}
+	traceID, responseID := "gw-prune-trace", "gw-prune-response"
+	// A background merge could collapse the target's two versions before the reads below, which
+	// are meant to find a value only the newest version carries. The test writes only by insert
+	// (Update re-inserts a new version), so no mutation waits on the stopped merges.
+	require.NoError(t, store.db.Exec("SYSTEM STOP MERGES logs").Error)
+	t.Cleanup(func() { require.NoError(t, store.db.Exec("SYSTEM START MERGES logs").Error) })
+	for i, ts := range months {
+		filler := make([]*Log, 0, 64)
+		for j := range 63 {
+			filler = append(filler, chTestLog(fmt.Sprintf("gw-prune-filler-%d-%d", i, j), ts.Add(-time.Hour+time.Duration(j)*time.Second)))
+		}
+		if i == 1 {
+			// Written as the processing version: trace_id is known at request start,
+			// provider_response_id only once the provider answers.
+			target := chTestLog("gw-prune-target", ts)
+			target.TraceID, target.ParentSpanID = new(traceID), new("llm")
+			filler = append(filler, target)
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, filler))
+	}
+	require.NoError(t, store.Update(ctx, "gw-prune-target", map[string]interface{}{"status": "success", "provider_response_id": responseID}))
+	var parts uint64
+	require.NoError(t, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&parts).Error)
+	require.Equal(t, uint64(4), parts, "three filler parts plus the update's part")
+
+	var explain []string
+	require.NoError(t, store.db.Raw("EXPLAIN indexes = 1 SELECT id FROM logs WHERE trace_id = 'gw-absent' SETTINGS final = 0").Scan(&explain).Error)
+	assert.Contains(t, strings.Join(explain, "\n"), "idx_logs_trace_id", "a trace_id read must consult its skip index")
+	explain = nil
+	require.NoError(t, store.db.Raw("EXPLAIN indexes = 1 SELECT id FROM logs WHERE provider_response_id IN ('gw-absent') SETTINGS final = 0").Scan(&explain).Error)
+	assert.Contains(t, strings.Join(explain, "\n"), "idx_logs_provider_response_id", "a provider_response_id read must consult its skip index")
+
+	mcpTool := &MCPToolLog{ID: "gw-prune-mcp", Timestamp: months[1], ToolName: "search", Status: "success", CreatedAt: months[1], TraceID: new(traceID)}
+	require.NoError(t, store.CreateMCPToolLog(ctx, mcpTool))
+
+	calls, err := store.FindGatewayCallsByTraceID(ctx, traceID)
+	require.NoError(t, err)
+	require.Len(t, calls, 2)
+	assert.Equal(t, TraceLinkedLogKindLLM, calls[0].LogKind)
+	assert.Equal(t, "gw-prune-target", calls[0].ID)
+	assert.Equal(t, "success", calls[0].Status, "the lookup returns the newest version")
+	require.NotNil(t, calls[0].ProviderResponseID)
+	assert.Equal(t, responseID, *calls[0].ProviderResponseID)
+	assert.Equal(t, "gw-prune-mcp", calls[1].ID)
+	assert.LessOrEqual(t, chSelectedParts(t, store.db, "trace_id = 'gw-prune-trace'"), uint64(2), "the trace_id lookup must prune to the target's parts")
+	assert.LessOrEqual(t, chSelectedParts(t, store.db, "SELECT id, timestamp FROM `logs` WHERE trace_id = 'gw-prune-trace'"), uint64(2), "the trace_id candidate read must prune by its skip index")
+
+	calls, err = store.FindGatewayCallsByProviderResponseIDs(ctx, []string{responseID})
+	require.NoError(t, err)
+	require.Len(t, calls, 1, "a provider_response_id set only by the newest version is found")
+	assert.Equal(t, "gw-prune-target", calls[0].ID)
+	assert.Equal(t, "success", calls[0].Status)
+	assert.LessOrEqual(t, chSelectedParts(t, store.db, "provider_response_id IN ('gw-prune-response')"), uint64(2), "the provider_response_id lookup must prune to the target's parts")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "SELECT id, timestamp FROM `logs` WHERE provider_response_id IN ('gw-prune-response')"), "the provider_response_id candidate read must prune to the update's part")
+
+	// A version that drops the response id must stop matching it.
+	require.NoError(t, store.Update(ctx, "gw-prune-target", map[string]interface{}{"provider_response_id": "gw-prune-other"}))
+	calls, err = store.FindGatewayCallsByProviderResponseIDs(ctx, []string{responseID})
+	require.NoError(t, err)
+	assert.Empty(t, calls, "an older version's response id must not match")
+
+	calls, err = store.FindGatewayCallsByTraceID(ctx, "gw-absent")
+	require.NoError(t, err)
+	assert.Empty(t, calls)
 }
 
 // TestClickHouseMarkTracesPastNextExpiryPages runs the paged next-expiry sweep on ClickHouse.
@@ -2824,6 +2975,36 @@ func TestClickHouseTraceRowVersions(t *testing.T) {
 		}
 		assert.True(t, found, "a pending mark never expires")
 		require.NoError(t, store.db.Exec("TRUNCATE TABLE trace_dirty_marks").Error)
+	})
+
+	t.Run("an enrichment copy does not replace a fold committed after its read", func(t *testing.T) {
+		start := time.Now().UTC().Add(-time.Minute)
+		key := []TraceSpanKey{{TraceID: "enrich-race", SpanID: "llm"}}
+		require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "enrich-race", SpanID: "llm", Source: TraceSourceOTel, Kind: TraceSpanKindLLM, Name: "v1", StartTime: start}}))
+		read, err := store.FindTraceSpans(ctx, "p1", key)
+		require.NoError(t, err)
+		require.Len(t, read, 1)
+		// Another instance commits a fold of the span after the read.
+		require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "enrich-race", SpanID: "llm", Source: TraceSourceOTel, Kind: TraceSpanKindLLM, Name: "v2", StartTime: start}}))
+		stale := read[0]
+		stale.LinkMethod = "header"
+		require.NoError(t, store.writeEnrichedSpanCopy(ctx, stale))
+		found, err := store.FindTraceSpans(ctx, "p1", key)
+		require.NoError(t, err)
+		require.Len(t, found, 1)
+		assert.Equal(t, "v2", found[0].Name, "the fold committed after the read wins")
+
+		// An enrichment on the current row lands, and ClearLink drops the link it wrote.
+		require.NoError(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "enrich-race", "llm", TraceSpanEnrichment{LinkMethod: new("header"), LinkSnapshot: &TraceLinkSnapshot{TotalTokens: 9}}))
+		found, err = store.FindTraceSpans(ctx, "p1", key)
+		require.NoError(t, err)
+		require.NotNil(t, found[0].LinkSnapshotParsed)
+		assert.Equal(t, "v2", found[0].Name)
+		require.NoError(t, store.UpdateTraceSpanEnrichment(ctx, "p1", "enrich-race", "llm", TraceSpanEnrichment{ClearLink: true}))
+		found, err = store.FindTraceSpans(ctx, "p1", key)
+		require.NoError(t, err)
+		assert.Nil(t, found[0].LinkSnapshotParsed)
+		assert.Empty(t, found[0].LinkMethod)
 	})
 
 	t.Run("a clean mark does not replace a newer dirty mark", func(t *testing.T) {

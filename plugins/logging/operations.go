@@ -119,6 +119,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		entry.App = new(clampString(data.App, maxPersistedAppLen))
 	}
 	entry.ClientIP = optionalString(data.ClientIP)
+	applyTraceLink(entry, data.TraceLink)
 	return p.store.CreateIfNotExists(ctx, entry)
 }
 

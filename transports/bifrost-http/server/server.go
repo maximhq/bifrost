@@ -3068,7 +3068,7 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 	if s.Config.LogsStore == nil || s.Config.ConfigStore == nil {
 		return
 	}
-	s.TraceIngest = traceingest.NewService(s.Config.LogsStore, s.Config.ConfigStore, traceingest.Config{
+	ingestConfig := traceingest.Config{
 		RetentionDays: func() int {
 			if s.Config.ClientConfig == nil {
 				return 0
@@ -3078,7 +3078,13 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 		ContentLoggingDisabled: func() bool {
 			return s.Config.ClientConfig != nil && s.Config.ClientConfig.DisableContentLogging
 		},
-	}, logger)
+	}
+	if s.Config.ModelCatalog != nil {
+		// Spans the gateway did not serve are priced from the catalog when the SDK sent no cost. A nil
+		// catalog is left out rather than passed as a typed nil, which would not read as unpriced.
+		ingestConfig.Pricer = s.Config.ModelCatalog
+	}
+	s.TraceIngest = traceingest.NewService(s.Config.LogsStore, s.Config.ConfigStore, ingestConfig, logger)
 	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
 	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
 }

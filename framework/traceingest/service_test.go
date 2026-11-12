@@ -336,3 +336,22 @@ func TestRetentionAndRateLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 7), *spans[0].ExpiresAt, time.Minute)
 }
+
+// The fold commit and enrichment write spans one at a time. On ClickHouse an enrichment reads a
+// span, patches it and inserts it again; a commit in between would be replaced by the stale copy.
+func TestCommitWaitsForAnEnrichmentWrite(t *testing.T) {
+	env := newTestEnv(t, Config{})
+	env.service.spanWriteMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- env.service.Ingest(context.Background(), env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{{TraceID: "t1", SpanID: "s", Kind: logstore.TraceSpanKindLLM, StartTime: at(0)}})
+	}()
+	select {
+	case <-done:
+		env.service.spanWriteMu.Unlock()
+		t.Fatal("the commit wrote while an enrichment held the span write lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	env.service.spanWriteMu.Unlock()
+	require.NoError(t, <-done)
+}

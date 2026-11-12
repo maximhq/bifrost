@@ -1341,6 +1341,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	entry.ClientIP = optionalString(pending.InitialData.ClientIP)
 	applyApp(entry, pending.InitialData.App)
 	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
+	applyTraceLink(entry, pending.InitialData.TraceLink)
 	return entry
 }
 
@@ -1382,6 +1383,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	entry.ClientIP = optionalString(pending.InitialData.ClientIP)
 	applyApp(entry, pending.InitialData.App)
 	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
+	applyTraceLink(entry, pending.InitialData.TraceLink)
 	return entry
 }
 
