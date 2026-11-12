@@ -1442,7 +1442,14 @@ Prometheus picks up a changed Secret on its next scrape, but Bifrost reads the a
 
 The render also fails if `bifrost.plugins.telemetry.config.metrics_enabled` is `false`: `/metrics` then returns `404`, so the target would sit at `up=0` all the same.
 
-To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. Bifrost accepts a session token or a base64-encoded `username:password` as the bearer token. Session tokens expire, so a static Secret holding one needs rotating, or scrapes start returning `401`; `basicAuth` has no such expiry. To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
+To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. Bifrost accepts a session token or a base64-encoded `username:password` as the bearer token. Session tokens expire, so a static Secret holding one needs rotating, or scrapes start returning `401`; `basicAuth` has no such expiry.
+
+**What the scrape credentials can do.** Bifrost has no metrics-only credential: the basic-auth admin credentials, a base64 `username:password` bearer token and a session token all pass the same auth check as the dashboard and the management API. Whoever holds the scrape credentials therefore has admin access to Bifrost, not just to `/metrics`. Treat them that way:
+
+- The Prometheus Operator copies the referenced credentials into the configuration it generates for Prometheus, so they also live in the Prometheus namespace. Restrict who can read Secrets there and in the `ServiceMonitor`'s namespace.
+- With the default `http` scheme the credentials cross the pod network in plain text on every scrape. Use `scheme: https` with `tlsConfig` when Bifrost serves TLS, or a service mesh that encrypts pod-to-pod traffic.
+
+**Leaving `/metrics` unauthenticated instead.** Adding `/metrics` to `bifrost.client.whitelistedRoutes` skips scrape auth, but it opens the endpoint to every client that can reach Bifrost, not only Prometheus. The chart's default ingress routes every path (`path: /`, `pathType: Prefix`), so `/metrics` (and `/<prefix>/metrics` with `bifrost.server.basePath`) becomes reachable from outside the cluster. The metrics carry customer, team, user and virtual key names and IDs as labels, so this discloses tenant and key information. Only whitelist `/metrics` if the ingress does not expose it (a path rule or controller deny for `/metrics`) and a NetworkPolicy limits in-cluster access to Prometheus.
 
 For OpenTelemetry integration:
 

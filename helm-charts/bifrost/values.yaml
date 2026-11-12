@@ -106,6 +106,12 @@ serviceMonitor:
   # it is not one of the routes that stay open without auth (such as /health). An
   # unauthenticated scrape gets a 401 and the target silently sits at up=0: Prometheus
   # looks healthy but stores no Bifrost metrics. Turn this on whenever auth is enabled.
+  #
+  # The scrape credentials are admin credentials (Bifrost has no metrics-only one), and
+  # the Prometheus Operator copies them into Prometheus's generated config. Restrict
+  # Secret access in both namespaces and prefer scheme: https. Do not whitelist /metrics
+  # in bifrost.client.whitelistedRoutes instead unless the ingress blocks it: the default
+  # ingress routes every path, and metric labels name customers, teams, users and keys.
   basicAuth:
     enabled: false
     # Secret holding the admin credentials. In the Helm release namespace, defaults

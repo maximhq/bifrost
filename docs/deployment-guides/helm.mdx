@@ -589,6 +589,17 @@ serviceMonitor:
 - For a bearer token instead, set `serviceMonitor.authorization.credentials` to a Secret key reference. It cannot be combined with `basicAuth`.
 - The render fails rather than producing a `ServiceMonitor` that can never scrape: when no Secret can be resolved, when both auth methods are set, when `authorization` has no `credentials`, or when `bifrost.plugins.telemetry.config.metrics_enabled` is `false` (`/metrics` then returns `404`).
 
+<Warning>
+The scrape credentials are admin credentials. Bifrost has no metrics-only credential: the basic-auth admin credentials, a base64 `username:password` bearer token and a session token all grant the same access as the dashboard and management API.
+
+- The Prometheus Operator copies the referenced credentials into the configuration it generates for Prometheus, so they also live in the Prometheus namespace. Restrict who can read Secrets there and in the `ServiceMonitor`'s namespace.
+- With the default `http` scheme they cross the pod network in plain text on every scrape. Use `scheme: https` with `tlsConfig` when Bifrost serves TLS, or a service mesh that encrypts pod-to-pod traffic.
+</Warning>
+
+<Warning>
+Do not make `/metrics` public by adding it to `bifrost.client.whitelistedRoutes` unless the ingress blocks it. The default ingress routes every path (`path: /`, `pathType: Prefix`), so a whitelisted `/metrics` (and `/<prefix>/metrics` with `bifrost.server.basePath`) is reachable from outside the cluster, and its labels carry customer, team, user and virtual key names and IDs. If you whitelist it, exclude `/metrics` at the ingress and limit in-cluster access to Prometheus with a NetworkPolicy.
+</Warning>
+
 ### Health Checks
 
 Check pod health:
