@@ -52,6 +52,7 @@ func TestGemini(t *testing.T) {
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		PassthroughModel:     "gemini-2.5-flash",
 		RealtimeModel:        "gemini-3.8-live",
+		DecisionModel:        "gemini-decision-1",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             false, // Not supported
 			SimpleChat:                 true,
@@ -84,6 +85,7 @@ func TestGemini(t *testing.T) {
 			SpeechSynthesisStream:      true,
 			Reasoning:                  true,
 			ListModels:                 true,
+			Decision:                   true,
 			BatchCreate:                true,
 			BatchList:                  true,
 			BatchRetrieve:              true,

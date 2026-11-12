@@ -248,6 +248,15 @@ func TestIsBasetenDecisionModel(t *testing.T) {
 	}
 }
 
+func TestIsGeminiDecisionModel(t *testing.T) {
+	for _, model := range []string{"gemini-decision-1", "Gemini-Decision-2"} {
+		assert.True(t, IsGeminiDecisionModel(model), model)
+	}
+	for _, model := range []string{"gemini-2.5-flash", "gemini/gemini-decision-1", "models/gemini-decision-1", ""} {
+		assert.False(t, IsGeminiDecisionModel(model), model)
+	}
+}
+
 func TestIsPerplexityDeciderModel(t *testing.T) {
 	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
 		assert.True(t, IsPerplexityDeciderModel(model), model)

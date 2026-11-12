@@ -28,6 +28,7 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 | [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
 | [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
 | [Baseten](/providers/supported-providers/baseten#6-decisions) | `baseten/decision-models/baseten-joey-2b-latest`, `baseten/decision-models/baseten-elephant-9b-latest`, `baseten/decision-models/baseten-mammoth-27b-latest` | `/v1/decisions` | Yes, inline |
+| [Gemini](/providers/supported-providers/gemini#12-decisions) | `gemini/gemini-decision-1` | `/v1/decisions` | Yes, inline or by HTTPS URL |
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
 | [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
 | [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide`, `databricks/system.ai.openjev-qwen35-4b`, `databricks/system.ai.typesafeai-jev-1-14-0` | `/v1/decisions` | System One models, by reference (see [Images by Reference](#images-by-reference)) |

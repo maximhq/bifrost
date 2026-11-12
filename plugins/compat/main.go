@@ -292,6 +292,7 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // (OpenRouter's gpt-6-luna chat models) serves it as a chat model, so it is
 // emulated unless that provider's datasheet row says otherwise (OpenRouter's
 // openai/gpt-6-luna-decisions).
+// gemini-decision models are native on Gemini, the only provider serving them.
 // Typesafe, vLLM and SGLang serve every model natively, so they are never marked. Custom
 // providers have no catalog rows and are matched by their own name, so one
 // serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
@@ -306,7 +307,8 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
 		(provider == schemas.Azure && (schemas.IsMicrosoftDecisionModel(model) || schemas.DefaultSupportsDecisions(model))) ||
 		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model)) ||
-		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model))
+		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model)) ||
+		(provider == schemas.Gemini && schemas.IsGeminiDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}

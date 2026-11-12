@@ -1243,6 +1243,8 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		fallback = schemas.IsDatabricksDecisionModel(model)
 	case provider == schemas.Baseten:
 		fallback = schemas.IsBasetenDecisionModel(model)
+	case provider == schemas.Gemini:
+		fallback = schemas.IsGeminiDecisionModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }

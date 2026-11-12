@@ -3841,3 +3841,87 @@ type GeminiLiveUsageMetadata struct {
 	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
 }
+
+// GeminiDecisionRequest is the body of the Gemini Developer API's
+// POST /v1beta/decisions. Input is a string, or a list of content blocks.
+type GeminiDecisionRequest struct {
+	Model       string                            `json:"model"`
+	Input       interface{}                       `json:"input"`
+	Questions   map[string]GeminiDecisionQuestion `json:"questions"`
+	ExtraParams map[string]interface{}            `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// GeminiDecisionContent is one input block of a decisions request: text, or
+// media given inline (Data, base64) or by URI, with its MIME type.
+type GeminiDecisionContent struct {
+	Type       string  `json:"type"`
+	Text       *string `json:"text,omitempty"`
+	Data       string  `json:"data,omitempty"`
+	URI        string  `json:"uri,omitempty"`
+	MimeType   string  `json:"mime_type,omitempty"`
+	Resolution string  `json:"resolution,omitempty"`
+}
+
+// GeminiDecisionQuestion is one question of a decisions request. Criteria is
+// a GeminiDecisionNoulCriteria for noul, an option -> description map for
+// choice, and an ordered list of level descriptions for score.
+type GeminiDecisionQuestion struct {
+	Type         string      `json:"type"`
+	Instructions string      `json:"instructions"`
+	Criteria     interface{} `json:"criteria,omitempty"`
+}
+
+// GeminiDecisionNoulCriteria describes what yes and no mean for a noul question.
+type GeminiDecisionNoulCriteria struct {
+	TrueDescription  *string `json:"true_description,omitempty"`
+	FalseDescription *string `json:"false_description,omitempty"`
+}
+
+// GeminiDecisionResponse is the reply of POST /v1beta/decisions: one answer per
+// question, under the key the question was sent with.
+type GeminiDecisionResponse struct {
+	Answers map[string]GeminiDecisionAnswer `json:"answers"`
+	Usage   *GeminiDecisionUsage            `json:"usage,omitempty"`
+}
+
+// GeminiDecisionAnswer is one answer. Which of Noul, Choice, and Score is set
+// follows Type.
+type GeminiDecisionAnswer struct {
+	Type          string             `json:"type"`
+	Noul          *float64           `json:"noul,omitempty"`
+	Choice        *string            `json:"choice,omitempty"`
+	Score         *float64           `json:"score,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Confidence    *float64           `json:"confidence,omitempty"`
+}
+
+// GeminiDecisionUsage is a decisions reply's token usage. Output tokens are
+// always 0.
+type GeminiDecisionUsage struct {
+	TotalInputTokens      int                            `json:"total_input_tokens"`
+	InputTokensByModality []GeminiDecisionModalityTokens `json:"input_tokens_by_modality,omitempty"`
+	TotalOutputTokens     int                            `json:"total_output_tokens"`
+	TotalTokens           int                            `json:"total_tokens"`
+}
+
+// GeminiDecisionModalityTokens counts the input tokens of one modality.
+type GeminiDecisionModalityTokens struct {
+	Modality string `json:"modality"`
+	Tokens   int    `json:"tokens"`
+}
+
+// GeminiDecisionError is a decisions error body. Safety blocks carry a string
+// code ("safety", "prohibited_content", ...) rather than Google's usual
+// numeric one.
+type GeminiDecisionError struct {
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}

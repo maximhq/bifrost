@@ -2472,6 +2472,13 @@ func IsBasetenDecisionModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "decision-models/")
 }
 
+// IsGeminiDecisionModel checks if the model is one of Google's decision models on the
+// Gemini Developer API ("gemini-decision-1"), served on /v1beta/decisions rather than
+// generateContent. Later versions share the prefix.
+func IsGeminiDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "gemini-decision")
+}
+
 // ollamaDecisionModelPrefixes are the System One model families in Ollama's
 // library, served on its /v1/systemone endpoint rather than chat.
 var ollamaDecisionModelPrefixes = []string{"nimble", "tev1", "clef", "laya"}
