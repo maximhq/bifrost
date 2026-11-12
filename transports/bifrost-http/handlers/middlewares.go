@@ -2193,7 +2193,9 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 					return
 				}
-				// Continue with the next handler
+				// The admin's own credentials, marked as the Bearer branch below marks them:
+				// OSS admin-only handlers (Warp's settings, notifications) check this.
+				ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 				next(ctx)
 				return
 			}

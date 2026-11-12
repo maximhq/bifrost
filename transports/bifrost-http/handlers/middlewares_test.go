@@ -1819,6 +1819,35 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 	}
 }
 
+// TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin pins that the admin's username and
+// password sent as Basic make the request the local admin, as the same credentials sent
+// base64-encoded as a Bearer token already did. Handlers that are admin-only in OSS (Warp's
+// settings, publishing notifications) check that marker, so Basic credentials were refused
+// there.
+func TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hash, err := encrypt.Hash("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := newSetupLockedAuthMiddleware("", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	})
+	encoded := base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	for _, header := range []string{"Basic " + encoded} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.Header.Set("Authorization", header)
+		if !runOSSAPIChain(am, ctx) {
+			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+		assert.True(t, admin, "%s admin credentials should run as the local admin", strings.Fields(header)[0])
+	}
+}
+
 // TestSetupLockMiddleware_PublicRoutesStayOpen pins that the setup screen can bootstrap:
 // health, version and is-auth-enabled answer without the setup token while locked.
 func TestSetupLockMiddleware_PublicRoutesStayOpen(t *testing.T) {

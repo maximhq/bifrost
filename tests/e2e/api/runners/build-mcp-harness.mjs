@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveOutPath, writeCollection } from "./lib/collection-builder.mjs";
 import {
-  AUTH, JSONCT, lit, A, request, folder, readConfig, putConfig, restoreConfig, O, setMode, restoreHeaders,
+  AUTH, JSONCT, lit, A, request, folder, readConfig, putConfig, restoreConfig, O, setMode, restoreHeaders, schemasLack,
   withMode, MODE_NAMES, modePrefix, authMode, CHAOS, freshServer, mockGet, mockPost, createClient, deleteClient,
   getClient, toolNamesAre, clientState, waitForClient, httpClient, MCP_ACCEPT, rpc, rpcResultEquals, rpcError,
   rpcResult, setEnforce, toolNamesInList, toolResultError, mockCalls, call, init, vkCreate, vkDelete,
@@ -5273,10 +5273,15 @@ const LIB34 = folder("LIB-34 Loopback URL over the API", "Setup: PUT /api/config
   mockGet("LIB-34", "library", "control: the PUT never reached the catalog", [A.custom("library's request log is empty", ["pm.expect(((pm.response.json().rest || {}).calls || []), 'body: ' + pm.response.text()).to.eql([]);"])]),
 ]);
 
-const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval 0, then -1.", [
+const LIB36_REFUSED = "MCP library sync interval must be 0 (disabled) or at least 3600 seconds";
+const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval -1, 60, then 0, restoring the stored interval at the end. 0 turns the sync off; anything else must be at least 3600 seconds.", [
   readConfig("LIB-36"),
-  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 0", "mcp_library_sync_interval", "0", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
-  frameworkPut("LIB-36", "PUT mcp_library_sync_interval -1", "mcp_library_sync_interval", "-1", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
+  request("LIB-36", "setup: read the stored mcp_library_sync_interval", "GET", "/api/config?from_db=true", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('lib36_interval', String(pm.response.json().framework_config.mcp_library_sync_interval || 0));"] }),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval -1", "mcp_library_sync_interval", "-1", [A.status(400), A.msgEquals(LIB36_REFUSED)]),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 60, below the minimum", "mcp_library_sync_interval", "60", [A.status(400), A.msgEquals(LIB36_REFUSED)]),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 0 turns the sync off", "mcp_library_sync_interval", "0", [A.status(200)]),
+  request("LIB-36", "0 is stored", "GET", "/api/config?from_db=true", { asserts: [A.status(200), A.custom("mcp_library_sync_interval is 0", ["pm.expect(pm.response.json().framework_config.mcp_library_sync_interval, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  frameworkPut("LIB-36", "teardown: restore the stored mcp_library_sync_interval", "mcp_library_sync_interval", "Number(pm.collectionVariables.get('lib36_interval'))", [A.status(200)]),
 ]);
 
 // ================================================================ MCP tools inside model requests, on the mock LLM
@@ -12856,15 +12861,23 @@ const BMC05 = folder("BMC-05 Tool calls", `Setup: ${BMC_TEXT}; ${LLM_TEXT}.`, [
   llmScript("BMC-05", "bmc05", TEXT_OK),
   bmc("BMC-05", "an inference tool runs a completion on the mock model", call("createChatCompletion", { model: MODEL, messages: [userMsg("bmc05")] }), [A.status(200), callOK("the scripted reply", ["pm.expect(json && json.choices && json.choices[0].message.content, 'text: ' + text).to.equal('ok');"])]),
   llmCaptured("BMC-05", "the completion reached the model once", "bmc05", [modelRequests(1)]),
+  // A tool result is one message, so no tool streams: stream and stream_options are not arguments, and a call that
+  // passes stream anyway gets the completion, not its raw event stream.
+  llmScript("BMC-05", "bmc05s", { turns: [{ text: "not streamed" }], then: { text: "ok" } }),
+  bmc("BMC-05", "createChatCompletion with stream true answers with the completion, not an event stream", call("createChatCompletion", { model: MODEL, stream: true, stream_options: { include_usage: true }, messages: [userMsg("bmc05s")] }), [A.status(200), callOK("one completion body", [
+    "pm.expect(text.indexOf('data:'), 'text: ' + text).to.equal(-1);",
+    "pm.expect(json && json.choices && json.choices[0].message.content, 'text: ' + text).to.equal('not streamed');",
+  ])]),
+  llmCaptured("BMC-05", "the model was asked without streaming", "bmc05s", [modelRequests(1), A.custom("request 1 is not a stream", [REQS, "pm.expect(reqs[0].stream, 'stream').to.equal(false);"])]),
   // cursorCohereChat takes its body whole as one argument, so its schema cannot leave stream out: the executor drops it.
-  llmScript("BMC-05", "bmc05s", TEXT_OK),
-  bmc("BMC-05", "a whole-body tool asked to stream answers once, as JSON", call("cursorCohereChat", { body: { model: MODEL, messages: [userMsg("bmc05s")], stream: true } }), [A.status(200), callOK("one JSON reply, not an event stream", [
+  llmScript("BMC-05", "bmc05c", TEXT_OK),
+  bmc("BMC-05", "a whole-body tool asked to stream answers once, as JSON", call("cursorCohereChat", { body: { model: MODEL, messages: [userMsg("bmc05c")], stream: true } }), [A.status(200), callOK("one JSON reply, not an event stream", [
     "pm.expect(text.trim().indexOf('event:'), 'text: ' + text).to.not.equal(0);",
     "pm.expect(text.trim().indexOf('data:'), 'text: ' + text).to.not.equal(0);",
     "pm.expect(json, 'text: ' + text).to.be.an('object');",
   ])]),
-  llmCaptured("BMC-05", "the model was asked without stream", "bmc05s", [modelRequests(1), A.custom("the request does not ask to stream", [REQS, "pm.expect((reqs[0] || {}).json && reqs[0].json.stream, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
-  bmc("BMC-05", "tools/list", BMC_LIST, [A.status(200), A.custom("getLogs takes metadata as an object of key to value, not a metadata_<key> argument", [BY_NAME,
+  llmCaptured("BMC-05", "the model was asked without stream", "bmc05c", [modelRequests(1), A.custom("the request does not ask to stream", [REQS, "pm.expect((reqs[0] || {}).json && reqs[0].json.stream, 'body: ' + pm.response.text()).to.not.equal(true);"])]),
+  bmc("BMC-05", "tools/list", BMC_LIST, [A.status(200), schemasLack(["createChatCompletion", "createResponse", "createTextCompletion", "openaiCreateChatCompletion", "anthropicCreateMessage"], ["stream", "stream_options"]), A.custom("getLogs takes metadata as an object of key to value, not a metadata_<key> argument", [BY_NAME,
     "var props = (byName.getLogs.inputSchema || {}).properties || {};",
     "pm.expect(props, 'getLogs properties').to.have.property('metadata');",
     "pm.expect(props.metadata.type, 'metadata.type').to.equal('object');",
@@ -12938,18 +12951,13 @@ const WARP_TEXT = `Warp on (feature flag on by default), configured on openai/mo
 const WARP_CONFIG_BODY = [
   "pm.variables.set('warp_config_body', JSON.stringify({ enabled: true, provider: 'openai', model: 'mock-model', api_key_id: '', embedding_provider: 'openai', embedding_model: 'text-embedding-3-small', embedding_dimension: 1536 }));",
 ];
-// Saving the Warp config needs the local admin, which the auth middleware marks for a dashboard session but not for
-// Basic credentials, so it is saved with the admin's session cookie.
-const ADMIN_SESSION = { noAuth: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }] };
+// Saving the Warp config is admin-only; the admin's Basic credentials, which every request carries, are the local admin.
 const warpOn = (id) => [
-  adminLogin(id),
   request(id, "setup: the warp feature flag is on", "GET", "/api/feature-flags", { asserts: [A.status(200), A.custom("warp is enabled", ["var f = (pm.response.json().flags || []).filter(function (x) { return x.id === 'warp'; })[0];", "pm.expect(f && f.enabled, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   request(id, "setup: read the Warp config", "GET", "/api/warp/config", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('warp_config_was', pm.response.text());"] }),
-  request(id, "setup: configure Warp on openai/mock-model", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_body}}", pre: WARP_CONFIG_BODY, asserts: [A.status(200)] }),
+  request(id, "setup: configure Warp on openai/mock-model", "PUT", "/api/warp/config", { raw: "{{warp_config_body}}", pre: WARP_CONFIG_BODY, asserts: [A.status(200)] }),
 ];
-const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_was}}", asserts: [A.status(200)] });
-// warpOff restores the Warp config, then logs out the admin session warpOn logged in.
-const warpOff = (id) => [warpRestore(id), adminLogout(id)];
+const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { raw: "{{warp_config_was}}", asserts: [A.status(200)] });
 // warpAsk starts a Warp thread with one question carrying the scenario marker. The thread id goes in <key>_conv, the
 // question in <key>_q, what Warp answered (a card's question, else the answer) in <key>_a, and a confirmation card's
 // Confirm hint in <key>_token.
@@ -13012,7 +13020,7 @@ const WMG01 = folder("WMG-01 A management read answers a configuration question"
     "pm.expect(calls[0].failed, 'body: ' + pm.response.text()).to.not.equal(true);",
   ])]),
   llmCaptured("WMG-01", "the providers listProviders read reached the model", "wmg01", [modelRequests(2, { atLeast: true }), sentIncludes(1, "anthropic"), sentIncludes(1, "gemini")]),
-  ...warpOff("WMG-01"),
+  warpRestore("WMG-01"),
 ]);
 
 const WMG02 = folder("WMG-02 Which management tools the model is offered", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. Warp offers the /api reads except the log reads and the reads that return virtual key values, and the creates except createWebhookEndpoint, whose response carries a secret; never an update, a delete, a destructive POST or a route outside /api. The model then calls listVirtualKeys anyway.`, [
@@ -13032,7 +13040,7 @@ const WMG02 = folder("WMG-02 Which management tools the model is offered", `Setu
     declaresNone(0, ["createWebhookEndpoint"], "its response carries the signing secret, shown once"),
     sentIncludes(1, "no tool named", "the refusal of listVirtualKeys"),
   ]),
-  ...warpOff("WMG-02"),
+  warpRestore("WMG-02"),
 ]);
 
 const WMG03 = folder("WMG-03 No offered read hands the model a virtual key's value", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a team wmg03-team and a customer wmg03-customer, each holding a virtual key. The model reads the teams and the customers.`, [
@@ -13054,7 +13062,7 @@ const WMG03 = folder("WMG-03 No offered read hands the model a virtual key's val
   request("WMG-03", "teardown: delete the customer's key", "DELETE", "/api/governance/virtual-keys/{{wmg03_ck_id}}", { asserts: [A.status(200)] }),
   request("WMG-03", "teardown: delete the team", "DELETE", "/api/governance/teams/{{wmg03_team_id}}", { asserts: [A.status(200)] }),
   request("WMG-03", "teardown: delete the customer", "DELETE", "/api/governance/customers/{{wmg03_customer_id}}", { asserts: [A.status(200)] }),
-  ...warpOff("WMG-03"),
+  warpRestore("WMG-03"),
 ]);
 
 const WMG04 = folder("WMG-04 A create runs only on Confirm, once, as the caller", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg04-key, then, on a second thread, createFolder named wmg04-folder: folder names may repeat, so a replayed Confirm that ran the write again would leave a second folder.`, [
@@ -13081,7 +13089,7 @@ const WMG04 = folder("WMG-04 A create runs only on Confirm, once, as the caller"
   foldersNamed("WMG-04", "the replayed Confirm ran nothing: still exactly one folder", "wmg04-folder", 1),
   request("WMG-04", "teardown: delete the folder", "DELETE", "/api/prompt-repo/folders/{{wmg04_folder_id}}", { asserts: [A.status(200)] }),
   request("WMG-04", "teardown: delete the key", "DELETE", "/api/governance/virtual-keys/{{wmg04_vk_id}}", { asserts: [A.status(200)] }),
-  ...warpOff("WMG-04"),
+  warpRestore("WMG-04"),
 ]);
 
 const WMG05 = folder("WMG-05 Cancel writes nothing, and the card cannot be confirmed afterwards", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg05-key.`, [
@@ -13093,7 +13101,7 @@ const WMG05 = folder("WMG-05 Cancel writes nothing, and the card cannot be confi
   keysNamed("WMG-05", "Cancel wrote nothing", "wmg05-key", 0),
   warpReply("WMG-05", "the card's Confirm after Cancel", "wmg05", "{{wmg05_token}}", [turnOK()]),
   keysNamed("WMG-05", "Confirm after Cancel wrote nothing", "wmg05-key", 0),
-  ...warpOff("WMG-05"),
+  warpRestore("WMG-05"),
 ]);
 
 const WMG06 = folder("WMG-06 A Confirm token works only on its own thread", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg06-key; the card's token is then sent on a new thread.`, [
@@ -13105,7 +13113,7 @@ const WMG06 = folder("WMG-06 A Confirm token works only on its own thread", `Set
   // scenario marker, so only the status is asserted: what matters is that nothing was written.
   warpReply("WMG-06", "the token on a new thread", "wmg06", "{{wmg06_token}}", [], { newThread: true }),
   keysNamed("WMG-06", "nothing was written", "wmg06-key", 0),
-  ...warpOff("WMG-06"),
+  warpRestore("WMG-06"),
 ]);
 
 const WMG07 = folder("WMG-07 A tool Warp does not offer is not run, even when the model names it", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a virtual key wmg07-key. The model calls deleteVirtualKey and updateVirtualKey on it.`, [
@@ -13120,7 +13128,7 @@ const WMG07 = folder("WMG-07 A tool Warp does not offer is not run, even when th
   keysNamed("WMG-07", "the key is still there, under its name", "wmg07-key", 1),
   keysNamed("WMG-07", "and was not renamed", "wmg07-renamed", 0),
   vkDelete("WMG-07", "teardown: delete the key", "wmg07_vk"),
-  ...warpOff("WMG-07"),
+  warpRestore("WMG-07"),
 ]);
 
 const WMG08 = folder("WMG-08 With /api writes off Warp offers no create", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; bifrost_mcp_allow_writes false, restored at the end.`, [
@@ -13135,7 +13143,7 @@ const WMG08 = folder("WMG-08 With /api writes off Warp offers no create", `Setup
   keysNamed("WMG-08", "nothing was written", "wmg08-key", 0),
   restoreBifrostMCP("WMG-08"),
   bmcWait("WMG-08"),
-  ...warpOff("WMG-08"),
+  warpRestore("WMG-08"),
 ]);
 
 const WMG09 = folder("WMG-09 Without bifrost_url Warp has no management tools", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; bifrost_url cleared, restored at the end.`, [
@@ -13148,7 +13156,7 @@ const WMG09 = folder("WMG-09 Without bifrost_url Warp has no management tools", 
   llmCaptured("WMG-09", "no management tool was offered", "wmg09", [modelRequests(1, { atLeast: true }), declaresNone(0, ["listProviders", "getConfig", "createVirtualKey"])]),
   restoreConfig("WMG-09"),
   bmcWait("WMG-09"),
-  ...warpOff("WMG-09"),
+  warpRestore("WMG-09"),
 ]);
 
 const WMG10 = folder("WMG-10 A confirmed write that /api refuses is reported", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a virtual key wmg10-key already exists. The model asks for another key with the same name.`, [
@@ -13161,7 +13169,7 @@ const WMG10 = folder("WMG-10 A confirmed write that /api refuses is reported", `
   llmCaptured("WMG-10", "the model read the refusal as the tool result", "wmg10", [modelRequests(2, { atLeast: true }), sentIncludes(1, "HTTP 4", "the /api error status")]),
   keysNamed("WMG-10", "still exactly one key named wmg10-key", "wmg10-key", 1),
   vkDelete("WMG-10", "teardown: delete the key", "wmg10_vk"),
-  ...warpOff("WMG-10"),
+  warpRestore("WMG-10"),
 ]);
 
 const collection = {
