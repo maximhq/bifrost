@@ -318433,7 +318433,7 @@
       "description": "Exercises executeToolCode through the real /mcp gateway and the SSE fixture at localhost:3012. A run-scoped code-mode client permits only capture_media. The success case reads the structured title and both _media placeholders, then checks text-first PNG and WAV content blocks with exact bytes and MIME types. Controls with a nested tool error and a later sandbox failure must withhold media. No provider requests are made. Serial because registering a code-mode client makes its meta-tools visible gateway-wide. Run with FEATURE=code-mode-media; rebuild examples/mcps/remote-test-server before reusing a fixture already listening on :3012.",
       "item": [
         {
-          "name": "[EXPECT-200] openai code-mode-media provision a run-scoped code-mode SSE client",
+          "name": "[EXPECT-200] mcp code-mode-media provision a run-scoped code-mode SSE client",
           "event": [
             {
               "listen": "prerequest",
@@ -318474,7 +318474,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-media capture the returned client id and fixture readiness",
+          "name": "[EXPECT-200] mcp code-mode-media capture the returned client id and fixture readiness",
           "event": [
             {
               "listen": "test",
@@ -318508,7 +318508,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-media /mcp forwards nested image and audio after text",
+          "name": "[EXPECT-200] mcp code-mode-media /mcp forwards nested image and audio after text",
           "event": [
             {
               "listen": "test",
@@ -318602,7 +318602,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-media /mcp withholds nested-error image and audio",
+          "name": "[EXPECT-200] mcp code-mode-media /mcp withholds nested-error image and audio",
           "event": [
             {
               "listen": "test",
@@ -318684,7 +318684,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-media /mcp withholds media after a sandbox failure",
+          "name": "[EXPECT-200] mcp code-mode-media /mcp withholds media after a sandbox failure",
           "event": [
             {
               "listen": "test",
@@ -318766,7 +318766,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-media delete the run-scoped client by its returned id",
+          "name": "[EXPECT-200] mcp code-mode-media delete the run-scoped client by its returned id",
           "event": [
             {
               "listen": "prerequest",
