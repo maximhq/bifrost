@@ -2266,7 +2266,7 @@
 				"impact": {
 					"back": "Sugestões",
 					"replaying": "Reproduzindo requisições recentes com o rascunho…",
-					"emptyBank": "As listas de frases do rascunho estão vazias, então não há nada para reproduzir.",
+					"emptyBank": "Nenhuma frase foi preparada, então não há nada para reproduzir.",
 					"failed": "Não foi possível reproduzir o rascunho: {{error}}",
 					"retry": "Tentar novamente",
 					"source_one": "Reprodução do último {{count}} dia · {{requests}} requisições capturadas · rascunho vs. ativo",

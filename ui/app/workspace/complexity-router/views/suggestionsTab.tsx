@@ -215,12 +215,14 @@ export default function SuggestionsTab({
 	const counts = data?.counts ?? {};
 	const storedCount = (counts.open ?? 0) + (counts.accepted ?? 0) + (counts.dismissed ?? 0) + (counts.superseded ?? 0);
 
-	if (view === "impact") {
+	// The impact view replays what is staged, so with nothing staged the list
+	// shows instead; the view stays in the URL and opens once a group is staged.
+	if (view === "impact" && staged.length > 0) {
 		const groupOfPhrase = (phrase: string) => staged.find((entry) => entry.phrases.includes(phrase))?.id;
 		return (
 			<SuggestionImpactView
 				routerId={routerId}
-				keywords={keywords}
+				staged={staged}
 				minSimilarity={draftMinSimilarity}
 				groupOfPhrase={groupOfPhrase}
 				tierLabel={tierLabel}

@@ -2264,7 +2264,7 @@
 				"impact": {
 					"back": "建议",
 					"replaying": "正在用草稿重放最近的请求…",
-					"emptyBank": "草稿短语列表为空，因此没有可重放的内容。",
+					"emptyBank": "没有暂存的短语，因此没有可重放的内容。",
 					"failed": "无法重放草稿：{{error}}",
 					"retry": "重试",
 					"source_one": "重放最近 {{count}} 天 · {{requests}} 个捕获的请求 · 草稿 vs 线上",

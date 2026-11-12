@@ -20,12 +20,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // suggestionManagerFake is a routing manager that keeps suggestions in a real
 // log store.
 type suggestionManagerFake struct {
 	mockRoutingManager
+	reloads     map[string]int // ReloadModelRouter calls, by router
+	reloadErr   error          // what ReloadModelRouter answers
 	store       logstore.LogStore
 	texts       map[string]string
 	runErr      error
@@ -70,7 +73,7 @@ func (m *suggestionManagerFake) ComplexitySuggestionImpact(_ context.Context, _ 
 }
 
 func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (string, bool) {
-	return m.version, routerID == defaultComplexitySuggestionRouter
+	return m.version, routerID == "default"
 }
 
 func (m *suggestionManagerFake) EstimateComplexitySuggestionRun(_ context.Context, _ string, window time.Duration) (suggestrun.Estimate, error) {
@@ -123,6 +126,52 @@ type suggestionsConfigStore struct {
 	configstore.ConfigStore
 	config   *configstore.ComplexityAnalyzerConfig
 	schedule *tables.TableComplexitySuggestionSchedule
+	routers  map[string]*configstore.ModelRouter
+}
+
+func (s suggestionsConfigStore) GetModelRouter(_ context.Context, id string) (*configstore.ModelRouter, error) {
+	router, ok := s.routers[id]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	copied := *router
+	return &copied, nil
+}
+
+func (s suggestionsConfigStore) UpdateModelRouter(_ context.Context, router *configstore.ModelRouter, _ ...*gorm.DB) error {
+	if _, ok := s.routers[router.ID]; !ok {
+		return configstore.ErrNotFound
+	}
+	saved := *router
+	s.routers[router.ID] = &saved
+	return nil
+}
+
+// EditModelRouter applies edit to a copy of the stored router and keeps it
+// when edit changed it, as the store does under the router's row lock.
+func (s suggestionsConfigStore) EditModelRouter(_ context.Context, id string, edit func(*configstore.ModelRouter) (bool, error)) (*configstore.ModelRouter, error) {
+	router, ok := s.routers[id]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	copied := *router
+	changed, err := edit(&copied)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		s.routers[id] = &copied
+	}
+	return &copied, nil
+}
+
+// suggestionTestRouter is the saved router the suggestion handler tests are
+// about: a semantic router with one phrase per tier.
+func suggestionTestRouter() *configstore.ModelRouter {
+	return &configstore.ModelRouter{ID: "default", Name: "Default", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
+		Keywords: configstore.ComplexityEditableKeywordConfig{SimpleKeywords: []string{"say hello"}, MediumKeywords: []string{"summarize this"}, ComplexKeywords: []string{"design a system"}},
+		Semantic: &configstore.ComplexitySemanticConfig{Provider: "openai", EmbeddingModel: "text-embedding-3-small"},
+	}}
 }
 
 func (s suggestionsConfigStore) GetComplexityAnalyzerConfig(context.Context) (*configstore.ComplexityAnalyzerConfig, error) {
@@ -131,6 +180,15 @@ func (s suggestionsConfigStore) GetComplexityAnalyzerConfig(context.Context) (*c
 
 func (s suggestionsConfigStore) GetComplexitySuggestionSchedule(context.Context, string) (*tables.TableComplexitySuggestionSchedule, error) {
 	return s.schedule, nil
+}
+
+// ReloadModelRouter records a router reload.
+func (f *suggestionManagerFake) ReloadModelRouter(_ context.Context, id string) error {
+	if f.reloads == nil {
+		f.reloads = map[string]int{}
+	}
+	f.reloads[id]++
+	return f.reloadErr
 }
 
 func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
@@ -144,7 +202,7 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	t.Cleanup(func() { _ = ls.Close(ctx) })
 	manager := &suggestionManagerFake{store: ls, texts: map[string]string{"log-1": "where is my refund for order 12"}, version: "bank-v2"}
 	config := &configstore.ComplexityAnalyzerConfig{Suggestions: &configstore.ComplexitySuggestionsConfig{Enabled: true}}
-	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config})
+	h, err := NewRoutingHandler(manager, suggestionsConfigStore{config: config, routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter()}})
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
@@ -183,7 +241,7 @@ func serve(t *testing.T, r *router.Router, method, uri, body string) (int, map[s
 
 func TestComplexitySuggestionsList(t *testing.T) {
 	r, _ := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions", "")
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	suggestions := body["suggestions"].([]any)
 	require.Len(t, suggestions, 1, "open only by default")
@@ -197,22 +255,22 @@ func TestComplexitySuggestionsList(t *testing.T) {
 	assert.NotEmpty(t, body["next_run_at"])
 	assert.Equal(t, "run-1", body["last_run"].(map[string]any)["id"])
 
-	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=dismissed,superseded", "")
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=dismissed,superseded", "")
 	require.Equal(t, fasthttp.StatusOK, code)
 	assert.Len(t, body["suggestions"].([]any), 2)
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=maybe", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=maybe", "")
 	assert.Equal(t, fasthttp.StatusBadRequest, code)
 }
 
 func TestComplexitySuggestionsDetailReadsVisibleExamples(t *testing.T) {
 	r, _ := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/s-open", "")
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/s-open", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, []any{
 		map[string]any{"log_id": "log-1", "text": "where is my refund for order 12"},
 		map[string]any{"log_id": "log-gone"},
 	}, body["examples"], "a log the caller cannot read gives no text")
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/missing", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/missing", "")
 	assert.Equal(t, fasthttp.StatusNotFound, code)
 }
 
@@ -220,7 +278,7 @@ func TestComplexitySuggestionsDetailReadsVisibleExamples(t *testing.T) {
 // status changes; only the user's transitions are allowed.
 func TestComplexitySuggestionsStatusTransitions(t *testing.T) {
 	r, manager := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"accepted"}`)
+	code, body := serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"accepted"}`)
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, "accepted", body["status"])
 	assert.NotEmpty(t, body["resolved_at"])
@@ -228,26 +286,26 @@ func TestComplexitySuggestionsStatusTransitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, rows[0].Centroid, "the centroid is kept for the next run's match")
 
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"dismissed"}`)
+	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"dismissed"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "accepted to dismissed goes through open")
-	code, body = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"open"}`)
+	code, body = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"open"}`)
 	require.Equal(t, fasthttp.StatusOK, code)
 	assert.NotContains(t, body, "resolved_at", "undoing clears when it was resolved")
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-old/status", `{"status":"accepted"}`)
+	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-old/status", `{"status":"accepted"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "a superseded suggestion is stale")
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"superseded"}`)
+	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"superseded"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "superseding is the runs' call")
 
 	// A status that does not exist is a bad request, not a refused transition.
 	for _, status := range []string{`"approved"`, `""`, `"ACCEPTED"`} {
-		code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":`+status+`}`)
+		code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":`+status+`}`)
 		assert.Equal(t, fasthttp.StatusBadRequest, code, status)
 	}
 }
 
 func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 	r, manager := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test",
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test",
 		`{"phrases":[{"tier":"simple","text":"where is my refund"}],"suggestion_id":"s-open"}`)
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, []suggestrun.TestExample{{LogID: "log-1", Text: "where is my refund for order 12"}}, manager.tested,
@@ -255,33 +313,33 @@ func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 	assert.Equal(t, 1.0, body["taken_over"])
 	assert.Equal(t, "SIMPLE", body["phrases"].([]any)[0].(map[string]any)["tier"], "the tier is read case-insensitively")
 
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", `{"phrases":[]}`)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", `{"phrases":[]}`)
 	assert.Equal(t, fasthttp.StatusBadRequest, code)
 	manager.testErr = complexity.ErrNoServingGeneration
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code)
 }
 
 func TestComplexitySuggestionsRuns(t *testing.T) {
 	r, manager := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs?limit=5", "")
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs?limit=5", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Len(t, body["runs"].([]any), 1)
 	assert.NotEmpty(t, body["next_run_at"])
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs?limit=0", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs?limit=0", "")
 	assert.Equal(t, fasthttp.StatusBadRequest, code)
 
-	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	require.Equal(t, fasthttp.StatusAccepted, code, body)
 	assert.Equal(t, "run-now", body["run_id"])
 	manager.runErr = routing.ErrComplexitySuggestionRunInFlight
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusConflict, code)
 	manager.runErr = complexity.ErrNoServingGeneration
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "no warmed phrase bank to suggest against")
 	manager.runErr = complexity.ErrNoCaptureStore
-	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "nothing captured to suggest from")
 	assert.Contains(t, fmt.Sprint(body), "shared vector store", "the refusal says what is needed")
 	assert.Equal(t, 4, manager.runCalls)
@@ -293,14 +351,14 @@ func TestComplexitySuggestionsNeedALogStore(t *testing.T) {
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
-	code, _ := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions", "")
+	code, _ := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code)
 
 	h, err = NewRoutingHandler(&mockRoutingManager{}, suggestionsConfigStore{})
 	require.NoError(t, err)
 	r = router.New()
 	h.RegisterRoutes(r)
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "a manager without suggestions")
 }
 
@@ -311,12 +369,14 @@ func TestComplexitySuggestionsWithoutTheRoutingPlugin(t *testing.T) {
 	r, manager := suggestionHandler(t)
 	manager.pluginMissing = true
 	for _, c := range []struct{ method, uri, body string }{
-		{fasthttp.MethodGet, "/api/routing/complexity-suggestions", ""},
-		{fasthttp.MethodGet, "/api/routing/complexity-suggestions/s-open", ""},
-		{fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"accepted"}`},
-		{fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs", ""},
-		{fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", ""},
-		{fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", ""},
+		{fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", ""},
+		{fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/s-open", ""},
+		{fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"accepted"}`},
+		{fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs", ""},
+		{fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", ""},
+		{fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs/estimate?window=7d", ""},
+		// Adding phrases needs the plugin only to accept the suggestions named.
+		{fasthttp.MethodPost, "/api/routing/model-routers/default/phrases", `{"phrases":{"SIMPLE":["where is my refund"]},"suggestion_ids":["s-open"]}`},
 	} {
 		code, _ := serve(t, r, c.method, c.uri, c.body)
 		assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "%s %s", c.method, c.uri)
@@ -326,10 +386,10 @@ func TestComplexitySuggestionsWithoutTheRoutingPlugin(t *testing.T) {
 	// The plugin going away between the check and the run is a 503 too.
 	manager.pluginMissing = false
 	manager.runErr = fmt.Errorf("%w: not registered", ErrRoutingPluginUnavailable)
-	code, _ := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, _ := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code)
 	manager.runErr = routing.ErrComplexitySuggestionsOff
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusConflict, code, "suggestions switched off stay a conflict")
 }
 
@@ -337,7 +397,7 @@ func TestComplexitySuggestionsWithoutTheRoutingPlugin(t *testing.T) {
 // and the total the selected ones, whatever page was served.
 func TestComplexitySuggestionsListPages(t *testing.T) {
 	r, _ := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=open,dismissed,superseded&limit=2", "")
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=open,dismissed,superseded&limit=2", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	page := body["suggestions"].([]any)
 	require.Len(t, page, 2)
@@ -345,19 +405,19 @@ func TestComplexitySuggestionsListPages(t *testing.T) {
 	assert.Equal(t, 3.0, body["total"])
 	assert.Equal(t, map[string]any{"open": 1.0, "dismissed": 1.0, "superseded": 1.0}, body["counts"])
 
-	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=open,dismissed,superseded&limit=2&offset=2", "")
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=open,dismissed,superseded&limit=2&offset=2", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	require.Len(t, body["suggestions"].([]any), 1)
 	assert.Equal(t, "s-old", body["suggestions"].([]any)[0].(map[string]any)["id"])
 
 	// A status asked for twice selects its rows once, so it counts once.
-	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=open,open,dismissed", "")
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=open,open,dismissed", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	require.Len(t, body["suggestions"].([]any), 2)
 	assert.Equal(t, 2.0, body["total"], "the total matches the rows the list selects")
 
 	for _, q := range []string{"limit=0", "limit=501", "offset=-1", "limit=x"} {
-		code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?"+q, "")
+		code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?"+q, "")
 		assert.Equal(t, fasthttp.StatusBadRequest, code, q)
 	}
 }
@@ -392,7 +452,7 @@ func TestComplexitySuggestionsStatusConflictsWithAChangeSinceRead(t *testing.T) 
 		rows[0].Status = logstore.ComplexitySuggestionStatusSuperseded
 		require.NoError(t, ls.UpsertComplexitySuggestions(context.Background(), rows))
 	}
-	code, _ := serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-open/status", `{"status":"accepted"}`)
+	code, _ := serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"accepted"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code)
 	rows, err := ls.ListComplexitySuggestions(context.Background(), logstore.ComplexitySuggestionFilter{IDs: []string{"s-open"}})
 	require.NoError(t, err)
@@ -418,7 +478,7 @@ func TestComplexitySuggestionsTestPhrasesExamplesAndLimits(t *testing.T) {
 		"log_ids":       ids,
 	})
 	require.NoError(t, err)
-	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", string(payload))
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", string(payload))
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, []suggestrun.TestExample{
 		{LogID: "log-2", Text: "cancel my subscription"},
@@ -432,17 +492,17 @@ func TestComplexitySuggestionsTestPhrasesExamplesAndLimits(t *testing.T) {
 	payload, err = json.Marshal(map[string]any{"phrases": []map[string]string{{"tier": "SIMPLE", "text": "x"}}, "log_ids": tooMany})
 	require.NoError(t, err)
 	calls := manager.testCalls
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", string(payload))
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", string(payload))
 	assert.Equal(t, fasthttp.StatusBadRequest, code, "the logs a test may read are bounded")
 	assert.Equal(t, calls, manager.testCalls)
 
 	calls = manager.testCalls
 	long := strings.Repeat("a", configstore.MaxComplexitySemanticPhraseCharacters+1)
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"`+long+`"}]}`)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"`+long+`"}]}`)
 	assert.Equal(t, fasthttp.StatusBadRequest, code)
 	assert.Equal(t, calls, manager.testCalls, "an oversized phrase is never embedded")
 	atLimit := strings.Repeat("a", configstore.MaxComplexitySemanticPhraseCharacters)
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"  `+atLimit+`  "}]}`)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"  `+atLimit+`  "}]}`)
 	assert.Equal(t, fasthttp.StatusOK, code, "the limit applies after trimming")
 }
 
@@ -451,7 +511,7 @@ func TestComplexitySuggestionsTestPhrasesExamplesAndLimits(t *testing.T) {
 // listed nor reachable by ID.
 func TestComplexitySuggestionsAreScopedToARouter(t *testing.T) {
 	r, _ := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?status=open,dismissed,superseded", "")
+	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions?status=open,dismissed,superseded", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, "default", body["router_id"])
 	assert.Equal(t, "bank-v2", body["router_version"])
@@ -467,36 +527,36 @@ func TestComplexitySuggestionsAreScopedToARouter(t *testing.T) {
 		"computed against an earlier bank is stale; no recorded version is not")
 	assert.Equal(t, "run-1", body["last_run"].(map[string]any)["id"], "the last run is this router's")
 
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/s-office", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/s-office", "")
 	assert.Equal(t, fasthttp.StatusNotFound, code)
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/complexity-suggestions/s-office/status", `{"status":"dismissed"}`)
+	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-office/status", `{"status":"dismissed"}`)
 	assert.Equal(t, fasthttp.StatusNotFound, code)
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions?router_id=office", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/office/suggestions", "")
 	assert.Equal(t, fasthttp.StatusNotFound, code, "a router that does not exist")
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?router_id=office", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/office/suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusNotFound, code)
 }
 
 func TestComplexitySuggestionsRunWindowAndEstimate(t *testing.T) {
 	r, manager := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window=24h", "")
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs?window=24h", "")
 	require.Equal(t, fasthttp.StatusAccepted, code, body)
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window=7d", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs?window=7d", "")
 	require.Equal(t, fasthttp.StatusAccepted, code)
 	assert.Equal(t, []time.Duration{24 * time.Hour, 7 * 24 * time.Hour}, manager.windows)
 	for _, bad := range []string{"0d", "-1h", "soon"} {
-		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs?window="+bad, "")
+		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs?window="+bad, "")
 		assert.Equal(t, fasthttp.StatusBadRequest, code, bad)
 	}
 
-	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", "")
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs/estimate?window=7d", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, 900.0, body["requests"])
 	assert.Equal(t, 300.0, body["max_model_calls"])
-	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=30d", "")
+	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs/estimate?window=30d", "")
 	assert.Equal(t, fasthttp.StatusBadRequest, code, "a window past the lookback")
 	manager.estimateErr = complexity.ErrNoCaptureStore
-	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", "")
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/runs/estimate?window=7d", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "Chromem or no store: a 503 with the reason, not a 500")
 	assert.Contains(t, fmt.Sprint(body), "shared vector store")
 }
@@ -505,7 +565,7 @@ func TestComplexitySuggestionsRunWindowAndEstimate(t *testing.T) {
 // that ended, or one the router does not have, is refused.
 func TestComplexitySuggestionsCancelRun(t *testing.T) {
 	r, manager := suggestionHandler(t)
-	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel", "")
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs/run-9/cancel", "")
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	assert.Equal(t, "run-9", manager.cancelled)
 	assert.Equal(t, "cancelled", body["status"])
@@ -519,10 +579,10 @@ func TestComplexitySuggestionsCancelRun(t *testing.T) {
 		{errors.New("store down"), fasthttp.StatusInternalServerError},
 	} {
 		manager.cancelErr = tc.err
-		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel", "")
+		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs/run-9/cancel", "")
 		assert.Equal(t, tc.code, code, body)
 	}
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel?router_id=office", "")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/office/suggestions/runs/run-9/cancel", "")
 	assert.Equal(t, fasthttp.StatusNotFound, code, "another router's run is not this router's to cancel")
 }
 
@@ -532,10 +592,18 @@ func TestComplexitySuggestionsCancelRun(t *testing.T) {
 func TestComplexitySuggestionsImpact(t *testing.T) {
 	r, manager := suggestionHandler(t)
 	manager.impact = ComplexitySuggestionImpactReport{Requests: 10, Total: 10, ChangedCount: 2, Savings: 1.5}
-	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact?window=7d",
-		`{"phrases":[{"tier":"simple","text":"  where is my refund "},{"tier":"COMPLEX","text":"write a poem"}]}`)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact?window=7d",
+		`{"phrases":{"simple":["  where is my refund "," Say  Hello"],"COMPLEX":["write a poem"]}}`)
 	require.Equal(t, fasthttp.StatusOK, code, body)
-	assert.Equal(t, []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "where is my refund"}, {Tier: "COMPLEX", Text: "write a poem"}}, manager.draft)
+	// The phrases are added to the router's saved ones for the replay; one
+	// its tier holds is skipped.
+	assert.Equal(t, []complexity.SuggestionPhrase{
+		{Tier: "SIMPLE", Text: "say hello"}, {Tier: "SIMPLE", Text: "where is my refund"},
+		{Tier: "MEDIUM", Text: "summarize this"},
+		{Tier: "COMPLEX", Text: "design a system"}, {Tier: "COMPLEX", Text: "write a poem"},
+	}, manager.draft)
+	assert.Equal(t, map[string]any{"SIMPLE": []any{"where is my refund"}, "COMPLEX": []any{"write a poem"}}, body["added"])
+	assert.Equal(t, []any{map[string]any{"tier": "SIMPLE", "text": "Say  Hello"}}, body["skipped"])
 	assert.Equal(t, []time.Duration{7 * 24 * time.Hour}, manager.windows)
 	assert.Equal(t, 2.0, body["changed_count"])
 	assert.Equal(t, 1.5, body["savings"])
@@ -543,33 +611,23 @@ func TestComplexitySuggestionsImpact(t *testing.T) {
 
 	// A draft that changes the floor is replayed at it; a floor the router
 	// would refuse is refused here too.
-	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact",
-		`{"phrases":[{"tier":"SIMPLE","text":"x"}],"min_similarity":0.62}`)
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact",
+		`{"phrases":{"SIMPLE":["x"]},"min_similarity":0.62}`)
 	require.Equal(t, fasthttp.StatusOK, code, body)
 	require.NotNil(t, manager.draftFloor)
 	assert.InDelta(t, 0.62, *manager.draftFloor, 1e-9)
 	for _, bad := range []string{"-0.1", "1", "1.5"} {
-		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"x"}],"min_similarity":`+bad+`}`)
+		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact", `{"phrases":{"SIMPLE":["x"]},"min_similarity":`+bad+`}`)
 		assert.Equal(t, fasthttp.StatusBadRequest, code, bad)
 	}
 
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[]}`)
-	assert.Equal(t, fasthttp.StatusBadRequest, code, "an empty bank")
-	// The saved bank's limits: its phrase count and one phrase's length.
-	tooMany := make([]map[string]string, configstore.MaxComplexitySemanticPhrases+1)
-	for i := range tooMany {
-		tooMany[i] = map[string]string{"tier": "SIMPLE", "text": fmt.Sprintf("phrase %d", i)}
-	}
-	payload, err := json.Marshal(map[string]any{"phrases": tooMany})
-	require.NoError(t, err)
-	manager.draft = nil
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", string(payload))
-	assert.Equal(t, fasthttp.StatusBadRequest, code, "more phrases than a bank can hold")
-	long := strings.Repeat("a", configstore.MaxComplexitySemanticPhraseCharacters+1)
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"`+long+`"}]}`)
-	assert.Equal(t, fasthttp.StatusBadRequest, code, "a phrase longer than a bank allows")
-	assert.Nil(t, manager.draft, "neither is replayed")
-	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact?window=soon", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact", `{"phrases":{}}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "no phrases")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact", `{"phrases":{"MEDIUM":["design a system"]}}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "a phrase another tier holds")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/missing/suggestions/impact", `{"phrases":{"SIMPLE":["x"]}}`)
+	assert.Equal(t, fasthttp.StatusNotFound, code, "an unknown router")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact?window=soon", `{"phrases":{"SIMPLE":["x"]}}`)
 	assert.Equal(t, fasthttp.StatusBadRequest, code, "an unreadable window")
 	for _, tc := range []struct {
 		err  error
@@ -582,9 +640,104 @@ func TestComplexitySuggestionsImpact(t *testing.T) {
 		{errors.New("embedding provider down"), fasthttp.StatusBadGateway},
 	} {
 		manager.impactErr = tc.err
-		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
+		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/impact", `{"phrases":{"SIMPLE":["x"]}}`)
 		assert.Equal(t, tc.code, code, "%v: %v", tc.err, body)
 	}
+}
+
+// Adding phrases is the one suggestion API that writes: they are appended to
+// the router's saved phrases, the router is reloaded, and the suggestions
+// they came from are marked accepted. A phrase another tier holds, or a
+// suggestion that is not open, refuses the request and saves nothing.
+func TestModelRouterAddPhrases(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/phrases",
+		`{"phrases":{"SIMPLE":["where is my refund","say hello"]},"suggestion_ids":["s-open"]}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, map[string]any{"SIMPLE": []any{"where is my refund"}}, body["added"])
+	assert.Equal(t, []any{map[string]any{"tier": "SIMPLE", "text": "say hello"}}, body["skipped"])
+	assert.Equal(t, []any{"s-open"}, body["accepted"])
+	router := body["router"].(map[string]any)
+	assert.Equal(t, []any{"say hello", "where is my refund"}, router["keywords"].(map[string]any)["simple_keywords"])
+	assert.Equal(t, 1, manager.reloads["default"], "the router is served with its new phrases")
+
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions/s-open", "")
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, "accepted", body["suggestion"].(map[string]any)["status"])
+
+	for name, tc := range map[string]struct {
+		path, body string
+		code       int
+	}{
+		"another tier holds it": {"default", `{"phrases":{"COMPLEX":["where is my refund"]}}`, fasthttp.StatusBadRequest},
+		"a suggestion not open": {"default", `{"phrases":{"SIMPLE":["new one"]},"suggestion_ids":["s-dismissed"]}`, fasthttp.StatusConflict},
+		"another router's":      {"default", `{"phrases":{"SIMPLE":["new one"]},"suggestion_ids":["s-office"]}`, fasthttp.StatusNotFound},
+		"an unknown router":     {"missing", `{"phrases":{"SIMPLE":["new one"]}}`, fasthttp.StatusNotFound},
+		"no phrases":            {"default", `{"phrases":{}}`, fasthttp.StatusBadRequest},
+	} {
+		code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/"+tc.path+"/phrases", tc.body)
+		assert.Equal(t, tc.code, code, "%s: %v", name, body)
+	}
+	assert.Equal(t, 1, manager.reloads["default"], "a refused request saves and reloads nothing")
+
+	// A misspelled field is refused, not ignored.
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/phrases", `{"phrases":{"SIMPLE":["say hello"]},"suggestion_id":["s-open"]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "an unknown field")
+	// Phrases already there are a retry: nothing is saved, but the router is
+	// served again, so a reload that failed the first time is reached.
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/phrases", `{"phrases":{"SIMPLE":["where is my refund"]}}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Empty(t, body["added"])
+	assert.Equal(t, 2, manager.reloads["default"], "a retry reaches the reload")
+}
+
+// statusWriteFails is a log store whose suggestion status writes fail.
+type statusWriteFails struct{ logstore.LogStore }
+
+func (statusWriteFails) UpdateComplexitySuggestionStatus(context.Context, string, string, string, *time.Time) (bool, error) {
+	return false, errors.New("log store down")
+}
+
+// Phrases saved stand when a suggestion they came from cannot be marked
+// accepted: it is left out of the accepted list, which names only the
+// suggestions actually accepted.
+func TestModelRouterAddPhrasesKeepsTheSaveWhenAcceptingFails(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	manager.store = statusWriteFails{manager.store}
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/phrases",
+		`{"phrases":{"SIMPLE":["where is my refund"]},"suggestion_ids":["s-open"]}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, map[string]any{"SIMPLE": []any{"where is my refund"}}, body["added"])
+	assert.Equal(t, []any{}, body["accepted"])
+}
+
+// A phrase add whose reload fails after the save is still audited: the
+// phrases are saved, and a retry finds them held, saves nothing and records
+// nothing, so the entry has to come from the call that saved them.
+func TestModelRouterAddPhrasesIsAuditedWhenTheReloadFails(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	manager.reloadErr = errors.New("the routing plugin refused the router")
+	post := func() *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetRequestURI("/api/routing/model-routers/default/phrases")
+		req.SetBodyString(`{"phrases":{"SIMPLE":["where is my refund"]}}`)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, nil, nil)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	first := post()
+	require.Equal(t, fasthttp.StatusInternalServerError, first.Response.StatusCode(), string(first.Response.Body()))
+	change := requireSingleAuditChange(t, first, "model_router.phrases_added")
+	assert.Equal(t, "default", change.TargetID)
+	assert.Contains(t, string(change.After), "where is my refund")
+
+	retry := post()
+	require.Equal(t, fasthttp.StatusInternalServerError, retry.Response.StatusCode(), "the retry still reaches the reload")
+	assert.Empty(t, auditChanges(t, retry), "a retry that saves nothing records nothing")
+	assert.Equal(t, 2, manager.reloads["default"])
 }
 
 // Pricing covers every changed request: at its live tier's model, and at its
