@@ -284,6 +284,51 @@ func TestAttemptWindowCoversOnlyCurrentAttempt(t *testing.T) {
 	}
 }
 
+// A message enqueues once per attempt, so a second record replaces the first. The wait belongs
+// to the attempt it was recorded in: marking the next attempt clears it, so an attempt that
+// never reaches a worker (a short-circuit) cannot inherit the previous one's.
+func TestRecordQueueWaitBelongsToCurrentAttempt(t *testing.T) {
+	ctx := newTestCtx()
+	ctx.ResetUpstreamLatency()
+	ctx.MarkAttemptStart()
+
+	if w, _ := GetAttemptWindow(ctx); w.QueueWait != 0 {
+		t.Fatalf("queue wait = %v before any was recorded, want 0", w.QueueWait)
+	}
+	RecordQueueWait(ctx, 40*time.Millisecond)
+	RecordQueueWait(ctx, 70*time.Millisecond)
+	w, ok := GetAttemptWindow(ctx)
+	if !ok || w.QueueWait != 70*time.Millisecond {
+		t.Fatalf("queue wait = %v (ok=%v), want 70ms: the second record replaces the first", w.QueueWait, ok)
+	}
+	if w.Upstream() != 0 {
+		t.Fatalf("upstream = %v after only a queue wait, want 0: the wait is not provider time", w.Upstream())
+	}
+
+	ctx.MarkAttemptStart()
+	if w, _ := GetAttemptWindow(ctx); w.QueueWait != 0 {
+		t.Fatalf("queue wait = %v on the next attempt, want 0", w.QueueWait)
+	}
+
+	RecordQueueWait(ctx, 0)
+	RecordQueueWait(ctx, -time.Millisecond)
+	if w, _ := GetAttemptWindow(ctx); w.QueueWait != 0 {
+		t.Fatalf("queue wait = %v after non-positive records, want 0", w.QueueWait)
+	}
+}
+
+// Without an accumulator (internal calls, tests, paths that never reset) the record is dropped.
+func TestRecordQueueWaitWithoutAccumulatorIsIgnored(t *testing.T) {
+	ctx := newTestCtx()
+	RecordQueueWait(ctx, time.Second)
+	if _, ok := GetAttemptWindow(ctx); ok {
+		t.Fatal("attempt window reported without an accumulator")
+	}
+	RecordQueueWait(nil, time.Second)
+	var nilCtx *BifrostContext
+	RecordQueueWait(nilCtx, time.Second)
+}
+
 // Per-attempt cost on the request path: core marks each attempt, and logging reads
 // the window once per row.
 func BenchmarkAttemptWindow(b *testing.B) {
@@ -293,6 +338,16 @@ func BenchmarkAttemptWindow(b *testing.B) {
 	for b.Loop() {
 		ctx.MarkAttemptStart()
 		_, _ = GetAttemptWindow(ctx)
+	}
+}
+
+// Per-request cost of the queue-wait handoff: the worker's one record per attempt.
+func BenchmarkRecordQueueWait(b *testing.B) {
+	ctx := newTestCtx()
+	ctx.ResetUpstreamLatency()
+	b.ReportAllocs()
+	for b.Loop() {
+		RecordQueueWait(ctx, time.Millisecond)
 	}
 }
 
