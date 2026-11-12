@@ -309,14 +309,17 @@ func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	inference := bearerCtx(accessToken)
 	inference.Request.Header.Set("x-api-key", "sk-bf-someone-else")
 	var seenVK, seenAuth, seenAPIKey string
+	var seenGatewayUser bool
 	h.BearerMiddleware(func(ctx *fasthttp.RequestCtx) {
 		seenVK = string(ctx.Request.Header.Peek("x-bf-vk"))
 		seenAuth = string(ctx.Request.Header.Peek("Authorization"))
 		seenAPIKey = string(ctx.Request.Header.Peek("x-api-key"))
+		_, seenGatewayUser = lib.PreAuthenticated(ctx)
 	})(inference)
 	assert.Equal(t, vk.Value.GetValue(), seenVK)
 	assert.Empty(t, seenAuth)
 	assert.Empty(t, seenAPIKey)
+	assert.False(t, seenGatewayUser, "a vk-mode request is authenticated by its x-bf-vk downstream, not by the user marker")
 
 	// Claude Code refreshes with only grant_type and refresh_token.
 	refresh := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}.Encode())
@@ -485,6 +488,8 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 			called = true
 			assert.Empty(t, string(c.Request.Header.Peek("Authorization")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
+			_, ok := lib.PreAuthenticated(c)
+			assert.False(t, ok, "an anonymous session must not be marked as an authenticated user")
 		})(ctx)
 		assert.True(t, called)
 	})
@@ -520,6 +525,11 @@ func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
 			assert.Empty(t, string(c.Request.Header.Peek("Authorization")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-api-key")))
 			assert.Empty(t, string(c.Request.Header.Peek("x-bf-vk")))
+			// The enterprise identity middleware runs next and finds no bearer
+			// left; this marker is what tells it the user is already authenticated.
+			method, ok := lib.PreAuthenticated(c)
+			assert.True(t, ok, "user-mode request must be marked pre-authenticated")
+			assert.Equal(t, lib.PreAuthClientGateway, method)
 		})(ctx)
 		assert.True(t, called, string(ctx.Response.Body()))
 	})
