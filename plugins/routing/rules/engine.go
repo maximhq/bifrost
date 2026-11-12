@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/routing"
@@ -352,19 +353,23 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 	return finalDecision, nil
 }
 
+// stickyRouteStateKind names sticky target selection among the kinds of per-session state, so its
+// key is scoped the way every other piece of session state is (bifrost.SessionStateKey).
+const stickyRouteStateKind = "sticky-route"
+
 // selectRuleTarget picks the target a matched rule routes to. A rule with sticky_sessions set
-// gives every request of one session the same target, keyed by the session id and the rule id;
-// any other request keeps the per-request weighted random draw.
+// gives every request of one session the same target; any other request, and one that carries
+// no session or has switched session affinity off, keeps the per-request weighted random draw.
 //
-// Stickiness here is what lets core's session affinity hold: affinity keeps a session on the
-// route that last served it only while the routing chain still offers that route, and a fresh
-// random draw on every turn keeps handing it a chain without it.
+// The session is keyed with bifrost.SessionStateKey: by session id, virtual key and user, so the
+// same session id from two callers is two sessions, plus the rule id, so a chain of sticky rules
+// picks independently. Stickiness here is what lets core's session affinity hold: affinity keeps
+// a session on the route that last served it only while the routing chain still offers that
+// route, and a fresh random draw on every turn keeps handing it a chain without it.
 func selectRuleTarget(ctx *schemas.BifrostContext, rule *configstoreTables.TableRoutingRule) (configstoreTables.TableRoutingTarget, bool) {
-	if rule.StickySessions {
-		if sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string); sessionID != "" {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' has sticky_sessions, so the target is chosen from the session id", rule.Name))
-			return selectStickyWeightedTarget(rule.Targets, sessionID+"\x00"+rule.ID)
-		}
+	if rule.StickySessions && schemas.IsSessionAffinityActive(ctx) {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' has sticky_sessions, so the target is chosen from the session", rule.Name))
+		return selectStickyWeightedTarget(rule.Targets, bifrost.SessionStateKey(ctx, stickyRouteStateKind, rule.ID))
 	}
 	return selectWeightedTarget(rule.Targets)
 }
@@ -393,11 +398,14 @@ func selectStickyWeightedTarget(targets []configstoreTables.TableRoutingTarget, 
 	var best configstoreTables.TableRoutingTarget
 	bestScore, bestIdentity, found := 0.0, "", false
 	for _, t := range targets {
+		if !(t.Weight >= 0) {
+			continue // negative or NaN: invalid, as in the first pass
+		}
 		weight := t.Weight
 		if total == 0 && weight == 0 {
 			weight = 1 // all-zero weights: every valid target counts the same
 		}
-		if weight <= 0 {
+		if weight == 0 {
 			continue
 		}
 		identity := routingTargetIdentity(t)
