@@ -359,7 +359,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel, traffic
 		// Removing every line of an MCP limit removes the limit (see below), so only adding one needs a line.
 		// Lines the other page owns stay on the row, so a row that keeps one is not left empty.
 		const keepsOtherPagesLines = rowLines(baseConfig, traffic, false).length > 0 || rowRequestLines(baseConfig, traffic, false).length > 0;
-		if (saveHasNoLimit(hasAnyLimit, keepsOtherPagesLines, isMCPPage && isEditing)) {
+		if (saveHasNoLimit(hasAnyLimit, isEditing, keepsOtherPagesLines, isMCPPage && isEditing)) {
 			form.setError("root", { message: t("modelLimits.atLeastOneRequired") });
 			return;
 		}
