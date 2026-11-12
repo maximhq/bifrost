@@ -318641,6 +318641,227 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Code mode readToolFile header counts the real lines (code-mode-total-lines) (#9841) [SERIAL]",
+      "description": "readToolFile prepends `# Total lines: N (this is the complete file, no need to paginate)` to a code-mode stub, and a model reads N to decide whether it already holds the whole file. N was computed from `strings.Split` on a stub that ends in a newline, which already counts one empty element past the last line, and then +1 for the header, so it claimed one line more than readToolFile returned (#9841). This case reads a server stub over `/v1/mcp/tool/execute` and pins that N equals the number of lines in the reply.\n\nSerial, and it provisions its own client for the same reason as folders 210 and 254: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-total-lines provision a code-mode client on the SSE fixture - #9841",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeTotalLinesClient', 'harness_codemode_total_lines_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeTotalLinesQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeTotalLinesSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeTotalLinesClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-total-lines readToolFile header counts the lines it returns - #9841",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The header is how a model decides it already holds the whole file, so it must not claim a line that never arrives.",
+                  "pm.test('the Total lines header equals the number of lines returned', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'readToolFile errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var stub = String(pm.response.json().content || '');",
+                  "  var match = /^# Total lines: (\\d+) /.exec(stub);",
+                  "  pm.expect(match, 'the stub does not open with a Total lines header:\\n' + stub).to.not.equal(null);",
+                  "  var claimed = parseInt(match[1], 10);",
+                  "  var returned = stub.replace(/\\n$/, '').split('\\n').length;",
+                  "  pm.expect(claimed, 'header claims ' + claimed + ' lines but ' + returned + ' were returned:\\n' + stub).to.equal(returned);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-total-lines\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"readToolFile\",\n    \"arguments\": \"{\\\"fileName\\\":\\\"servers/{{codeModeTotalLinesClient}}.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-total-lines queue this run's client, plus any stale leftovers - #9841",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeTotalLinesClient');",
+                  "var PREFIX = 'harness_codemode_total_lines_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeTotalLinesQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-total-lines remove every queued code-mode client - #9841",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeTotalLinesQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeTotalLinesClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeTotalLinesQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeTotalLinesQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeTotalLinesSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeTotalLinesSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeTotalLinesClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeTotalLinesClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
