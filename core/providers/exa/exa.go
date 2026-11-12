@@ -21,6 +21,11 @@ type ExaProvider struct {
 	sendBackRawResponse bool
 }
 
+// exaMaxResponseBodyBytes caps one Exa response. Search can return up to 100 pages of text, so
+// the limit sits above the text caps; a response past it is a pathological page set and fails
+// as a provider error rather than growing the gateway's memory without bound.
+const exaMaxResponseBodyBytes = 32 << 20 // 32 MiB
+
 // NewExaProvider creates a new Exa provider instance.
 func NewExaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*ExaProvider, error) {
 	config.CheckAndSetDefaults()
@@ -34,6 +39,9 @@ func NewExaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Exa
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		// The text caps keep a normal response far below this; the limit turns a pathological
+		// one into a provider error instead of unbounded memory in the gateway.
+		MaxResponseBodySize: exaMaxResponseBodyBytes,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)

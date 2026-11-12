@@ -21,13 +21,29 @@ func (b *exaSearchBody) GetExtraParams() map[string]interface{} { return b.Extra
 // exaContentsOptions asks Exa for page text. It is sent only when the caller asked for content,
 // because Exa prices text retrieval separately from the search itself.
 type exaContentsOptions struct {
-	Text bool `json:"text"`
+	Text exaTextOptions `json:"text"`
 }
+
+// exaTextOptions is Exa's text extraction request. Exa accepts `true` or an object carrying
+// maxCharacters; the object form is always sent so one call cannot return unbounded page text.
+type exaTextOptions struct {
+	MaxCharacters int `json:"maxCharacters"`
+}
+
+const (
+	// exaSearchContentMaxCharacters bounds the page text of one search result. A search can
+	// return up to 100 results, so one response must not carry 100 full articles; a caller with
+	// a different budget can override the contents option through extra-params passthrough.
+	exaSearchContentMaxCharacters = 20000
+	// exaFetchContentMaxCharacters bounds one fetched page. The page is the result, so the cap
+	// sits far above a normal article and only keeps a pathological page finite.
+	exaFetchContentMaxCharacters = 1000000
+)
 
 // exaContentsBody is the wire shape of an Exa /contents request for one page.
 type exaContentsBody struct {
 	URLs        []string               `json:"urls"`
-	Text        bool                   `json:"text"`
+	Text        exaTextOptions         `json:"text"`
 	ExtraParams map[string]interface{} `json:"-"`
 }
 

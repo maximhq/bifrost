@@ -129,7 +129,7 @@ func TestSearch_SendsExaContractAndReportsExaCost(t *testing.T) {
 		"excludeDomains":     []any{"example.com"},
 		"startPublishedDate": "2026-01-01",
 		"endPublishedDate":   "2026-10-01T00:00:00Z",
-		"contents":           map[string]any{"text": true},
+		"contents":           map[string]any{"text": map[string]any{"maxCharacters": float64(20000)}},
 	}
 	for field, value := range want {
 		got, _ := json.Marshal(captured.body[field])
@@ -236,8 +236,9 @@ func TestFetch_ReadsOnePageThroughContents(t *testing.T) {
 		t.Fatalf("path = %q, want /contents", captured.path)
 	}
 	urls, _ := json.Marshal(captured.body["urls"])
-	if string(urls) != `["https://go.dev/doc"]` || captured.body["text"] != true {
-		t.Fatalf("body = %v, want the one URL with text", captured.body)
+	text, _ := json.Marshal(captured.body["text"])
+	if string(urls) != `["https://go.dev/doc"]` || string(text) != `{"maxCharacters":1000000}` {
+		t.Fatalf("body = %v, want the one URL with bounded page text", captured.body)
 	}
 	if resp.Title != "Go docs" || resp.Content != "# Go" {
 		t.Fatalf("response = %+v, want the page title and text", resp)
@@ -298,5 +299,33 @@ func TestExa_RefusesInferenceAsUnsupported(t *testing.T) {
 	_, bifrostErr := provider.ChatCompletion(newCtx(), testKey, &schemas.BifrostChatRequest{Provider: schemas.Exa, Model: "m"})
 	if bifrostErr == nil || bifrostErr.Error == nil {
 		t.Fatal("expected an unsupported-operation error")
+	}
+}
+
+// Exa's failures carry {"requestId", "error", "tag"}, not the object-valued error the shared
+// OpenAI parser expects. The status survived before; the reason, the tag and the request id an
+// operator quotes to Exa support must survive too.
+func TestSearch_KeepsExasStructuredErrorDetails(t *testing.T) {
+	body := `{"requestId":"req_abc123","error":"Your API key is invalid","tag":"INVALID_API_KEY"}`
+	provider := newTestExaProvider(t, newExaServer(t, http.StatusUnauthorized, body, false, nil).URL)
+
+	_, bifrostErr := provider.Search(newCtx(), testKey, &schemas.BifrostSearchRequest{Provider: schemas.Exa, Query: "q"})
+	if bifrostErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %v, want 401", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "Your API key is invalid" {
+		t.Fatalf("message = %+v, want Exa's reason", bifrostErr.Error)
+	}
+	if bifrostErr.Type == nil || *bifrostErr.Type != "INVALID_API_KEY" {
+		t.Fatalf("type = %v, want Exa's tag", bifrostErr.Type)
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "INVALID_API_KEY" {
+		t.Fatalf("error type = %v, want Exa's tag", bifrostErr.Error.Type)
+	}
+	if bifrostErr.EventID == nil || *bifrostErr.EventID != "req_abc123" {
+		t.Fatalf("event id = %v, want Exa's requestId", bifrostErr.EventID)
 	}
 }

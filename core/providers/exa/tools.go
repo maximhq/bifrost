@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -37,7 +36,7 @@ func (provider *ExaProvider) Search(ctx *schemas.BifrostContext, key schemas.Key
 				ExtraParams:        request.ExtraParams,
 			}
 			if request.IncludeContent != nil && *request.IncludeContent {
-				body.Contents = &exaContentsOptions{Text: true}
+				body.Contents = &exaContentsOptions{Text: exaTextOptions{MaxCharacters: exaSearchContentMaxCharacters}}
 			}
 			return body, nil
 		},
@@ -98,7 +97,11 @@ func (provider *ExaProvider) Fetch(ctx *schemas.BifrostContext, key schemas.Key,
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return &exaContentsBody{URLs: []string{request.URL}, Text: true, ExtraParams: request.ExtraParams}, nil
+			return &exaContentsBody{
+				URLs:        []string{request.URL},
+				Text:        exaTextOptions{MaxCharacters: exaFetchContentMaxCharacters},
+				ExtraParams: request.ExtraParams,
+			}, nil
 		},
 	)
 	if bifrostErr != nil {
@@ -171,9 +174,9 @@ func (provider *ExaProvider) Fetch(ctx *schemas.BifrostContext, key schemas.Key,
 
 // postRequest performs one POST against Exa's API, authenticating with the key in x-api-key.
 //
-// Non-200 responses are parsed with the shared OpenAI-compatible error parser, which keeps the
-// upstream status code: 402 means the account is out of credit and 429 a rate limit, and
-// flattening either into a generic provider error would hide the fix.
+// Non-200 responses are parsed from Exa's own error envelope, which keeps the upstream status
+// code: 402 means the account is out of credit and 429 a rate limit, and flattening either into
+// a generic provider error would hide the fix.
 func (provider *ExaProvider) postRequest(ctx *schemas.BifrostContext, key schemas.Key, path string, body []byte) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -198,7 +201,7 @@ func (provider *ExaProvider) postRequest(ctx *schemas.BifrostContext, key schema
 	// Headers are extracted before the status check so an error response still forwards them.
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseExaError(resp), latency)
 	}
 
 	// The response goes back to fasthttp's pool when this returns, so the body is decoded into
