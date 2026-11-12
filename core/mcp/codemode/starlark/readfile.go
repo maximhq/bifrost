@@ -259,9 +259,11 @@ func isKnownServer(name string, servers []string) bool {
 
 // normalizeVFSPath strips the decorations callers commonly add to a VFS path:
 // surrounding whitespace, a trailing "()", a leading "./" or "/", a "servers/"
-// prefix in any case, a trailing "/" and a ".pyi" or ".py" extension. A path
-// that exactly names one of servers keeps its extension-like suffix, so a
-// server named "acme.py" is not read as "acme".
+// prefix in any case, a trailing "/" and a ".pyi" or ".py" extension.
+// "<name>.pyi" is the canonical stub filename, so it resolves to server <name>
+// whenever that server is connected. Otherwise a path that exactly names one of
+// servers keeps its extension-like suffix, so a server named "acme.py" is not
+// read as "acme".
 func normalizeVFSPath(p string, servers []string) string {
 	p = strings.TrimSpace(p)
 	p = strings.TrimSuffix(p, "()")
@@ -271,11 +273,11 @@ func normalizeVFSPath(p string, servers []string) string {
 		p = p[len("servers/"):]
 	}
 	p = strings.TrimRight(p, "/")
+	if trimmed, ok := strings.CutSuffix(p, ".pyi"); ok && (isKnownServer(trimmed, servers) || !isKnownServer(p, servers)) {
+		return trimmed
+	}
 	if isKnownServer(p, servers) {
 		return p
-	}
-	if trimmed, ok := strings.CutSuffix(p, ".pyi"); ok {
-		return trimmed
 	}
 	return strings.TrimSuffix(p, ".py")
 }
