@@ -2675,6 +2675,11 @@
                     "default": false,
                     "description": "If true, re-evaluates the routing chain after this rule matches"
                   },
+                  "sticky_sessions": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, every request that carries a session id (x-bf-session-id or a harness session header) gets the same weighted target for that session; requests without one keep weighted random selection."
+                  },
                   "targets": {
                     "type": "array",
                     "minItems": 1,

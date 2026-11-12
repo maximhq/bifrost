@@ -1981,6 +1981,8 @@
 		"enableRuleHelp": "Die Regel ist aktiv und wird auf passende Anfragen angewendet",
 		"chainRule": "Regel verketten",
 		"chainRuleHelp": "Nachdem diese Regel zutrifft, werden die Routing-Regeln unter Verwendung des aufgelösten Anbieters/Modells als neuer Kontext erneut ausgewertet. Nützlich für die Kombination von Regeln, z. B. um zuerst einen Modell-Alias zu normalisieren und dann basierend auf dem kanonischen Namen weiterzuleiten.",
+		"stickySessions": "Sitzungsbindung",
+		"stickySessionsHelp": "Hält alle Anfragen einer Sitzung auf demselben gewichteten Ziel, damit Unterhaltungen nicht mitten im Verlauf den Anbieter wechseln und Prompt-Caches weiter greifen. Anfragen ohne Sitzungs-ID nutzen weiterhin die gewichtete Zufallsauswahl.",
 		"selectScope": "Geltungsbereich auswählen...",
 		"priorityRequired": "Priorität ist erforderlich",
 		"priorityMin": "Priorität muss ≥ 0 sein",

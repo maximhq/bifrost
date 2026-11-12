@@ -1981,6 +1981,8 @@
 		"enableRuleHelp": "La règle sera active et appliquée aux requêtes correspondantes",
 		"chainRule": "Règle de chaîne",
 		"chainRuleHelp": "Lorsque cette règle correspond, réévaluez les règles de routage en utilisant le fournisseur/modèle résolu comme nouveau contexte. Utile pour composer des règles, par ex. normaliser d'abord un alias de modèle, puis router en fonction du nom canonique.",
+		"stickySessions": "Sessions persistantes",
+		"stickySessionsHelp": "Garde toutes les requêtes d'une session sur la même cible pondérée, afin que les conversations ne changent pas de fournisseur en cours de route et que les caches de prompts restent efficaces. Les requêtes sans identifiant de session conservent la sélection aléatoire pondérée.",
 		"selectScope": "Sélectionnez une portée...",
 		"priorityRequired": "La priorité est requise",
 		"priorityMin": "La priorité doit être ≥ 0",

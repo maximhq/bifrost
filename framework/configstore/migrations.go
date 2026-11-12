@@ -593,6 +593,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
 	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
 	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
+	{IDs: []string{"add_sticky_sessions_column_to_routing_rules"}, run: migrationAddStickySessionsColumnToRoutingRules},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -8222,6 +8223,35 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddStickySessionsColumnToRoutingRules adds sticky_sessions to routing_rules.
+// When true, a request carrying a session id gets the same weighted target for every turn
+// of that session. Unlike chain_rule it needs no config_hash backfill: the rule hash only
+// includes sticky_sessions when it is true, and every existing row is false.
+func migrationAddStickySessionsColumnToRoutingRules(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sticky_sessions_column_to_routing_rules"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableRoutingRule{}, "sticky_sessions"); err != nil {
+				return fmt.Errorf("failed to add sticky_sessions column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableRoutingRule{}, "sticky_sessions"); err != nil {
+				return fmt.Errorf("failed to drop sticky_sessions column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

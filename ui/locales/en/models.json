@@ -1981,6 +1981,8 @@
 		"enableRuleHelp": "Rule will be active and applied to matching requests",
 		"chainRule": "Chain Rule",
 		"chainRuleHelp": "After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for composing rules, e.g. normalize a model alias first, then route based on the canonical name.",
+		"stickySessions": "Sticky Sessions",
+		"stickySessionsHelp": "Keep every request of a session on the same weighted target, so conversations don't switch provider mid-thread and prompt caches keep hitting. Requests without a session ID still use weighted random selection.",
 		"selectScope": "Select scope...",
 		"priorityRequired": "Priority is required",
 		"priorityMin": "Priority must be ≥ 0",

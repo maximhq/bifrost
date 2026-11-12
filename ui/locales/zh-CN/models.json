@@ -1979,6 +1979,8 @@
 		"enableRuleHelp": "规则将处于活动状态，并应用于匹配的请求",
 		"chainRule": "链式规则",
 		"chainRuleHelp": "此规则匹配后，使用解析出的供应商/模型作为新上下文重新评估路由规则。适用于组合规则，例如先规范化模型别名，再按规范名称路由。",
+		"stickySessions": "会话粘性",
+		"stickySessionsHelp": "让同一会话的所有请求始终发往同一个加权目标，避免对话中途切换提供商，并保持提示缓存命中。没有会话 ID 的请求仍使用加权随机选择。",
 		"selectScope": "选择作用域…",
 		"priorityRequired": "优先级为必填项",
 		"priorityMin": "优先级必须 ≥ 0",
