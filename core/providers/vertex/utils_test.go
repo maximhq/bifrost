@@ -1374,7 +1374,7 @@ func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
 
 // The /genai_passthrough router strips the API version with its prefix, so Vertex must build
 // the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
-// Model calls keep the v1 they have always used.
+// Google publisher model calls honor it too; other model calls keep v1.
 func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 	var mu sync.Mutex
 	var paths []string
@@ -1420,9 +1420,14 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		{"", interactions, "/v1/projects/proj/locations/global/interactions"},
 		{"v1beta", interactions, "/v1/projects/proj/locations/global/interactions"}, // Gemini-only version; Vertex has no v1beta
 		{"v2", interactions, "/v2/projects/proj/locations/global/interactions"},     // any other version is forwarded as sent
-		// Model calls keep v1: Google's v1beta1 streamRawPredict answers 500 for Claude.
+		// A client project named "models" is not a model call.
+		{"v1beta1", "/projects/models/locations/global/interactions", "/v1beta1/projects/proj/locations/global/interactions"},
+		// Non-Google model calls keep v1: Google's v1beta1 streamRawPredict answers 500 for Claude.
 		{"v1beta1", claudeStream, "/v1/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"},
-		{"v1beta1", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		// Google publisher models honor an explicit Vertex version (v1beta1-only fields such as mediaProcessing).
+		{"v1beta1", geminiGenerate, "/v1beta1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{"", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{"v1beta", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
 	} {
 		mu.Lock()
 		paths = nil

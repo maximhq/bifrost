@@ -471,6 +471,19 @@ func PassthroughWireFormat(path string) schemas.ModelProvider {
 	return schemas.Gemini
 }
 
+// vertexPassthroughAPIVersion picks the upstream API version for a passthrough path already rewritten
+// to /projects/{p}/locations/{region}/..., reading only the resource after the location so a project
+// named "models" is not mistaken for a model call. The client's version is kept except Gemini's v1beta,
+// which Vertex lacks, and non-Google model calls: Google's v1beta1 streamRawPredict answers 500 for Claude.
+func vertexPassthroughAPIVersion(clientVersion, path, region string) string {
+	_, resource, _ := strings.Cut(path, "/locations/"+region)
+	if clientVersion == "" || clientVersion == "v1beta" ||
+		(strings.Contains(resource, "/models/") && !strings.HasPrefix(resource, "/publishers/google/")) {
+		return "v1"
+	}
+	return clientVersion
+}
+
 var (
 	vertexBodyProjectsLit = []byte("projects/")
 	vertexLocationsLit    = []byte("/locations/")
