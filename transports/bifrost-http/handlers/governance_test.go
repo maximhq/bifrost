@@ -3518,6 +3518,20 @@ func TestBudgetsFromSingleBudgetUpdateKeepsResetConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("moving off the quarterly window drops the stored quarter start", func(t *testing.T) {
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetDuration: schemas.Ptr("1M")}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetDuration != "1M" || budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum on the new window, got %+v", budget)
+		}
+		if budget.ResetConfig != nil {
+			t.Fatalf("expected no quarter start on a monthly window, got %+v", budget.ResetConfig)
+		}
+	})
+
 	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
 		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
 		if got == nil || len(*got) != 1 {
@@ -4171,6 +4185,44 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	}
 	if len(governanceManager.adoptedBudgetIDs) != 1 || governanceManager.adoptedBudgetIDs[0] != budgetID {
 		t.Errorf("expected budget %s to be adopted onto its calendar boundary, got %v", budgetID, governanceManager.adoptedBudgetIDs)
+	}
+}
+
+// TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind pins the deprecated single-budget update that
+// moves a quarterly budget to another window: the stored quarter start does not travel onto a window it
+// is invalid for, so the request succeeds instead of failing validation with a 500.
+func TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	store.customers["cust-q"] = &configstoreTables.TableCustomer{
+		ID:   "cust-q",
+		Name: "Quarterly",
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "bud-q",
+			MaxLimit:      500,
+			ResetDuration: "1Q",
+			ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4},
+			LastReset:     time.Now(),
+		}},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"budget": map[string]any{"reset_duration": "1M"}})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-q")
+
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	budgets := store.customers["cust-q"].Budgets
+	if len(budgets) != 1 || budgets[0].ResetDuration != "1M" || budgets[0].MaxLimit != 500 {
+		t.Fatalf("expected the budget moved to 1M with its maximum, got %+v", budgets)
+	}
+	if budgets[0].ResetConfig != nil {
+		t.Fatalf("expected no quarter start on a monthly budget, got %+v", budgets[0].ResetConfig)
 	}
 }
 
