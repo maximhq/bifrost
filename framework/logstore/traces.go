@@ -119,7 +119,7 @@ type TraceSpan struct {
 
 	ParentSpanID  string  `gorm:"type:varchar(128)" json:"parent_span_id,omitempty"` // the tree parent: the first of ParentSpanIDsParsed
 	ParentSpanIDs *string `gorm:"type:text" json:"-"`
-	RowID         string  `gorm:"type:varchar(255)" json:"row_id,omitempty"`
+	RowID         string  `gorm:"type:varchar(255);index:idx_trace_spans_row_id" json:"row_id,omitempty"`
 	Source        string  `gorm:"type:varchar(32);not null" json:"source"`
 	Name          string  `gorm:"type:text" json:"name"`
 	Kind          string  `gorm:"type:varchar(32);not null;default:'unknown'" json:"kind"`
@@ -417,6 +417,7 @@ type TraceUpload struct {
 	SizeBytes   int64      `json:"size_bytes"`
 	Status      string     `gorm:"type:varchar(16);not null" json:"status"` // pending | done | error
 	ObjectKey   string     `gorm:"type:text" json:"object_key,omitempty"`
+	Token       string     `gorm:"type:varchar(64)" json:"-"` // required in the upload URL when the id is derived, not random
 	Data        []byte     `json:"-"`
 	ExpiresAt   *time.Time `gorm:"index:idx_trace_uploads_expires_at" json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `gorm:"not null" json:"created_at"`
@@ -461,6 +462,7 @@ type TraceStore interface {
 	UpsertTraceSpans(ctx context.Context, spans []*TraceSpan) error
 	ListTraceSpans(ctx context.Context, projectID, traceID string) ([]*TraceSpan, error)
 	FindTraceSpans(ctx context.Context, projectID string, keys []TraceSpanKey) ([]*TraceSpan, error)
+	FindTraceSpansByRowIDs(ctx context.Context, projectID string, rowIDs []string) ([]*TraceSpan, error)
 	FindTrace(ctx context.Context, projectID, traceID string) (*Trace, error)
 	RecomputeTraceRollup(ctx context.Context, projectID, traceID string) (*Trace, error)
 	MarkTracesDirty(ctx context.Context, keys []TraceKey) error
@@ -645,6 +647,23 @@ func (s *RDBLogStore) FindTraceSpans(ctx context.Context, projectID string, keys
 		found = append(found, spans...)
 	}
 	return found, nil
+}
+
+// FindTraceSpansByRowIDs loads the spans stored under the given vendor row ids. Braintrust
+// addresses a span by its row id when it sends feedback or a comment.
+func (s *RDBLogStore) FindTraceSpansByRowIDs(ctx context.Context, projectID string, rowIDs []string) ([]*TraceSpan, error) {
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+	var spans []*TraceSpan
+	query := s.db.WithContext(ctx).Where("row_id IN ?", rowIDs)
+	if projectID != "" {
+		query = query.Where("project_id = ?", projectID)
+	}
+	if err := query.Limit(len(rowIDs) * 2).Find(&spans).Error; err != nil {
+		return nil, err
+	}
+	return spans, nil
 }
 
 // countsTokens reports whether a span of this kind carries token usage of its own. Only model calls
@@ -1146,7 +1165,16 @@ func (s *RDBLogStore) CreateTraceUpload(ctx context.Context, upload *TraceUpload
 		upload.Status = TraceUploadStatusPending
 	}
 	upload.SizeBytes = max(upload.SizeBytes, int64(len(upload.Data)))
-	return s.traceUpsert(s.db.WithContext(ctx), &TraceUpload{}, []string{"id"}).Create(upload).Error
+	if s.replacesOnInsert() {
+		return s.db.WithContext(ctx).Create(upload).Error
+	}
+	// An upload issued again while it is still pending gets a fresh window and token, so the new URL
+	// works; a finished upload is never reopened.
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"created_at", "token", "content_type", "filename", "expires_at"}),
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Eq{Column: clause.Column{Table: "trace_uploads", Name: "status"}, Value: TraceUploadStatusPending}}},
+	}).Create(upload).Error
 }
 
 // FindTraceUpload loads one upload, ErrNotFound when it does not exist.

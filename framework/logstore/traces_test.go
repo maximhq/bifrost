@@ -1083,3 +1083,24 @@ func TestListProjectTraceKeysFindsTracesWithoutARollup(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"fresh", "parts-only"}, got)
 }
+
+// A pending upload that is issued again gets a fresh window and token, so the new upload URL works.
+// A finished upload is never reopened.
+func TestCreateTraceUploadRefreshesAPendingUpload(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	old := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "bt-key", ProjectID: "p1", Source: TraceSourceBraintrust, Token: "first", CreatedAt: old}))
+	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "bt-key", ProjectID: "p1", Source: TraceSourceBraintrust, Token: "second"}))
+	upload, err := store.FindTraceUpload(ctx, "bt-key")
+	require.NoError(t, err)
+	assert.Equal(t, "second", upload.Token)
+	assert.True(t, upload.CreatedAt.After(old), "the upload window starts again")
+
+	require.NoError(t, store.SaveTraceUploadBytes(ctx, "bt-key", []byte("png")))
+	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "bt-key", ProjectID: "p1", Source: TraceSourceBraintrust, Token: "third"}))
+	done, err := store.FindTraceUpload(ctx, "bt-key")
+	require.NoError(t, err)
+	assert.Equal(t, TraceUploadStatusDone, done.Status, "a finished upload stays finished")
+	assert.Equal(t, "second", done.Token)
+}

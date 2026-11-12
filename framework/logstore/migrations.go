@@ -360,6 +360,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
 	{IDs: []string{"add_trace_tables"}, run: migrationAddTraceTables},
 	{IDs: []string{"logs_add_trace_link_columns"}, run: migrationAddTraceLinkColumns},
+	{IDs: []string{"trace_spans_add_row_id_index"}, run: migrationAddTraceSpanRowIDIndex},
+	{IDs: []string{"trace_uploads_add_token"}, run: migrationAddTraceUploadToken},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3063,6 +3065,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_provider_response_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_provider_response_id ON logs(provider_response_id) WHERE provider_response_id IS NOT NULL",
+	},
+	{
+		table: "trace_spans",
+		name:  "idx_trace_spans_row_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trace_spans_row_id ON trace_spans(row_id)",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -6266,6 +6273,73 @@ func traceLinkColumnsMigration(ctx context.Context, logger schemas.Logger) *migr
 			return nil
 		},
 	}
+}
+
+// rollbackTraceSpanRowIDIndex drops the row id index this migration made. On Postgres the migration
+// made none (performanceIndexes builds it concurrently), and a plain DROP INDEX there would take an
+// ACCESS EXCLUSIVE lock on a live trace table, so the index is left to its owner.
+func rollbackTraceSpanRowIDIndex(tx *gorm.DB) error {
+	const index = "idx_trace_spans_row_id"
+	if tx.Dialector.Name() == "postgres" || !tx.Migrator().HasIndex(&TraceSpan{}, index) {
+		return nil
+	}
+	return tx.Migrator().DropIndex(&TraceSpan{}, index)
+}
+
+// migrationAddTraceSpanRowIDIndex indexes trace_spans.row_id, the id Braintrust addresses a span by
+// when it sends feedback or a comment. A database that created trace_spans before the column was
+// indexed gets the index here. Postgres builds it concurrently through performanceIndexes, since
+// the table may already hold spans.
+func migrationAddTraceSpanRowIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "trace_spans_add_row_id_index"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	const index = "idx_trace_spans_row_id"
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" || tx.Migrator().HasIndex(&TraceSpan{}, index) {
+				return nil
+			}
+			return tx.Migrator().CreateIndex(&TraceSpan{}, index)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackTraceSpanRowIDIndex(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddTraceUploadToken adds trace_uploads.token, the random token an upload URL must carry
+// when the upload's id is derived from its content and so can be computed by others.
+func migrationAddTraceUploadToken(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "trace_uploads_add_token"
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasColumn(&TraceUpload{}, "token") {
+				return nil
+			}
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return tx.Migrator().AddColumn(&TraceUpload{}, "Token")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the column would make pending upload URLs unusable", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
 }
 
 // migrationAddTraceTables creates the tables behind SDK trace ingest: received parts, folded spans,
