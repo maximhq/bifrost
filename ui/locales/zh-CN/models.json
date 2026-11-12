@@ -2165,6 +2165,8 @@
 				},
 				"estimateFailed": "无法估算本次运行：{{error}}",
 				"estimateEmpty": "此时间段内尚未采集到任何请求。",
+				"estimateBackfill_one": "启用建议之前的 {{count}} 个请求会先从其日志中嵌入。",
+				"estimateBackfill_other": "启用建议之前的 {{count}} 个请求会先从其日志中嵌入。",
 				"captureUnavailableEmbedded": "建议功能需要共享向量存储，例如 Weaviate、Qdrant、Redis 或 Pinecone。此网关的向量存储是 Chromem，它将向量保存在每个网关自身的内存中，因此不会为建议采集请求。",
 				"captureUnavailableNone": "建议功能需要共享向量存储（例如 Weaviate、Qdrant、Redis 或 Pinecone）来保存采集的请求。当前未配置，因此不会为建议采集请求。",
 				"runInBackground": "在你的网关内后台运行，不在请求路径上。",
@@ -2179,6 +2181,7 @@
 				"cancelRun": "取消",
 				"runProgressAria": "运行进度",
 				"stage": {
+					"backfilling": "正在从日志嵌入较早的请求…",
 					"queued": "正在等待工作进程接手运行…",
 					"reading": "正在读取捕获的请求…",
 					"clustering": "正在对相似请求分组…",

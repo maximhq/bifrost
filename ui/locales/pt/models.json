@@ -2167,6 +2167,8 @@
 				},
 				"estimateFailed": "Não foi possível estimar a execução: {{error}}",
 				"estimateEmpty": "Ainda não foram capturados pedidos neste período.",
+				"estimateBackfill_one": "{{count}} solicitação anterior à ativação das sugestões é incorporada primeiro a partir do seu log.",
+				"estimateBackfill_other": "{{count}} solicitações anteriores à ativação das sugestões são incorporadas primeiro a partir dos seus logs.",
 				"captureUnavailableEmbedded": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone. O armazenamento vetorial deste gateway é o Chromem, que guarda os vetores na memória de cada gateway, por isso não são capturados pedidos para sugestões.",
 				"captureUnavailableNone": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone para guardar os pedidos capturados. Não está configurado nenhum, por isso não são capturados pedidos para sugestões.",
 				"runInBackground": "Corre em segundo plano no seu gateway, fora do caminho dos pedidos.",
@@ -2181,6 +2183,7 @@
 				"cancelRun": "Cancelar",
 				"runProgressAria": "Progresso da execução",
 				"stage": {
+					"backfilling": "Incorporando solicitações anteriores a partir dos logs…",
 					"queued": "Aguardando um worker assumir a execução…",
 					"reading": "Lendo as requisições capturadas…",
 					"clustering": "Agrupando requisições semelhantes…",

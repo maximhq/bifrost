@@ -878,6 +878,19 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-suggestions-run-start-button')).toBeDisabled()
     })
 
+    test('should say a first run embeds earlier requests from their logs', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (route) => route.fulfill({ json: { requests: 1300, clustered: 1000, assigned: 300, skipped: 0, max_model_calls: 30, backfill: 1200 } }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-run-now-button').click()
+      await expect(page.getByTestId('complexity-suggestions-run-backfill')).toContainText(
+        '1200 earlier requests, from before suggestions were on, are embedded from their logs first.',
+      )
+      await expect(page.getByTestId('complexity-suggestions-run-start-button')).toBeEnabled()
+    })
+
     test('should say why nothing is captured when the vector store is Chromem', async ({ page }) => {
       await page.route(
         (url) => url.pathname === '/api/routing/model-routers/default/status',
