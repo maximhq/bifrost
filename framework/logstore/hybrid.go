@@ -3353,3 +3353,34 @@ func (h *HybridLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs [
 func (h *HybridLogStore) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error {
 	return h.inner.EachComplexityRouterLog(ctx, routerID, from, to, fn)
 }
+
+// TraceUploadsAvailable is always true here: upload bytes go to the object store.
+func (h *HybridLogStore) TraceUploadsAvailable() bool { return true }
+
+// SaveTraceUploadBytes stores an upload's bytes as an object and marks its row done. The row keeps
+// the object key and the size, never the bytes.
+func (h *HybridLogStore) SaveTraceUploadBytes(ctx context.Context, id string, data []byte) error {
+	upload, err := h.inner.FindTraceUpload(ctx, id)
+	if err != nil {
+		return err
+	}
+	key := h.prefix + "/trace-uploads/" + upload.ProjectID + "/" + upload.ID
+	if err := h.objects.Put(ctx, key, data, nil); err != nil {
+		return fmt.Errorf("objectstore: failed to store trace upload %s: %w", id, err)
+	}
+	upload.Status, upload.ObjectKey, upload.Data, upload.SizeBytes = TraceUploadStatusDone, key, nil, int64(len(data))
+	return h.inner.CompleteTraceUploadRow(ctx, upload)
+}
+
+// ReadTraceUploadBytes loads an upload and its bytes, from the object store when they live there.
+func (h *HybridLogStore) ReadTraceUploadBytes(ctx context.Context, id string) (*TraceUpload, []byte, error) {
+	upload, data, err := h.inner.ReadTraceUploadBytes(ctx, id)
+	if err != nil || upload.ObjectKey == "" {
+		return upload, data, err
+	}
+	data, err = h.objects.Get(ctx, upload.ObjectKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("objectstore: failed to read trace upload %s: %w", id, err)
+	}
+	return upload, data, nil
+}
