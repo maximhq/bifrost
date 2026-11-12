@@ -371,6 +371,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             archive.ubuntu.com:443
@@ -511,6 +512,7 @@ jobs:
           # sensitive, so vars.* (never auto-masked) is the right home.
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
@@ -621,6 +623,7 @@ jobs:
             inference.baseten.co:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             archive.ubuntu.com:443
@@ -792,6 +795,7 @@ jobs:
           # sensitive, so vars.* (never auto-masked) is the right home.
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/test-proxy-e2e.sh
@@ -844,6 +848,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             archive.ubuntu.com:443
@@ -977,6 +982,7 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
@@ -1322,6 +1328,7 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             archive.ubuntu.com:443
             esm.ubuntu.com:443
@@ -1422,6 +1429,7 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
@@ -1561,6 +1569,7 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
             cluster.qdrant.io:443
@@ -1653,6 +1662,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1686,6 +1696,7 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             generativelanguage.googleapis.com:443
             openrouter.ai:443
@@ -1789,6 +1800,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1816,6 +1828,7 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             generativelanguage.googleapis.com:443
             iojs.org:443
@@ -1967,6 +1980,7 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
             archive.ubuntu.com:443
@@ -2131,6 +2145,7 @@ jobs:
             172.38.0.12:8080
             172.38.0.12:8301
             172.38.0.13:6379
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             iojs.org:443
             aiplatform.googleapis.com:443
@@ -2289,6 +2304,7 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
@@ -2438,6 +2454,7 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
             codeload.github.com:443
@@ -2538,6 +2555,7 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.parasail.io:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             bedrock.us-east-1.amazonaws.com:443
             codeload.github.com:443
@@ -2650,6 +2668,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
@@ -2751,6 +2770,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
@@ -2806,6 +2826,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
@@ -2917,6 +2938,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh

@@ -118059,6 +118059,7 @@
           "elevenlabs",
           "huggingface",
           "nebius",
+          "runcrate",
           "xai",
           "replicate",
           "vllm",

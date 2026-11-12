@@ -49,6 +49,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
+	"github.com/maximhq/bifrost/core/providers/runcrate"
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
@@ -5300,6 +5301,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
+	case schemas.Runcrate:
+		return runcrate.NewRuncrateProvider(config, bifrost.logger)
 	case schemas.HuggingFace:
 		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	case schemas.XAI:

@@ -1,0 +1,169 @@
+---
+title: "Runcrate"
+description: "Runcrate API conversion guide - OpenAI-compatible format, streaming, tool calling, embeddings, and parameter handling"
+icon: "cloud"
+---
+
+## Overview
+
+[Runcrate](https://runcrate.ai) is an AI cloud with an **OpenAI-compatible API** for open-weight models. Bifrost delegates all functionality to the OpenAI provider implementation. Key characteristics:
+- **OpenAI compatibility** - Chat, text, embedding, and streaming features use the standard OpenAI request and response shapes
+- **Tool calling** - Function definitions and parallel tool execution
+- **Streaming support** - Server-Sent Events with token usage tracking
+- **Parameter preservation** - Passes through all standard OpenAI parameters
+- **Responses API** - Supported through conversion to Chat Completions
+
+Default base URL: `https://api.runcrate.ai`. Get an API key at [runcrate.ai/dashboard/api-keys](https://runcrate.ai/dashboard/api-keys). The upstream API reference is at [runcrate.ai/docs/models/chat-completions](https://runcrate.ai/docs/models/chat-completions).
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ❌ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Image Generation, Speech, Transcriptions, Files, and Batch are not implemented in the Bifrost Runcrate provider. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Runcrate as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Runcrate** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Runcrate**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.RUNCRATE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "runcrate": {
+      "keys": [
+        {
+          "name": "runcrate-key-1",
+          "value": "env.RUNCRATE_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Runcrate:
+    return []schemas.Key{{
+        Name:   "runcrate-key-1",
+        Value:  *schemas.NewSecretVar("env.RUNCRATE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Example request:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "runcrate/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Runcrate supports the standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Runcrate uses the shared OpenAI converter without provider-specific filtering, so message types, tools, and streaming formats follow the OpenAI behavior documented there.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
+
+---
+
+# 3. Text Completions
+
+Runcrate supports the legacy text completion API for non-streaming requests. Parameters (`prompt`, `max_tokens`, `temperature`, `top_p`, `stop`) are sent as-is, and the response returns `choices[].text`.
+
+Text completion streaming is not supported: Runcrate streams `/v1/completions` as `chat.completion.chunk` deltas instead of `text_completion` chunks, which the shared OpenAI text completion stream handler does not parse. Use Chat Completions streaming instead.
+
+---
+
+# 4. Embeddings
+
+Embedding requests are sent to `/v1/embeddings` in the OpenAI format. Use any embedding model listed by `/v1/models`.
+
+---
+
+# 5. List Models
+
+Lists available models from Runcrate's `/v1/models` endpoint.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions Streaming | Runcrate streams `/v1/completions` as chat chunks; use Chat Completions streaming |
+| Image Generation | Not implemented in the Bifrost Runcrate provider |
+| Speech/TTS | Not implemented in the Bifrost Runcrate provider |
+| Transcription/STT | Not implemented in the Bifrost Runcrate provider |
+| Batch Operations | Not implemented in the Bifrost Runcrate provider |
+| File Management | Not implemented in the Bifrost Runcrate provider |
+
+---
+
+## Caveats
+
+<Accordion title="Forced tool_choice depends on the model">
+**Severity**: Low
+**Behavior**: Some open-weight models on Runcrate (for example `meta-llama/Llama-3.3-70B-Instruct-Turbo` and `Qwen/Qwen3-235B-A22B-Instruct-2507`) reject `tool_choice: "required"` or a named function with a 400 `tool_choice_unsupported` error. `tool_choice: "auto"` works on those models.
+**Impact**: Pick a model that supports forced tool calls (for example `deepseek-ai/DeepSeek-V4-Flash`) when you need to force a tool call.
+</Accordion>

@@ -27,6 +27,7 @@ ModelProvider:
     - elevenlabs
     - huggingface
     - nebius
+    - runcrate
     - xai
     - replicate
     - vllm

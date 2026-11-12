@@ -95,6 +95,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.runcrate.ai:443
             api.x.ai:443
             archive.ubuntu.com:443
             esm.ubuntu.com:443
@@ -242,6 +243,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNCRATE_API_KEY: ${{ secrets.RUNCRATE_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
