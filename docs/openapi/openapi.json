@@ -118072,6 +118072,7 @@
           "typesafe",
           "minimax",
           "byteplus",
+          "machgen",
           "baseten"
         ]
       },

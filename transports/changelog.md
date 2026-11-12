@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **MachGen Provider** - New `machgen` provider for MachGen's image and video models: text-to-image, image edit, and async video generation with retrieve and download. `/v1/models` lists the models each key can use, with their task types. Set up from the UI or `providers.machgen` in config.json
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

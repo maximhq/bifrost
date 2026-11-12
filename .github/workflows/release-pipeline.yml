@@ -409,6 +409,7 @@ jobs:
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
 
@@ -512,6 +513,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
@@ -661,6 +663,7 @@ jobs:
             www.getbifrost.ai:443
             api.runware.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.typesafe.ai:443
             ai.google.dev:443
             code.claude.com:443
@@ -793,6 +796,7 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/test-proxy-e2e.sh
 
@@ -978,6 +982,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
@@ -1427,6 +1432,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1655,6 +1661,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
@@ -1791,6 +1798,7 @@ jobs:
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
@@ -2290,6 +2298,7 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -2752,6 +2761,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -2918,6 +2928,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64
@@ -3047,6 +3058,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
@@ -3174,6 +3186,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
@@ -3320,6 +3333,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 

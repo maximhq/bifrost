@@ -133,6 +133,7 @@ jobs:
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
             api.dev.runwayml.com:443
+            api.machgen.ai:443
             api.runware.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
@@ -242,6 +243,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          MACHGEN_API_KEY: ${{ secrets.MACHGEN_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |

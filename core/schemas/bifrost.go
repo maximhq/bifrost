@@ -91,6 +91,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	MachGen       ModelProvider = "machgen"
 	Baseten       ModelProvider = "baseten"
 )
 
@@ -145,6 +146,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
+	MachGen,
 	Baseten,
 }
 

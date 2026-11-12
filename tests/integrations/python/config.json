@@ -717,6 +717,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "machgen": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "MachGen API Key",
+          "value": "env.MACHGEN_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "runway": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

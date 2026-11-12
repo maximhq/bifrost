@@ -1,0 +1,558 @@
+package machgen
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type testNoopLogger struct{}
+
+func (testNoopLogger) Debug(string, ...any)                   {}
+func (testNoopLogger) Info(string, ...any)                    {}
+func (testNoopLogger) Warn(string, ...any)                    {}
+func (testNoopLogger) Error(string, ...any)                   {}
+func (testNoopLogger) Fatal(string, ...any)                   {}
+func (testNoopLogger) SetLevel(schemas.LogLevel)              {}
+func (testNoopLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (testNoopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+// Each input shape picks its MachGen task type, and an explicit task_type overrides the inference.
+func TestToMachGenVideoGenerationRequest_InfersTaskTypeFromInputs(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    *schemas.VideoGenerationInput
+		extra    map[string]interface{}
+		wantType string
+	}{
+		{"prompt only is text to video", &schemas.VideoGenerationInput{Prompt: "p"}, nil, taskTypeT2V},
+		{"input reference is image to video", &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr("https://x/a.png")}, nil, taskTypeI2V},
+		{"video uri is reference to video", &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://x/a.mp4")}, nil, taskTypeR2V},
+		{"named subjects are reference to video", &schemas.VideoGenerationInput{Prompt: "@alice waves"}, map[string]interface{}{
+			"src_image_urls":       []interface{}{"https://x/alice.png"},
+			"subject_to_image_ids": map[string]interface{}{"alice": []interface{}{0}},
+		}, taskTypeR2V},
+		{"explicit task type wins", &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr("https://x/a.png")}, map[string]interface{}{"task_type": "R2V"}, taskTypeR2V},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model:  "MiniMax-H3",
+				Input:  tc.input,
+				Params: &schemas.VideoGenerationParameters{ExtraParams: tc.extra},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantType, req.TaskType)
+			assert.NotContains(t, req.ExtraParams, "task_type")
+			assert.NotContains(t, req.ExtraParams, "subject_to_image_ids")
+		})
+	}
+}
+
+// size becomes height plus a named aspect ratio, and seconds becomes duration_secs.
+func TestToMachGenVideoGenerationRequest_MapsSizeAndDurationToVideoConfig(t *testing.T) {
+	req, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "Kling-v3",
+		Input: &schemas.VideoGenerationInput{Prompt: "a red panda"},
+		Params: &schemas.VideoGenerationParameters{
+			Seconds:        schemas.Ptr("5"),
+			Size:           "1080x1920",
+			Seed:           schemas.Ptr(7),
+			Audio:          schemas.Ptr(true),
+			NegativePrompt: schemas.Ptr("blur"),
+		},
+	})
+	require.NoError(t, err)
+
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"model": "Kling-v3",
+		"task_type": "T2V",
+		"prompt": "a red panda",
+		"seed": 7,
+		"video_config": {"duration_secs": 5, "height": 1920, "aspect_ratio": "9:16", "audio": true, "negative_prompt": "blur"}
+	}`, string(body))
+}
+
+// Common sizes whose width is rounded (1366x768) still map to a named ratio rather than a reduced fraction.
+func TestParseSize_SnapsRoundedWidthsToNamedAspectRatios(t *testing.T) {
+	for size, want := range map[string]string{
+		"1280x720":  "16:9",
+		"1366x768":  "16:9", // MachGen rounds 768 * 16/9 up to 1366
+		"1080x1920": "9:16",
+		"1024x1024": "1:1",
+		"2560x1097": "21:9",
+	} {
+		height, aspect, err := parseSize(size)
+		require.NoError(t, err, size)
+		assert.Equal(t, want, *aspect, size)
+		assert.Positive(t, *height)
+	}
+}
+
+// Bad seconds or size values are caller errors, not requests sent upstream.
+func TestToMachGenVideoGenerationRequest_RejectsMalformedParams(t *testing.T) {
+	for name, params := range map[string]*schemas.VideoGenerationParameters{
+		"non integer seconds": {Seconds: schemas.Ptr("4.5")},
+		"size without x":      {Size: "720p"},
+		"unsupported ratio":   {Size: "1000x700"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model:  "MiniMax-H3",
+				Input:  &schemas.VideoGenerationInput{Prompt: "p"},
+				Params: params,
+			})
+			require.Error(t, err)
+		})
+	}
+}
+
+// Image edit takes images by URL only; uploaded bytes are rejected.
+func TestToMachGenImageEditRequest_RequiresImageURLs(t *testing.T) {
+	_, err := ToMachGenImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "Nano-Banana-Pro",
+		Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{Image: []byte{1, 2, 3}}}},
+	})
+	require.Error(t, err)
+
+	req, err := ToMachGenImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "Nano-Banana-Pro",
+		Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: "https://x/a.png"}}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, taskTypeI2I, req.TaskType)
+	assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs)
+}
+
+// Every converter rejects a source that is not an http(s) URL with a host, wherever it came from.
+func TestMachGenConverters_RejectInlineDataURLSources(t *testing.T) {
+	const dataURL = "data:image/png;base64,iVBORw0KGgo="
+	convert := map[string]func() (*MachGenGenerateRequest, error){
+		"image generation input image": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{dataURL}},
+			})
+		},
+		"image generation bare base64": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{"iVBORw0KGgo="}},
+			})
+		},
+		"image edit url": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageEditRequest(&schemas.BifrostImageEditRequest{
+				Model: "Nano-Banana-Pro",
+				Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: dataURL}}},
+			})
+		},
+		"video input reference": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model: "MiniMax-H3",
+				Input: &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr(dataURL)},
+			})
+		},
+		"video src_video_urls extra param": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model:  "MiniMax-H3",
+				Input:  &schemas.VideoGenerationInput{Prompt: "p"},
+				Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"src_video_urls": []interface{}{"DATA:video/mp4;base64,AAAA"}}},
+			})
+		},
+		"https url without a host": func() (*MachGenGenerateRequest, error) {
+			return ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model:  "FLUX.2-dev",
+				Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+				Params: &schemas.ImageGenerationParameters{InputImages: []string{"https://?x"}},
+			})
+		},
+	}
+	for name, fn := range convert {
+		t.Run(name, func(t *testing.T) {
+			_, err := fn()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "public http(s) URL")
+		})
+	}
+}
+
+// Lifting MachGen fields must not mutate the caller's extra params, which a retry converts again.
+func TestMachGenConverters_LeaveCallerExtraParamsUntouched(t *testing.T) {
+	extra := map[string]interface{}{
+		"task_type":      "I2I",
+		"src_image_urls": []interface{}{"https://x/a.png"},
+		"style":          "watercolor",
+	}
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Model:  "FLUX.2-dev",
+		Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: extra},
+	}
+	// A retry converts the same request again, so the second pass must see the same inputs.
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, err := ToMachGenImageGenerationRequest(bifrostReq)
+		require.NoError(t, err)
+		assert.Equal(t, taskTypeI2I, req.TaskType, "attempt %d", attempt)
+		assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs, "attempt %d", attempt)
+		assert.Equal(t, map[string]interface{}{"style": "watercolor"}, req.ExtraParams, "attempt %d", attempt)
+	}
+	assert.Len(t, extra, 3)
+}
+
+// A null MachGen field in extra params is dropped instead of reaching the passthrough merge.
+func TestMachGenConverters_DropNullLiftedExtraParams(t *testing.T) {
+	// A null src_image_urls left in ExtraParams would overwrite the input image when
+	// passthrough merges extra params into the body.
+	req, err := ToMachGenImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{
+			InputImages: []string{"https://x/a.png"},
+			ExtraParams: map[string]interface{}{"src_image_urls": nil, "task_type": nil},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, taskTypeI2I, req.TaskType)
+	assert.Equal(t, []string{"https://x/a.png"}, req.SrcImageURLs)
+	assert.Empty(t, req.ExtraParams)
+
+	video, err := ToMachGenVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://x/a.mp4")},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"src_video_urls": nil}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://x/a.mp4"}, video.SrcVideoURLs)
+	assert.Empty(t, video.ExtraParams)
+}
+
+// MachGen task states map to Bifrost video statuses, with metadata and errors carried over.
+func TestToBifrostVideoGenerationResponse_MapsTaskLifecycle(t *testing.T) {
+	completed, bErr := ToBifrostVideoGenerationResponse(&MachGenTaskStatusResponse{
+		TaskID:     "t-1",
+		Status:     MachGenTaskStatusCompleted,
+		Metadata:   &MachGenTaskMetadata{Prompt: "p", Model: "MiniMax-H3", Width: schemas.Ptr(1280), Height: schemas.Ptr(720), DurationSecs: schemas.Ptr(5.0)},
+		TaskOutput: &MachGenTaskOutput{Video: "https://api.machgen.ai/api/v0/assets/t-1"},
+	})
+	require.Nil(t, bErr)
+	assert.Equal(t, schemas.VideoStatusCompleted, completed.Status)
+	assert.Equal(t, "1280x720", completed.Size)
+	assert.Equal(t, "5", *completed.Seconds)
+	require.Len(t, completed.Videos, 1)
+
+	failed, bErr := ToBifrostVideoGenerationResponse(&MachGenTaskStatusResponse{
+		TaskID:   "t-2",
+		Status:   MachGenTaskStatusFailed,
+		ErrorMsg: schemas.Ptr("The task was canceled before it completed."),
+	})
+	require.Nil(t, bErr)
+	assert.Equal(t, schemas.VideoStatusFailed, failed.Status)
+	assert.Equal(t, "The task was canceled before it completed.", failed.Error.Message)
+
+	pending, _ := ToBifrostVideoGenerationResponse(&MachGenTaskStatusResponse{TaskID: "t-3", Status: MachGenTaskStatusPending})
+	assert.Equal(t, schemas.VideoStatusQueued, pending.Status)
+}
+
+// fakeMachGen serves the generate -> tasks -> assets lifecycle; a task reports RUNNING on its
+// first poll and COMPLETED afterwards.
+func fakeMachGen(t *testing.T, apiKey string, asset []byte, assetType string) (*httptest.Server, *[]byte) {
+	t.Helper()
+	var mu sync.Mutex
+	polls := 0
+	var submitted []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+apiKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"Invalid API key"}`))
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == generatePath:
+			submitted, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte(`{"task_id":"t-abc","metadata":{"prompt":"p"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == tasksPath+"t-abc":
+			polls++
+			if polls == 1 {
+				_, _ = w.Write([]byte(`{"task_id":"t-abc","status":"RUNNING","metadata":{"prompt":"p"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"task_id":"t-abc","status":"COMPLETED","metadata":{"prompt":"p","model":"FLUX.2-dev","width":1024,"height":1024},"task_output":{"image":"x","video":"x"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == modelsPath:
+			_, _ = w.Write([]byte(`{"models":[
+				{"model":"FLUX.2-dev","aliases":[],"kind":"image","surfaces":[{"task_type":"T2I"},{"task_type":"I2I"}]},
+				{"model":"MiniMax-H3","aliases":[],"kind":"video","supports_audio":true,"surfaces":[{"task_type":"T2V","heights":[768]},{"task_type":"I2V"},{"task_type":"R2V"}]}
+			]}`))
+		case r.Method == http.MethodGet && r.URL.Path == assetsPath+"t-abc":
+			w.Header().Set("Content-Type", assetType)
+			_, _ = w.Write(asset)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Task not found"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &submitted
+}
+
+// newTestProvider points a provider at a fake MachGen server.
+func newTestProvider(t *testing.T, baseURL string) *MachGenProvider {
+	t.Helper()
+	provider, err := NewMachGenProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 30, AllowPrivateNetwork: true},
+	}, testNoopLogger{})
+	require.NoError(t, err)
+	return provider
+}
+
+// testKey builds a key that allows every model.
+func testKey(value string) schemas.Key {
+	return schemas.Key{Value: *schemas.NewSecretVar(value), Models: []string{"*"}}
+}
+
+// Image generation polls until the task completes, then returns the downloaded image as b64_json.
+func TestMachGenImageGeneration_WaitsForTaskAndReturnsImageInline(t *testing.T) {
+	image := []byte("\xff\xd8jpeg-bytes")
+	server, submitted := fakeMachGen(t, "MGA_test", image, "image/jpeg")
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	resp, bErr := provider.ImageGeneration(ctx, testKey("MGA_test"), &schemas.BifrostImageGenerationRequest{
+		Model:  "FLUX.2-dev",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a cozy reading nook"},
+		Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024")},
+	})
+	require.Nil(t, bErr)
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(image), resp.Data[0].B64JSON)
+	assert.Equal(t, "FLUX.2-dev", resp.Model)
+	assert.JSONEq(t, `{"model":"FLUX.2-dev","task_type":"T2I","prompt":"a cozy reading nook","image_config":{"height":1024,"aspect_ratio":"1:1"}}`, string(*submitted))
+}
+
+// A transient status or download failure keeps working on the submitted task. Returning it
+// would let core retry the whole call, which submits a second task and loses the first.
+func TestMachGenImageGeneration_RidesOutTransientFailuresWithoutResubmitting(t *testing.T) {
+	image := []byte("\xff\xd8jpeg-bytes")
+	var mu sync.Mutex
+	submits, polls, downloads := 0, 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == generatePath:
+			submits++
+			_, _ = w.Write([]byte(`{"task_id":"t-abc"}`))
+		case r.URL.Path == tasksPath+"t-abc":
+			polls++
+			if polls == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"detail":"Service temporarily unavailable"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"task_id":"t-abc","status":"COMPLETED","task_output":{"image":"x"}}`))
+		case r.URL.Path == assetsPath+"t-abc":
+			downloads++
+			if downloads == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write(image)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	resp, bErr := provider.ImageGeneration(ctx, testKey("MGA_test"), &schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+	})
+	require.Nil(t, bErr, "%v", bErr)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(image), resp.Data[0].B64JSON)
+	assert.Equal(t, 1, submits)
+	assert.Equal(t, 2, polls)
+	assert.Equal(t, 2, downloads)
+}
+
+// When MachGen stays unavailable past the request timeout, the call ends as a timeout, which
+// core does not retry, rather than as the 5xx it would answer with a second submission.
+func TestMachGenImageGeneration_EndsAsTimeoutWhenStatusStaysUnavailable(t *testing.T) {
+	var mu sync.Mutex
+	submits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost && r.URL.Path == generatePath {
+			submits++
+			_, _ = w.Write([]byte(`{"task_id":"t-abc"}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	provider, err := NewMachGenProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 1, AllowPrivateNetwork: true},
+	}, testNoopLogger{})
+	require.NoError(t, err)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, bErr := provider.ImageGeneration(ctx, testKey("MGA_test"), &schemas.BifrostImageGenerationRequest{
+		Model: "FLUX.2-dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "p"},
+	})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.Error.Type, "%v", bErr)
+	assert.Equal(t, schemas.RequestTimedOut, *bErr.Error.Type)
+	assert.Equal(t, 1, submits)
+}
+
+// A video goes through submit, retrieve and download with the provider-suffixed id.
+func TestMachGenVideoLifecycle_SubmitRetrieveDownload(t *testing.T) {
+	video := []byte("mp4-bytes")
+	server, _ := fakeMachGen(t, "MGA_test", video, "video/mp4")
+	provider := newTestProvider(t, server.URL)
+	key := testKey("MGA_test")
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	created, bErr := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{
+		Model: "MiniMax-H3",
+		Input: &schemas.VideoGenerationInput{Prompt: "p"},
+	})
+	require.Nil(t, bErr)
+	assert.Equal(t, schemas.VideoStatusQueued, created.Status)
+	assert.Equal(t, "t-abc:machgen", created.ID)
+
+	running, bErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{ID: created.ID})
+	require.Nil(t, bErr)
+	assert.Equal(t, schemas.VideoStatusInProgress, running.Status)
+
+	downloaded, bErr := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{ID: created.ID})
+	require.Nil(t, bErr)
+	assert.Equal(t, video, downloaded.Content)
+	assert.Equal(t, "video/mp4", downloaded.ContentType)
+}
+
+// MachGen's error detail reaches the caller as the error message.
+func TestMachGenSurfacesAPIErrorDetail(t *testing.T) {
+	server, _ := fakeMachGen(t, "MGA_test", nil, "")
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, bErr := provider.VideoGeneration(ctx, testKey("MGA_wrong"), &schemas.BifrostVideoGenerationRequest{
+		Model: "MiniMax-H3",
+		Input: &schemas.VideoGenerationInput{Prompt: "p"},
+	})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.StatusCode)
+	assert.Equal(t, http.StatusUnauthorized, *bErr.StatusCode)
+	assert.Equal(t, "Invalid API key", bErr.Error.Message)
+}
+
+// List models reports each model's task types and output modalities, filtered by the key's allow-list.
+func TestMachGenListModels_ReportsTaskTypesAndHonorsKeyAllowlist(t *testing.T) {
+	server, _ := fakeMachGen(t, "MGA_test", nil, "")
+	provider := newTestProvider(t, server.URL)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, bErr := provider.ListModels(ctx, []schemas.Key{testKey("MGA_test")}, &schemas.BifrostListModelsRequest{Provider: schemas.MachGen})
+	require.Nil(t, bErr)
+	require.Len(t, resp.Data, 2)
+	byID := map[string]schemas.Model{}
+	for _, m := range resp.Data {
+		byID[m.ID] = m
+	}
+	h3 := byID["machgen/MiniMax-H3"]
+	assert.Equal(t, []string{"T2V", "I2V", "R2V"}, h3.SupportedMethods)
+	require.NotNil(t, h3.Architecture)
+	assert.Equal(t, []string{"video"}, h3.Architecture.OutputModalities)
+	assert.Equal(t, []string{"image"}, byID["machgen/FLUX.2-dev"].Architecture.OutputModalities)
+
+	restricted := testKey("MGA_test")
+	restricted.Models = schemas.WhiteList{"MiniMax-H3"}
+	resp, bErr = provider.ListModels(ctx, []schemas.Key{restricted}, &schemas.BifrostListModelsRequest{Provider: schemas.MachGen})
+	require.Nil(t, bErr)
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, "machgen/MiniMax-H3", resp.Data[0].ID)
+}
+
+// TestMachGenLive runs a real text-to-image task when MACHGEN_API_KEY is set.
+func TestMachGenLive(t *testing.T) {
+	apiKey := strings.TrimSpace(os.Getenv("MACHGEN_API_KEY"))
+	if apiKey == "" {
+		t.Skip("Skipping MachGen live test because MACHGEN_API_KEY is not set")
+	}
+	provider, err := NewMachGenProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 300},
+	}, testNoopLogger{})
+	require.NoError(t, err)
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	resp, bErr := provider.ImageGeneration(ctx, testKey(apiKey), &schemas.BifrostImageGenerationRequest{
+		Model:  "FLUX.2-dev",
+		Input:  &schemas.ImageGenerationInput{Prompt: "an isometric illustration of a cozy reading nook"},
+		Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024")},
+	})
+	require.Nil(t, bErr, "%v", bErr)
+	require.Len(t, resp.Data, 1)
+	assert.NotEmpty(t, resp.Data[0].B64JSON)
+}
+
+// BenchmarkToMachGenVideoGenerationRequest measures a request with sources and MachGen extra params.
+func BenchmarkToMachGenVideoGenerationRequest(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{
+		Model: "MiniMax-H3",
+		Input: &schemas.VideoGenerationInput{Prompt: "@alice waves", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), Size: "1280x720", ExtraParams: map[string]interface{}{
+			"src_image_urls":       []interface{}{"https://example.com/alice.png"},
+			"subject_to_image_ids": map[string]interface{}{"alice": []interface{}{1}},
+		}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToMachGenVideoGenerationRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkToBifrostImageGenerationResponse measures base64-encoding a 1 MiB image into the response.
+func BenchmarkToBifrostImageGenerationResponse(b *testing.B) {
+	task := &MachGenTaskStatusResponse{TaskID: "t1", Status: MachGenTaskStatusCompleted}
+	image := make([]byte, 1<<20)
+	b.ReportAllocs()
+	for b.Loop() {
+		ToBifrostImageGenerationResponse(task, image)
+	}
+}
