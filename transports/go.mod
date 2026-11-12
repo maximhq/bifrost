@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/transports/v2
 go 1.27.3
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.5.0
+	github.com/a2aproject/a2a-go/v2 v2.8.0
 	github.com/andybalholm/brotli v1.2.7
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
@@ -137,7 +137,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect

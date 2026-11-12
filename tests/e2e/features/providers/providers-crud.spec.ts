@@ -411,6 +411,7 @@ test.describe("Providers", () => {
       await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toBeVisible();
       await providersPage.keySaveBtn.click();
       await expect(providersPage.keyForm).toBeVisible();
+      expect((await savedAlias()).deployment_url, "the http:// deployment URL must not be saved").toBeUndefined();
 
       await deploymentUrl.fill("https://model-e2e.api.baseten.co/environments/production/sync/v1");
       await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toHaveCount(0);

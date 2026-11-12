@@ -1996,6 +1996,10 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 	@$(ECHO) ""
 	@$(ECHO) "$(GREEN)✓ go mod tidy complete$(NC)"
 
+.PHONY: test-cli-integration
+test-cli-integration: ## Build the CLI and test configuration and management commands (Python 3.11+)
+	@cd cli && python3 scripts/testconfigure.py -v
+
 test-cli: install-gotestsum ## Run CLI tests
 	@$(ECHO) "$(GREEN)Running CLI tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
@@ -2178,7 +2182,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek baseten
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its

@@ -511,7 +511,7 @@
 		"grpcHostPortFormat": "gRPC 地址必须采用 <host>:<port> 格式（例如 {{example}}）",
 		"invalidInput": "输入无效",
 		"vertexEndpointId": "请输入 Vertex 端点 ID，或粘贴受支持的端点 URL",
-		"basetenDeploymentUrl": "部署 URL 必须是绝对 https URL",
+		"basetenDeploymentUrl": "部署 URL 必须是不含凭据、查询参数或片段的绝对 https URL",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt 需要私钥",
 			"secretRequiredForMethod": "选择发送方式需要客户端密钥",

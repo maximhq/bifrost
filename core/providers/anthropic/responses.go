@@ -6895,8 +6895,9 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 		Status:       schemas.Ptr("completed"),
 		CacheControl: toolBlock.CacheControl,
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
-			CallID: toolBlock.ID,
-			Name:   toolBlock.Name,
+			CallID:      toolBlock.ID,
+			Name:        toolBlock.Name,
+			ToolsetName: toolBlock.ToolsetName,
 		},
 	}
 	if isOutputMessage {
