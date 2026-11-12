@@ -5501,6 +5501,7 @@ type WSStreamHooks struct {
 	PostHookRunner       schemas.PostHookRunner
 	Cleanup              func()
 	ShortCircuitResponse *schemas.BifrostResponse
+	Request              *schemas.BifrostRequest // the request as the pre-hooks left it; a relay forwards a body plugins rewrote from here
 }
 
 // RealtimeTurnHooks mirrors RunStreamPreHooks but is explicitly scoped to a
@@ -5667,6 +5668,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	return &WSStreamHooks{
 		PostHookRunner: postHookRunner,
 		Cleanup:        cleanup,
+		Request:        preReq,
 	}, nil
 }
 
