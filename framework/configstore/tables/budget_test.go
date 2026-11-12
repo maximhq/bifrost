@@ -506,3 +506,62 @@ func TestBudgetScopeSemantics(t *testing.T) {
 	assert.Equal(t, LimitPeriodKey("1d", ""), LimitPeriodKey("1d", LimitScopeShared))
 	assert.NotEqual(t, LimitPeriodKey("1d", LimitScopeShared), LimitPeriodKey("1d", LimitScopeMCP))
 }
+
+// TestRateLimitRequestPeriodKey verifies a request limit is identified by its reset duration and scope.
+func TestRateLimitRequestPeriodKey(t *testing.T) {
+	hour, day := "1h", "1d"
+	assert.Equal(t, LimitPeriodKey("1h", LimitScopeMCP), (&TableRateLimit{RequestResetDuration: &hour, Scope: LimitScopeMCP}).RequestPeriodKey())
+	assert.Equal(t, LimitPeriodKey("1d", LimitScopeShared), (&TableRateLimit{RequestResetDuration: &day}).RequestPeriodKey(), "an empty scope reads as shared")
+	assert.Equal(t, LimitPeriodKey("", LimitScopeModel), (&TableRateLimit{Scope: LimitScopeModel}).RequestPeriodKey(), "a missing duration keys on the empty string")
+}
+
+// TestRateLimitBeforeSaveRequestLimits verifies the request-limit rules: an owned row
+// has one owner, a request limit and no token limit, and any request-only row,
+// owned or not, may carry a scope other than shared while a row with a token limit may not.
+func TestRateLimitBeforeSaveRequestLimits(t *testing.T) {
+	owner := "owner-1"
+	requestLimit := func() *TableRateLimit {
+		return &TableRateLimit{ID: "rule", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"), ModelConfigID: &owner}
+	}
+
+	rule := requestLimit()
+	require.NoError(t, rule.BeforeSave(nil))
+	assert.Equal(t, LimitScopeShared, rule.Scope, "an empty scope normalizes to shared")
+	assert.True(t, rule.IsRequestLimit())
+
+	rule = requestLimit()
+	rule.Scope = LimitScopeMCP
+	require.NoError(t, rule.BeforeSave(nil))
+	assert.Equal(t, LimitScopeMCP, rule.Scope)
+
+	rule = requestLimit()
+	rule.Scope = "tools"
+	assert.ErrorContains(t, rule.BeforeSave(nil), "invalid rate limit scope")
+
+	rule = requestLimit()
+	rule.TeamID = &owner
+	assert.ErrorContains(t, rule.BeforeSave(nil), "more than one owner")
+
+	rule = requestLimit()
+	rule.RequestMaxLimit = nil
+	rule.RequestResetDuration = nil
+	assert.ErrorContains(t, rule.BeforeSave(nil), "requires request_max_limit")
+
+	rule = requestLimit()
+	rule.TokenMaxLimit = schemas.Ptr(int64(1000))
+	rule.TokenResetDuration = schemas.Ptr("1h")
+	assert.ErrorContains(t, rule.BeforeSave(nil), "cannot carry a token limit")
+
+	combined := &TableRateLimit{ID: "combined", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h")}
+	require.NoError(t, combined.BeforeSave(nil), "an unowned combined rate limit stays valid")
+	assert.False(t, combined.IsRequestLimit())
+	combined.Scope = LimitScopeModel
+	assert.ErrorContains(t, combined.BeforeSave(nil), "only valid on a request-only limit")
+	combined.Scope = LimitScopeMCP
+	assert.ErrorContains(t, combined.BeforeSave(nil), "only valid on a request-only limit")
+
+	unowned := &TableRateLimit{ID: "unowned", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"), Scope: LimitScopeMCP}
+	require.NoError(t, unowned.BeforeSave(nil), "an unowned request-only row may carry a non-shared scope")
+	assert.False(t, unowned.IsRequestLimit())
+	assert.Equal(t, LimitScopeMCP, unowned.Scope)
+}

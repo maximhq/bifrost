@@ -145,6 +145,32 @@ func TestRequestTimeRateLimitResetSkipsReferenceRefresh(t *testing.T) {
 	}
 }
 
+// TestRequestLimitResetsRequestCounterOnly verifies a request limit, which carries no token limit,
+// is reset through the shared rate-limit path: its expired request window rolls over and nothing
+// is attempted for the token dimension it does not have.
+func TestRequestLimitResetsRequestCounterOnly(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	rule := buildRequestLimit("rule", 10, 7, "1m", configstoreTables.LimitScopeMCP)
+	rule.RequestLastReset = time.Now().Add(-2 * time.Minute)
+	store.rateLimits.Store(rule.ID, &rule)
+
+	reset := store.ResetExpiredRateLimitsInMemory(ctx, true)
+	if len(reset) != 1 || reset[0].ID != rule.ID {
+		t.Fatalf("expected the expired request limit to reset, got %v", reset)
+	}
+	live := store.LoadRateLimit(ctx, rule.ID)
+	if live.RequestCurrentUsage != 0 || !live.RequestLastReset.After(rule.RequestLastReset) {
+		t.Fatalf("expected the request window to roll over, got usage %d last reset %s", live.RequestCurrentUsage, live.RequestLastReset)
+	}
+	if live.TokenResetDuration != nil || !live.TokenLastReset.IsZero() {
+		t.Fatal("expected the token dimension to stay unset")
+	}
+	if again := store.ResetExpiredRateLimitsInMemory(ctx, true); len(again) != 0 {
+		t.Fatalf("expected a fresh window not to reset again, got %d", len(again))
+	}
+}
+
 // TestBackgroundRateLimitResetRefreshesReferences verifies non-request resets still hydrate embedded references.
 func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 	ctx := context.Background()

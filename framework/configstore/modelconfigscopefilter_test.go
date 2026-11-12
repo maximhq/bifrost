@@ -105,8 +105,8 @@ func TestGetModelConfigsPaginatedScopesFilter(t *testing.T) {
 }
 
 // TestGetModelConfigsPaginatedAppliesToMCP covers the MCP page listing: only holder-level rows (model
-// "*", no provider) with a shared or mcp budget are returned, so a row whose budgets are all model-only
-// and every narrower row stay off it, and the total counts the same rows.
+// "*", no provider) with a shared or mcp budget or request limit are returned, so a row whose lines
+// are all model-only and every narrower row stay off it, and the total counts the same rows.
 func TestGetModelConfigsPaginatedAppliesToMCP(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
@@ -118,6 +118,8 @@ func TestGetModelConfigsPaginatedAppliesToMCP(t *testing.T) {
 		{ID: "vk1-mcp", Scope: "virtual_key", ScopeID: sid("vk1"), ModelName: "*"},
 		{ID: "vk2-model-only", Scope: "virtual_key", ScopeID: sid("vk2"), ModelName: "*"},
 		{ID: "vk3-no-budgets", Scope: "virtual_key", ScopeID: sid("vk3"), ModelName: "*"},
+		{ID: "vk4-shared-requests", Scope: "virtual_key", ScopeID: sid("vk4"), ModelName: "*"},
+		{ID: "vk5-model-requests", Scope: "virtual_key", ScopeID: sid("vk5"), ModelName: "*"},
 		{ID: "vk1-openai", Scope: "virtual_key", ScopeID: sid("vk1"), ModelName: "*", Provider: sid("openai")},
 		{ID: "global-gpt-4o", Scope: "global", ModelName: "gpt-4o"},
 	}
@@ -139,17 +141,29 @@ func TestGetModelConfigsPaginatedAppliesToMCP(t *testing.T) {
 		owner := b.owner
 		require.NoError(t, db.Create(&tables.TableBudget{ID: owner + "-" + string(b.scope), MaxLimit: float64(i + 1), ResetDuration: "1d", Scope: b.scope, ModelConfigID: &owner}).Error)
 	}
+	requestLimits := []struct {
+		owner string
+		scope tables.LimitScope
+	}{
+		{"vk4-shared-requests", tables.LimitScopeShared},
+		{"vk5-model-requests", tables.LimitScopeModel},
+		{"vk1-openai", tables.LimitScopeShared},
+	}
+	for _, r := range requestLimits {
+		owner, limit, duration := r.owner, int64(10), "1h"
+		require.NoError(t, db.Create(&tables.TableRateLimit{ID: owner + "-rule", RequestMaxLimit: &limit, RequestResetDuration: &duration, Scope: r.scope, ModelConfigID: &owner}).Error)
+	}
 
 	store := &RDBConfigStore{}
 	store.db.Store(db)
 	rows, total, err := store.GetModelConfigsPaginated(context.Background(), ModelConfigsQueryParams{AppliesToMCP: true, Scopes: []string{"global", "virtual_key"}})
 	require.NoError(t, err)
-	require.Equal(t, int64(2), total)
+	require.Equal(t, int64(3), total)
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.ID)
 	}
-	require.ElementsMatch(t, []string{"global-shared", "vk1-mcp"}, ids)
+	require.ElementsMatch(t, []string{"global-shared", "vk1-mcp", "vk4-shared-requests"}, ids)
 	for _, r := range rows {
 		if r.ID == "vk1-mcp" {
 			require.Len(t, r.Budgets, 2, "a listed row carries all its budgets, model-only ones included")

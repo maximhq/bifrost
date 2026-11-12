@@ -343,6 +343,14 @@ func StampCalendarAlignment(calendarAligned bool, budgets []TableBudget, rateLim
 	}
 }
 
+// StampRequestLimitsCalendarAlignment copies an owner's calendar-alignment flag
+// onto the request limits it owns, for the same reason as StampCalendarAlignment.
+func StampRequestLimitsCalendarAlignment(calendarAligned bool, requestLimits []TableRateLimit) {
+	for i := range requestLimits {
+		requestLimits[i].IsCalendarAligned = calendarAligned
+	}
+}
+
 // HasActiveOverride reports whether the budget currently has a valid configured override.
 func (b *TableBudget) HasActiveOverride() bool {
 	if b == nil || b.OverrideAmount <= 0 {

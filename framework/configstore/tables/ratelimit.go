@@ -1,8 +1,11 @@
 package tables
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -22,6 +25,13 @@ type TableRateLimit struct {
 	RequestResetDuration *string   `gorm:"type:varchar(50)" json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
 	RequestCurrentUsage  int64     `gorm:"default:0" json:"request_current_usage"`                   // Current request usage
 	RequestLastReset     time.Time `gorm:"index" json:"request_last_reset"`                          // Last time request counter was reset
+
+	Scope LimitScope `gorm:"type:varchar(20);not null;default:'shared'" json:"scope"` // Traffic counted: shared, model or mcp
+
+	// Owner FKs: set only on a request limit, which belongs to exactly one ModelConfig, Team or Customer
+	ModelConfigID *string `gorm:"type:varchar(255);index" json:"model_config_id,omitempty"`
+	TeamID        *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID    *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
 
 	// Deprecated: set calendar_aligned on the parent access profile / VK / team
 	// instead. Kept for backward compatibility with older config.json files;
@@ -44,8 +54,71 @@ type TableRateLimit struct {
 // TableName sets the table name for each model
 func (TableRateLimit) TableName() string { return "governance_rate_limits" }
 
+// IsRequestLimit reports whether the row is a request limit: a request-only limit
+// owned by a model config, team or customer through an owner FK, as opposed to
+// the single rate limit a holder references through its rate_limit_id.
+func (rl *TableRateLimit) IsRequestLimit() bool {
+	return rl.ModelConfigID != nil || rl.TeamID != nil || rl.CustomerID != nil
+}
+
+// RequestPeriodKey is the identity of a request limit within its owner: its reset duration and scope.
+func (rl *TableRateLimit) RequestPeriodKey() string {
+	duration := ""
+	if rl.RequestResetDuration != nil {
+		duration = *rl.RequestResetDuration
+	}
+	return LimitPeriodKey(duration, rl.Scope)
+}
+
+// legacyRequestLimitSuffix ends every ID LegacyRequestLimitID returns.
+const legacyRequestLimitSuffix = "-requests"
+
+// maxRateLimitIDLength is the width of TableRateLimit.ID (varchar(255)).
+const maxRateLimitIDLength = 255
+
+// LegacyRequestLimitID is the ID of the request limit split out of the combined
+// rate limit rateLimitID. Deterministic so the migration and the config.json
+// loader produce identical rows. An ID too long to take the suffix within the column is cut
+// and carries a hash of the whole ID instead, so two long IDs sharing a prefix stay distinct.
+func LegacyRequestLimitID(rateLimitID string) string {
+	if len(rateLimitID)+len(legacyRequestLimitSuffix) <= maxRateLimitIDLength {
+		return rateLimitID + legacyRequestLimitSuffix
+	}
+	sum := sha256.Sum256([]byte(rateLimitID))
+	tag := "-" + hex.EncodeToString(sum[:8])
+	keep := maxRateLimitIDLength - len(legacyRequestLimitSuffix) - len(tag)
+	for keep > 0 && !utf8.RuneStart(rateLimitID[keep]) {
+		keep--
+	}
+	return rateLimitID[:keep] + tag + legacyRequestLimitSuffix
+}
+
 // BeforeSave hook for RateLimit to validate reset duration formats
 func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
+	if !rl.Scope.IsValid() {
+		return fmt.Errorf("invalid rate limit scope: %s (must be one of shared, model, mcp)", rl.Scope)
+	}
+	rl.Scope = rl.Scope.Normalize()
+	if rl.IsRequestLimit() {
+		owners := 0
+		for _, owner := range []*string{rl.ModelConfigID, rl.TeamID, rl.CustomerID} {
+			if owner != nil {
+				owners++
+			}
+		}
+		if owners > 1 {
+			return fmt.Errorf("request limit cannot have more than one owner (model config/team/customer)")
+		}
+		if rl.RequestMaxLimit == nil || rl.RequestResetDuration == nil {
+			return fmt.Errorf("request limit requires request_max_limit and request_reset_duration")
+		}
+		if rl.TokenMaxLimit != nil || rl.TokenResetDuration != nil {
+			return fmt.Errorf("request limit cannot carry a token limit")
+		}
+	} else if rl.Scope != LimitScopeShared && (rl.RequestMaxLimit == nil || rl.RequestResetDuration == nil || rl.TokenMaxLimit != nil || rl.TokenResetDuration != nil) {
+		return fmt.Errorf("rate limit scope %s is only valid on a request-only limit (request_max_limit and request_reset_duration set, no token limit)", rl.Scope)
+	}
+
 	// Validate token reset duration if provided
 	if rl.TokenResetDuration != nil {
 		if d, err := ParseDuration(*rl.TokenResetDuration); err != nil {

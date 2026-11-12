@@ -168,6 +168,31 @@ func buildRateLimitWithUsage(id string, tokenMaxLimit, tokenUsage, requestMaxLim
 	}
 }
 
+// buildRequestLimit builds a request limit: a request-only rate limit of the given scope, as a holder
+// owns it through an owner FK (left for the caller to set).
+func buildRequestLimit(id string, maxRequests, usage int64, resetDuration string, scope configstoreTables.LimitScope) configstoreTables.TableRateLimit {
+	return configstoreTables.TableRateLimit{
+		ID:                   id,
+		RequestMaxLimit:      &maxRequests,
+		RequestCurrentUsage:  usage,
+		RequestResetDuration: &resetDuration,
+		RequestLastReset:     time.Now(),
+		Scope:                scope,
+	}
+}
+
+// buildTokenLimit builds a token-only rate limit, which is what a holder's Max Tokens is.
+func buildTokenLimit(id string, maxTokens, usage int64) *configstoreTables.TableRateLimit {
+	duration := "1h"
+	return &configstoreTables.TableRateLimit{
+		ID:                 id,
+		TokenMaxLimit:      &maxTokens,
+		TokenCurrentUsage:  usage,
+		TokenResetDuration: &duration,
+		TokenLastReset:     time.Now(),
+	}
+}
+
 func buildTeam(id, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableTeam {
 	team := &configstoreTables.TableTeam{
 		ID:   id,
@@ -570,7 +595,7 @@ func scopedModelLimits(gs *LocalGovernanceStore, ctx context.Context, scope, sco
 			continue
 		}
 		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
-		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, rateLimitIDs(mc.RateLimitID, mc.RequestLimits)...)...)
 	}
 	return budgets, rateLimits
 }

@@ -1808,6 +1808,21 @@ func GenerateRateLimitHash(rl tables.TableRateLimit) (string, error) {
 		hash.Write([]byte(*rl.RequestResetDuration))
 	}
 
+	// Hash a non-default scope and an owner only when set, so every rate limit
+	// written before request limits existed keeps a byte-identical digest.
+	if scope := rl.Scope.Normalize(); scope != tables.LimitScopeShared {
+		hash.Write([]byte("scope:" + string(scope)))
+	}
+	if rl.ModelConfigID != nil {
+		hash.Write([]byte("model_config_id:" + *rl.ModelConfigID))
+	}
+	if rl.TeamID != nil {
+		hash.Write([]byte("team_id:" + *rl.TeamID))
+	}
+	if rl.CustomerID != nil {
+		hash.Write([]byte("customer_id:" + *rl.CustomerID))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

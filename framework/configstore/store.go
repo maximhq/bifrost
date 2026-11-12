@@ -54,7 +54,7 @@ type ModelConfigsQueryParams struct {
 	Scopes       []string
 	ScopeID      string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider     string // optional; filters to an exact provider value (e.g. "openai")
-	AppliesToMCP bool   // optional; holder-level rows with at least one shared or mcp budget
+	AppliesToMCP bool   // optional; holder-level rows with at least one shared or mcp budget or request limit
 }
 
 // effectiveScopes returns the scope values to filter on, merging the deprecated

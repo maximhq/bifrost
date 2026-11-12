@@ -6084,6 +6084,8 @@ func TestModelConfigAppliesToMCP(t *testing.T) {
 	assert.True(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets("")}), "an unset scope reads as shared")
 	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Budgets: budgets(configstoreTables.LimitScopeModel)}))
 	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*"}))
+	assert.True(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", RequestLimits: []configstoreTables.TableRateLimit{{Scope: configstoreTables.LimitScopeMCP}}}), "an mcp request limit reaches MCP traffic")
+	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", RequestLimits: []configstoreTables.TableRateLimit{{Scope: configstoreTables.LimitScopeModel}}}))
 	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "*", Provider: &openai, Budgets: budgets(configstoreTables.LimitScopeShared)}))
 	assert.False(t, modelConfigAppliesToMCP(&configstoreTables.TableModelConfig{ModelName: "gpt-4o", Budgets: budgets(configstoreTables.LimitScopeShared)}))
 }

@@ -120,6 +120,8 @@ type TableModelConfig struct {
 	// parsing; not read by the governance store after the multi-budget cutover.
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
+	// RequestLimits are request limits owned via TableRateLimit.ModelConfigID; RateLimit carries the token limit.
+	RequestLimits []TableRateLimit `gorm:"foreignKey:ModelConfigID;constraint:-" json:"request_limits,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -145,6 +147,7 @@ func (mc *TableModelConfig) IsHolderLevel() bool {
 // store's Update*InMemory paths re-stamp on every model-config update.
 func (mc *TableModelConfig) AfterFind(tx *gorm.DB) error {
 	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+	StampRequestLimitsCalendarAlignment(mc.CalendarAligned, mc.RequestLimits)
 	return nil
 }
 

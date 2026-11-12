@@ -20,6 +20,8 @@ type TableCustomer struct {
 	RateLimit   *TableRateLimit   `gorm:"foreignKey:RateLimitID" json:"rate_limit,omitempty"`
 	Teams       []TableTeam       `gorm:"foreignKey:CustomerID" json:"teams"`
 	VirtualKeys []TableVirtualKey `gorm:"foreignKey:CustomerID" json:"virtual_keys"`
+	// RequestLimits are request limits owned via TableRateLimit.CustomerID; RateLimit carries the token limit.
+	RequestLimits []TableRateLimit `gorm:"foreignKey:CustomerID;constraint:-" json:"request_limits,omitempty"`
 
 	// VirtualKeyCount is the number of virtual keys owned by this customer. Not
 	// persisted; populated by the read paths so list responses can report the
@@ -53,5 +55,6 @@ func (TableCustomer) TableName() string { return "governance_customers" }
 // reset path (which reads the derived field off those objects) sees the correct value.
 func (c *TableCustomer) AfterFind(tx *gorm.DB) error {
 	StampCalendarAlignment(c.CalendarAligned, c.Budgets, c.RateLimit)
+	StampRequestLimitsCalendarAlignment(c.CalendarAligned, c.RequestLimits)
 	return nil
 }

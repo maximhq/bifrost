@@ -7159,3 +7159,63 @@ func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) 
 	require.NoError(t, err)
 	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
 }
+
+// TestRequestLimitsLoadedAndDeletedWithHolder verifies that the request limits a model
+// config, team or customer owns are loaded with it, keep their owner across a
+// rate-limit write that omits it, and are deleted with it.
+func TestRequestLimitsLoadedAndDeletedWithHolder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	mc := &tables.TableModelConfig{ID: "mc-rules", ModelName: "gpt-4", Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-rules"), CalendarAligned: true}
+	require.NoError(t, store.DB().Create(mc).Error)
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-rules", Name: "Team Rules", CalendarAligned: true}))
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "customer-rules", Name: "Customer Rules"}))
+
+	rule := func(id string, set func(*tables.TableRateLimit)) {
+		rl := &tables.TableRateLimit{ID: id, RequestMaxLimit: schemas.Ptr(int64(5)), RequestResetDuration: schemas.Ptr("1h"), Scope: tables.LimitScopeModel}
+		set(rl)
+		require.NoError(t, store.CreateRateLimit(ctx, rl))
+	}
+	rule("rule-mc", func(rl *tables.TableRateLimit) { rl.ModelConfigID = &mc.ID })
+	rule("rule-team", func(rl *tables.TableRateLimit) { rl.TeamID = schemas.Ptr("team-rules") })
+	rule("rule-customer", func(rl *tables.TableRateLimit) { rl.CustomerID = schemas.Ptr("customer-rules") })
+
+	gotMC, err := store.GetModelConfigByID(ctx, mc.ID)
+	require.NoError(t, err)
+	require.Len(t, gotMC.RequestLimits, 1)
+	assert.Equal(t, "rule-mc", gotMC.RequestLimits[0].ID)
+	assert.True(t, gotMC.RequestLimits[0].IsCalendarAligned, "the owner's calendar alignment is stamped on its request limits")
+	byScope, err := store.GetModelConfigsByScopeAndScopeIDs(ctx, tables.ModelConfigScopeVirtualKey, []string{"vk-rules"})
+	require.NoError(t, err)
+	require.Len(t, byScope, 1)
+	require.Len(t, byScope[0].RequestLimits, 1, "the batched relation loader attaches request limits too")
+	assert.True(t, byScope[0].RequestLimits[0].IsCalendarAligned)
+
+	gotTeam, err := store.GetTeam(ctx, "team-rules")
+	require.NoError(t, err)
+	require.Len(t, gotTeam.RequestLimits, 1)
+	assert.Equal(t, "rule-team", gotTeam.RequestLimits[0].ID)
+	assert.True(t, gotTeam.RequestLimits[0].IsCalendarAligned)
+	gotCustomer, err := store.GetCustomer(ctx, "customer-rules")
+	require.NoError(t, err)
+	require.Len(t, gotCustomer.RequestLimits, 1)
+	assert.Equal(t, "rule-customer", gotCustomer.RequestLimits[0].ID)
+
+	// A write naming only the limits keeps the rule's owner and scope.
+	require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{ID: "rule-team", RequestMaxLimit: schemas.Ptr(int64(7)), RequestResetDuration: schemas.Ptr("1h")}))
+	updated, err := store.GetRateLimit(ctx, "rule-team")
+	require.NoError(t, err)
+	require.NotNil(t, updated.TeamID)
+	assert.Equal(t, "team-rules", *updated.TeamID)
+	assert.Equal(t, tables.LimitScopeModel, updated.Scope)
+	assert.Equal(t, int64(7), *updated.RequestMaxLimit)
+
+	require.NoError(t, store.DeleteModelConfig(ctx, mc.ID))
+	require.NoError(t, store.DeleteTeam(ctx, "team-rules"))
+	require.NoError(t, store.DeleteCustomer(ctx, "customer-rules"))
+	for _, id := range []string{"rule-mc", "rule-team", "rule-customer"} {
+		_, err := store.GetRateLimit(ctx, id)
+		assert.ErrorIs(t, err, ErrNotFound, "request limit %s is deleted with its owner", id)
+	}
+}

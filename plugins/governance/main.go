@@ -1095,7 +1095,8 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 //
 // A budget's scope is applied here, once, so that what is checked, logged and charged agree: an
 // MCP tool execution answers only to "mcp" and "shared" budgets, every other request only to "model"
-// and "shared" ones. See BudgetsForRequestKind.
+// and "shared" ones. See BudgetsForRequestKind. Rate limits are filtered the same way, by
+// RateLimitsForRequestKind.
 func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
@@ -1107,6 +1108,7 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestTy
 		return nil, err
 	}
 	budgets = BudgetsForRequestKind(ctx, store, budgets, isMCP)
+	rateLimits = RateLimitsForRequestKind(ctx, store, rateLimits, isMCP)
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil
@@ -1121,28 +1123,29 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, requestTy
 // store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
 // it anyway. The common case, where every budget applies, returns the input without allocating.
 func BudgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, isMCP bool) []schemas.Limit {
-	return filterLimits(budgets, func(id string) bool {
+	return filterLimits(budgets, func(id string) (bool, bool) {
 		budget := store.LoadBudget(ctx, id)
-		return budget == nil || budget.Scope.AppliesTo(isMCP)
+		return budget == nil || budget.Scope.AppliesTo(isMCP), false
 	})
 }
 
-// filterLimits keeps the limits whose ID applies. Nothing is allocated when all do; on the first
-// drop it copies what was kept so far rather than filtering in place, since the gathered slice may
-// share a backing array with the store's.
-func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schemas.Limit {
+// filterLimits keeps the limits whose ID applies, each with RequestsOnly as apply reports it.
+// Nothing is allocated when all apply unchanged; on the first drop or change it copies what was kept
+// so far rather than filtering in place, since the gathered slice may share a backing array with the
+// store's.
+func filterLimits(limits []schemas.Limit, apply func(id string) (applies, requestsOnly bool)) []schemas.Limit {
 	var kept []schemas.Limit
 	for i, limit := range limits {
-		ok := applies(limit.ID)
+		ok, requestsOnly := apply(limit.ID)
 		if kept == nil {
-			if ok {
+			if ok && requestsOnly == limit.RequestsOnly {
 				continue
 			}
-			kept = make([]schemas.Limit, i, len(limits)-1)
+			kept = make([]schemas.Limit, i, len(limits))
 			copy(kept, limits[:i])
-			continue
 		}
 		if ok {
+			limit.RequestsOnly = requestsOnly
 			kept = append(kept, limit)
 		}
 	}
@@ -1150,6 +1153,29 @@ func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schema
 		return limits
 	}
 	return kept
+}
+
+// RateLimitsForRequestKind drops the rate limits that do not count a request of this kind: an MCP
+// tool execution when isMCP, a model request otherwise. It mirrors BudgetsForRequestKind:
+//   - a request limit counts the traffic its scope names (shared, model or mcp);
+//   - Max Tokens is model-only, so a tool execution drops a row that carries no request limit.
+//
+// A legacy combined row (tokens and requests on one row, which the migration leaves combined when
+// several holders share it) is scope shared and keeps counting both kinds of request, but a tool
+// execution answers to its request limit only: it is marked RequestsOnly, and CheckRateLimits skips
+// its Max Tokens. A row the store cannot load is kept, since enforcement skips it anyway. The common
+// case, where nothing is dropped or marked, returns the input without allocating.
+func RateLimitsForRequestKind(ctx context.Context, store GovernanceStore, rateLimits []schemas.Limit, isMCP bool) []schemas.Limit {
+	return filterLimits(rateLimits, func(id string) (bool, bool) {
+		rateLimit := store.LoadRateLimit(ctx, id)
+		if rateLimit == nil {
+			return true, false
+		}
+		if !rateLimit.Scope.AppliesTo(isMCP) || (isMCP && rateLimit.RequestMaxLimit == nil) {
+			return false, false
+		}
+		return true, isMCP && rateLimit.TokenMaxLimit != nil
+	})
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -2353,6 +2379,10 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		}
 		for _, rateLimitID := range rateLimitIDs {
 			if alreadyCharged["rate-limit:"+rateLimitID] {
+				continue
+			}
+			// Likewise an MCP-only request limit.
+			if rateLimit := p.store.LoadRateLimit(ctx, rateLimitID); rateLimit != nil && !rateLimit.Scope.AppliesTo(false) {
 				continue
 			}
 			billingKey := fmt.Sprintf("%s:model-rate-limit:%s:%s", usage.RequestID, modelUsage.Model, rateLimitID)

@@ -592,6 +592,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
 	{IDs: []string{"add_budget_scope_column"}, run: migrationAddBudgetScopeColumn},
+	{IDs: []string{"split_request_limits_from_rate_limits"}, run: migrationSplitRequestLimitsFromRateLimits},
+	{IDs: []string{"add_rate_limit_owner_indexes"}, run: migrationAddRateLimitOwnerIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -4434,6 +4436,325 @@ func migrationAddBudgetScopeColumn(ctx context.Context, db *gorm.DB, logger sche
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
+	return nil
+}
+
+// migrationSplitRequestLimitsFromRateLimits moves each model config's, team's and customer's request
+// limit out of its combined rate limit into an owned, shared-scope request limit row (see
+// splitLegacyRequestLimits). Idempotent.
+func migrationSplitRequestLimitsFromRateLimits(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "split_request_limits_from_rate_limits"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range []string{"Scope", "ModelConfigID", "TeamID", "CustomerID"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
+					return fmt.Errorf("failed to add %s column to governance_rate_limits: %w", field, err)
+				}
+			}
+			if err := tx.Exec(`UPDATE governance_rate_limits SET scope = 'shared' WHERE scope IS NULL OR scope = ''`).Error; err != nil {
+				return fmt.Errorf("failed to backfill rate limit scope: %w", err)
+			}
+			// The owner indexes are built by add_rate_limit_owner_indexes, outside this transaction.
+			return splitLegacyRequestLimits(tx, logger, migrationName)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("split_request_limits_from_rate_limits is non-rollbackable: older binaries read a holder's request limit only from its rate_limit_id row, so every split request limit would silently stop being enforced")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rateLimitOwnerIndexes are the owner indexes of governance_rate_limits, by index name and column.
+var rateLimitOwnerIndexes = [][2]string{
+	{"idx_governance_rate_limits_model_config_id", "model_config_id"},
+	{"idx_governance_rate_limits_team_id", "team_id"},
+	{"idx_governance_rate_limits_customer_id", "customer_id"},
+}
+
+// migrationAddRateLimitOwnerIndexes builds the owner indexes split_request_limits_from_rate_limits
+// leaves for it, concurrently on Postgres, which cannot run inside the migration's transaction.
+func migrationAddRateLimitOwnerIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_rate_limit_owner_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, index := range rateLimitOwnerIndexes {
+				if err := ensureIndexConcurrently(tx, "governance_rate_limits", index[0], index[1], false); err != nil {
+					return fmt.Errorf("failed to create index %s: %w", index[0], err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, index := range rateLimitOwnerIndexes {
+				if err := dropIndexConcurrently(tx, "governance_rate_limits", index[0]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// idBatchSize bounds the id lists bound per statement.
+const idBatchSize = 500
+
+// CountRateLimitReferences returns, per rate-limit id in ids, how many rows name it through a
+// rate_limit_id column. Every table in the database that has one is counted, not only the OSS
+// holders, so a row a table added on top of OSS also references counts as shared. Ids no row
+// names are absent from the result.
+func CountRateLimitReferences(tx *gorm.DB, ids []string) (map[string]int, error) {
+	references := make(map[string]int, len(ids))
+	if len(ids) == 0 {
+		return references, nil
+	}
+	mg := tx.Migrator()
+	tableNames, err := mg.GetTables()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+	for _, table := range tableNames {
+		if !mg.HasColumn(table, "rate_limit_id") {
+			continue
+		}
+		for chunk := range slices.Chunk(ids, idBatchSize) {
+			var counts []struct {
+				RateLimitID string
+				Count       int
+			}
+			if err := tx.Table(table).Select("rate_limit_id, COUNT(*) AS count").
+				Where("rate_limit_id IN ?", chunk).Group("rate_limit_id").Scan(&counts).Error; err != nil {
+				return nil, fmt.Errorf("failed to count rate limit references in %s: %w", table, err)
+			}
+			for _, c := range counts {
+				references[c.RateLimitID] += c.Count
+			}
+		}
+	}
+	return references, nil
+}
+
+// sameRateLimitOwner reports whether two rate limits name the same model config, team or customer
+// as owner, and that owner is set.
+func sameRateLimitOwner(a, b tables.TableRateLimit) bool {
+	same := func(x, y *string) bool { return x != nil && y != nil && *x == *y }
+	return same(a.ModelConfigID, b.ModelConfigID) || same(a.TeamID, b.TeamID) || same(a.CustomerID, b.CustomerID)
+}
+
+// splitLegacyRequestLimits performs the data move of migrationSplitRequestLimitsFromRateLimits
+// inside its transaction, in a number of statements that grows with the batch count rather than the
+// holder count. Each limit becomes a row with id LegacyRequestLimitID(id), keeping the request usage,
+// last reset and created_at; the original keeps its token limit or is deleted along with the
+// holder's reference. Only global and virtual-key model configs are split.
+func splitLegacyRequestLimits(tx *gorm.DB, logger schemas.Logger, migrationName string) error {
+	type candidate struct {
+		HolderID    string
+		RateLimitID string
+	}
+	type holderSet struct {
+		table      string
+		candidates []candidate
+		owner      func(rule *tables.TableRateLimit, id string)
+	}
+	sets := []*holderSet{
+		{table: "governance_model_configs", owner: func(rule *tables.TableRateLimit, id string) { rule.ModelConfigID = &id }},
+		{table: "governance_teams", owner: func(rule *tables.TableRateLimit, id string) { rule.TeamID = &id }},
+		{table: "governance_customers", owner: func(rule *tables.TableRateLimit, id string) { rule.CustomerID = &id }},
+	}
+	// Holders whose rate limit is an unowned row with a request limit.
+	var candidateIDs []string
+	for _, set := range sets {
+		q := tx.Table(set.table + " AS h").Select("h.id AS holder_id, h.rate_limit_id AS rate_limit_id").
+			Joins("JOIN governance_rate_limits rl ON rl.id = h.rate_limit_id").
+			Where("rl.request_max_limit IS NOT NULL AND rl.model_config_id IS NULL AND rl.team_id IS NULL AND rl.customer_id IS NULL")
+		if set.table == "governance_model_configs" {
+			// Project-scoped model configs stay combined: other tables reference their rate limits.
+			q = q.Where("h.scope IN ?", []string{tables.ModelConfigScopeGlobal, tables.ModelConfigScopeVirtualKey})
+		}
+		if err := q.Order("h.id").Scan(&set.candidates).Error; err != nil {
+			return fmt.Errorf("failed to read request-limited holders from %s: %w", set.table, err)
+		}
+		for _, c := range set.candidates {
+			candidateIDs = append(candidateIDs, c.RateLimitID)
+		}
+	}
+	if len(candidateIDs) == 0 {
+		logger.Info("[configstore] %s: split 0 request limit(s) out of combined rate limits", migrationName)
+		return nil
+	}
+
+	// A row referenced more than once is shared and cannot be moved to a single owner.
+	references, err := CountRateLimitReferences(tx, candidateIDs)
+	if err != nil {
+		return err
+	}
+
+	// The rate limits to split, and the request limits that already exist from an earlier run.
+	splitIDs := make([]string, 0, len(candidateIDs))
+	warned := make(map[string]bool)
+	for _, id := range candidateIDs {
+		if references[id] == 1 {
+			splitIDs = append(splitIDs, id)
+		} else if !warned[id] {
+			warned[id] = true
+			logger.Warn("[configstore] %s: rate limit %s is shared by %d holders; its request limit stays combined", migrationName, id, references[id])
+		}
+	}
+	rateLimits := make(map[string]tables.TableRateLimit, len(splitIDs))
+	existingRules := make(map[string]tables.TableRateLimit)
+	for chunk := range slices.Chunk(splitIDs, idBatchSize) {
+		var rows []tables.TableRateLimit
+		if err := tx.Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			return fmt.Errorf("failed to read rate limits to split: %w", err)
+		}
+		for _, rl := range rows {
+			rateLimits[rl.ID] = rl
+		}
+		ruleIDs := make([]string, len(chunk))
+		for i, id := range chunk {
+			ruleIDs[i] = tables.LegacyRequestLimitID(id)
+		}
+		var existing []tables.TableRateLimit
+		if err := tx.Select("id", "model_config_id", "team_id", "customer_id").Where("id IN ?", ruleIDs).Find(&existing).Error; err != nil {
+			return fmt.Errorf("failed to check existing request limits: %w", err)
+		}
+		for _, rl := range existing {
+			existingRules[rl.ID] = rl
+		}
+	}
+
+	now := time.Now().UTC()
+	var rules []tables.TableRateLimit
+	var deleteIDs []string                      // request-only originals, deleted
+	var clearIDs []string                       // combined originals, keep their token limit
+	clearHashes := make(map[string]string)      // recomputed hash per combined original that had one
+	holdersToClear := make(map[string][]string) // holder table -> holders losing rate_limit_id
+	for _, set := range sets {
+		for _, c := range set.candidates {
+			rl, ok := rateLimits[c.RateLimitID]
+			if !ok || references[c.RateLimitID] != 1 {
+				continue
+			}
+			ruleID := tables.LegacyRequestLimitID(rl.ID)
+			if existing, taken := existingRules[ruleID]; taken {
+				// Only this holder's own request limit from an earlier run may stand under the derived id; any
+				// other row there is an unrelated rate limit, and treating it as the split would lose this one.
+				var probe tables.TableRateLimit
+				set.owner(&probe, c.HolderID)
+				if !sameRateLimitOwner(existing, probe) {
+					return fmt.Errorf("cannot split rate limit %s: the id %s for its request limit is already taken by an unrelated rate limit; rename one of them", rl.ID, ruleID)
+				}
+			} else {
+				rule := tables.TableRateLimit{
+					ID:                   ruleID,
+					RequestMaxLimit:      rl.RequestMaxLimit,
+					RequestResetDuration: rl.RequestResetDuration,
+					RequestCurrentUsage:  rl.RequestCurrentUsage,
+					RequestLastReset:     rl.RequestLastReset,
+					TokenLastReset:       rl.TokenLastReset,
+					Scope:                tables.LimitScopeShared,
+					CreatedAt:            rl.CreatedAt,
+					UpdatedAt:            now,
+				}
+				// CreatedAt anchors the reset windows, so the request limit keeps the source row's.
+				if rule.CreatedAt.IsZero() {
+					rule.CreatedAt = now
+				}
+				if rule.TokenLastReset.IsZero() {
+					rule.TokenLastReset = now
+				}
+				set.owner(&rule, c.HolderID)
+				if rl.ConfigHash != "" {
+					hash, err := GenerateRateLimitHash(rule)
+					if err != nil {
+						return fmt.Errorf("failed to hash request limit %s: %w", ruleID, err)
+					}
+					rule.ConfigHash = hash
+				}
+				rules = append(rules, rule)
+			}
+			if rl.TokenMaxLimit == nil {
+				deleteIDs = append(deleteIDs, rl.ID)
+				holdersToClear[set.table] = append(holdersToClear[set.table], c.HolderID)
+				continue
+			}
+			clearIDs = append(clearIDs, rl.ID)
+			if rl.ConfigHash != "" {
+				rl.RequestMaxLimit = nil
+				rl.RequestResetDuration = nil
+				rl.RequestCurrentUsage = 0
+				hash, err := GenerateRateLimitHash(rl)
+				if err != nil {
+					return fmt.Errorf("failed to hash rate limit %s: %w", rl.ID, err)
+				}
+				clearHashes[rl.ID] = hash
+			}
+		}
+	}
+
+	if len(rules) > 0 {
+		// Every rule leaves the token limit unset and sets the request limit, so no
+		// default:null column is mixed within a batch; a mix would make GORM emit the
+		// DEFAULT keyword, which SQLite rejects in a multi-row insert.
+		if err := tx.CreateInBatches(&rules, idBatchSize).Error; err != nil {
+			return fmt.Errorf("failed to create request limits: %w", err)
+		}
+	}
+	for _, set := range sets {
+		for chunk := range slices.Chunk(holdersToClear[set.table], idBatchSize) {
+			if err := tx.Table(set.table).Where("id IN ?", chunk).Update("rate_limit_id", nil).Error; err != nil {
+				return fmt.Errorf("failed to clear rate_limit_id on %s: %w", set.table, err)
+			}
+		}
+	}
+	for chunk := range slices.Chunk(deleteIDs, idBatchSize) {
+		if err := tx.Where("id IN ?", chunk).Delete(&tables.TableRateLimit{}).Error; err != nil {
+			return fmt.Errorf("failed to delete request-only rate limits: %w", err)
+		}
+	}
+	for chunk := range slices.Chunk(clearIDs, idBatchSize) {
+		updates := map[string]any{
+			"request_max_limit":      nil,
+			"request_reset_duration": nil,
+			"request_current_usage":  0,
+			"updated_at":             now,
+		}
+		// One CASE carries each row's recomputed hash; rows without a hash keep theirs.
+		var hashCase strings.Builder
+		var hashArgs []any
+		for _, id := range chunk {
+			if hash, ok := clearHashes[id]; ok {
+				hashCase.WriteString(" WHEN ? THEN ?")
+				hashArgs = append(hashArgs, id, hash)
+			}
+		}
+		if len(hashArgs) > 0 {
+			updates["config_hash"] = gorm.Expr("CASE id"+hashCase.String()+" ELSE config_hash END", hashArgs...)
+		}
+		if err := tx.Table("governance_rate_limits").Where("id IN ?", chunk).Updates(updates).Error; err != nil {
+			return fmt.Errorf("failed to clear request limits on combined rate limits: %w", err)
+		}
+	}
+	logger.Info("[configstore] %s: split %d request limit(s) out of combined rate limits", migrationName, len(deleteIDs)+len(clearIDs))
 	return nil
 }
 

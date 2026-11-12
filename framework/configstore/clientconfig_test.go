@@ -1,8 +1,11 @@
 package configstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
@@ -110,4 +113,57 @@ func TestGenerateRelayHash(t *testing.T) {
 	reordered := testRelay("tavily")
 	reordered.Routes = append([]schemas.RelayRouteConfig{{Method: "POST", Path: "/extract"}}, reordered.Routes...)
 	require.NotEqual(t, hash(ordered), hash(reordered), "reordering routes is a change")
+}
+
+// legacyRateLimitDigest restates the hashing contract from before request limits
+// existed, independently of the implementation: an unowned shared-scope rate limit
+// must keep this digest, or every deployment would resync its rate limits on upgrade.
+func legacyRateLimitDigest(t *testing.T, rl tables.TableRateLimit) string {
+	t.Helper()
+	h := sha256.New()
+	h.Write([]byte(rl.ID))
+	if rl.TokenMaxLimit != nil {
+		data, err := sonic.Marshal(*rl.TokenMaxLimit)
+		require.NoError(t, err)
+		h.Write(data)
+	}
+	if rl.TokenResetDuration != nil {
+		h.Write([]byte(*rl.TokenResetDuration))
+	}
+	if rl.RequestMaxLimit != nil {
+		data, err := sonic.Marshal(*rl.RequestMaxLimit)
+		require.NoError(t, err)
+		h.Write(data)
+	}
+	if rl.RequestResetDuration != nil {
+		h.Write([]byte(*rl.RequestResetDuration))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func TestGenerateRateLimitHashRequestLimits(t *testing.T) {
+	hash := func(rl tables.TableRateLimit) string {
+		t.Helper()
+		h, err := GenerateRateLimitHash(rl)
+		require.NoError(t, err)
+		return h
+	}
+	combined := tables.TableRateLimit{ID: "rl-1", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h"), RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1m")}
+	require.Equal(t, legacyRateLimitDigest(t, combined), hash(combined), "an unowned rate limit keeps its digest")
+	explicitShared := combined
+	explicitShared.Scope = tables.LimitScopeShared
+	require.Equal(t, hash(combined), hash(explicitShared), "an explicit shared scope hashes like an empty one")
+
+	owner := "mc-1"
+	rule := tables.TableRateLimit{ID: "rule-1", RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1m")}
+	unowned := hash(rule)
+	rule.ModelConfigID = &owner
+	owned := hash(rule)
+	require.NotEqual(t, unowned, owned, "the owner is part of the hash")
+	asTeam := rule
+	asTeam.ModelConfigID = nil
+	asTeam.TeamID = &owner
+	require.NotEqual(t, owned, hash(asTeam), "the owner kind is part of the hash")
+	rule.Scope = tables.LimitScopeMCP
+	require.NotEqual(t, owned, hash(rule), "a non-default scope is part of the hash")
 }
