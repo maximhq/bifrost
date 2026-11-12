@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -388,6 +392,63 @@ func TestConnectionChecker_PerCallListFailureSendsOneListPerProbeAttempt(t *test
 	assert.Equal(t, UnstableConnectionCheckInterval, next)
 	requireFailureStage(t, m, config.ID, schemas.MCPConnectionFailureStageToolDiscovery)
 	assert.Equal(t, lists+ProbeRetryConfig.MaxRetries+1, u.count("tools/list"), "one tools/list per probe attempt")
+}
+
+// closingTransport serves an in-process server until closed is set, then fails every request with
+// transport.ErrTransportClosed, as a STDIO transport does once its server process has exited. It
+// counts the requests it refused.
+type closingTransport struct {
+	transport.Interface
+	closed  atomic.Bool
+	refused atomic.Int32
+}
+
+// SendRequest refuses the request once the transport is closed.
+func (c *closingTransport) SendRequest(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+	if c.closed.Load() {
+		c.refused.Add(1)
+		return nil, transport.ErrTransportClosed
+	}
+	return c.Interface.SendRequest(ctx, request)
+}
+
+// TestConnectionChecker_ClosedTransportIsNotRetried: once a connection's transport has closed,
+// the check's ping or tools/list fails with transport.ErrTransportClosed through the plugin gate,
+// and the probe gives up after that one request instead of retrying a client no retry can repair.
+func TestConnectionChecker_ClosedTransportIsNotRetried(t *testing.T) {
+	for _, ping := range []bool{true, false} {
+		t.Run(fmt.Sprintf("ping=%t", ping), func(t *testing.T) {
+			s := server.NewMCPServer("closing", "1.0.0", server.WithToolCapabilities(false))
+			s.AddTool(mcpgo.NewTool("echo", mcpgo.WithDescription("Echo tool")),
+				func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+					return mcpgo.NewToolResultText("ok"), nil
+				})
+			tr := &closingTransport{Interface: transport.NewInProcessTransport(s)}
+			conn := client.NewClient(tr)
+			t.Cleanup(func() { _ = conn.Close() })
+			ctx := context.Background()
+			require.NoError(t, conn.Start(ctx))
+			initRequest := mcpgo.InitializeRequest{}
+			initRequest.Params.ProtocolVersion = mcpgo.ProtocolVersion20251125
+			initRequest.Params.ClientInfo = mcpgo.Implementation{Name: "test", Version: "1.0.0"}
+			_, err := conn.Initialize(ctx, initRequest)
+			require.NoError(t, err)
+
+			m := NewMCPManager(ctx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			t.Cleanup(func() { _ = m.Cleanup() })
+			checker := NewClientConnectionChecker(m, "closing", time.Minute, ping, &MockLogger{})
+
+			_, err = m.runListToolsWithHooks(ctx, conn, "closing")
+			require.NoError(t, err)
+			tr.closed.Store(true)
+			_, err = m.runListToolsWithHooks(withSingleListAttempt(ctx), conn, "closing")
+			require.ErrorIs(t, err, transport.ErrTransportClosed, "the gate keeps the transport's error")
+			tr.refused.Store(0)
+
+			require.False(t, checker.checkLiveConnection(conn, "closing", 0))
+			assert.Equal(t, int32(1), tr.refused.Load(), "one request, no retries")
+		})
+	}
 }
 
 // TestConnectionChecker_ForgottenSessionReconnects: when the upstream forgets the

@@ -1387,7 +1387,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		logger,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %v", err)
+		return nil, fmt.Errorf("failed to list tools: %w", err)
 	}
 
 	if toolsResponse == nil {
