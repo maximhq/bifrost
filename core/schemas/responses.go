@@ -54,6 +54,9 @@ type BifrostResponsesRequest struct {
 	// restore function_call items. Never serialized; the shared request never has it.
 	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
 
+	// CustomToolNames holds custom tools sent as function tools, for restoring their calls.
+	CustomToolNames map[string]struct{} `json:"-"`
+
 	// Removed at Messages ingress, before Input is shared. Shallow fallback copies
 	// retain this private metadata; only Anthropic attempts restore it.
 	anthropicBillingHeader *anthropicBillingHeader
