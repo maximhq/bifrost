@@ -1112,6 +1112,39 @@ func validateGovernanceBudgetScopes(configData *ConfigData, warn func(string, ..
 	return nil
 }
 
+// tierRequestLimitsDiffer reports whether a request limit config.json's split took from the key's legacy
+// rate limit (or a provider config's) differs from the stored one. The key's hash is taken from the file
+// as declared and does not see those limits once they are held aside, so a changed maximum on an
+// otherwise unchanged key would never be written without this.
+func (c *Config) tierRequestLimitsDiffer(ctx context.Context, configData *ConfigData, vk configstoreTables.TableVirtualKey) bool {
+	if c.ConfigStore == nil || len(configData.legacyTierRequestLimits) == 0 {
+		return false
+	}
+	for key, rules := range configData.legacyTierRequestLimits {
+		if key.vkID != vk.ID {
+			continue
+		}
+		for _, rule := range rules {
+			stored, err := c.ConfigStore.GetRateLimit(ctx, rule.ID)
+			if err != nil {
+				return true
+			}
+			if !samePointee(stored.RequestMaxLimit, rule.RequestMaxLimit) || !samePointee(stored.RequestResetDuration, rule.RequestResetDuration) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// samePointee reports whether two optional values are both unset or both set to the same value.
+func samePointee[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // legacyTierKey keys a virtual key's all-models tier for a provider ("" for the key itself).
 type legacyTierKey struct{ vkID, provider string }
 
@@ -4645,7 +4678,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					configData.Governance.VirtualKeys[i].ID = existingVirtualKey.ID
 				}
 				found = true
-				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash {
+				if forceFileSync || existingVirtualKey.ConfigHash != fileVKHash || config.tierRequestLimitsDiffer(ctx, configData, existingVirtualKey) {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", existingVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 					// Preserve stored value when config doesn't supply one

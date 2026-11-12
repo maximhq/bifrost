@@ -28327,3 +28327,46 @@ func TestSplitLegacyGovernanceRequestLimitsKeepsCollidingAndNonSharedRows(t *tes
 	assert.NotContains(t, byID, "mcp-rl-requests")
 	assert.NotContains(t, byID, "bad-rl-requests")
 }
+
+// TestSQLite_LegacyKeyRequestLimitMaximumChangeIsPersisted: a key's legacy combined rate limit is split
+// into a request limit on the key's tier, and changing only that request maximum in config.json (the
+// key and every other row byte-identical) reaches the stored limit on the next boot.
+func TestSQLite_LegacyKeyRequestLimitMaximumChangeIsPersisted(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	tokens, tokenDur, reqDur := int64(1000), "1h", "1m"
+	declare := func(requests int64) *ConfigData {
+		cd := makeConfigDataWithProvidersAndDir(nil, dir)
+		cd.Governance = &configstore.GovernanceConfig{
+			RateLimits: []tables.TableRateLimit{{
+				ID: "vk-rl", TokenMaxLimit: &tokens, TokenResetDuration: &tokenDur,
+				RequestMaxLimit: &requests, RequestResetDuration: &reqDur,
+			}},
+			VirtualKeys: []tables.TableVirtualKey{{
+				ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"),
+				IsActive: schemas.Ptr(true), RateLimitID: schemas.Ptr("vk-rl"),
+			}},
+		}
+		return cd
+	}
+	storedMaximum := func(c *Config) int64 {
+		var limits []tables.TableRateLimit
+		require.NoError(t, c.ConfigStore.DB().Where("id = ?", tables.LegacyRequestLimitID("vk-rl")).Find(&limits).Error)
+		require.Len(t, limits, 1, "the key's request limit was not split off")
+		require.NotNil(t, limits[0].RequestMaxLimit)
+		return *limits[0].RequestMaxLimit
+	}
+
+	createConfigFile(t, dir, declare(10))
+	c1, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), storedMaximum(c1))
+	c1.Close(ctx)
+
+	createConfigFile(t, dir, declare(20))
+	c2, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer c2.Close(ctx)
+	assert.Equal(t, int64(20), storedMaximum(c2), "the changed request maximum was not persisted")
+}
