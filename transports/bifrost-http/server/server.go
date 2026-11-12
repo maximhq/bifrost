@@ -174,6 +174,10 @@ type ServerCallbacks interface {
 	// auth type, connection type, and needs_session_stickiness into account
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
+	// IsMCPAllowedForUser reports whether the user may call the MCP client named mcpClientName.
+	IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool
+	// IsMCPCredentialActionAllowedOnOthers reports whether the caller may take action on a per-user MCP credential that is not their own.
+	IsMCPCredentialActionAllowedOnOthers(ctx *fasthttp.RequestCtx, action handlers.MCPCredentialAction) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// RefreshMCPClientTools re-discovers a client's tools from its upstream
 	// server on demand and reports how many it serves afterwards. Unlike
@@ -713,6 +717,23 @@ func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
 		return nil
 	}
 	return reloader.Reload(ctx)
+}
+
+// IsMCPAllowedForUser asks the governance plugin whether userID may call the MCP
+// client named mcpClientName. Without a governance plugin nobody may.
+func (s *BifrostHTTPServer) IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool {
+	plugin, err := s.getGovernancePlugin()
+	if err != nil || plugin == nil {
+		return false
+	}
+	return plugin.IsMCPAllowedForUser(ctx, mcpClientName, userID)
+}
+
+// IsMCPCredentialActionAllowedOnOthers reports whether the caller may refresh or revoke a
+// per-user MCP credential that is not their own: whoever reaches those routes may
+// act on every credential.
+func (s *BifrostHTTPServer) IsMCPCredentialActionAllowedOnOthers(_ *fasthttp.RequestCtx, _ handlers.MCPCredentialAction) bool {
+	return true
 }
 
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.

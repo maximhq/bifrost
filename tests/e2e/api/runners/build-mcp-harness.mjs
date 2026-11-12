@@ -82,6 +82,21 @@ const ADM73 = folder("ADM-73 Sessions list validation",
   request("ADM-73", "defaults are limit 50, offset 0", "GET", "/api/mcp/sessions", { asserts: [A.status(200), A.jsonEquals("limit", 50), A.jsonEquals("offset", 0)] }),
 ]);
 
+// Connecting a caller's own credential needs a signed-in user; the harness admin has none, so
+// only the body checks and that refusal are reachable here.
+const ADM89 = folder("ADM-89 Connect needs a signed-in user",
+  "Setup: dashboard auth on, admin credentials, no user identity.", [
+  request("ADM-89", "no mcp_client_id is rejected", "POST", "/api/mcp/sessions/connect", { body: {}, asserts: [A.status(400), A.msgEquals("mcp_client_id is required")] }),
+  request("ADM-89", "an unknown origin is rejected", "POST", "/api/mcp/sessions/connect", {
+    body: { mcp_client_id: "adm89-id", origin: "settings" },
+    asserts: [A.status(400), A.msgEquals('Unknown origin "settings"')],
+  }),
+  request("ADM-89", "a caller with no user identity is refused", "POST", "/api/mcp/sessions/connect", {
+    body: { mcp_client_id: "adm89-id", origin: "home" },
+    asserts: [A.status(403), A.msgEquals("Connecting to an MCP server needs a signed-in user.")],
+  }),
+]);
+
 // ---------------------------------------------------------------- LOG
 const LOG27 = folder("LOG-27 Invalid list params", "Setup: none (dashboard auth on, admin credentials).", [
   request("LOG-27", "limit=0 is rejected", "GET", "/api/mcp-logs?limit=0", { asserts: [A.status(400)] }),
@@ -204,6 +219,7 @@ const noCredRoutes = [
   ["GET", "/api/mcp/client/adm01-id/openapi-spec"],
   ["POST", "/api/mcp/openapi/preview", {}],
   ["GET", "/api/mcp/sessions"],
+  ["POST", "/api/mcp/sessions/connect", { mcp_client_id: "adm01-id" }],
   ["DELETE", "/api/mcp/sessions/adm01-id"],
   ["POST", "/api/mcp/sessions/adm01-id/reauth"],
   ["GET", "/api/mcp/per-user-headers/flows/adm01-id"],
@@ -4839,6 +4855,16 @@ const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin 
   flowDetail("ADM-76", "control: the OAuth token's pending flow is open", "adm76_t_flow", [A.status(200)]),
   execTool("ADM-76", "setup: execute as adm76-sess2 opens a pending OAuth flow", "adm76-echo_tool", [A.status(400), keepFlow("adm76_of", "adm76_f")], { session: "adm76-sess2" }),
   sessionsHas("ADM-76", "control: the pending OAuth flow is listed", "adm76-u", ADM76_OAUTH_FLOW, "one kind \"flow\", auth_kind \"oauth\" entry for it"),
+  // The harness admin has no user identity, so no row is theirs: each of the four row kinds says so.
+  request("ADM-76", "no row is the admin's own", "GET", SESSIONS, { asserts: [A.status(200), A.custom("the header credential, the pending header flow, the OAuth token and the pending OAuth flow are each listed with owned_by_caller false", [
+    "var rows = pm.response.json().sessions || [];",
+    "['adm76_hc', 'adm76_hf', 'adm76_t', 'adm76_of'].forEach(function (v) {",
+    "  var id = pm.collectionVariables.get(v);",
+    "  var row = rows.find(function (s) { return s.id === id; });",
+    "  pm.expect(row, v + ' (' + id + ') is listed: ' + pm.response.text()).to.be.an('object');",
+    "  pm.expect(row.owned_by_caller, v + ' (' + id + '): ' + pm.response.text()).to.equal(false);",
+    "});",
+  ])] }),
   request("ADM-76", "revoke the header credential", "DELETE", "/api/mcp/sessions/{{adm76_hc}}", { asserts: [A.status(204)] }),
   request("ADM-76", "the header credential's flow is gone", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(404)] }),
   request("ADM-76", "revoke the pending header flow", "DELETE", "/api/mcp/sessions/{{adm76_hf}}", { asserts: [A.status(204)] }),
@@ -12499,7 +12525,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88, ADM89]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),

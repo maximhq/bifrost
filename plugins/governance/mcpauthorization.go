@@ -1,6 +1,8 @@
 package governance
 
 import (
+	"context"
+
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -41,4 +43,10 @@ func mcpToolCallAllowed(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequ
 		return access.IsMCPToolAllowed(req.ClientName + "-*")
 	}
 	return access.IsMCPToolAllowed(req.GetToolName())
+}
+
+// IsMCPAllowedForUser reports whether userID may call the MCP client named mcpClientName. This
+// governance grants MCP access by virtual key only and knows no users, so it allows none.
+func (p *GovernancePlugin) IsMCPAllowedForUser(_ context.Context, _, _ string) bool {
+	return false
 }

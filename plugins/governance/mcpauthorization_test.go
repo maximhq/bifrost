@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -164,4 +165,10 @@ func TestPreMCPHookRefusesAConnectNameWithoutCoresMark(t *testing.T) {
 	_, short, err := plugin.PreMCPHook(newPreRequestCtx(nil, nil), req)
 	require.NoError(t, err)
 	require.NotNil(t, short, "a tool name alone is no connect call")
+}
+
+// TestIsMCPAllowedForUser_AllowsNoUser: virtual keys are the only thing this governance grants MCP
+// access to, so no user is allowed any MCP client.
+func TestIsMCPAllowedForUser_AllowsNoUser(t *testing.T) {
+	require.False(t, (&GovernancePlugin{}).IsMCPAllowedForUser(context.Background(), "alpha", "alice"))
 }

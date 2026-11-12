@@ -152,6 +152,9 @@ type BaseGovernancePlugin interface {
 	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
+	// IsMCPAllowedForUser reports whether the user may call the MCP client named mcpClientName,
+	// so a dashboard surface can offer to connect their own credential to it.
+	IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool
 }
 
 // AttributeRoutingEmbeddingCostPlugin is an optional capability for governance

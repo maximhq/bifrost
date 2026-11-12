@@ -1572,7 +1572,7 @@ func generateSecureRandomString(length int) (string, error) {
 //
 // The function errors out cleanly on any misconfig (missing identity, unknown
 // mode, missing template config) — no fallbacks, no generated identities.
-func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
+func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode, origin string) (*schemas.OAuth2FlowInitiation, string, error) {
 	// 1. Load template OAuth config.
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil {
@@ -1658,9 +1658,8 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		existing.Status = "pending"
 		existing.ExpiresAt = expiresAt
 		existing.Issuer, existing.IssParameterSupported = templateConfig.Issuer, templateConfig.IssParameterSupported
-		// The page an earlier attempt started on is not where this one started; a caller
-		// starting from a dashboard page records it again after initiating.
-		existing.Origin = ""
+		// This attempt starts where its caller is, not where an earlier one did.
+		existing.Origin = origin
 		if err := p.configStore.UpdateOauthUserSession(ctx, existing); err != nil {
 			return nil, "", fmt.Errorf("failed to update flow row for reauth: %w", err)
 		}
@@ -1683,6 +1682,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 			FlowMode:      string(flowMode),
 			Status:        "pending",
 			ExpiresAt:     expiresAt,
+			Origin:        origin,
 
 			Issuer:                templateConfig.Issuer,
 			IssParameterSupported: templateConfig.IssParameterSupported,

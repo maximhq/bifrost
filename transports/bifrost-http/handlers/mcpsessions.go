@@ -60,7 +60,7 @@ type MCPSessionsHandler struct {
 	// this handler writes token or credential rows directly through the
 	// configstore.
 	mcpCredentialCacheManager MCPCredentialCacheManager
-	mcpManager                MCPManager // discovers a caller's tools again on refresh
+	mcpManager                MCPManager // discovers a caller's tools again on refresh, and says which MCP clients a user may connect to
 }
 
 // NewMCPSessionsHandler creates the handler.
@@ -71,6 +71,7 @@ func NewMCPSessionsHandler(store *lib.Config, mcpCredentialCacheManager MCPCrede
 // RegisterRoutes registers the sessions tab routes.
 func (h *MCPSessionsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/mcp/sessions", lib.ChainMiddlewares(h.list, middlewares...))
+	r.POST("/api/mcp/sessions/connect", lib.ChainMiddlewares(h.connect, middlewares...))
 	r.POST("/api/mcp/sessions/{id}/reauth", lib.ChainMiddlewares(h.reauth, middlewares...))
 	r.POST("/api/mcp/sessions/{id}/refresh", lib.ChainMiddlewares(h.refresh, middlewares...))
 	r.DELETE("/api/mcp/sessions/{id}", lib.ChainMiddlewares(h.revoke, middlewares...))
@@ -146,8 +147,12 @@ type mcpSessionRow struct {
 	// /api/oauth/per-user/flows/{id}/start, not /reauth.
 	CanReauth bool `json:"can_reauth"`
 	// CanRefresh mirrors what POST /refresh accepts for this row: an active credential of a client
-	// that keeps a discovery per caller, refreshable by the same callers as CanReauth.
+	// that keeps a discovery per caller, refreshable by the same callers as CanReauth, and by them
+	// only if the row is their own or they may act on others' credentials.
 	CanRefresh bool `json:"can_refresh"`
+	// OwnedByCaller marks a row bound to the calling user's own identity (user mode, their user
+	// ID), which the caller manages end to end.
+	OwnedByCaller bool `json:"owned_by_caller"`
 	// Discovery is what Bifrost discovered with this credential's binding, on a
 	// client with per_user_discovery on. Token and header rows of user and
 	// virtual-key callers only; nil when the binding holds none.
@@ -367,7 +372,9 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	})
 
 	caller := callerUserIDFromCtx(ctx)
+	refreshOthers := h.mcpManager != nil && h.mcpManager.IsMCPCredentialActionAllowedOnOthers(ctx, MCPCredentialActionRefresh)
 	for i := range rows {
+		rows[i].OwnedByCaller = ownedByCaller(rows[i].AuthMode, rows[i].UserID, caller)
 		// Flow rows are completed via /api/oauth/per-user/flows/{id}/start, not
 		// /reauth — passing a flow ID to /reauth always 404s before the identity
 		// gate runs. Leave CanReauth at its zero value so the wire field matches
@@ -376,7 +383,7 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 			continue
 		}
 		rows[i].CanReauth = canAccessUserFlow(rows[i].AuthMode, rows[i].UserID, caller)
-		rows[i].CanRefresh = rows[i].CanReauth && refreshable(rows[i])
+		rows[i].CanRefresh = rows[i].CanReauth && refreshable(rows[i]) && (rows[i].OwnedByCaller || refreshOthers)
 	}
 
 	totalCount := len(rows)
@@ -541,6 +548,35 @@ func canAccessUserFlow(authMode string, rowUserID *string, callerUserID string) 
 	return callerUserID != "" && callerUserID == *rowUserID
 }
 
+// ownedByCaller reports whether a row of authMode bound to rowUserID is the calling user's
+// own: a user-mode row of their user ID. A caller without a user identity owns no row.
+func ownedByCaller(authMode string, rowUserID *string, callerUserID string) bool {
+	return authMode == string(schemas.MCPAuthModeUser) && callerUserID != "" && rowUserID != nil && *rowUserID == callerUserID
+}
+
+// MCPCredentialAction is an action a caller takes on a per-user MCP credential row.
+type MCPCredentialAction string
+
+const (
+	// MCPCredentialActionRefresh discovers again with the row's stored credential.
+	MCPCredentialActionRefresh MCPCredentialAction = "refresh"
+	// MCPCredentialActionRevoke deletes the row: a credential or a pending sign-in.
+	MCPCredentialActionRevoke MCPCredentialAction = "revoke"
+)
+
+// isCredentialActionAllowed reports whether the caller may take action on a credential row of authMode
+// bound to rowUserID: on their own always, on anyone else's when the server allows it. Without a
+// manager to ask, on their own only.
+func isCredentialActionAllowed(ctx *fasthttp.RequestCtx, manager MCPManager, action MCPCredentialAction, authMode string, rowUserID *string) bool {
+	if ownedByCaller(authMode, rowUserID, callerUserIDFromCtx(ctx)) {
+		return true
+	}
+	return manager != nil && manager.IsMCPCredentialActionAllowedOnOthers(ctx, action)
+}
+
+// revokeOthersRefused answers a revoke of a row the caller may not act on.
+const revokeOthersRefused = "You can only revoke your own MCP sessions."
+
 // refreshable reports whether POST /refresh accepts row, before its identity gate: an active
 // credential of a user or a virtual key on a client with per_user_discovery on that is serving
 // callers.
@@ -610,7 +646,8 @@ func bindingIdentity(mode schemas.MCPAuthMode, userID, virtualKeyID *string, ses
 //
 // Only an active credential of a user or a virtual key, on a client with per_user_discovery on that
 // is serving callers, can be refreshed, and a user's only by that user: the same rule as reauth,
-// since the refresh dials as them. A refresh that cannot discover answers 502 and keeps the
+// since the refresh dials as them. A virtual key's credential is refreshed only by a caller the
+// server lets act on others' credentials. A refresh that cannot discover answers 502 and keeps the
 // caller's discovery, since the credential it was made with is unchanged. The row is read again
 // before storing, as a sign-in reads its credential again: if it was revoked or replaced meanwhile,
 // nothing is stored and the refresh answers 409.
@@ -636,6 +673,10 @@ func (h *MCPSessionsHandler) refresh(ctx *fasthttp.RequestCtx) {
 	}
 	if !canAccessUserFlow(string(session.mode), session.userID, callerUserIDFromCtx(ctx)) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can refresh this session's tools.")
+		return
+	}
+	if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRefresh, string(session.mode), session.userID) {
+		SendError(ctx, fasthttp.StatusForbidden, "You can only refresh tools for your own MCP sessions.")
 		return
 	}
 	config, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, session.mcpClientID)
@@ -836,7 +877,7 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
-	flow, sessionID, err := provider.InitiateUserOAuthFlow(bfCtx, tok.OauthConfigID, tok.MCPClientID, redirectURI, rowMode)
+	flow, sessionID, err := provider.InitiateUserOAuthFlow(bfCtx, tok.OauthConfigID, tok.MCPClientID, redirectURI, rowMode, "")
 	if err != nil {
 		logger.Error("[mcp/sessions] reauth flow init failed: token=%s err=%v", rowID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to initiate reauthentication")
@@ -917,6 +958,163 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 	})
 }
 
+// mcpSessionConnectRequest is the body of POST /api/mcp/sessions/connect.
+type mcpSessionConnectRequest struct {
+	MCPClientID string `json:"mcp_client_id"`
+	Origin      string `json:"origin,omitempty"` // dashboard page the sign-in starts from (tables.MCPOauthFlowOrigin*), which the OAuth callback returns to
+}
+
+// connect starts the calling user's own sign-in to an MCP client: the first
+// one, or a fresh one in place of a pending, expired or rejected credential.
+// It needs a signed-in user allowed to call the client
+// (MCPManager.IsMCPAllowedForUser); a client they may not call answers 404 as
+// if it did not exist. Only an
+// enabled, verified per_user_oauth or per_user_headers client takes a caller's
+// own credential.
+//
+// per_user_oauth: starts or reuses the user's pending flow for the client and
+// answers the provider's authorize URL, for the browser to open directly. An
+// origin makes the callback return a signed-in caller to that page.
+// per_user_headers: starts a submission flow and answers its ID and the header
+// names to submit, for PUT /api/mcp/per-user-headers/flows/{id}.
+func (h *MCPSessionsHandler) connect(ctx *fasthttp.RequestCtx) {
+	var req mcpSessionConnectRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil || req.MCPClientID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_client_id is required")
+		return
+	}
+	if req.Origin != "" && req.Origin != tables.MCPOauthFlowOriginHome {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Unknown origin %q", req.Origin))
+		return
+	}
+	userID := callerUserIDFromCtx(ctx)
+	if userID == "" {
+		SendError(ctx, fasthttp.StatusForbidden, "Connecting to an MCP server needs a signed-in user.")
+		return
+	}
+	config, err := h.store.GetMCPClient(req.MCPClientID)
+	if err != nil || config == nil || h.mcpManager == nil || !h.mcpManager.IsMCPAllowedForUser(ctx, config.Name, userID) {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP server not found")
+		return
+	}
+	switch {
+	case config.Disabled:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server is disabled.")
+		return
+	case config.PendingVerification:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server is waiting for an administrator to verify it.")
+		return
+	}
+	bfCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+	defer cancel()
+	switch config.AuthType {
+	case schemas.MCPAuthTypePerUserOauth:
+		h.connectOAuth(ctx, bfCtx, userID, config, req.Origin)
+	case schemas.MCPAuthTypePerUserHeaders:
+		h.connectHeaders(ctx, bfCtx, userID, config)
+	default:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server does not take your own credentials.")
+	}
+}
+
+// connectOAuth is connect's per_user_oauth branch.
+func (h *MCPSessionsHandler) connectOAuth(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, userID string, config *schemas.MCPClientConfig, origin string) {
+	provider := h.store.OAuthProvider
+	if provider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
+		return
+	}
+	if config.OauthConfigID == nil || *config.OauthConfigID == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "This MCP server has no OAuth configuration")
+		return
+	}
+	bfCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	_, flowID, err := provider.InitiateUserOAuthFlow(bfCtx, *config.OauthConfigID, config.ID, redirectURI, schemas.MCPAuthModeUser, origin)
+	if err != nil {
+		logger.Error("[mcp/sessions] connect flow init failed: mcp_client=%s err=%v", config.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start signing in")
+		return
+	}
+	authorizeURL, err := provider.BuildUpstreamAuthorizeURL(ctx, flowID)
+	if err != nil {
+		switch {
+		case errors.Is(err, schemas.ErrOAuth2FlowExpired),
+			errors.Is(err, schemas.ErrOAuth2FlowNotPending),
+			errors.Is(err, schemas.ErrOAuth2NotPerUserSession):
+			SendError(ctx, fasthttp.StatusConflict, "Signing in was started again elsewhere; try again")
+			return
+		}
+		logger.Error("[mcp/sessions] connect authorize URL failed: flow=%s err=%v", flowID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to build upstream authorize URL")
+		return
+	}
+	lib.RecordAuditChange(ctx, "mcp_session.connect_started", "mcp_session", flowID, config.Name, nil, auditMCPSession("oauth_flow", config.ID, string(schemas.MCPAuthModeUser), &userID, nil))
+	SendJSON(ctx, map[string]any{
+		"kind":          "oauth",
+		"flow_id":       flowID,
+		"authorize_url": authorizeURL,
+	})
+}
+
+// connectHeaders is connect's per_user_headers branch.
+func (h *MCPSessionsHandler) connectHeaders(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, userID string, config *schemas.MCPClientConfig) {
+	provider := h.store.MCPHeadersProvider
+	if provider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Per-user headers provider not configured")
+		return
+	}
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Could not derive callback base URL")
+		return
+	}
+	initiation, err := provider.InitiateUserSubmissionFlow(bfCtx, schemas.MCPAuthModeUser, userID, config.ID, baseURL)
+	if err != nil {
+		logger.Error("[mcp/sessions] connect header flow init failed: mcp_client=%s err=%v", config.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start submitting your headers")
+		return
+	}
+	lib.RecordAuditChange(ctx, "mcp_session.connect_started", "mcp_session", initiation.FlowID, config.Name, nil, auditMCPSession("header_flow", config.ID, string(schemas.MCPAuthModeUser), &userID, nil))
+	keys := config.PerUserHeaderKeys
+	if keys == nil {
+		keys = []string{}
+	}
+	SendJSON(ctx, map[string]any{
+		"kind":                 "headers",
+		"flow_id":              initiation.FlowID,
+		"required_header_keys": keys,
+		"missing_header_keys":  h.missingCallerHeaderKeys(bfCtx, provider, userID, config.ID, keys),
+	})
+}
+
+// missingCallerHeaderKeys is which of the required header keys the user's stored credential for
+// the client does not hold, the keys an admin added since they last submitted, so a resubmission
+// can point them out. A user with no stored credential is missing none: everything is new to
+// them. Only key names are compared; no value leaves the store. A failed read is logged and
+// reports none, since it only drives a hint.
+func (h *MCPSessionsHandler) missingCallerHeaderKeys(ctx context.Context, provider schemas.MCPHeadersProvider, userID, mcpClientID string, required []string) []string {
+	missing := []string{}
+	cred, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeUser, userID, mcpClientID)
+	if err != nil {
+		if !errors.Is(err, schemas.ErrHeadersCredentialNotFound) {
+			logger.Warn("[mcp/sessions] connect could not read the stored header keys: mcp_client=%s err=%v", mcpClientID, err)
+		}
+		return missing
+	}
+	if cred == nil {
+		return missing
+	}
+	// Required keys and stored keys are both canonical (lowercase, trimmed) by the write-side
+	// invariant, so an exact lookup is correct.
+	for _, key := range required {
+		if value, ok := cred.Headers[key]; !ok || value == "" {
+			missing = append(missing, key)
+		}
+	}
+	return missing
+}
+
 // revoke hard-deletes the local token row and any pending flow rows for the
 // same identity + MCP client. Upstream revocation against the OAuth provider
 // is NOT performed — the per-user OAuth template config doesn't carry a
@@ -926,9 +1124,9 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 // Every row kind the list returns can be revoked: a header credential, a
 // pending header flow, a pending OAuth flow and an OAuth token.
 //
-// Same authorization model as list/reauth: caller with an identity must match
-// the row's identity column; caller without an identity is the dashboard admin
-// view and can act on any row.
+// A row the caller cannot see answers 404. Of the rows they can see, a caller
+// revokes their own (isCredentialActionAllowed), and anyone else's only when the server
+// lets them act on others' credentials; otherwise 403.
 func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	rowID, ok := ctx.UserValue("id").(string)
 	if !ok || rowID == "" {
@@ -948,6 +1146,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if headerCred != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, headerCred.AuthMode, headerCred.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
 		// Drop pending submission flow rows for the same binding BEFORE
 		// the credential. If a flow finishes (submit lands) after the
 		// credential is gone, the upsert would mint a fresh credential and
@@ -992,6 +1194,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if headerFlow != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, headerFlow.FlowMode, headerFlow.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
 		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderFlow(ctx, headerFlow.ID); err != nil {
 			logger.Error("[mcp/sessions] delete header flow failed: id=%s err=%v", rowID, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
@@ -1013,6 +1219,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if oauthFlow != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, oauthFlow.FlowMode, oauthFlow.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
 		if err := h.store.ConfigStore.DeleteOauthUserSession(ctx, oauthFlow.ID); err != nil {
 			logger.Error("[mcp/sessions] delete oauth flow failed: id=%s err=%v", rowID, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
@@ -1026,6 +1236,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	tok, err := h.loadRowAuthorizedForCaller(ctx, rowID)
 	if err != nil {
 		_ = err
+		return
+	}
+	if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, tok.AuthMode, tok.UserID) {
+		SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
 		return
 	}
 	// Delete pending flow rows BEFORE the token row. If a flow finishes
