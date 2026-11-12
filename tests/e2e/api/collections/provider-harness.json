@@ -318471,10 +318471,13 @@
                   "    pm.expect(m.supported_methods, 'no task types on ' + m.id).to.be.an('array').that.is.not.empty;",
                   "  });",
                   "});",
-                  "pm.test('includes a public image and video model', function () {",
-                  "  var ids = pm.response.json().data.map(function (m) { return m.id; });",
-                  "  pm.expect(ids).to.include('machgen/FLUX.2-dev');",
-                  "  pm.expect(ids).to.include('machgen/MiniMax-H3');",
+                  "pm.test('includes a public image and video model with their task types', function () {",
+                  "  var byId = {};",
+                  "  pm.response.json().data.forEach(function (m) { byId[m.id] = m; });",
+                  "  pm.expect(byId, 'machgen/FLUX.2-dev missing').to.have.property('machgen/FLUX.2-dev');",
+                  "  pm.expect(byId, 'machgen/MiniMax-H3 missing').to.have.property('machgen/MiniMax-H3');",
+                  "  pm.expect(byId['machgen/FLUX.2-dev'].supported_methods).to.include.members(['T2I', 'I2I']);",
+                  "  pm.expect(byId['machgen/MiniMax-H3'].supported_methods).to.include('T2V');",
                   "});"
                 ]
               }
