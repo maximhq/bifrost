@@ -1641,6 +1641,9 @@
 		"issuerLabel": "Issuer URL",
 		"issuerDescription": "Bifrost's stable public URL. Each gateway is served at <code0/>. This is the same issuer the MCP OAuth server uses, so changing it also affects MCP clients signed in with OAuth. Supports env var syntax (e.g. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com or env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<issuer URL>/gateway/<client>"
+		"urlTemplate": "<issuer URL>/gateway/<client>",
+		"accessTokenTtlLabel": "Access token lifetime (seconds)",
+		"accessTokenTtlDescription": "How long each sign-in's access token stays valid (default 600, minimum 60). Signing out or revoking a sign-in stops it from refreshing, but the access token it already holds keeps working until it expires. To cut access off immediately, deactivate the virtual key or the user. This setting is shared with MCP OAuth.",
+		"accessTokenTtlInvalid": "The access token lifetime must be a whole number of at least 60 seconds."
 	}
 }

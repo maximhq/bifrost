@@ -1636,6 +1636,9 @@
 		"issuerLabel": "颁发者 URL",
 		"issuerDescription": "Bifrost 的固定公共 URL。每个网关都在 <code0/> 提供服务。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<颁发者 URL>/gateway/<客户端>"
+		"urlTemplate": "<颁发者 URL>/gateway/<客户端>",
+		"accessTokenTtlLabel": "访问令牌有效期（秒）",
+		"accessTokenTtlDescription": "每次登录的访问令牌保持有效的时长（默认 600，最小 60）。退出登录或撤销登录会停止刷新，但已签发的访问令牌在过期前仍可使用。要立即切断访问，请停用虚拟密钥或该用户。此设置与 MCP OAuth 共用。",
+		"accessTokenTtlInvalid": "访问令牌有效期必须是不小于 60 秒的整数。"
 	}
 }

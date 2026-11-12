@@ -1670,6 +1670,9 @@
 		"issuerLabel": "URL de l’émetteur",
 		"issuerDescription": "L’URL publique stable de Bifrost. Chaque passerelle est servie à <code0/>. C’est le même émetteur que celui du serveur OAuth MCP : le modifier affecte donc aussi les clients MCP connectés via OAuth. Prend en charge la syntaxe des variables d’environnement (par ex. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com ou env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<URL de l’émetteur>/gateway/<client>"
+		"urlTemplate": "<URL de l’émetteur>/gateway/<client>",
+		"accessTokenTtlLabel": "Durée de vie du jeton d’accès (secondes)",
+		"accessTokenTtlDescription": "Durée de validité du jeton d’accès de chaque connexion (600 par défaut, 60 minimum). Se déconnecter ou révoquer une connexion empêche son renouvellement, mais le jeton d’accès déjà émis reste valable jusqu’à son expiration. Pour couper l’accès immédiatement, désactivez la clé virtuelle ou l’utilisateur. Ce paramètre est partagé avec MCP OAuth.",
+		"accessTokenTtlInvalid": "La durée de vie du jeton d’accès doit être un nombre entier d’au moins 60 secondes."
 	}
 }

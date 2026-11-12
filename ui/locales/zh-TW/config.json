@@ -1665,6 +1665,9 @@
 		"issuerLabel": "簽發者 URL",
 		"issuerDescription": "Bifrost 的固定公開 URL。每個閘道都在 <code0/> 提供服務。它與 MCP OAuth 伺服器使用同一個簽發者，因此變更它也會影響透過 OAuth 登入的 MCP 用戶端。支援環境變數語法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<簽發者 URL>/gateway/<用戶端>"
+		"urlTemplate": "<簽發者 URL>/gateway/<用戶端>",
+		"accessTokenTtlLabel": "存取權杖有效期（秒）",
+		"accessTokenTtlDescription": "每次登入的存取權杖保持有效的時間（預設 600，最小 60）。登出或撤銷登入會停止重新整理，但已簽發的存取權杖在到期前仍可使用。若要立即切斷存取，請停用虛擬金鑰或該使用者。此設定與 MCP OAuth 共用。",
+		"accessTokenTtlInvalid": "存取權杖有效期必須是不小於 60 秒的整數。"
 	}
 }

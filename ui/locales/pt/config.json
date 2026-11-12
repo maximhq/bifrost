@@ -1641,6 +1641,9 @@
 		"issuerLabel": "URL do emissor",
 		"issuerDescription": "O URL público estável do Bifrost. Cada gateway é servido em <code0/>. É o mesmo emissor usado pelo servidor OAuth do MCP, pelo que alterá-lo também afeta os clientes MCP com sessão iniciada por OAuth. Suporta a sintaxe de variáveis de ambiente (por ex., <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com ou env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<URL do emissor>/gateway/<cliente>"
+		"urlTemplate": "<URL do emissor>/gateway/<cliente>",
+		"accessTokenTtlLabel": "Validade do token de acesso (segundos)",
+		"accessTokenTtlDescription": "Por quanto tempo o token de acesso de cada login continua válido (padrão 600, mínimo 60). Sair ou revogar um login impede a renovação, mas o token de acesso já emitido continua funcionando até expirar. Para cortar o acesso imediatamente, desative a chave virtual ou o usuário. Esta configuração é compartilhada com o MCP OAuth.",
+		"accessTokenTtlInvalid": "A validade do token de acesso deve ser um número inteiro de pelo menos 60 segundos."
 	}
 }

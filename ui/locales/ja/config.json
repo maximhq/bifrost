@@ -1660,6 +1660,9 @@
 		"issuerLabel": "発行者 URL",
 		"issuerDescription": "Bifrost の固定の公開 URL です。各ゲートウェイは <code0/> で提供されます。MCP OAuth サーバーと同じ発行者を使うため、変更すると OAuth でサインインした MCP クライアントにも影響します。環境変数構文に対応しています（例: <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com または env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<発行者 URL>/gateway/<クライアント>"
+		"urlTemplate": "<発行者 URL>/gateway/<クライアント>",
+		"accessTokenTtlLabel": "アクセストークンの有効期間（秒）",
+		"accessTokenTtlDescription": "各サインインのアクセストークンが有効な期間です（既定値 600、最小 60）。サインアウトやサインインの取り消しで更新は止まりますが、すでに発行されたアクセストークンは期限切れまで使えます。すぐにアクセスを止めるには、仮想キーまたはユーザーを無効にしてください。この設定は MCP OAuth と共有されます。",
+		"accessTokenTtlInvalid": "アクセストークンの有効期間は 60 秒以上の整数で指定してください。"
 	}
 }

@@ -1,6 +1,7 @@
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +29,10 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 
 const isIssuerSet = (issuer?: SecretVar) => !!(issuer?.value?.trim() || issuer?.ref?.trim());
 
+// The access token lifetime is shared with MCP OAuth and validated the same way as on the MCP page.
+const minAccessTokenTTL = 60;
+const accessTokenTTLText = (ttl?: number) => String(ttl || 600);
+
 // Claude Code is pointed at {issuer}/gateway/claude-code. Only a plain-text issuer can be
 // shown; env and vault references resolve on the server, so the caller shows the
 // translated "<issuer URL>/gateway/claude-code" template instead (fallback).
@@ -47,6 +52,7 @@ export default function GatewaysView() {
 
 	const [enabled, setEnabled] = useState(false);
 	const [issuerURL, setIssuerURL] = useState<SecretVar | undefined>(undefined);
+	const [accessTokenTTL, setAccessTokenTTL] = useState(accessTokenTTLText());
 	const [managedSettings, setManagedSettings] = useState("");
 	const [telemetry, setTelemetry] = useState<TelemetryDraft>(() => telemetryDraftFromConfig(undefined));
 
@@ -54,6 +60,7 @@ export default function GatewaysView() {
 		if (!config) return;
 		setEnabled(config.oauth2_server_config?.gateways?.claude_code?.enabled ?? false);
 		setIssuerURL(config.oauth2_server_config?.issuer_url);
+		setAccessTokenTTL(accessTokenTTLText(config.oauth2_server_config?.access_token_ttl));
 		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.gateways?.claude_code?.managed_settings));
 		setTelemetry(telemetryDraftFromConfig(config.oauth2_server_config?.gateways?.claude_code?.telemetry));
 	}, [config]);
@@ -64,10 +71,11 @@ export default function GatewaysView() {
 		return (
 			enabled !== (stored?.gateways?.claude_code?.enabled ?? false) ||
 			!secretVarEquals(issuerURL, stored?.issuer_url) ||
+			accessTokenTTL !== accessTokenTTLText(stored?.access_token_ttl) ||
 			managedSettings !== formatManagedSettings(stored?.gateways?.claude_code?.managed_settings) ||
 			telemetryDraftKey(telemetry) !== telemetryDraftKey(telemetryDraftFromConfig(stored?.gateways?.claude_code?.telemetry))
 		);
-	}, [config, enabled, issuerURL, managedSettings, telemetry]);
+	}, [config, enabled, issuerURL, accessTokenTTL, managedSettings, telemetry]);
 
 	const urlTemplate = t("claudeCode.gatewayURLTemplate");
 	const url = gatewayURL(issuerURL, urlTemplate);
@@ -96,6 +104,11 @@ export default function GatewaysView() {
 		}
 		if (enabled && !isIssuerSet(issuerURL)) {
 			toast.error(t("claudeCode.issuerRequired"));
+			return;
+		}
+		const ttl = Number(accessTokenTTL);
+		if (!Number.isInteger(ttl) || ttl < minAccessTokenTTL) {
+			toast.error(t("gateways.accessTokenTtlInvalid"));
 			return;
 		}
 		// Managed settings are edited as JSON text and parsed only here, so a
@@ -132,6 +145,7 @@ export default function GatewaysView() {
 					oauth2_server_config: {
 						...clientConfig.oauth2_server_config,
 						issuer_url: issuerURL,
+						access_token_ttl: ttl,
 						gateways: {
 							...clientConfig.oauth2_server_config?.gateways,
 							claude_code: { enabled, managed_settings: parsedSettings, ...(telemetryPayload ? { telemetry: telemetryPayload } : {}) },
@@ -143,7 +157,7 @@ export default function GatewaysView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, enabled, issuerURL, managedSettings, telemetry, telemetryErrorMessage, updateCoreConfig, t]);
+	}, [bifrostConfig, enabled, issuerURL, accessTokenTTL, managedSettings, telemetry, telemetryErrorMessage, updateCoreConfig, t]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="gateways-view">
@@ -169,6 +183,23 @@ export default function GatewaysView() {
 						placeholder={t("gateways.issuerPlaceholder")}
 						value={issuerURL}
 						onChange={setIssuerURL}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="space-y-1.5 rounded-sm border p-4">
+					<label htmlFor="gateways-access-token-ttl" className="text-sm font-medium">
+						{t("gateways.accessTokenTtlLabel")}
+					</label>
+					<p className="text-muted-foreground text-sm">{t("gateways.accessTokenTtlDescription")}</p>
+					<Input
+						id="gateways-access-token-ttl"
+						data-testid="gateways-access-token-ttl-input"
+						type="number"
+						min={minAccessTokenTTL}
+						className="max-w-40"
+						value={accessTokenTTL}
+						onChange={(e) => setAccessTokenTTL(e.target.value)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

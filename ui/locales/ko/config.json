@@ -1665,6 +1665,9 @@
 		"issuerLabel": "발급자 URL",
 		"issuerDescription": "Bifrost의 고정 공개 URL이에요. 각 게이트웨이는 <code0/>에서 제공돼요. MCP OAuth 서버와 같은 발급자를 사용하므로 변경하면 OAuth로 로그인한 MCP 클라이언트에도 영향을 줘요. 환경 변수 구문을 지원해요(예: <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com 또는 env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<발급자 URL>/gateway/<클라이언트>"
+		"urlTemplate": "<발급자 URL>/gateway/<클라이언트>",
+		"accessTokenTtlLabel": "액세스 토큰 유효 기간(초)",
+		"accessTokenTtlDescription": "각 로그인의 액세스 토큰이 유효한 기간입니다(기본값 600, 최소 60). 로그아웃하거나 로그인을 취소하면 갱신은 중단되지만, 이미 발급된 액세스 토큰은 만료될 때까지 계속 작동합니다. 즉시 접근을 차단하려면 가상 키나 사용자를 비활성화하세요. 이 설정은 MCP OAuth와 공유됩니다.",
+		"accessTokenTtlInvalid": "액세스 토큰 유효 기간은 60초 이상의 정수여야 합니다."
 	}
 }

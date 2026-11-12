@@ -316,7 +316,11 @@ The developer then runs `/login` in Claude Code, presses Enter on the **Cloud ga
    - **Anonymous session**: only offered to a signed-in dashboard user while *Enforce authentication on inference* is off.
 3. The browser confirms the sign-in, and Claude Code receives its token.
 
-Claude Code never receives the virtual key itself. It gets a signed token bound to the key (audience `https://bifrost.example.com/gateway/claude-code`, so it is refused on `/mcp`), which Bifrost resolves back to the key on every request. Deactivating or deleting the key, or revoking the grant under **OAuth grants**, cuts the session off; signing out with `/logout` revokes it too. Access tokens last for the configured `access_token_ttl` (10 minutes by default), and Claude Code refreshes them silently.
+Claude Code never receives the virtual key itself. It gets a signed token bound to the key (audience `https://bifrost.example.com/gateway/claude-code`, so it is refused on `/mcp`), which Bifrost resolves back to the key on every request. Access tokens last for the configured `access_token_ttl` (10 minutes by default, set under **Settings → Gateways** and shared with MCP OAuth), and Claude Code refreshes them silently.
+
+<Note>
+Deactivating or deleting the key, or deactivating the user, cuts the session off on the next request: Bifrost re-checks the identity on every call. Revoking the grant under **OAuth grants**, or signing out with `/logout`, stops the session from refreshing, but the access token Claude Code already holds keeps working until it expires, for up to `access_token_ttl`. To cut a session off immediately, deactivate the key or the user; to shorten the window for revocations, lower `access_token_ttl`.
+</Note>
 
 ### Models, managed settings and telemetry
 

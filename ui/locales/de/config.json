@@ -1670,6 +1670,9 @@
 		"issuerLabel": "Issuer-URL",
 		"issuerDescription": "Die stabile öffentliche URL von Bifrost. Jedes Gateway ist unter <code0/> erreichbar. Es ist derselbe Issuer, den der MCP-OAuth-Server nutzt; eine Änderung betrifft also auch per OAuth angemeldete MCP-Clients. Unterstützt Umgebungsvariablen-Syntax (z. B. <code1>env.BIFROST_ISSUER_URL</code1>).",
 		"issuerPlaceholder": "https://bifrost.example.com oder env.BIFROST_ISSUER_URL",
-		"urlTemplate": "<Issuer-URL>/gateway/<Client>"
+		"urlTemplate": "<Issuer-URL>/gateway/<Client>",
+		"accessTokenTtlLabel": "Lebensdauer des Zugriffstokens (Sekunden)",
+		"accessTokenTtlDescription": "Wie lange das Zugriffstoken einer Anmeldung gültig bleibt (Standard 600, mindestens 60). Abmelden oder Widerrufen einer Anmeldung verhindert die nächste Aktualisierung, das bereits ausgestellte Zugriffstoken funktioniert aber bis zu seinem Ablauf weiter. Um den Zugriff sofort zu sperren, deaktiviere den virtuellen Schlüssel oder den Benutzer. Diese Einstellung wird mit MCP OAuth geteilt.",
+		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss eine ganze Zahl von mindestens 60 Sekunden sein."
 	}
 }
