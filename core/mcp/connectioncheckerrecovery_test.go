@@ -356,6 +356,40 @@ func TestConnectionChecker_ListFailureKeepsKnownTools(t *testing.T) {
 	requireRecovered(t, m, config.ID)
 }
 
+// TestConnectionChecker_ListFailureSendsOneListPerProbeAttempt: the probe's own retries
+// (ProbeRetryConfig) are the only ones a failing tools/list gets during a check. Each probe
+// attempt sends exactly one tools/list, rather than running the connect-time retry schedule of
+// the list underneath it inside every attempt.
+func TestConnectionChecker_ListFailureSendsOneListPerProbeAttempt(t *testing.T) {
+	u := startUnreliableUpstream(t)
+	m, config := connectUnreliableClient(t, u, "listonce", true)
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	state, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.NotNil(t, state.Conn)
+	lists := u.count("tools/list")
+
+	u.set(func(u *unreliableUpstream) { u.listFail = true })
+	require.False(t, checker.checkLiveConnection(state.Conn, config.Name, state.ConnGeneration))
+	requireFailureStage(t, m, config.ID, schemas.MCPConnectionFailureStageListTools)
+	assert.Equal(t, lists+ProbeRetryConfig.MaxRetries+1, u.count("tools/list"), "one tools/list per probe attempt")
+}
+
+// TestConnectionChecker_PerCallListFailureSendsOneListPerProbeAttempt: the same holds for a
+// per-call client, whose check dials a fresh connection for every probe attempt.
+func TestConnectionChecker_PerCallListFailureSendsOneListPerProbeAttempt(t *testing.T) {
+	u := startUnreliableUpstream(t)
+	m, config := connectUnreliableClient(t, u, "percallonce", false)
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	lists := u.count("tools/list")
+
+	u.set(func(u *unreliableUpstream) { u.listFail = true })
+	next, _ := checker.performCheck()
+	assert.Equal(t, UnstableConnectionCheckInterval, next)
+	requireFailureStage(t, m, config.ID, schemas.MCPConnectionFailureStageToolDiscovery)
+	assert.Equal(t, lists+ProbeRetryConfig.MaxRetries+1, u.count("tools/list"), "one tools/list per probe attempt")
+}
+
 // TestConnectionChecker_ForgottenSessionReconnects: when the upstream forgets the
 // session with no traffic in between, the check's ping gets a 404, is not retried, and the client
 // opens one new connection and is healthy again.

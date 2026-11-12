@@ -1,3 +1,4 @@
+- fix: mcp - a failing tools/list in a connection health check is sent once per probe attempt instead of running the connect-time retry schedule inside every attempt, and a closed transport (e.g. an exited STDIO server) is no longer retried, so the checker reaches the reconnect without the extra delay
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
 - fix: anthropic - Messages requests routed to Bedrock keep `toolset_name` on replayed `tool_use` blocks, so a computer toolset turn no longer fails with a 400 on its paired `tool_result`
