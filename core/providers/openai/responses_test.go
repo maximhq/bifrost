@@ -4053,7 +4053,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 	})
 
 	t.Run("strips_sampling_fields_for_gpt6", func(t *testing.T) {
-		include := []string{"message.output_text.logprobs", "reasoning.encrypted_content"}
+		include := []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}
 		params := &schemas.ResponsesParameters{
 			Temperature: schemas.Ptr(0.2),
 			TopP:        schemas.Ptr(0.9),
@@ -4067,7 +4067,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 			require.Nil(t, req.TopLogProbs, provider)
 			require.Equal(t, []string{"reasoning.encrypted_content"}, req.Include, provider)
 		}
-		require.Equal(t, []string{"message.output_text.logprobs", "reasoning.encrypted_content"}, params.Include,
+		require.Equal(t, []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}, params.Include,
 			"caller's include must not be mutated")
 	})
 

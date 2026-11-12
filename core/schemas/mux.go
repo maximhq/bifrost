@@ -833,7 +833,7 @@ func chatConvertibleRolelessItem(t ResponsesMessageType) bool {
 	return false
 }
 
-func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
+func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
 	}
@@ -885,10 +885,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			Role:                 ChatMessageRoleAssistant,
 			ChatAssistantMessage: assistant,
 		})
+		if sources != nil {
+			*sources = append(*sources, -1)
+		}
 		textTurn = -1
 	}
 
-	for _, rm := range rms {
+	for idx, rm := range rms {
 		// Chat Completions has no mid-conversation effort item; emitting it would produce a
 		// roleless, contentless chat message.
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
@@ -1161,6 +1164,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		}
 
 		chatMessages = append(chatMessages, cm)
+		if sources != nil {
+			*sources = append(*sources, idx)
+		}
 		textTurn = -1
 		if cm.Role == ChatMessageRoleAssistant && (cm.ChatAssistantMessage == nil || cm.ChatAssistantMessage.Refusal == nil) {
 			textTurn = len(chatMessages) - 1
@@ -1405,6 +1411,10 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			Metadata:        cr.Params.Metadata,
 		}
 
+		if cr.Params.LogProbs != nil && *cr.Params.LogProbs {
+			brr.Params.Include = []string{ResponsesIncludeOutputTextLogProbs}
+		}
+
 		// Convert StreamOptions
 		if cr.Params.StreamOptions != nil {
 			brr.Params.StreamOptions = &ResponsesStreamOptions{
@@ -1473,7 +1483,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	}
 
 	// Convert Input messages using existing ToChatMessages()
-	bcr.Input = ToChatMessages(brr.Input)
+	bcr.Input = ToChatMessages(brr.Input, nil)
 
 	// The Responses API carries its system prompt in the top-level `instructions` field rather than
 	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
@@ -1794,6 +1804,41 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	return responsesResp
 }
 
+// ResponsesIncludeOutputTextLogProbs is the Responses include entry that returns token logprobs.
+const ResponsesIncludeOutputTextLogProbs = "message.output_text.logprobs"
+
+// chatLogProbsFromResponsesMessage collects one output message's output_text token logprobs.
+func chatLogProbsFromResponsesMessage(msg *ResponsesMessage) *BifrostLogProbs {
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeMessage || msg.Content == nil {
+		return nil
+	}
+	var content []ContentLogProb
+	for _, block := range msg.Content.ContentBlocks {
+		if block.ResponsesOutputMessageContentText == nil {
+			continue
+		}
+		for _, lp := range block.ResponsesOutputMessageContentText.LogProbs {
+			content = append(content, ContentLogProb(lp))
+		}
+	}
+	if len(content) == 0 {
+		return nil
+	}
+	return &BifrostLogProbs{Content: content}
+}
+
+// chatLogProbsFromTextLogProbs converts one output_text block's logprobs; empty yields nil.
+func chatLogProbsFromTextLogProbs(logprobs []ResponsesOutputMessageContentTextLogProb) *BifrostLogProbs {
+	if len(logprobs) == 0 {
+		return nil
+	}
+	content := make([]ContentLogProb, len(logprobs))
+	for i, lp := range logprobs {
+		content[i] = ContentLogProb(lp)
+	}
+	return &BifrostLogProbs{Content: content}
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesResponse to BifrostChatResponse format
 // This converts Responses API format to Chat-style fields (Choices)
 func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostChatResponse {
@@ -1821,7 +1866,8 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	// Create Choices from ResponsesResponse
 	if len(responsesResp.Output) > 0 {
 		// Convert ResponsesMessages back to ChatMessages
-		chatMessages := ToChatMessages(responsesResp.Output)
+		var sources []int
+		chatMessages := ToChatMessages(responsesResp.Output, &sources)
 
 		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
 
@@ -1834,6 +1880,9 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 				ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{
 					Message: &chatMsg,
 				},
+			}
+			if src := sources[i]; src >= 0 {
+				choice.LogProbs = chatLogProbsFromResponsesMessage(&responsesResp.Output[src])
 			}
 			choices = append(choices, choice)
 		}
@@ -2757,7 +2806,8 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 	case ResponsesStreamResponseTypeOutputTextDelta:
 		resp.Choices = []BifrostResponseChoice{
 			{
-				Index: 0,
+				Index:    0,
+				LogProbs: chatLogProbsFromTextLogProbs(rsr.LogProbs),
 				ChatStreamResponseChoice: &ChatStreamResponseChoice{
 					Delta: &ChatStreamResponseChoiceDelta{
 						Content: rsr.Delta,
