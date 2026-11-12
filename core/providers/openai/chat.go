@@ -148,6 +148,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
 		return openaiReq
+	case schemas.BedrockMantle, schemas.Bedrock:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		if !isGPTOSS(capModel) {
+			openaiReq.stripUnsupportedSamplingParams(caps)
+		}
+		return openaiReq
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// DeepSeek's chat-completions endpoint still uses the legacy max_tokens
