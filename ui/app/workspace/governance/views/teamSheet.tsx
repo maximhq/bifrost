@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { RequestLimitLines } from "@/components/ui/multibudgets";
+import { TokenLimitLabel } from "@/components/ui/tokenLimitLabel";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,11 +27,20 @@ import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import QuarterStartSelect from "@/components/ui/quarterStartSelect";
 import BudgetScopeSelect from "@/components/ui/budgetScopeSelect";
-import { budgetPeriodKey } from "@/lib/budgetOutline";
+import { budgetPeriodKey, hasDuplicateBudgetPeriods } from "@/lib/budgetOutline";
 import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
 import { LimitScope, CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
-import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
+import {
+	budgetSignature,
+	formatCurrency,
+	isRequestLimitExhausted,
+	parseResetPeriod,
+	type RequestLimitLine,
+	requestLimitLinesOf,
+	requestLimitsOf,
+	toRequestLimitRequests,
+} from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
@@ -70,8 +81,7 @@ interface TeamFormData {
 	// Rate Limit
 	tokenMaxLimit: number | undefined;
 	tokenResetDuration: string;
-	requestMaxLimit: number | undefined;
-	requestResetDuration: string;
+	requestLimits: RequestLimitLine[];
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendarAligned: boolean;
 	isDirty: boolean;
@@ -93,8 +103,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 		// Rate Limit
 		tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: team?.rate_limit?.token_reset_duration || "1h",
-		requestMaxLimit: team?.rate_limit?.request_max_limit ?? undefined,
-		requestResetDuration: team?.rate_limit?.request_reset_duration || "1h",
+		requestLimits: requestLimitLinesOf(team),
 		calendarAligned: team?.calendar_aligned ?? false,
 	};
 };
@@ -102,6 +111,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	const { t, i18n } = useTranslation("governance");
 	const { t: tCommon } = useTranslation("common");
+	const { t: tModels } = useTranslation("models");
 	const isEditing = !!team;
 	const [initialState, setInitialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team));
 	const [formData, setFormData] = useState<TeamFormData>({
@@ -189,8 +199,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			budgets: formData.budgets,
 			tokenMaxLimit: formData.tokenMaxLimit,
 			tokenResetDuration: formData.tokenResetDuration,
-			requestMaxLimit: formData.requestMaxLimit,
-			requestResetDuration: formData.requestResetDuration,
+			requestLimits: formData.requestLimits,
 			calendarAligned: formData.calendarAligned,
 		};
 		setFormData((prev) => ({
@@ -203,14 +212,13 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		formData.budgets,
 		formData.tokenMaxLimit,
 		formData.tokenResetDuration,
-		formData.requestMaxLimit,
-		formData.requestResetDuration,
+		formData.requestLimits,
 		formData.calendarAligned,
 		initialState,
 	]);
 
 	const tokenMaxLimitNum = formData.tokenMaxLimit;
-	const requestMaxLimitNum = formData.requestMaxLimit;
+	const submittableRequestLimits = useMemo(() => toRequestLimitRequests(formData.requestLimits), [formData.requestLimits]);
 
 	// Validation
 	const validator = useMemo(() => {
@@ -241,15 +249,11 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					]
 				: []),
 
-			// Rate limit validation - request limits
-			...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
-				? [
-						Validator.minValue(requestMaxLimitNum || 0, 1, t("sheet.requestMaxLimit")),
-						Validator.required(formData.requestResetDuration, t("sheet.requestResetRequired")),
-					]
-				: []),
+			// Request limits: each at least 1, one per reset period and scope
+			...submittableRequestLimits.map((rl) => Validator.minValue(rl.max_limit, 1, t("sheet.requestMaxLimit"))),
+			Validator.custom(!hasDuplicateBudgetPeriods(submittableRequestLimits), t("requestLimits.unique")),
 		]);
-	}, [formData, tokenMaxLimitNum, requestMaxLimitNum, t]);
+	}, [formData, tokenMaxLimitNum, submittableRequestLimits, t]);
 
 	const updateField = <K extends keyof TeamFormData>(field: K, value: TeamFormData[K]) => {
 		if (field === "name") {
@@ -322,22 +326,16 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
-				// Detect rate limit changes using had/has pattern
+				// The rate limit carries the token limit only; {} removes it. A legacy row's request fields are
+				// replaced by request_limits on the backend.
 				const hadRateLimit = !!team.rate_limit;
-				const hasRateLimit =
-					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
-					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
-				if (hasRateLimit) {
-					updateData.rate_limit = {
-						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
-						request_max_limit: requestMaxLimitNum,
-						request_reset_duration:
-							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
-					};
+				if (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) {
+					updateData.rate_limit = { token_max_limit: tokenMaxLimitNum, token_reset_duration: formData.tokenResetDuration };
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateTeamRequest["rate_limit"];
 				}
+				// The full desired set: [] removes every request limit.
+				updateData.request_limits = submittableRequestLimits;
 
 				await updateTeam({ teamId: team.id, data: updateData }).unwrap();
 				toast.success(t("teams.updated"));
@@ -351,18 +349,11 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					calendar_aligned: formData.calendarAligned,
 				};
 
-				// Add rate limit if enabled (token or request limits)
-				if (
-					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
-					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)
-				) {
-					createData.rate_limit = {
-						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
-						request_max_limit: requestMaxLimitNum,
-						request_reset_duration:
-							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
-					};
+				if (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) {
+					createData.rate_limit = { token_max_limit: tokenMaxLimitNum, token_reset_duration: formData.tokenResetDuration };
+				}
+				if (submittableRequestLimits.length > 0) {
+					createData.request_limits = submittableRequestLimits;
 				}
 
 				await createTeam(createData).unwrap();
@@ -510,27 +501,25 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							))}
 						</div>
 
-						{/* Rate Limit Configuration - Token Limits */}
-						<NumberAndSelect
-							id="tokenMaxLimit"
-							label={t("sheet.maximumTokens")}
-							value={formData.tokenMaxLimit}
-							selectValue={formData.tokenResetDuration}
-							onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
-							onChangeSelect={(value) => updateField("tokenResetDuration", value)}
-							options={resetDurationOptions}
-						/>
-
-						{/* Rate Limit Configuration - Request Limits */}
-						<NumberAndSelect
-							id="requestMaxLimit"
-							label={t("sheet.maximumRequests")}
-							value={formData.requestMaxLimit}
-							selectValue={formData.requestResetDuration}
-							onChangeNumber={(value) => updateField("requestMaxLimit", value)}
-							onChangeSelect={(value) => updateField("requestResetDuration", value)}
-							options={resetDurationOptions}
-						/>
+						{/* Rate Limiting Configuration: request limits, one line per reset period and scope, then the token limit */}
+						<div className="space-y-5">
+							<Label className="text-sm font-medium">{tModels("virtualKeys.rateLimitingConfiguration")}</Label>
+							<RequestLimitLines
+								data-testid="team-request-limit-lines"
+								lines={formData.requestLimits}
+								onChange={(lines) => updateField("requestLimits", lines)}
+								showScope
+							/>
+							<NumberAndSelect
+								id="tokenMaxLimit"
+								label={<TokenLimitLabel label={t("sheet.maximumTokens")} data-testid="team-token-limit-info" />}
+								value={formData.tokenMaxLimit}
+								selectValue={formData.tokenResetDuration}
+								onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
+								onChangeSelect={(value) => updateField("tokenResetDuration", value)}
+								options={resetDurationOptions}
+							/>
+						</div>
 
 						<CalendarAlignmentNotice
 							enabled={formData.calendarAligned}
@@ -540,9 +529,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 									rate_limit: {
 										token_max_limit: formData.tokenMaxLimit,
 										token_reset_duration: formData.tokenResetDuration,
-										request_max_limit: formData.requestMaxLimit,
-										request_reset_duration: formData.requestResetDuration,
 									},
+									request_limits: formData.requestLimits,
 								},
 							])}
 						/>
@@ -558,9 +546,9 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 								(formData.tokenMaxLimit !== undefined &&
 									formData.tokenMaxLimit !== null &&
 									(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
-								(formData.requestMaxLimit !== undefined &&
-									formData.requestMaxLimit !== null &&
-									(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
+								calendarWindowDurations([{ request_limits: formData.requestLimits }]).some(
+									(duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration),
+								);
 							if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
 							return (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
@@ -616,7 +604,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						/>
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
-						{isEditing && ((team?.budgets && team.budgets.length > 0) || team?.rate_limit) && (
+						{isEditing && ((team?.budgets && team.budgets.length > 0) || team?.rate_limit || (team?.request_limits?.length ?? 0) > 0) && (
 							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
 								<p className="text-sm font-medium">{t("sheet.currentUsage")}</p>
 								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -674,38 +662,31 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											</p>
 										</div>
 									)}
-									{team?.rate_limit?.request_max_limit && (
-										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">{t("sheet.requests")}</p>
+									{requestLimitsOf(team).map((rule) => (
+										<div key={rule.id} className="space-y-1" data-testid="team-request-limit-usage">
+											<p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+												{t("sheet.requests")}
+												{rule.request_reset_duration ? ` · ${parseResetPeriod(rule.request_reset_duration)}` : null}
+												{rule !== team?.rate_limit ? <BudgetScopeBadge scope={rule.scope} /> : null}
+											</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{team.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
-													{team.rate_limit.request_max_limit.toLocaleString(getLocale())}
+													{rule.request_current_usage.toLocaleString(getLocale())} /{" "}
+													{(rule.request_max_limit ?? 0).toLocaleString(getLocale())}
 												</span>
-												<Badge
-													variant={
-														team.rate_limit.request_max_limit > 0 &&
-														team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit
-															? "destructive"
-															: "default"
-													}
-													className="text-xs"
-												>
-													{team.rate_limit.request_max_limit > 0
-														? Math.round((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100)
-														: 0}
-													%
+												<Badge variant={isRequestLimitExhausted(rule) ? "destructive" : "default"} className="text-xs">
+													{rule.request_max_limit ? Math.round((rule.request_current_usage / rule.request_max_limit) * 100) : 0}%
 												</Badge>
 											</div>
 											<p className="text-muted-foreground text-xs">
 												{t("sheet.lastReset")}{" "}
-												{formatDistanceToNow(new Date(team.rate_limit.request_last_reset), {
+												{formatDistanceToNow(new Date(rule.request_last_reset), {
 													addSuffix: true,
 													locale: dateFnsLocale(i18n.language),
 												})}
 											</p>
 										</div>
-									)}
+									))}
 								</div>
 							</div>
 						)}

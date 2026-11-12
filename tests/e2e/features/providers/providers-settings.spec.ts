@@ -396,14 +396,15 @@ test.describe("Provider Settings", () => {
           providerSettingsPage.page.getByText("Rate Limiting Configuration"),
         ).toBeVisible();
 
-        // Should see token and request limit inputs
+        // Should see the token limit input (model requests only) and the request limit lines
         const tokenInput = providerSettingsPage.page.locator("#providerTokenMaxLimit");
-        const requestInput = providerSettingsPage.page.locator(
-          "#providerRequestMaxLimit",
-        );
-
         await expect(tokenInput).toBeVisible();
-        await expect(requestInput).toBeVisible();
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-token-limit-info"),
+        ).toBeVisible();
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-request-limits-add-btn"),
+        ).toBeVisible();
       }
     });
 
@@ -443,13 +444,14 @@ test.describe("Provider Settings", () => {
         await tokenInput.fill("");
         await tokenInput.pressSequentially("100000");
 
-        // Set request limit
-        const requestInput = providerSettingsPage.page.locator(
-          "#providerRequestMaxLimit",
+        // Set a shared request limit line; the provider tier offers no scope
+        await providerSettingsPage.setGovernanceConfig({ requestLimit: 1000 });
+        const requestInput = providerSettingsPage.page.getByTestId(
+          "provider-governance-request-limits-amount-0",
         );
-        await requestInput.click();
-        await requestInput.fill("");
-        await requestInput.pressSequentially("1000");
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-request-limits-scope-0"),
+        ).toHaveCount(0);
 
         // Verify values
         expect(await tokenInput.inputValue()).toBe("100000");

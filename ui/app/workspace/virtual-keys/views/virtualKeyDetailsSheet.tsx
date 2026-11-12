@@ -17,7 +17,7 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
-import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
+import { BudgetOverrideRequest, RequestLimit, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { virtualKeyMetadataLogsFilter } from "@/lib/utils/virtualKeyMetadata";
 import {
@@ -25,7 +25,9 @@ import {
 	formatCurrency,
 	getEffectiveBudgetLimit,
 	hasActiveBudgetOverride,
+	isRequestLimitExhausted,
 	parseResetPeriod,
+	requestLimitsOf,
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/managedVirtualKeyNotice";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -70,6 +72,51 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 	);
 }
 
+// One request limit's usage: its counter against its maximum, reset period and, when asked, last reset.
+// A scope badge marks the traffic it counts on holders whose rules carry one.
+function RequestLimitUsage({
+	rule,
+	label,
+	calendarAligned,
+	showScope,
+	showLastReset = true,
+	className,
+}: {
+	rule: RequestLimit;
+	label: string;
+	calendarAligned?: boolean;
+	showScope?: boolean;
+	showLastReset?: boolean;
+	className?: string;
+}) {
+	const { t, i18n } = useTranslation("models");
+	return (
+		<div className={className ?? "space-y-2"} data-testid="vk-request-limit-usage">
+			<div className="flex items-center gap-1.5">
+				<span className="text-muted-foreground text-xs font-medium">{label}</span>
+				{showScope ? <BudgetScopeBadge scope={rule.scope} /> : null}
+			</div>
+			<UsageLine current={rule.request_current_usage} max={rule.request_max_limit ?? 0} format={(n) => n.toLocaleString(getLocale())} />
+			<div className="text-muted-foreground flex items-center justify-between text-xs">
+				<span>
+					{t("virtualKeys.resets", { period: parseResetPeriod(rule.request_reset_duration || "") })}
+					{calendarAligned && supportsCalendarAlignment(rule.request_reset_duration || "") && t("virtualKeys.calendarSuffix")}
+				</span>
+				{showLastReset && rule.request_last_reset ? (
+					<span>
+						{t("virtualKeys.lastReset", {
+							when: formatDistanceToNow(new Date(rule.request_last_reset), {
+								addSuffix: true,
+								locale: dateFnsLocale(i18n.language),
+							}),
+						})}
+					</span>
+				) : null}
+			</div>
+		</div>
+	);
+}
+
 interface VirtualKeyDetailSheetProps {
 	virtualKey: VirtualKey;
 	onClose: () => void;
@@ -87,8 +134,9 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { t, i18n } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit, displayRequestLimits } =
 		useVirtualKeyUsage(virtualKey);
+	const requestLimits = requestLimitsOf({ rate_limit: displayRateLimit, request_limits: displayRequestLimits });
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
@@ -143,9 +191,7 @@ export default function VirtualKeyDetailSheet({
 		(displayRateLimit?.token_current_usage &&
 			displayRateLimit?.token_max_limit &&
 			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
-		(displayRateLimit?.request_current_usage &&
-			displayRateLimit?.request_max_limit &&
-			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
+		requestLimits.some(isRequestLimitExhausted);
 
 	return (
 		<Sheet open onOpenChange={onClose}>
@@ -449,14 +495,14 @@ export default function VirtualKeyDetailSheet({
 														)}
 
 														{/* Provider Rate Limits */}
-														{config.rate_limit && (
+														{(config.rate_limit || (config.request_limits?.length ?? 0) > 0) && (
 															<>
 																<DottedSeparator />
 																<div className="space-y-3">
 																	<h4 className="text-sm font-medium">{t("virtualKeys.providerRateLimits")}</h4>
 
 																	{/* Token Limits */}
-																	{config.rate_limit.token_max_limit != null ? (
+																	{config.rate_limit && config.rate_limit.token_max_limit != null ? (
 																		<div className="space-y-2">
 																			<span className="text-muted-foreground text-xs font-medium">{t("virtualKeys.tokenLimits")}</span>
 																			<UsageLine
@@ -487,39 +533,16 @@ export default function VirtualKeyDetailSheet({
 																		</div>
 																	) : null}
 
-																	{/* Request Limits */}
-																	{config.rate_limit.request_max_limit != null ? (
-																		<div className="space-y-2">
-																			<span className="text-muted-foreground text-xs font-medium">{t("virtualKeys.requestLimits")}</span>
-																			<UsageLine
-																				current={config.rate_limit.request_current_usage}
-																				max={config.rate_limit.request_max_limit}
-																				format={(n) => n.toLocaleString(getLocale())}
-																			/>
-																			<div className="text-muted-foreground flex items-center justify-between text-xs">
-																				<span>
-																					{t("virtualKeys.resets", {
-																						period: parseResetPeriod(config.rate_limit.request_reset_duration || ""),
-																					})}
-																					{virtualKey.calendar_aligned &&
-																						supportsCalendarAlignment(config.rate_limit.request_reset_duration || "") &&
-																						t("virtualKeys.calendarSuffix")}
-																				</span>
-																				{config.rate_limit.request_last_reset ? (
-																					<span>
-																						{t("virtualKeys.lastReset", {
-																							when: formatDistanceToNow(new Date(config.rate_limit.request_last_reset), {
-																								addSuffix: true,
-																								locale: dateFnsLocale(i18n.language),
-																							}),
-																						})}
-																					</span>
-																				) : null}
-																			</div>
-																		</div>
-																	) : null}
+																	{requestLimitsOf(config).map((rule, ruleIdx) => (
+																		<RequestLimitUsage
+																			key={rule.id || ruleIdx}
+																			rule={rule}
+																			label={t("virtualKeys.requestLimits")}
+																			calendarAligned={virtualKey.calendar_aligned}
+																		/>
+																	))}
 
-																	{config.rate_limit.token_max_limit == null && config.rate_limit.request_max_limit == null && (
+																	{config.rate_limit?.token_max_limit == null && requestLimitsOf(config).length === 0 && (
 																		<p className="text-muted-foreground text-sm">{t("virtualKeys.noProviderRateLimits")}</p>
 																	)}
 																</div>
@@ -596,27 +619,15 @@ export default function VirtualKeyDetailSheet({
 																				</div>
 																			) : null}
 
-																			{/* Request Limits */}
-																			{mb.rate_limit?.request_max_limit != null ? (
-																				<div className="space-y-2">
-																					<span className="text-muted-foreground text-xs font-medium">
-																						{t("virtualKeys.requestLimits")}
-																					</span>
-																					<UsageLine
-																						current={mb.rate_limit.request_current_usage}
-																						max={mb.rate_limit.request_max_limit}
-																						format={(n) => n.toLocaleString(getLocale())}
-																					/>
-																					<div className="text-muted-foreground text-xs">
-																						{t("virtualKeys.resets", {
-																							period: parseResetPeriod(mb.rate_limit.request_reset_duration || ""),
-																						})}
-																						{virtualKey.calendar_aligned &&
-																							supportsCalendarAlignment(mb.rate_limit.request_reset_duration || "") &&
-																							t("virtualKeys.calendarSuffix")}
-																					</div>
-																				</div>
-																			) : null}
+																			{requestLimitsOf(mb).map((rule, ruleIdx) => (
+																				<RequestLimitUsage
+																					key={rule.id || ruleIdx}
+																					rule={rule}
+																					label={t("virtualKeys.requestLimits")}
+																					calendarAligned={virtualKey.calendar_aligned}
+																					showLastReset={false}
+																				/>
+																			))}
 																		</div>
 																	))}
 																</div>
@@ -782,10 +793,10 @@ export default function VirtualKeyDetailSheet({
 							<div className="space-y-4">
 								<h3 className="font-semibold">{t("virtualKeys.rateLimits")}</h3>
 
-								{displayRateLimit ? (
+								{displayRateLimit?.token_max_limit != null || requestLimits.length > 0 ? (
 									<div className="space-y-4">
 										{/* Token Limits */}
-										{displayRateLimit.token_max_limit != null ? (
+										{displayRateLimit?.token_max_limit != null ? (
 											<div className="space-y-3 rounded-lg border p-4">
 												<span className="text-sm font-medium">{t("virtualKeys.tokenLimitsTitle")}</span>
 												<UsageLine
@@ -814,39 +825,16 @@ export default function VirtualKeyDetailSheet({
 											</div>
 										) : null}
 
-										{/* Request Limits */}
-										{displayRateLimit.request_max_limit != null ? (
-											<div className="space-y-3 rounded-lg border p-4">
-												<span className="text-sm font-medium">{t("virtualKeys.requestLimitsTitle")}</span>
-												<UsageLine
-													current={displayRateLimit.request_current_usage}
-													max={displayRateLimit.request_max_limit}
-													format={(n) => n.toLocaleString(getLocale())}
-												/>
-												<div className="text-muted-foreground flex items-center justify-between text-xs">
-													<span>
-														{t("virtualKeys.resets", { period: parseResetPeriod(displayRateLimit.request_reset_duration || "") })}
-														{virtualKey.calendar_aligned &&
-															supportsCalendarAlignment(displayRateLimit.request_reset_duration || "") &&
-															t("virtualKeys.calendarSuffix")}
-													</span>
-													{displayRateLimit.request_last_reset ? (
-														<span>
-															{t("virtualKeys.lastReset", {
-																when: formatDistanceToNow(new Date(displayRateLimit.request_last_reset), {
-																	addSuffix: true,
-																	locale: dateFnsLocale(i18n.language),
-																}),
-															})}
-														</span>
-													) : null}
-												</div>
-											</div>
-										) : null}
-
-										{displayRateLimit.token_max_limit == null && displayRateLimit.request_max_limit == null && (
-											<p className="text-muted-foreground text-sm">{t("virtualKeys.noRateLimits")}</p>
-										)}
+										{requestLimits.map((rule, ruleIdx) => (
+											<RequestLimitUsage
+												key={rule.id || ruleIdx}
+												rule={rule}
+												label={t("virtualKeys.requestLimitsTitle")}
+												calendarAligned={virtualKey.calendar_aligned}
+												showScope
+												className="space-y-3 rounded-lg border p-4"
+											/>
+										))}
 									</div>
 								) : (
 									<p className="text-muted-foreground text-sm">{t("virtualKeys.noRateLimits")}</p>

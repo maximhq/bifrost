@@ -2242,13 +2242,12 @@
 		"saving": "Saving..."
 	},
 	"mcpLimits": {
-		"titleDescription": "Configure budgets for MCP tool executions, globally or per virtual key. MCP lines are charged by tool executions only; Shared lines are charged by model requests too.",
-		"emptyTitle": "MCP budgets",
-		"emptyDescription": "Cap the spend of MCP tool executions globally or per virtual key, on their own or shared with model requests.",
-		"createDescription": "Set up MCP and Shared budgets for the deployment or a virtual key.",
-		"editDescription": "Update the MCP and Shared budgets of this scope.",
+		"titleDescription": "Configure budgets and request limits for MCP tool executions, globally or per virtual key. MCP lines are charged by tool executions only; Shared lines are charged by model requests too.",
+		"emptyTitle": "MCP budgets and limits",
+		"emptyDescription": "Cap the spend and request rate of MCP tool executions globally or per virtual key, on their own or shared with model requests.",
+		"createDescription": "Set up MCP and Shared budgets and request limits for the deployment or a virtual key.",
+		"editDescription": "Update the MCP and Shared budgets and request limits of this scope.",
 		"deleteTitle": "Remove MCP Limits",
-		"deleteDescription": "Remove the MCP and Shared budgets of \"{{name}}\"? Model budgets and the rate limit set on the Models page stay.",
-		"atLeastOneBudget": "At least one budget is required"
+		"deleteDescription": "Remove the MCP and Shared budgets and request limits of \"{{name}}\"? Model lines and the token limit set on the Models page stay."
 	}
 }

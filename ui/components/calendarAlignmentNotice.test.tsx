@@ -25,6 +25,17 @@ describe("calendar alignment notices", () => {
 		).toEqual(["7d", "2w", "6h"]);
 	});
 
+	it("includes request limit lines that carry a maximum", () => {
+		expect(
+			calendarWindowDurations([
+				{
+					request_limits: [{ max_limit: 5, reset_duration: "1d" }, { reset_duration: "2w" }],
+					model_budgets: [{ request_limits: [{ max_limit: 1, reset_duration: "6h" }] }],
+				},
+			]),
+		).toEqual(["1d", "6h"]);
+	});
+
 	it("keeps calendar labels consistent with backend single-unit alignment", () => {
 		for (const duration of ["7d", "2w", "3M", "2Q", "2Y", "30m", "6h"]) {
 			expect(isMultiUnitDuration(duration)).toBe(true);

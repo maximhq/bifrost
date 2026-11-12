@@ -2,8 +2,9 @@ import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { ModelAccessSelector, summarizeGrantModelAccess } from "@/components/modelAccess";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
-import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
+import MultiBudgetLines, { BudgetLineEntry, RequestLimitLines } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { TokenLimitLabel } from "@/components/ui/tokenLimitLabel";
 import { budgetLinesLabel, money, shortPeriod, swatchClass } from "@/lib/budgetOutline";
 import { resetDurationOptions } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
@@ -35,6 +36,8 @@ export interface ProviderConfigModelBudget {
 	model_name: string;
 	budgets: ProviderConfigBudgetLine[];
 	rate_limit?: ProviderConfigRateLimit;
+	/** Only edited when `showRequestLimits` is set. */
+	request_limits?: ProviderConfigBudgetLine[];
 }
 
 export interface ProviderConfigCardValue {
@@ -45,6 +48,8 @@ export interface ProviderConfigCardValue {
 	keyIds: string[];
 	budgets: ProviderConfigBudgetLine[];
 	rateLimit?: ProviderConfigRateLimit | null;
+	/** Request limit lines (shared scope); only edited when `showRequestLimits` is set. */
+	requestLimits?: ProviderConfigBudgetLine[];
 	/** Only rendered when `showModelBudgets` is set. */
 	modelBudgets?: ProviderConfigModelBudget[];
 }
@@ -65,6 +70,11 @@ interface ProviderConfigCardBaseProps {
 	providerKeys: ProviderKeyInfo[] | null;
 	/** Renders the per-model budgets tree when `showModelBudgets` is enabled. */
 	showModelBudgets?: boolean;
+	/**
+	 * Edit request limits as lines (value.requestLimits, model budget request_limits) in place of the
+	 * rate limit's single Max Requests field. Off for owners whose API still takes the combined form.
+	 */
+	showRequestLimits?: boolean;
 	/** Read-only global provider cap shown on the Provider budget row (Access Profile). */
 	globalProviderCap?: { max_limit: number; reset_duration?: string };
 	/** Prefix for data-testids, e.g. "ap" or "vk". */
@@ -155,6 +165,7 @@ export function ProviderConfigCard({
 	iconProvider,
 	providerKeys,
 	showModelBudgets = false,
+	showRequestLimits = false,
 	globalProviderCap,
 	testIdPrefix = "provider",
 	index,
@@ -204,7 +215,10 @@ export function ProviderConfigCard({
 			? t("providerConfigs.keyCount", { count: value.keyIds.length })
 			: t("providerConfigs.noKeys");
 	const modelsSummary = summarizeGrantModelAccess(value.allowedModels, value.blacklistedModels);
-	const hasRl = value.rateLimit?.token_max_limit != null || value.rateLimit?.request_max_limit != null;
+	const hasRl =
+		value.rateLimit?.token_max_limit != null ||
+		value.rateLimit?.request_max_limit != null ||
+		(showRequestLimits && (value.requestLimits || []).some((l) => l.max_limit != null));
 	const rlSummary = hasRl ? t("providerConfigs.rateLimitsSet") : t("providerConfigs.noRateLimits");
 
 	return (
@@ -408,72 +422,101 @@ export function ProviderConfigCard({
 															});
 														}}
 													/>
-													<NumberAndSelect
-														id={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
-														dataTestId={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
-														labelClassName="font-medium"
-														label={t("sheet.maximumTokensLower")}
-														placeholder={t("sheet.noLimit")}
-														value={mb.rate_limit?.token_max_limit}
-														selectValue={mb.rate_limit?.token_reset_duration || "1h"}
-														onChangeNumber={(v) => {
-															update({
-																modelBudgets: modelBudgets.map((m, i) =>
-																	i === mbIndex
-																		? {
-																				...m,
-																				rate_limit: {
-																					...(m.rate_limit || {}),
-																					token_max_limit: v,
-																					token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
-																				},
-																			}
-																		: m,
-																),
-															});
-														}}
-														onChangeSelect={(v) => {
-															update({
-																modelBudgets: modelBudgets.map((m, i) =>
-																	i === mbIndex ? { ...m, rate_limit: { ...(m.rate_limit || {}), token_reset_duration: v } } : m,
-																),
-															});
-														}}
-														options={resetDurationOptions}
-													/>
-													<NumberAndSelect
-														id={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
-														dataTestId={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
-														labelClassName="font-medium"
-														label={t("sheet.maximumRequestsLower")}
-														placeholder={t("sheet.noLimit")}
-														value={mb.rate_limit?.request_max_limit}
-														selectValue={mb.rate_limit?.request_reset_duration || "1h"}
-														onChangeNumber={(v) => {
-															update({
-																modelBudgets: modelBudgets.map((m, i) =>
-																	i === mbIndex
-																		? {
-																				...m,
-																				rate_limit: {
-																					...(m.rate_limit || {}),
-																					request_max_limit: v,
-																					request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
-																				},
-																			}
-																		: m,
-																),
-															});
-														}}
-														onChangeSelect={(v) => {
-															update({
-																modelBudgets: modelBudgets.map((m, i) =>
-																	i === mbIndex ? { ...m, rate_limit: { ...(m.rate_limit || {}), request_reset_duration: v } } : m,
-																),
-															});
-														}}
-														options={resetDurationOptions}
-													/>
+													{/* Rate limits: request limits, then the token limit */}
+													<div className="space-y-5">
+														{showRequestLimits && (
+															<RequestLimitLines
+																data-testid={`${tid}-model-request-limits-${index}-${mbIndex}`}
+																lines={(mb.request_limits || []).map((l) => ({
+																	id: l.id,
+																	max_limit: l.max_limit,
+																	reset_duration: l.reset_duration || "1h",
+																}))}
+																onChange={(lines: BudgetLineEntry[]) => {
+																	update({
+																		modelBudgets: modelBudgets.map((m, i) => (i === mbIndex ? { ...m, request_limits: lines } : m)),
+																	});
+																}}
+															/>
+														)}
+														<NumberAndSelect
+															id={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
+															dataTestId={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
+															labelClassName="font-medium"
+															label={
+																showRequestLimits ? (
+																	<TokenLimitLabel
+																		label={t("sheet.maximumTokensLower")}
+																		data-testid={`${tid}-model-token-limit-info-${index}-${mbIndex}`}
+																	/>
+																) : (
+																	t("sheet.maximumTokensLower")
+																)
+															}
+															placeholder={t("sheet.noLimit")}
+															value={mb.rate_limit?.token_max_limit}
+															selectValue={mb.rate_limit?.token_reset_duration || "1h"}
+															onChangeNumber={(v) => {
+																update({
+																	modelBudgets: modelBudgets.map((m, i) =>
+																		i === mbIndex
+																			? {
+																					...m,
+																					rate_limit: {
+																						...(m.rate_limit || {}),
+																						token_max_limit: v,
+																						token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
+																					},
+																				}
+																			: m,
+																	),
+																});
+															}}
+															onChangeSelect={(v) => {
+																update({
+																	modelBudgets: modelBudgets.map((m, i) =>
+																		i === mbIndex ? { ...m, rate_limit: { ...(m.rate_limit || {}), token_reset_duration: v } } : m,
+																	),
+																});
+															}}
+															options={resetDurationOptions}
+														/>
+													</div>
+													{!showRequestLimits && (
+														<NumberAndSelect
+															id={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
+															dataTestId={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
+															labelClassName="font-medium"
+															label={t("sheet.maximumRequestsLower")}
+															placeholder={t("sheet.noLimit")}
+															value={mb.rate_limit?.request_max_limit}
+															selectValue={mb.rate_limit?.request_reset_duration || "1h"}
+															onChangeNumber={(v) => {
+																update({
+																	modelBudgets: modelBudgets.map((m, i) =>
+																		i === mbIndex
+																			? {
+																					...m,
+																					rate_limit: {
+																						...(m.rate_limit || {}),
+																						request_max_limit: v,
+																						request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
+																					},
+																				}
+																			: m,
+																	),
+																});
+															}}
+															onChangeSelect={(v) => {
+																update({
+																	modelBudgets: modelBudgets.map((m, i) =>
+																		i === mbIndex ? { ...m, rate_limit: { ...(m.rate_limit || {}), request_reset_duration: v } } : m,
+																	),
+																});
+															}}
+															options={resetDurationOptions}
+														/>
+													)}
 												</div>
 											)}
 										</div>
@@ -673,45 +716,66 @@ export function ProviderConfigCard({
 								/>
 							</div>
 
-							{/* Per-provider rate limits */}
-							<NumberAndSelect
-								id={`${tid}-providerTokenLimit-${index}`}
-								dataTestId={`${tid}-providerTokenLimit-${index}`}
-								labelClassName="font-medium"
-								label={t("sheet.maximumTokensLower")}
-								placeholder={t("sheet.noLimit")}
-								value={value.rateLimit?.token_max_limit}
-								selectValue={value.rateLimit?.token_reset_duration || "1h"}
-								onChangeNumber={(v) => {
-									const current = value.rateLimit || {};
-									update({ rateLimit: { ...current, token_max_limit: v, token_reset_duration: current.token_reset_duration || "1h" } });
-								}}
-								onChangeSelect={(v) => {
-									const current = value.rateLimit || {};
-									update({ rateLimit: { ...current, token_reset_duration: v } });
-								}}
-								options={resetDurationOptions}
-							/>
-							<NumberAndSelect
-								id={`${tid}-providerRequestLimit-${index}`}
-								dataTestId={`${tid}-providerRequestLimit-${index}`}
-								labelClassName="font-medium"
-								label={t("sheet.maximumRequestsLower")}
-								placeholder={t("sheet.noLimit")}
-								value={value.rateLimit?.request_max_limit}
-								selectValue={value.rateLimit?.request_reset_duration || "1h"}
-								onChangeNumber={(v) => {
-									const current = value.rateLimit || {};
-									update({
-										rateLimit: { ...current, request_max_limit: v, request_reset_duration: current.request_reset_duration || "1h" },
-									});
-								}}
-								onChangeSelect={(v) => {
-									const current = value.rateLimit || {};
-									update({ rateLimit: { ...current, request_reset_duration: v } });
-								}}
-								options={resetDurationOptions}
-							/>
+							{/* Per-provider rate limits: request limits, then the token limit */}
+							<div className="space-y-5">
+								{showRequestLimits && (
+									<RequestLimitLines
+										data-testid={`${tid}-provider-request-limits-${index}`}
+										lines={(value.requestLimits || []).map((l) => ({
+											id: l.id,
+											max_limit: l.max_limit,
+											reset_duration: l.reset_duration || "1h",
+										}))}
+										onChange={(lines: BudgetLineEntry[]) => update({ requestLimits: lines })}
+									/>
+								)}
+								<NumberAndSelect
+									id={`${tid}-providerTokenLimit-${index}`}
+									dataTestId={`${tid}-providerTokenLimit-${index}`}
+									labelClassName="font-medium"
+									label={
+										showRequestLimits ? (
+											<TokenLimitLabel label={t("sheet.maximumTokensLower")} data-testid={`${tid}-provider-token-limit-info-${index}`} />
+										) : (
+											t("sheet.maximumTokensLower")
+										)
+									}
+									placeholder={t("sheet.noLimit")}
+									value={value.rateLimit?.token_max_limit}
+									selectValue={value.rateLimit?.token_reset_duration || "1h"}
+									onChangeNumber={(v) => {
+										const current = value.rateLimit || {};
+										update({ rateLimit: { ...current, token_max_limit: v, token_reset_duration: current.token_reset_duration || "1h" } });
+									}}
+									onChangeSelect={(v) => {
+										const current = value.rateLimit || {};
+										update({ rateLimit: { ...current, token_reset_duration: v } });
+									}}
+									options={resetDurationOptions}
+								/>
+							</div>
+							{!showRequestLimits && (
+								<NumberAndSelect
+									id={`${tid}-providerRequestLimit-${index}`}
+									dataTestId={`${tid}-providerRequestLimit-${index}`}
+									labelClassName="font-medium"
+									label={t("sheet.maximumRequestsLower")}
+									placeholder={t("sheet.noLimit")}
+									value={value.rateLimit?.request_max_limit}
+									selectValue={value.rateLimit?.request_reset_duration || "1h"}
+									onChangeNumber={(v) => {
+										const current = value.rateLimit || {};
+										update({
+											rateLimit: { ...current, request_max_limit: v, request_reset_duration: current.request_reset_duration || "1h" },
+										});
+									}}
+									onChangeSelect={(v) => {
+										const current = value.rateLimit || {};
+										update({ rateLimit: { ...current, request_reset_duration: v } });
+									}}
+									options={resetDurationOptions}
+								/>
+							)}
 						</div>
 					)}
 				</>

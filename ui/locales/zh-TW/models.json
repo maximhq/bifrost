@@ -2240,13 +2240,12 @@
 		"saving": "儲存中..."
 	},
 	"mcpLimits": {
-		"titleDescription": "為 MCP 工具執行配置預算，可全域或按虛擬金鑰設定。MCP 行僅由工具執行計費；共用行也由模型請求計費。",
-		"emptyTitle": "MCP 預算",
-		"emptyDescription": "全域或按虛擬金鑰限制 MCP 工具執行的支出，可單獨設定，也可與模型請求共用。",
-		"createDescription": "為部署或虛擬金鑰設定 MCP 預算和共用預算。",
-		"editDescription": "更新此作用域的 MCP 預算和共用預算。",
+		"titleDescription": "為 MCP 工具執行配置預算和請求限額，可全域或按虛擬金鑰設定。MCP 行僅由工具執行計費；共用行也由模型請求計費。",
+		"emptyTitle": "MCP 預算和限額",
+		"emptyDescription": "全域或按虛擬金鑰限制 MCP 工具執行的支出和請求速率，可單獨設定，也可與模型請求共用。",
+		"createDescription": "為部署或虛擬金鑰設定 MCP 和共用的預算及請求限額。",
+		"editDescription": "更新此作用域的 MCP 和共用的預算及請求限額。",
 		"deleteTitle": "移除 MCP 限額",
-		"deleteDescription": "要移除「{{name}}」的 MCP 預算和共用預算嗎？在模型頁面設定的模型預算和速率限制會保留。",
-		"atLeastOneBudget": "至少需要一項預算"
+		"deleteDescription": "要移除「{{name}}」的 MCP 和共用的預算及請求限額嗎？在模型頁面設定的模型行和 Token 限額會保留。"
 	}
 }

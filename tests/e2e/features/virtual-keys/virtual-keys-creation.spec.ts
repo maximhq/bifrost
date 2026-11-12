@@ -1,5 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { coreConfigApi, virtualKeysApi } from '../../core/actions/api'
+import { fillRequestLimitLines } from '../../core/utils/test-helpers'
 import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import {
     createVirtualKeyData,
@@ -294,6 +295,110 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+    })
+  })
+
+  test.describe('Virtual Key with Request Limits', () => {
+    test('should save a shared and an MCP request limit on the same reset period', async ({ virtualKeysPage }) => {
+      const vkData = createVirtualKeyData({
+        name: `Scoped Request Limits VK ${Date.now()}`,
+        requestLimits: [
+          { maxLimit: 100, resetDuration: '1h' },
+          { maxLimit: 7, resetDuration: '1h', scope: 'mcp' },
+        ],
+      })
+      createdVKs.push(vkData.name)
+      await virtualKeysPage.createVirtualKey(vkData)
+
+      // Stored as two of the key's own request limits, one per scope.
+      const page = virtualKeysPage.page
+      const { id } = await findVirtualKeyByName(page.request, vkData.name)
+      const stored = (await virtualKeysApi.get(page.request, id)) as {
+        virtual_key: { request_limits?: Array<{ request_max_limit: number; request_reset_duration: string; scope: string }> }
+      }
+      const rules = (stored.virtual_key.request_limits ?? [])
+        .map((rl) => `${rl.request_max_limit}/${rl.request_reset_duration}/${rl.scope}`)
+        .sort()
+      expect(rules).toEqual(['100/1h/shared', '7/1h/mcp'])
+
+      // Reopening shows both lines with their scopes.
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const amounts = [
+        await page.getByTestId('vk-request-limit-lines-amount-0').inputValue(),
+        await page.getByTestId('vk-request-limit-lines-amount-1').inputValue(),
+      ]
+      const mcpIndex = amounts.indexOf('7')
+      expect(mcpIndex).toBeGreaterThanOrEqual(0)
+      expect(amounts[1 - mcpIndex]).toBe('100')
+      await expect(page.getByTestId(`vk-request-limit-lines-scope-${mcpIndex}-trigger`)).toHaveText('MCP')
+      await expect(page.getByTestId(`vk-request-limit-lines-scope-${1 - mcpIndex}-trigger`)).toHaveText('Shared')
+      // Max Tokens says it only counts model requests.
+      await expect(page.getByTestId('vk-token-limit-info')).toBeVisible()
+      await virtualKeysPage.closeSheet()
+    })
+
+    test('should clear request limits and Max Tokens together with the rate limit reset', async ({ virtualKeysPage }) => {
+      const page = virtualKeysPage.page
+      const name = `Reset Rate Limits VK ${Date.now()}`
+      const res = await page.request.post('/api/governance/virtual-keys', {
+        data: {
+          name,
+          rate_limit: { token_max_limit: 5000, token_reset_duration: '1h' },
+          request_limits: [{ max_limit: 100, reset_duration: '1h' }],
+        },
+      })
+      expect(res.status(), await res.text()).toBe(200)
+      createdVKs.push(name)
+      await page.reload()
+
+      await virtualKeysPage.viewVirtualKey(name)
+      await virtualKeysPage.waitForSheetAnimation()
+      // Request limits sit in the Rate Limiting block with Max Tokens, and its reset clears both.
+      await expect(page.getByTestId('vk-request-limit-lines-line-0')).toBeVisible()
+      await expect(page.locator('#tokenMaxLimit')).toHaveValue('5000')
+      await page.getByTestId('vk-rate-limit-reset-button').click()
+      await expect(page.locator('[data-testid^="vk-request-limit-lines-line-"]')).toHaveCount(0)
+      await expect(page.locator('#tokenMaxLimit')).toHaveValue('')
+      await virtualKeysPage.saveBtn.click()
+      await expect(virtualKeysPage.sheet).not.toBeVisible({ timeout: 10000 })
+
+      const { id } = await findVirtualKeyByName(page.request, name)
+      const stored = (await virtualKeysApi.get(page.request, id)) as {
+        virtual_key: { rate_limit?: { token_max_limit?: number } | null; request_limits?: unknown[] }
+      }
+      expect(stored.virtual_key.request_limits ?? []).toHaveLength(0)
+      expect(stored.virtual_key.rate_limit?.token_max_limit ?? null).toBeNull()
+    })
+
+    test('should flag two request limits with the same reset period and scope and not save', async ({ virtualKeysPage }) => {
+      const page = virtualKeysPage.page
+      const name = `Duplicate Request Limits VK ${Date.now()}`
+      await virtualKeysPage.createBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      await virtualKeysPage.waitForSheetAnimation()
+      await virtualKeysPage.nameInput.fill(name)
+      await fillRequestLimitLines(page, 'vk-request-limit-lines', [
+        { maxLimit: 5, resetDuration: '1h', scope: 'mcp' },
+        { maxLimit: 9, resetDuration: '1h', scope: 'mcp' },
+      ])
+      await expect(page.getByTestId('vk-request-limit-lines-line-0')).toContainText('Duplicate reset period for this scope')
+
+      // Saving is blocked: the sheet stays open and no key is created.
+      let posted = false
+      page.on('request', (req) => {
+        if (req.method() === 'POST' && req.url().includes('/api/governance/virtual-keys')) posted = true
+      })
+      await virtualKeysPage.saveBtn.click()
+      await expect(virtualKeysPage.sheet).toBeVisible()
+      await expect(page.getByTestId('vk-request-limit-lines-line-0')).toContainText('Duplicate reset period for this scope')
+      expect(posted).toBe(false)
+
+      // Moving one of them to another scope clears the conflict.
+      await page.getByTestId('vk-request-limit-lines-scope-1-trigger').click()
+      await page.getByTestId('vk-request-limit-lines-scope-1-option-shared').click()
+      await expect(page.getByTestId('vk-request-limit-lines-line-0')).not.toContainText('Duplicate reset period')
+      await virtualKeysPage.closeSheet()
     })
   })
 

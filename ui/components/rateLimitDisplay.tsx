@@ -1,6 +1,8 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import type { LimitScope } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import type { TFunction } from "i18next";
@@ -16,8 +18,20 @@ interface RateLimitShape {
 	request_current_usage?: number | null;
 }
 
+interface RequestLimitShape {
+	id?: string;
+	request_max_limit?: number | null;
+	request_reset_duration?: string | null;
+	request_current_usage?: number | null;
+	scope?: LimitScope;
+}
+
 interface RateLimitDisplayProps {
 	rateLimits: RateLimitShape | null | undefined;
+	/** The holder's request limits, listed after any request limit rateLimits still carries. */
+	requestLimits?: RequestLimitShape[] | null;
+	/** Mark each request limit with the traffic it counts; only for holders whose rules carry a scope. */
+	showScope?: boolean;
 	/** Compact mode for narrow cells — still renders bars, just tighter */
 	compact?: boolean;
 	/** Render limit + reset period only (no usage bar). Use for template entities like access profiles. */
@@ -41,12 +55,14 @@ function LimitText({
 	resetDuration,
 	calendarAligned,
 	scopeLabel,
+	scope,
 }: {
 	kind: "tokens" | "requests";
 	max: number;
 	resetDuration?: string | null;
 	calendarAligned?: boolean;
 	scopeLabel?: string;
+	scope?: LimitScope;
 }) {
 	const { t } = useTranslation("common");
 	return (
@@ -54,6 +70,7 @@ function LimitText({
 			<span className="font-mono">
 				{formatCompactNumber(max)} {kind === "requests" ? t("rateLimit.req") : t("rateLimit.tokens")}
 				{scopeLabel ? <span className="text-muted-foreground ml-1 font-sans">{scopeLabel}</span> : null}
+				{scope ? <BudgetScopeBadge scope={scope} className="ml-1.5" /> : null}
 			</span>
 			<span className="text-muted-foreground">{formatResetDuration(t, resetDuration, calendarAligned)}</span>
 		</div>
@@ -68,6 +85,7 @@ function Bar({
 	compact,
 	calendarAligned,
 	scopeLabel,
+	scope,
 }: {
 	kind: "tokens" | "requests";
 	current: number;
@@ -76,6 +94,7 @@ function Bar({
 	compact?: boolean;
 	calendarAligned?: boolean;
 	scopeLabel?: string;
+	scope?: LimitScope;
 }) {
 	const { t } = useTranslation("common");
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
@@ -90,6 +109,7 @@ function Bar({
 						<span className="font-medium">
 							{formatCompactNumber(max)} {kind === "requests" ? t("rateLimit.req") : t("rateLimit.tokens")}
 							{scopeLabel ? <span className="text-muted-foreground ml-1 font-normal">{scopeLabel}</span> : null}
+							{scope ? <BudgetScopeBadge scope={scope} className="ml-1.5" /> : null}
 						</span>
 						<span className="text-muted-foreground">{formatResetDuration(t, resetDuration, calendarAligned)}</span>
 					</div>
@@ -115,15 +135,21 @@ function Bar({
 	);
 }
 
-export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAligned, scopeLabel }: RateLimitDisplayProps) {
-	if (!rateLimits) {
-		return <span className="text-muted-foreground text-sm">-</span>;
-	}
+export function RateLimitDisplay({
+	rateLimits,
+	requestLimits,
+	showScope = false,
+	compact,
+	limitOnly,
+	calendarAligned,
+	scopeLabel,
+}: RateLimitDisplayProps) {
+	const hasTokens = rateLimits?.token_max_limit != null && rateLimits.token_max_limit > 0;
+	const listed: RequestLimitShape[] = [...(rateLimits?.request_max_limit != null ? [rateLimits] : []), ...(requestLimits ?? [])].filter(
+		(rule) => rule.request_max_limit != null && rule.request_max_limit > 0,
+	);
 
-	const hasTokens = rateLimits.token_max_limit != null && rateLimits.token_max_limit > 0;
-	const hasRequests = rateLimits.request_max_limit != null && rateLimits.request_max_limit > 0;
-
-	if (!hasTokens && !hasRequests) {
+	if (!hasTokens && listed.length === 0) {
 		return <span className="text-muted-foreground text-sm">-</span>;
 	}
 
@@ -133,44 +159,48 @@ export function RateLimitDisplay({ rateLimits, compact, limitOnly, calendarAlign
 				limitOnly ? (
 					<LimitText
 						kind="tokens"
-						max={rateLimits.token_max_limit!}
-						resetDuration={rateLimits.token_reset_duration}
+						max={rateLimits!.token_max_limit!}
+						resetDuration={rateLimits!.token_reset_duration}
 						calendarAligned={calendarAligned}
 						scopeLabel={scopeLabel}
 					/>
 				) : (
 					<Bar
 						kind="tokens"
-						current={rateLimits.token_current_usage ?? 0}
-						max={rateLimits.token_max_limit!}
-						resetDuration={rateLimits.token_reset_duration}
+						current={rateLimits!.token_current_usage ?? 0}
+						max={rateLimits!.token_max_limit!}
+						resetDuration={rateLimits!.token_reset_duration}
 						compact={compact}
 						calendarAligned={calendarAligned}
 						scopeLabel={scopeLabel}
 					/>
 				)
 			) : null}
-			{hasRequests ? (
+			{listed.map((rule, index) =>
 				limitOnly ? (
 					<LimitText
+						key={rule.id ?? index}
 						kind="requests"
-						max={rateLimits.request_max_limit!}
-						resetDuration={rateLimits.request_reset_duration}
+						max={rule.request_max_limit!}
+						resetDuration={rule.request_reset_duration}
 						calendarAligned={calendarAligned}
 						scopeLabel={scopeLabel}
+						scope={showScope ? (rule.scope ?? "shared") : undefined}
 					/>
 				) : (
 					<Bar
+						key={rule.id ?? index}
 						kind="requests"
-						current={rateLimits.request_current_usage ?? 0}
-						max={rateLimits.request_max_limit!}
-						resetDuration={rateLimits.request_reset_duration}
+						current={rule.request_current_usage ?? 0}
+						max={rule.request_max_limit!}
+						resetDuration={rule.request_reset_duration}
 						compact={compact}
 						calendarAligned={calendarAligned}
 						scopeLabel={scopeLabel}
+						scope={showScope ? (rule.scope ?? "shared") : undefined}
 					/>
-				)
-			) : null}
+				),
+			)}
 		</div>
 	);
 }

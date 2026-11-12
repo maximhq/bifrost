@@ -24,7 +24,7 @@ import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
 import { Customer } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import { formatCurrency, isRequestLimitExhausted, requestLimitsOf } from "@/lib/utils/governance";
 import { useEntityProfileLimits } from "@enterprise/components/access-profiles/fragments/entityAccessProfileSection";
 import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -304,18 +304,15 @@ export default function CustomersTable({
 												rateLimit?.token_max_limit &&
 												rateLimit.token_max_limit > 0 &&
 												rateLimit.token_current_usage >= rateLimit.token_max_limit;
-											const isRequestLimitExhausted =
-												rateLimit?.request_max_limit &&
-												rateLimit.request_max_limit > 0 &&
-												rateLimit.request_current_usage >= rateLimit.request_max_limit;
-											const isRateLimitExhausted = isTokenLimitExhausted || isRequestLimitExhausted;
+											// A profile's rate limit is one combined row; the customer's own request limits are separate.
+											const requestLimits = requestLimitsOf({
+												rate_limit: rateLimit,
+												request_limits: profile ? [] : customer.request_limits,
+											});
+											const isRateLimitExhausted = isTokenLimitExhausted || requestLimits.some(isRequestLimitExhausted);
 											const tokenPercentage =
 												rateLimit?.token_max_limit && rateLimit.token_max_limit > 0
 													? Math.min((rateLimit.token_current_usage / rateLimit.token_max_limit) * 100, 100)
-													: 0;
-											const requestPercentage =
-												rateLimit?.request_max_limit && rateLimit.request_max_limit > 0
-													? Math.min((rateLimit.request_current_usage / rateLimit.request_max_limit) * 100, 100)
 													: 0;
 
 											const isExhausted = isBudgetExhausted || isRateLimitExhausted;
@@ -408,9 +405,9 @@ export default function CustomersTable({
 														)}
 													</TableCell>
 													<TableCell className="min-w-[180px]">
-														{rateLimit ? (
+														{rateLimit?.token_max_limit || requestLimits.length > 0 ? (
 															<div className="space-y-2.5">
-																{rateLimit.token_max_limit && (
+																{rateLimit?.token_max_limit && (
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
@@ -449,45 +446,50 @@ export default function CustomersTable({
 																		</TooltipContent>
 																	</Tooltip>
 																)}
-																{rateLimit.request_max_limit && (
-																	<Tooltip>
-																		<TooltipTrigger asChild>
-																			<div className="space-y-1.5">
-																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">
-																						{t("usage.req", { value: rateLimit.request_max_limit.toLocaleString(getLocale()) })}
-																					</span>
-																					<span className="text-muted-foreground">
-																						{formatResetDuration(rateLimit.request_reset_duration || "1h")}
-																					</span>
+																{requestLimits.map((rule) => {
+																	const max = rule.request_max_limit ?? 0;
+																	const percentage = max > 0 ? Math.min((rule.request_current_usage / max) * 100, 100) : 0;
+																	return (
+																		<Tooltip key={rule.id}>
+																			<TooltipTrigger asChild>
+																				<div className="space-y-1.5">
+																					<div className="flex items-center justify-between gap-4 text-xs">
+																						<span className="flex items-center gap-1.5 font-medium">
+																							{t("usage.req", { value: max.toLocaleString(getLocale()) })}
+																							<BudgetScopeBadge scope={rule.scope} />
+																						</span>
+																						<span className="text-muted-foreground">
+																							{formatResetDuration(rule.request_reset_duration || "1h")}
+																						</span>
+																					</div>
+																					<Progress
+																						aria-label={t("usage.requestAria")}
+																						value={percentage}
+																						className={cn(
+																							"bg-muted/70 dark:bg-muted/30 h-1",
+																							isRequestLimitExhausted(rule)
+																								? "[&>div]:bg-red-500/70"
+																								: percentage > 80
+																									? "[&>div]:bg-amber-500/70"
+																									: "[&>div]:bg-emerald-500/70",
+																						)}
+																					/>
 																				</div>
-																				<Progress
-																					aria-label={t("usage.requestAria")}
-																					value={requestPercentage}
-																					className={cn(
-																						"bg-muted/70 dark:bg-muted/30 h-1",
-																						isRequestLimitExhausted
-																							? "[&>div]:bg-red-500/70"
-																							: requestPercentage > 80
-																								? "[&>div]:bg-amber-500/70"
-																								: "[&>div]:bg-emerald-500/70",
-																					)}
-																				/>
-																			</div>
-																		</TooltipTrigger>
-																		<TooltipContent>
-																			<p className="font-medium">
-																				{t("usage.requestTooltip", {
-																					used: rateLimit.request_current_usage.toLocaleString(getLocale()),
-																					max: rateLimit.request_max_limit.toLocaleString(getLocale()),
-																				})}
-																			</p>
-																			<p className="text-primary-foreground/80 text-xs">
-																				{t("usage.resets", { period: formatResetDuration(rateLimit.request_reset_duration || "1h") })}
-																			</p>
-																		</TooltipContent>
-																	</Tooltip>
-																)}
+																			</TooltipTrigger>
+																			<TooltipContent>
+																				<p className="font-medium">
+																					{t("usage.requestTooltip", {
+																						used: rule.request_current_usage.toLocaleString(getLocale()),
+																						max: max.toLocaleString(getLocale()),
+																					})}
+																				</p>
+																				<p className="text-primary-foreground/80 text-xs">
+																					{t("usage.resets", { period: formatResetDuration(rule.request_reset_duration || "1h") })}
+																				</p>
+																			</TooltipContent>
+																		</Tooltip>
+																	);
+																})}
 															</div>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>

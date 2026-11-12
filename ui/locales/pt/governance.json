@@ -702,5 +702,15 @@
 		"remove": "Remover",
 		"update": "Atualizar",
 		"add": "Adicionar"
+	},
+	"requestLimits": {
+		"title": "Limites de pedidos",
+		"add": "Adicionar um Limite",
+		"empty": "Não há limites de pedidos configurados.",
+		"removeAria": "Remover limite de pedidos {{number}}",
+		"duplicate": "Período de reposição duplicado; cada limite de pedidos tem de usar um intervalo diferente.",
+		"duplicateScope": "Período de reposição duplicado para este âmbito; os limites de pedidos com o mesmo âmbito têm de usar intervalos diferentes.",
+		"unique": "Cada limite de pedidos tem de ter um período de reposição único no seu âmbito",
+		"tokenInfo": "Aplica-se apenas a pedidos de modelos."
 	}
 }

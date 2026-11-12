@@ -1,7 +1,7 @@
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { cleanNumericInput } from "@/lib/utils/strings";
+import { cleanIntegerInput, cleanNumericInput } from "@/lib/utils/strings";
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -17,9 +17,10 @@ const NumberAndSelect = ({
 	placeholder,
 	dataTestId,
 	inputClassName,
+	integer = false,
 }: {
 	id: string;
-	label: string;
+	label: React.ReactNode;
 	value: number | undefined;
 	onChangeNumber: (value: number | undefined) => void;
 	selectValue?: string;
@@ -29,6 +30,8 @@ const NumberAndSelect = ({
 	placeholder?: string;
 	dataTestId?: string;
 	inputClassName?: string;
+	/** Accept whole numbers only; anything from a typed decimal point on is dropped. */
+	integer?: boolean;
 }) => {
 	const { t } = useTranslation("common");
 	// Internal string state to allow intermediate inputs like "0." or ""
@@ -59,7 +62,7 @@ const NumberAndSelect = ({
 				className={inputClassName}
 				value={displayValue}
 				onChange={(e) => {
-					const cleaned = cleanNumericInput(e.target.value);
+					const cleaned = integer ? cleanIntegerInput(e.target.value) : cleanNumericInput(e.target.value);
 					setDisplayValue(cleaned);
 					if (cleaned === "" || cleaned === ".") {
 						onChangeNumber(undefined);

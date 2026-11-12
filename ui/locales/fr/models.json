@@ -2242,13 +2242,12 @@
 		"saving": "Enregistrement..."
 	},
 	"mcpLimits": {
-		"titleDescription": "Configurez les budgets des exécutions d'outils MCP, globalement ou par clé virtuelle. Les lignes MCP ne sont débitées que par les exécutions d'outils ; les lignes partagées le sont aussi par les requêtes de modèles.",
-		"emptyTitle": "Budgets MCP",
-		"emptyDescription": "Plafonnez les dépenses des exécutions d'outils MCP globalement ou par clé virtuelle, séparément ou en partage avec les requêtes de modèles.",
-		"createDescription": "Configurez les budgets MCP et partagés du déploiement ou d'une clé virtuelle.",
-		"editDescription": "Mettez à jour les budgets MCP et partagés de cette portée.",
+		"titleDescription": "Configurez les budgets et les limites de requêtes des exécutions d'outils MCP, globalement ou par clé virtuelle. Les lignes MCP ne sont débitées que par les exécutions d'outils ; les lignes partagées le sont aussi par les requêtes de modèles.",
+		"emptyTitle": "Budgets et limites MCP",
+		"emptyDescription": "Plafonnez les dépenses et le débit de requêtes des exécutions d'outils MCP globalement ou par clé virtuelle, séparément ou en partage avec les requêtes de modèles.",
+		"createDescription": "Configurez les budgets et limites de requêtes MCP et partagés du déploiement ou d'une clé virtuelle.",
+		"editDescription": "Mettez à jour les budgets et limites de requêtes MCP et partagés de cette portée.",
 		"deleteTitle": "Retirer les limites MCP",
-		"deleteDescription": "Retirer les budgets MCP et partagés de « {{name}} » ? Les budgets de modèles et la limite de débit définis sur la page Modèles sont conservés.",
-		"atLeastOneBudget": "Au moins un budget est requis"
+		"deleteDescription": "Retirer les budgets et limites de requêtes MCP et partagés de « {{name}} » ? Les lignes de modèles et la limite de jetons définies sur la page Modèles sont conservées."
 	}
 }
