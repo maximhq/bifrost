@@ -214,16 +214,25 @@ func (h *ClientGatewayHandler) RegisterRoutes(r *router.Router, _ ...schemas.Bif
 }
 
 // RegisterInferenceRoutes wires every profile's inference routes. The bearer
-// check runs first and turns the gateway token into the identity it stands for,
-// so the inference middlewares and governance then treat the request exactly
-// like one that presented that virtual key (or user) directly.
-func (h *ClientGatewayHandler) RegisterInferenceRoutes(r *router.Router, client *bifrost.Bifrost, accessResolver integrations.AccessResolver, middlewares ...schemas.BifrostHTTPMiddleware) {
+// check turns the gateway token into the identity it stands for, so the auth
+// middlewares and governance then treat the request exactly like one that
+// presented that virtual key (or user) directly.
+//
+// The first outer middlewares wrap the whole request (tracing, recovery) and run
+// before the bearer check, so a gateway rejection is traced and a panic in the
+// check is recovered; the rest (auth, transport hooks) run after it. An outer of
+// 0 puts the bearer check first.
+func (h *ClientGatewayHandler) RegisterInferenceRoutes(r *router.Router, client *bifrost.Bifrost, accessResolver integrations.AccessResolver, outer int, middlewares ...schemas.BifrostHTTPMiddleware) {
+	outer = min(max(outer, 0), len(middlewares))
 	for _, ep := range h.endpoints {
 		routes := ep.profile.InferenceRoutes(ep.profile.PathPrefix(), h.store)
 		if len(routes) == 0 {
 			continue
 		}
-		chain := append([]schemas.BifrostHTTPMiddleware{ep.BearerMiddleware}, middlewares...)
+		chain := make([]schemas.BifrostHTTPMiddleware, 0, len(middlewares)+1)
+		chain = append(chain, middlewares[:outer]...)
+		chain = append(chain, ep.BearerMiddleware)
+		chain = append(chain, middlewares[outer:]...)
 		integrations.NewGenericRouter(client, h.store, accessResolver, routes, nil, logger).RegisterRoutes(r, chain...)
 	}
 }

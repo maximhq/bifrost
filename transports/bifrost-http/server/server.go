@@ -303,15 +303,16 @@ type BifrostHTTPServer struct {
 	wsLiveHandler        *handlers.WSLiveHandler
 	webrtcLiveHandler    *handlers.WebRTCLiveHandler
 
-	AuthMiddleware       *handlers.AuthMiddleware
-	setupLockInstalled   bool // OSS setup-lock gate guards /api (see AuthMiddleware.SetupLockMiddleware); never set on enterprise
-	CORSMiddleware       *handlers.CorsMiddleware
-	TracingMiddleware    *handlers.TracingMiddleware
-	WSTicketStore        *handlers.WSTicketStore
-	TempTokens           *temptoken.Service
-	TempTokenSweepWorker *temptoken.SweepWorker
-	OAuth2SweepWorker    *oauth2SweepWorker
-	ClientGateways       *handlers.ClientGatewayHandler // set in RegisterInferenceRoutes
+	AuthMiddleware                *handlers.AuthMiddleware
+	setupLockInstalled            bool // OSS setup-lock gate guards /api (see AuthMiddleware.SetupLockMiddleware); never set on enterprise
+	CORSMiddleware                *handlers.CorsMiddleware
+	TracingMiddleware             *handlers.TracingMiddleware
+	WSTicketStore                 *handlers.WSTicketStore
+	TempTokens                    *temptoken.Service
+	TempTokenSweepWorker          *temptoken.SweepWorker
+	OAuth2SweepWorker             *oauth2SweepWorker
+	ClientGateways                *handlers.ClientGatewayHandler // set in RegisterInferenceRoutes
+	InferenceOuterMiddlewareCount int                            // leading inference middlewares (tracing, recovery) the gateway bearer check runs inside
 	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
 	// tools. Optional; wired at server init when user-mode identity resolution
 	// is available, otherwise left nil (user-mode requests fall back to the
@@ -3030,7 +3031,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	// by the handler itself, so they take no middleware.
 	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache)
 	clientGateways.RegisterRoutes(s.Router)
-	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, middlewares...)
+	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, s.InferenceOuterMiddlewareCount, middlewares...)
 	s.ClientGateways = clientGateways
 	return nil
 }
@@ -3982,7 +3983,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Order: Tracing.pre → Recovery → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
 	//        TransportInterceptor.post → Recovery.defer → Tracing.defer
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
-	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
+	outerMiddlewares := handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware)
+	s.InferenceOuterMiddlewareCount = len(outerMiddlewares)
+	inferenceMiddlewares = append(outerMiddlewares, inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
