@@ -318429,14 +318429,15 @@
       ]
     },
     {
-      "name": "339. Custom provider boolean schema nodes (boolean-schema-nodes)",
-      "description": "Offline HTTP route coverage for custom_provider_config.boolean_schema_nodes_unsupported. Each row creates and deletes an OpenAI-base custom provider and a dummy key through /api/providers, then dispatches its main request through /v1/chat/completions or /v1/responses. The flagged, explicit-false and omitted-flag providers each cover streaming and non-streaming calls. Assertions inspect the serialized outbound extra_fields.raw_request, including the terminal SSE frame, rather than the submitted client body. Start runners/provider-error-fixture.mjs and an isolated gateway with provider_config/provider-error-fixture.config.json; no upstream credentials are needed. Select this whole folder with compat off. Set baseUrl to the isolated gateway and optionally providerErrorFixtureUrl (default http://127.0.0.1:8791); setupToken is required only when the management API uses the setup lock. Missing prerequisites fail these rows rather than skipping coverage.",
+      "name": "341. Custom provider boolean schema nodes (boolean-schema-nodes) (#9025 / PR #9348)",
+      "description": "Offline HTTP route coverage for custom_provider_config.boolean_schema_nodes_unsupported. Each row creates and deletes an OpenAI-base custom provider and a dummy key through /api/providers, then dispatches its main request through /v1/chat/completions or /v1/responses. The flagged, explicit-false and omitted-flag providers each cover streaming and non-streaming calls. Assertions inspect the serialized outbound extra_fields.raw_request, including the terminal SSE frame, rather than the submitted client body. Start runners/provider-error-fixture.mjs and an isolated gateway with provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every row is skipped otherwise. No upstream credentials are needed. Select this whole folder with compat off. Set baseUrl to the isolated gateway and optionally providerErrorFixtureUrl (default http://127.0.0.1:8791); setupToken is required only when the management API uses the setup lock. With providerErrorFixture=1 set, missing prerequisites fail these rows rather than skipping coverage.",
       "event": [
         {
           "listen": "prerequest",
           "script": {
             "type": "text/javascript",
             "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
               "var base = pm.variables.get('baseUrl');",
               "var fixture = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
               "var name = pm.info.requestName;",
@@ -318588,7 +318589,7 @@
       ],
       "item": [
         {
-          "name": "339.1 openai-base custom provider flagged chat completions (boolean-schema-nodes)",
+          "name": "341.1 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions openai-base custom provider flagged (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318615,7 +318616,7 @@
           }
         },
         {
-          "name": "339.2 openai-base custom provider flagged streaming chat (boolean-schema-nodes)",
+          "name": "341.2 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions streaming openai-base custom provider flagged (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318642,7 +318643,7 @@
           }
         },
         {
-          "name": "339.3 openai-base custom provider flagged Responses (boolean-schema-nodes)",
+          "name": "341.3 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses openai-base custom provider flagged (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318668,7 +318669,7 @@
           }
         },
         {
-          "name": "339.4 openai-base custom provider flagged streaming Responses (boolean-schema-nodes)",
+          "name": "341.4 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses streaming openai-base custom provider flagged (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318694,7 +318695,7 @@
           }
         },
         {
-          "name": "339.5 openai-base custom provider explicit false chat completions (boolean-schema-nodes)",
+          "name": "341.5 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions openai-base custom provider explicit false (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318721,7 +318722,7 @@
           }
         },
         {
-          "name": "339.6 openai-base custom provider explicit false streaming chat (boolean-schema-nodes)",
+          "name": "341.6 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions streaming openai-base custom provider explicit false (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318748,7 +318749,7 @@
           }
         },
         {
-          "name": "339.7 openai-base custom provider explicit false Responses (boolean-schema-nodes)",
+          "name": "341.7 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses openai-base custom provider explicit false (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318774,7 +318775,7 @@
           }
         },
         {
-          "name": "339.8 openai-base custom provider explicit false streaming Responses (boolean-schema-nodes)",
+          "name": "341.8 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses streaming openai-base custom provider explicit false (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318800,7 +318801,7 @@
           }
         },
         {
-          "name": "339.9 openai-base custom provider default off (flag omitted) chat completions (boolean-schema-nodes)",
+          "name": "341.9 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions openai-base custom provider default off (flag omitted) (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318827,7 +318828,7 @@
           }
         },
         {
-          "name": "339.10 openai-base custom provider default off (flag omitted) streaming chat (boolean-schema-nodes)",
+          "name": "341.10 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/chat/completions streaming openai-base custom provider default off (flag omitted) (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318854,7 +318855,7 @@
           }
         },
         {
-          "name": "339.11 openai-base custom provider default off (flag omitted) Responses (boolean-schema-nodes)",
+          "name": "341.11 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses openai-base custom provider default off (flag omitted) (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
@@ -318880,7 +318881,7 @@
           }
         },
         {
-          "name": "339.12 openai-base custom provider default off (flag omitted) streaming Responses (boolean-schema-nodes)",
+          "name": "341.12 harness-boolean-schema-nodes-<run>/upstream-ok~boolean-schema-nodes-<run> /v1/responses streaming openai-base custom provider default off (flag omitted) (boolean-schema-nodes) - #9025",
           "request": {
             "method": "POST",
             "header": [
