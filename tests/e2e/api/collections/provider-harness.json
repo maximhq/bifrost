@@ -319233,11 +319233,11 @@
       ]
     },
     {
-      "name": "342. ElevenLabs speech with_timestamps returns character times (elevenlabs with timestamps) (#9788)",
+      "name": "342. ElevenLabs speech with_timestamps returns character times (elevenlabs with timestamps) (#9788 / PR #9789)",
       "description": "POST /v1/audio/speech with an elevenlabs/ model and with_timestamps: true used to return alignment.characters with char_start_times_ms and char_end_times_ms null, in both alignment and normalized_alignment. ElevenLabs' /v1/text-to-speech/{voice_id}/with-timestamps reports the times as character_start_times_seconds and character_end_times_seconds; ElevenlabsAlignment (core/providers/elevenlabs/types.go) decoded names ElevenLabs never sends. Fix: decode ElevenLabs' fields and pass them through; SpeechAlignment (core/schemas/speech.go) now carries character_start_times_seconds and character_end_times_seconds. 342.1 pins the native /v1/audio/speech route: both alignments carry one start and one end time per character, in seconds, non-decreasing. /v1/async/audio/speech reaches the same ElevenlabsProvider.Speech and is not pinned separately. The /openai drop-in has no with_timestamps parameter in the OpenAI API. SpeechStream never calls the stream-with-timestamps endpoint, so streaming is out of scope here.",
       "item": [
         {
-          "name": "elevenlabs eleven_turbo_v2_5 /v1/audio/speech with_timestamps character times non-streaming",
+          "name": "elevenlabs eleven_turbo_v2_5 /v1/audio/speech with_timestamps character times non-streaming - #9788",
           "request": {
             "method": "POST",
             "header": [
