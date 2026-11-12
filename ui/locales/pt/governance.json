@@ -50,7 +50,8 @@
 			"budgetLimits": "Limites de orçamento",
 			"updateAction": "Atualizar cliente",
 			"createAction": "Criar cliente",
-			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para este cliente, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar."
+			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para este cliente, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar.",
+			"limitsCheckFailed": "Não foi possível verificar o que rege os gastos deste cliente, por isso o orçamento e o limite de taxa ainda não podem ser exibidos."
 		},
 		"detail": {
 			"title": "Detalhes do cliente",
