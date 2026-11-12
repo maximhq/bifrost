@@ -10,6 +10,7 @@
 		"mcpLogs": "Журналы MCP",
 		"connectors": "Коннекторы",
 		"relayLogs": "Журналы ретрансляторов",
+		"tracing": "Трассировка",
 		"relays": "Ретрансляторы",
 		"logsSettings": "Настройки журналов",
 		"models": "Модели",
@@ -91,6 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "Вызовы ретрансляторов и их стоимость",
+		"tracing": "Трассировки от SDK Braintrust, Langfuse, Arize и OpenTelemetry",
 		"relays": "Ретрансляция не-LLM API с ценами по маршрутам",
 		"home": "Ваше использование, ключи, бюджеты и доступ",
 		"observability": "Журналы запросов и мониторинг",
