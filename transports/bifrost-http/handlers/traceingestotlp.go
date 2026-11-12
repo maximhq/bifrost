@@ -172,6 +172,11 @@ func decodeOTLP(body []byte, isJSON bool) ([]otlpResource, error) {
 	if err := proto.Unmarshal(body, &request); err != nil {
 		return nil, err
 	}
+	return otlpResourcesOf(&request), nil
+}
+
+// otlpResourcesOf converts a decoded OTLP export into Bifrost's span shape.
+func otlpResourcesOf(request *collectortrace.ExportTraceServiceRequest) []otlpResource {
 	resources := make([]otlpResource, 0, len(request.ResourceSpans))
 	for _, resourceSpans := range request.ResourceSpans {
 		resource := otlpResource{Attributes: otlpAttributes(resourceSpans.GetResource().GetAttributes())}
@@ -195,7 +200,7 @@ func decodeOTLP(body []byte, isJSON bool) ([]otlpResource, error) {
 		}
 		resources = append(resources, resource)
 	}
-	return resources, nil
+	return resources
 }
 
 func otlpTime(unixNano uint64) time.Time {

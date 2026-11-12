@@ -365,6 +365,7 @@ type BifrostHTTPServer struct {
 	TraceIngest        *traceingest.Service
 	TraceIngestHandler *handlers.TraceIngestHandler
 	TraceForwarder     *traceingest.Forwarder
+	traceGRPCServer    *handlers.TraceIngestGRPCServer
 
 	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
 	// the management handler a clustered server replays relay changes through.
@@ -2853,6 +2854,38 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 		return
 	}
 	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
+	s.startTraceIngestGRPC()
+}
+
+// traceGRPCPortEnv names the port of the OTLP gRPC listener for trace ingest. The listener is off
+// unless it is set: opening a second port is something an operator opts into. 4317 is the port
+// OTLP exporters expect.
+const traceGRPCPortEnv = "BIFROST_TRACING_GRPC_PORT"
+
+// startTraceIngestGRPC starts the OTLP gRPC listener when its port is configured. A listener that
+// cannot start is logged and skipped: HTTP ingest does not depend on it.
+func (s *BifrostHTTPServer) startTraceIngestGRPC() {
+	raw := strings.TrimSpace(os.Getenv(traceGRPCPortEnv))
+	if raw == "" || s.traceGRPCServer != nil {
+		return
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		logger.Warn("%s=%q is not a port, the trace gRPC listener is off", traceGRPCPortEnv, raw)
+		return
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(s.Host, strconv.Itoa(port)))
+	if err != nil {
+		logger.Warn("failed to start the trace gRPC listener on port %d: %v", port, err)
+		return
+	}
+	s.traceGRPCServer = handlers.NewTraceIngestGRPCServer(s.TraceIngestHandler, logger)
+	go func() {
+		logger.Info("trace ingest (OTLP gRPC) listening on %s", listener.Addr())
+		if err := s.traceGRPCServer.Serve(listener); err != nil {
+			logger.Warn("trace gRPC listener stopped: %v", err)
+		}
+	}()
 }
 
 // ensureTraceIngest builds the trace ingest service and its handler once. It reports false when
@@ -4063,6 +4096,9 @@ func (s *BifrostHTTPServer) Start() error {
 			s.shutdownEvals()
 			logger.Info("closing agent gateway...")
 			s.CloseAgentGateway()
+			if s.traceGRPCServer != nil {
+				s.traceGRPCServer.Stop()
+			}
 			if s.TraceIngest != nil {
 				// Queued trace batches are written before the stores close.
 				s.TraceIngest.Close()

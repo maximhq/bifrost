@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/hex"
+	"net"
 	"testing"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -14,6 +15,12 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -177,4 +184,39 @@ func TestOTLPAuthAndProjectRouting(t *testing.T) {
 	fixedKey["x-project-name"] = "not-mine"
 	explicit := env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", fixedKey, otlpTestExport(t))
 	assert.Equal(t, fasthttp.StatusForbidden, explicit.Response.StatusCode(), "an explicit project the key cannot use is refused")
+}
+
+// TestOTLPOverGRPC pins the gRPC transport: an export with the key in call metadata is stored
+// through the same path as HTTP, and a missing key is Unauthenticated, which exporters do not retry.
+func TestOTLPOverGRPC(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := NewTraceIngestGRPCServer(env.handler, logger)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	client := collectortrace.NewTraceServiceClient(conn)
+	var request collectortrace.ExportTraceServiceRequest
+	require.NoError(t, proto.Unmarshal(otlpTestExport(t), &request))
+
+	_, err = client.Export(context.Background(), &request)
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+
+	// arize-otel sends the key as api_key metadata, with gzip.
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "api_key", traceTestKey, "space_id", "bifrost")
+	response, err := client.Export(ctx, &request, grpc.UseCompressor("gzip"))
+	require.NoError(t, err)
+	assert.Nil(t, response.PartialSuccess)
+	spans, err := env.store.ListTraceSpans(context.Background(), "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, spans, 3)
+
+	bearer := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+traceTestKey, "x-project-name", "grpc-project")
+	_, err = client.Export(bearer, &request)
+	require.NoError(t, err, "the test key may create the project it names")
 }
