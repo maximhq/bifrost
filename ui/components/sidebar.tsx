@@ -621,7 +621,7 @@ export default function AppSidebar() {
 		if (focusedIndex < 0) return;
 		const url = navigableItems[focusedIndex]?.url;
 		if (!url) return;
-		const el = document.querySelector(`[data-nav-url="${url}"]`);
+		const el = document.querySelector('[data-nav-url="' + CSS.escape(url) + '"]');
 		el?.scrollIntoView({ block: "nearest" });
 	}, [focusedIndex, navigableItems]);
 
