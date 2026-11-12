@@ -1563,3 +1563,49 @@ func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
 	require.NoError(t, roundTripIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
 	assert.False(t, db.Migrator().HasColumn(&MCPToolLog{}, "round_trip_id"))
 }
+
+// TestTraceLinkColumnsMigration pins logs_add_trace_link_columns: the gateway's LLM and MCP rows gain
+// the columns a pushed trace is matched on, the migration reruns cleanly, and its rollback refuses
+// while any row carries a link, since the link cannot be recaptured once dropped.
+func TestTraceLinkColumnsMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "trace-link.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	for _, column := range []string{"trace_id", "parent_span_id", "provider_response_id", "input_fingerprint"} {
+		require.True(t, db.Migrator().HasColumn(&Log{}, column), "logs.%s is added", column)
+	}
+	for _, column := range []string{"trace_id", "parent_span_id"} {
+		require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, column), "mcp_tool_logs.%s is added", column)
+	}
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_trace_id"))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_provider_response_id"))
+	require.True(t, db.Migrator().HasIndex(&MCPToolLog{}, "idx_mcp_logs_trace_id"))
+	require.NoError(t, traceLinkColumnsMigration(ctx, testLogger{}).Migrate(db), "the migration is idempotent")
+
+	now := time.Now().UTC()
+	traceID := "0af7651916cd43dd8448eb211c80319c"
+	require.NoError(t, db.Create(&Log{ID: "log-1", Timestamp: now, CreatedAt: now, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "success", TraceID: &traceID, ParentSpanID: new("b7ad6b7169203331"), ProviderResponseID: new("chatcmpl-1"), InputFingerprint: new("abc")}).Error)
+	require.NoError(t, db.Create(&MCPToolLog{ID: "mcp-1", ToolName: "echo", Status: "success", Timestamp: now, CreatedAt: now, TraceID: &traceID}).Error)
+
+	var stored Log
+	require.NoError(t, db.Where("trace_id = ?", traceID).First(&stored).Error)
+	assert.Equal(t, "b7ad6b7169203331", *stored.ParentSpanID)
+	assert.Equal(t, "chatcmpl-1", *stored.ProviderResponseID)
+	assert.Equal(t, "abc", *stored.InputFingerprint)
+
+	err = traceLinkColumnsMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while a row carries a trace link")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&Log{}, "trace_id"), "trace_id survives a refused rollback")
+
+	require.NoError(t, db.Model(&Log{}).Where("id = ?", "log-1").Updates(map[string]any{"trace_id": nil, "parent_span_id": nil, "provider_response_id": nil, "input_fingerprint": nil}).Error)
+	err = traceLinkColumnsMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "an MCP row's link alone still blocks the rollback")
+	require.NoError(t, db.Model(&MCPToolLog{}).Where("id = ?", "mcp-1").Update("trace_id", nil).Error)
+	require.NoError(t, traceLinkColumnsMigration(ctx, testLogger{}).Rollback(db), "empty columns roll back")
+	for _, column := range []string{"trace_id", "parent_span_id", "provider_response_id", "input_fingerprint"} {
+		assert.False(t, db.Migrator().HasColumn(&Log{}, column), "logs.%s is dropped", column)
+	}
+	assert.False(t, db.Migrator().HasColumn(&MCPToolLog{}, "trace_id"))
+}

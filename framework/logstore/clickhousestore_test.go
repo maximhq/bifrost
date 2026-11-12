@@ -2092,3 +2092,108 @@ func TestClickHouseWarpTopicTablesFollowLogsRetention(t *testing.T) {
 		assert.NotContains(t, chEngineFull(t, store.db, "warp_topics"), "TTL ", "topics never expire")
 	}
 }
+
+// TestClickHouseTraceStore runs the trace store's write rules against ClickHouse, where an upsert is
+// a plain insert into a ReplacingMergeTree and a delete is a lightweight delete.
+func TestClickHouseTraceStore(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	for _, table := range []string{"trace_span_parts", "trace_spans", "trace_span_links", "traces", "trace_scores", "trace_comments", "trace_uploads", "trace_dirty_marks"} {
+		require.NoError(t, store.db.Exec("TRUNCATE TABLE "+table).Error)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	end := now.Add(2 * time.Second)
+
+	part := &TraceSpanPart{ProjectID: "p1", TraceID: "t1", SpanID: "llm", Source: TraceSourceBraintrust, Payload: `{"a":1}`, ReceivedAt: now}
+	_, err := store.BatchCreateTraceSpanParts(ctx, []*TraceSpanPart{part})
+	require.NoError(t, err)
+	_, err = store.BatchCreateTraceSpanParts(ctx, []*TraceSpanPart{{ProjectID: "p1", TraceID: "t1", SpanID: "llm", Source: TraceSourceBraintrust, Payload: `{"a":1}`, ReceivedAt: now}})
+	require.NoError(t, err)
+	parts, err := store.ListTraceSpanParts(ctx, "p1", "t1", "llm")
+	require.NoError(t, err)
+	assert.Len(t, parts, 1, "a resent part replaces its stored copy")
+
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{
+		{ProjectID: "p1", TraceID: "t1", SpanID: "root", Source: TraceSourceBraintrust, Name: "first name", Kind: TraceSpanKindTask, StartTime: now},
+		{ProjectID: "p1", TraceID: "t1", SpanID: "llm", ParentSpanIDsParsed: []string{"root"}, Source: TraceSourceBraintrust, Name: "chat", Kind: TraceSpanKindLLM, StartTime: now, EndTime: &end, TotalTokens: 30, PromptTokens: 20, CompletionTokens: 10, Cost: new(0.002), MetadataParsed: map[string]any{"k": "v"}},
+	}))
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{{ProjectID: "p1", TraceID: "t1", SpanID: "root", Source: TraceSourceBraintrust, Name: "agent", Kind: TraceSpanKindTask, StartTime: now, EndTime: &end, TagsParsed: []string{"prod"}}}))
+	spans, err := store.ListTraceSpans(ctx, "p1", "t1")
+	require.NoError(t, err)
+	require.Len(t, spans, 2, "the refolded root replaced its first row")
+	found, err := store.FindTraceSpans(ctx, "p1", []TraceSpanKey{{TraceID: "t1", SpanID: "llm"}, {TraceID: "t1", SpanID: "absent"}})
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	assert.Equal(t, map[string]any{"k": "v"}, found[0].MetadataParsed)
+	assert.Equal(t, "root", found[0].ParentSpanID)
+
+	require.NoError(t, store.UpsertTraceScores(ctx, []*TraceScore{{ID: "sc1", ProjectID: "p1", TraceID: "t1", Name: "accuracy", Value: new(0.25), Source: TraceAuthorSDK}}))
+	require.NoError(t, store.UpsertTraceScores(ctx, []*TraceScore{{ID: "sc1", ProjectID: "p1", TraceID: "t1", Name: "accuracy", Value: new(0.75), Source: TraceAuthorSDK}}))
+	trace, err := store.RecomputeTraceRollup(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, "agent", trace.Name)
+	assert.False(t, trace.InProgress)
+	stored, err := store.FindTrace(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, 30, stored.TotalTokens)
+	assert.Equal(t, map[string]float64{"accuracy": 0.75}, stored.ScoresParsed)
+	assert.Equal(t, []string{"prod"}, stored.TagsParsed)
+	_, err = store.FindTrace(ctx, "p1", "absent")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	keys := []TraceKey{{ProjectID: "p1", TraceID: "t1"}, {ProjectID: "p1", TraceID: "t2"}}
+	require.NoError(t, store.MarkTracesDirty(ctx, keys))
+	dirty, err := store.ListDirtyTraces(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, dirty, 2)
+	stale := dirty[0]
+	stale.MarkedAt = stale.MarkedAt.Add(-time.Minute)
+	require.NoError(t, store.ClearTraceDirty(ctx, stale))
+	require.NoError(t, store.ClearTraceDirty(ctx, dirty[1]))
+	remaining, err := store.ListDirtyTraces(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "only the clear that named the stored mark took effect")
+	assert.Equal(t, dirty[0].TraceKey, remaining[0].TraceKey)
+
+	link := &TraceSpanLink{ProjectID: "p1", TraceID: "t1", SpanID: "llm", LogKind: TraceLinkedLogKindLLM, LogID: "log-1", Method: "header"}
+	require.NoError(t, store.CreateTraceSpanLinks(ctx, []*TraceSpanLink{link}))
+	require.NoError(t, store.CreateTraceSpanLinks(ctx, []*TraceSpanLink{{ProjectID: "p1", TraceID: "t1", SpanID: "llm", LogKind: TraceLinkedLogKindLLM, LogID: "log-1", Method: "header"}}))
+	links, err := store.FindTraceSpanLinksByLog(ctx, TraceLinkedLogKindLLM, []string{"log-1"})
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+
+	require.NoError(t, store.CreateTraceComment(ctx, &TraceComment{ID: "c1", ProjectID: "p1", TraceID: "t1", Text: "note", Source: TraceAuthorHuman}))
+	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "u1", ProjectID: "p1", Source: TraceSourceBraintrust}))
+	require.NoError(t, store.CompleteTraceUpload(ctx, "u1", TraceUploadStatusDone, "traces/u1", nil))
+	upload, err := store.FindTraceUpload(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, TraceUploadStatusDone, upload.Status)
+	assert.Equal(t, "traces/u1", upload.ObjectKey)
+
+	require.NoError(t, store.DeleteTraceScore(ctx, "p1", "sc1"))
+	scores, err := store.ListTraceScores(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Empty(t, scores)
+
+	require.NoError(t, store.DeleteTraces(ctx, []TraceKey{{ProjectID: "p1", TraceID: "t1"}}))
+	_, err = store.FindTrace(ctx, "p1", "t1")
+	assert.ErrorIs(t, err, ErrNotFound)
+	spans, err = store.ListTraceSpans(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Empty(t, spans)
+
+	// A row past its own expires_at is removed by the table TTL, not by the cleaner.
+	past := now.Add(-time.Hour)
+	require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{
+		{ProjectID: "p1", TraceID: "ttl", SpanID: "old", Source: TraceSourceOTel, StartTime: now, ExpiresAt: &past},
+		{ProjectID: "p1", TraceID: "ttl", SpanID: "kept", Source: TraceSourceOTel, StartTime: now},
+	}))
+	deleted, err := store.DeleteExpiredTraceRowsBatch(ctx, now, 100)
+	require.NoError(t, err)
+	assert.Zero(t, deleted)
+	require.NoError(t, store.db.Exec("OPTIMIZE TABLE trace_spans FINAL").Error)
+	spans, err = store.ListTraceSpans(ctx, "p1", "ttl")
+	require.NoError(t, err)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "kept", spans[0].SpanID)
+}

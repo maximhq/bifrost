@@ -66,7 +66,10 @@ type uploadWork struct {
 //   - Intercepted: Create, CreateIfNotExists, BatchCreateIfNotExists, FindByID,
 //     Update, DeleteLog, DeleteLogs, DeleteLogsBatch, Close
 type HybridLogStore struct {
-	inner          LogStore
+	inner LogStore
+	// TraceStore forwards every trace method to inner: trace rows are not offloaded.
+	TraceStore
+
 	objects        objectstore.ObjectStore
 	prefix         string
 	logger         schemas.Logger
@@ -133,6 +136,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 	}
 	h := &HybridLogStore{
 		inner:                 inner,
+		TraceStore:            inner,
 		objects:               objects,
 		prefix:                prefix,
 		logger:                logger,

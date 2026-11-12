@@ -603,6 +603,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_dataset_files"}, run: migrationAddEvalsDatasetFiles},
 	{IDs: []string{"add_evals_run_tables"}, run: migrationAddEvalsRunTables},
 	{IDs: []string{"add_evals_run_result_score_number"}, run: migrationAddEvalsRunResultScoreNumber},
+	{IDs: []string{"add_tracing_tables"}, run: migrationAddTracingTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17511,4 +17512,19 @@ func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddTracingTables creates the Tracing project and tracing key tables. Both are new, so
+// the migration takes no lock on an existing table.
+func migrationAddTracingTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_tracing_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableTraceProject{}, &tables.TableTracingKey{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the tracing tables would permanently delete projects and revoke every tracing key", migrationName)
+		},
+	})
 }
