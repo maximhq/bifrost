@@ -853,6 +853,25 @@ func ValidateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 	return validateRateLimit(rateLimit)
 }
 
+// applyRateLimitUpdate applies an update's rate limit onto the stored one. The request states the
+// limits the owner keeps: a maximum left out is cleared along with its window, which is how an
+// editor drops one limit and keeps the other. A maximum sent without a window keeps the window
+// already stored rather than leaving the limit with none, which validation would refuse.
+func applyRateLimitUpdate(rateLimit *configstoreTables.TableRateLimit, req *UpdateRateLimitRequest) {
+	rateLimit.TokenMaxLimit = req.TokenMaxLimit
+	if req.TokenMaxLimit == nil {
+		rateLimit.TokenResetDuration = nil
+	} else if req.TokenResetDuration != nil {
+		rateLimit.TokenResetDuration = req.TokenResetDuration
+	}
+	rateLimit.RequestMaxLimit = req.RequestMaxLimit
+	if req.RequestMaxLimit == nil {
+		rateLimit.RequestResetDuration = nil
+	} else if req.RequestResetDuration != nil {
+		rateLimit.RequestResetDuration = req.RequestResetDuration
+	}
+}
+
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
@@ -3695,10 +3714,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
@@ -4091,10 +4107,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
