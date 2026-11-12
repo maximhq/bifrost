@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { RoutingTarget } from "@/lib/types/routingRules";
 /**
  * Routing Rules Utility Functions
@@ -104,7 +105,7 @@ export function truncateCELExpression(expression: string, maxLength: number = 60
  */
 export function validateProviderModel(provider: string, _model?: string): string {
 	if (!provider || provider.trim().length === 0) {
-		return "Provider is required";
+		return i18n.t("validation.providerIsRequired");
 	}
 	return "";
 }
@@ -118,7 +119,7 @@ export function getPriorityBadgeClass(): string {
 }
 
 /**
- * Gets a user-friendly CEL operator from the expression
+ * Gets a user-friendly CEL operator from the expression. Developer-facing: nothing renders these labels.
  * @param expression - The CEL expression
  * @returns Array of detected operators
  */
@@ -128,20 +129,20 @@ export function detectCELOperators(expression: string): string[] {
 
 	// Common CEL operators
 	const operatorPatterns = [
-		{ regex: /==/, label: "Equals" },
-		{ regex: /!=/, label: "Not equals" },
-		{ regex: />=/, label: "Greater than or equal" },
-		{ regex: /<=/, label: "Less than or equal" },
-		{ regex: />/, label: "Greater than" },
-		{ regex: /</, label: "Less than" },
-		{ regex: /&&/, label: "AND" },
-		{ regex: /\|\|/, label: "OR" },
-		{ regex: /!(?!=)/, label: "NOT" },
-		{ regex: /in\s/, label: "IN" },
-		{ regex: /.matches\(/, label: "Regex" },
-		{ regex: /.startsWith\(/, label: "StartsWith" },
-		{ regex: /.contains\(/, label: "Contains" },
-		{ regex: /.endsWith\(/, label: "EndsWith" },
+		{ regex: /==/, label: "Equals" }, // i18n-ignore
+		{ regex: /!=/, label: "Not equals" }, // i18n-ignore
+		{ regex: />=/, label: "Greater than or equal" }, // i18n-ignore
+		{ regex: /<=/, label: "Less than or equal" }, // i18n-ignore
+		{ regex: />/, label: "Greater than" }, // i18n-ignore
+		{ regex: /</, label: "Less than" }, // i18n-ignore
+		{ regex: /&&/, label: "AND" }, // i18n-ignore
+		{ regex: /\|\|/, label: "OR" }, // i18n-ignore
+		{ regex: /!(?!=)/, label: "NOT" }, // i18n-ignore
+		{ regex: /in\s/, label: "IN" }, // i18n-ignore
+		{ regex: /.matches\(/, label: "Regex" }, // i18n-ignore
+		{ regex: /.startsWith\(/, label: "StartsWith" }, // i18n-ignore
+		{ regex: /.contains\(/, label: "Contains" }, // i18n-ignore
+		{ regex: /.endsWith\(/, label: "EndsWith" }, // i18n-ignore
 	];
 
 	operatorPatterns.forEach(({ regex, label }) => {

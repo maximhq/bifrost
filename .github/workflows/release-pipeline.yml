@@ -269,7 +269,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI and bifrost-http binary
         run: |
@@ -354,6 +354,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -425,7 +426,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -476,6 +477,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -616,6 +618,7 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            inference.baseten.co:443
             api.perplexity.ai:443
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
@@ -701,7 +704,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # The Ubuntu squid and microsocks packages start system services on the
       # ports the flow uses; stop them so the flow's own configured instances bind.
@@ -824,6 +827,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -890,7 +894,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # test-integrations.sh installs the Python suite with `uv sync --frozen`, and
       # silently degrades to `pip install -e .` when uv is absent. That fallback cannot
@@ -953,6 +957,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -999,7 +1004,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # core/internal/mcptests drives real STDIO MCP servers as child processes.
       # fixtures.go's InitMCPServerPaths only computes their paths
@@ -1214,7 +1219,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -1308,6 +1313,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1356,7 +1362,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install jq
         run: |
@@ -1406,6 +1412,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1546,6 +1553,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1625,6 +1633,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1670,6 +1679,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1759,6 +1769,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1798,6 +1809,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1946,6 +1958,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1988,7 +2001,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Set up Docker Compose
         run: |
@@ -2125,6 +2138,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2184,7 +2198,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2196,9 +2210,10 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
-      # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
-      # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native
-      # build: this job's logs store is Postgres, so the SQLite reader is never loaded.
+      # The content-logging and relay matrices read raw log rows through `pg`, pinned in
+      # tests/e2e/api/package-lock.json, and through Node's built-in node:sqlite for the SQLite
+      # cells (tests/e2e/api/lib/sqlite-readonly.js). --ignore-scripts skips better-sqlite3's
+      # native build, which that reader only falls back to on a Node without node:sqlite.
       - name: Install e2e API test deps (lockfile)
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: tests/e2e/api
@@ -2250,6 +2265,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -2305,7 +2321,9 @@ jobs:
           # their published ports, which DNAT to the pinned bridge IPs in
           # .github/workflows/configs/docker-compose.yml (Postgres 172.38.0.11,
           # Weaviate 172.38.0.12, which also gossips to itself on 8301). Warp's
-          # agent and embeddings call OpenAI.
+          # agent and embeddings call OpenAI. getbifrost.ai / www.getbifrost.ai serve
+          # the pricing datasheet the gateway must sync at boot; without it
+          # bifrost-http exits fatally.
           allowed-endpoints: >
             127.0.0.1:5432
             172.38.0.11:5432
@@ -2315,6 +2333,7 @@ jobs:
             api.openai.com:443
             auth.docker.io:443
             cr.weaviate.io:443
+            getbifrost.ai:443
             github.com:443
             iojs.org:443
             nodejs.org:443
@@ -2326,6 +2345,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -2338,7 +2358,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Install Newman (hash-pinned via lockfile)
         run: |
@@ -2410,6 +2430,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2509,6 +2530,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2613,6 +2635,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2671,7 +2694,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2704,6 +2727,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -2767,6 +2791,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2835,7 +2860,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
       # the lockfile carries an integrity hash for newman and every transitive dep, which
@@ -2868,6 +2893,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -2964,7 +2990,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3001,6 +3027,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3129,6 +3156,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3223,7 +3251,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3274,6 +3302,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3362,7 +3391,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Configure Git
         run: |
@@ -3426,7 +3455,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI
         run: make build-ui
@@ -3502,7 +3531,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "25"
+          node-version-file: ".nvmrc"
 
       - name: Build UI
         run: make build-ui

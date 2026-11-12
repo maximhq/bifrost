@@ -26,6 +26,9 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -702,6 +705,30 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
 		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
+	}
+}
+
+// An integration that decodes a body without messages builds an empty, non-nil Input; it must
+// be rejected as a 400 before dispatch, where the Responses conversion would panic on it.
+func TestChatCompletionRequest_EmptyInputRejected(t *testing.T) {
+	// A bare Bifrost has no request pools, so a request that slips past the guard panics.
+	guard := func(call func() *schemas.BifrostError) (err *schemas.BifrostError, passed bool) {
+		defer func() { passed = recover() != nil }()
+		return call(), false
+	}
+	bifrost := &Bifrost{}
+	for _, input := range [][]schemas.ChatMessage{nil, {}} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-5.6-luna", Input: input}
+
+		err, passed := guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+		err, passed = guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionStreamRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat stream: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
 	}
 }
 
@@ -3545,6 +3572,64 @@ func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schem
 	return resp, bifrostErr, nil
 }
 
+// panickingPostHookPlugin is an LLM plugin whose PostLLMHook panics after replacing
+// the response, the way a buggy plugin can half-mutate state before it crashes.
+type panickingPostHookPlugin struct{ fakeRoutingPlugin }
+
+func (p *panickingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostResponse, _ *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	var resp *schemas.BifrostResponse
+	_ = resp.ChatResponse // nil dereference: a runtime.Error panic
+	return nil, nil, nil
+}
+
+// recordingPostHookPlugin records whether its PostLLMHook ran and the response it saw.
+type recordingPostHookPlugin struct {
+	fakeRoutingPlugin
+	ran  bool
+	seen *schemas.BifrostResponse
+}
+
+func (p *recordingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.ran, p.seen = true, resp
+	return resp, bifrostErr, nil
+}
+
+// TestRunPostLLMHooksRecoversPluginPanic pins that a panicking PostLLMHook is treated like
+// a plugin error: it is logged and recorded, the response it was handed passes on
+// unchanged, the remaining post-hooks still run, and nothing is returned to the caller.
+// For streams the hooks run per chunk on the provider goroutine, which has no other
+// recover, so an escaped panic ends the process.
+func TestRunPostLLMHooksRecoversPluginPanic(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			outer := &recordingPostHookPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "outer"}}
+			bad := &panickingPostHookPlugin{fakeRoutingPlugin{name: "bad"}}
+			// Post-hooks run in reverse, so "bad" (index 1) runs before "outer" (index 0).
+			p := &PluginPipeline{
+				llmPlugins: []schemas.LLMPlugin{outer, bad},
+				logger:     NewDefaultLogger(schemas.LogLevelError),
+				tracer:     &schemas.NoOpTracer{},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if streaming {
+				ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+			}
+			in := &schemas.BifrostResponse{}
+
+			var out *schemas.BifrostResponse
+			var outErr *schemas.BifrostError
+			require.NotPanics(t, func() { out, outErr = p.RunPostLLMHooks(ctx, in, nil, 2) })
+			assert.Same(t, in, out, "the response handed to the panicking hook passes on unchanged")
+			assert.Nil(t, outErr, "a plugin panic is not returned to the caller")
+			assert.True(t, outer.ran, "post-hooks after the panicking one still run")
+			assert.Same(t, in, outer.seen)
+			require.Len(t, p.postHookErrors, 1)
+			assert.Contains(t, p.postHookErrors[0].Error(), "panic in PostLLMHook for plugin bad")
+			assert.Contains(t, p.postHookErrors[0].Error(), "nil pointer dereference")
+		})
+	}
+}
+
 type postHookResponsePreservingPlugin struct {
 	fakeRoutingPlugin
 	block                 bool
@@ -5118,6 +5203,48 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 				sent = sent.ResponsesToolNamespace.Tools[0]
 			}
 			assertKimiToolParamsNormalized(t, params, sent.ResponsesToolFunction.Parameters)
+		})
+	}
+}
+
+// A Codex thread whose tool definitions changed mid-session carries a second
+// additional_tools item re-declaring functions.exec. Every wire that hoists those items
+// must send exec once, with the later definition, instead of rejecting the request
+// with "tool name \"exec\" is not unique after flattening namespace tools".
+func TestPrepareResponsesRequest_AdditionalToolsRedeclaration(t *testing.T) {
+	first := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1","parameters":{"type":"object"}},{"type":"function","name":"wait","parameters":{"type":"object"}}]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2","parameters":{"type":"object"}}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock converse", schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		{"anthropic", schemas.Anthropic, "claude-sonnet-4-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(first)},
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(second)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			var names []string
+			for _, tool := range prepared.Params.Tools {
+				names = append(names, *tool.Name)
+			}
+			if len(names) != 2 || names[0] != "exec" || names[1] != "wait" {
+				t.Fatalf("want [exec wait] on the wire, got %v", names)
+			}
+			if got := *prepared.Params.Tools[0].Description; got != "v2" {
+				t.Fatalf("want the later exec definition, got description %q", got)
+			}
+			if len(prepared.Input) != 0 {
+				t.Fatalf("additional_tools items must be consumed, got %d input items", len(prepared.Input))
+			}
 		})
 	}
 }
@@ -8434,6 +8561,164 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// scenarioPolicyRefuser refuses every attempt on one provider the way the governance plugin refuses
+// a provider a virtual key does not allow: a 403 short-circuit that leaves fallbacks allowed.
+type scenarioPolicyRefuser struct{ refuses schemas.ModelProvider }
+
+func (p *scenarioPolicyRefuser) GetName() string { return "scenario-policy-refuser" }
+func (p *scenarioPolicyRefuser) Cleanup() error  { return nil }
+func (p *scenarioPolicyRefuser) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.refuses {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+		Type:       schemas.Ptr("provider_blocked"),
+		StatusCode: schemas.Ptr(http.StatusForbidden),
+		Error:      &schemas.ErrorField{Message: fmt.Sprintf("Provider '%s' is not allowed for virtual key 'vk'", p.refuses)},
+	}}, nil
+}
+func (p *scenarioPolicyRefuser) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksReportEachAttempt pins #3261. When the primary and every fallback
+// fail, the caller gets the primary's error, and that error has to say what became of each
+// fallback: a fallback a virtual key refuses never reaches its provider, and without this the
+// caller reads the primary's fast 429 as a routing rule whose fallback never ran. A fallback that
+// could not even be prepared is reported as skipped. Both orchestrator loops are covered.
+func TestScenarioExhaustedFallbacksReportEachAttempt(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			// provC has no provider config, so its fallback is skipped before any attempt.
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"}, schemas.Fallback{Provider: provC, Model: "m-c"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("want the primary's 429 back, got %v", bifrostErr)
+			}
+			if got := u.count("sk-b1"); got != 0 {
+				t.Fatalf("the refused fallback reached its upstream %d times, want 0", got)
+			}
+			attempts := bifrostErr.ExtraFields.FallbackAttempts
+			if len(attempts) != 2 {
+				t.Fatalf("fallback_attempts = %+v, want one entry per fallback (refused, skipped)", attempts)
+			}
+			refused := attempts[0]
+			if refused.Provider != provB || refused.Model != "m-b" || refused.StatusCode == nil || *refused.StatusCode != http.StatusForbidden || refused.Type != "provider_blocked" || !strings.Contains(refused.Message, "not allowed") || refused.Skipped {
+				t.Fatalf("the refused fallback must carry its provider, model, status, type and message: %+v", refused)
+			}
+			skipped := attempts[1]
+			if skipped.Provider != provC || skipped.Model != "m-c" || !skipped.Skipped || skipped.StatusCode != nil {
+				t.Fatalf("the unprepared fallback must be reported as skipped: %+v", skipped)
+			}
+			body, err := json.Marshal(bifrostErr)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(body), `"fallback_attempts":[{"provider":"prov-b","model":"m-b","status_code":403,"type":"provider_blocked"`) {
+				t.Fatalf("the wire error must carry fallback_attempts: %s", body)
+			}
+		})
+	}
+}
+
+// scenarioErrorRetainer keeps the first error its PostLLMHook sees, as the logging plugin does
+// with raw logging on, where the error is serialized later on another goroutine.
+type scenarioErrorRetainer struct {
+	mu       sync.Mutex
+	retained *schemas.BifrostError
+}
+
+func (p *scenarioErrorRetainer) GetName() string { return "scenario-error-retainer" }
+func (p *scenarioErrorRetainer) Cleanup() error  { return nil }
+func (p *scenarioErrorRetainer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioErrorRetainer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *scenarioErrorRetainer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.mu.Lock()
+	if p.retained == nil && bifrostErr != nil {
+		p.retained = bifrostErr
+	}
+	p.mu.Unlock()
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged pins that reporting the
+// fallbacks' outcomes does not write to the primary's error after its post-hooks ran: a plugin may
+// still hold that pointer, and a write there races its asynchronous serialization.
+func TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			retainer := &scenarioErrorRetainer{}
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, retainer, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || len(bifrostErr.ExtraFields.FallbackAttempts) != 1 {
+				t.Fatalf("want the primary's error with one fallback attempt, got %v", bifrostErr)
+			}
+			retainer.mu.Lock()
+			retained := retainer.retained
+			retainer.mu.Unlock()
+			if retained == nil || retained.StatusCode == nil || *retained.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("the retainer must have kept the primary's 429, got %v", retained)
+			}
+			if retained.ExtraFields.FallbackAttempts != nil {
+				t.Fatalf("the primary's error a plugin retained was written after its post-hooks ran: %+v", retained.ExtraFields.FallbackAttempts)
+			}
+		})
+	}
+}
+
 // TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
 // key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
 // inferred chain: that 400 says this provider cannot serve the model, not that the request is
@@ -8519,6 +8804,17 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
 			}
 		})
+	}
+}
+
+// BenchmarkFallbackAttemptOf measures summarizing one failed fallback for the primary's error. It
+// runs only on a fallback that already failed, never on a request its primary served.
+func BenchmarkFallbackAttemptOf(b *testing.B) {
+	fallback := schemas.Fallback{Provider: provB, Model: "m"}
+	fallbackErr := &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "Provider 'prov-b' is not allowed"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = fallbackAttemptOf(fallback, fallbackErr)
 	}
 }
 
@@ -8660,12 +8956,18 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 // listedToolsManager serves one client whose tool the test holds on to.
 type listedToolsManager struct {
 	mcp.MCPManagerInterface
-	state schemas.MCPClientState
+	state     schemas.MCPClientState
+	discovery *schemas.MCPDiscovery
 }
 
 // GetClients returns the held client state as the manager would.
 func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
 	return []schemas.MCPClientState{m.state}
+}
+
+// GetClientDiscovery returns the held discovery as the manager's store would.
+func (m *listedToolsManager) GetClientDiscovery(context.Context, string) *schemas.MCPDiscovery {
+	return m.discovery
 }
 
 // TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
@@ -8680,10 +8982,15 @@ func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
 			OutputSchema: json.RawMessage(`{"type":"object"}`),
 		},
 	}
-	manager := &listedToolsManager{state: schemas.MCPClientState{
-		ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"},
-		ToolMap:         map[string]schemas.ChatTool{"docs-search": held},
-	}}
+	manager := &listedToolsManager{
+		state: schemas.MCPClientState{ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"}},
+		discovery: &schemas.MCPDiscovery{
+			Tools:             map[string]schemas.ChatTool{"docs-search": held},
+			Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///b.md", "b"), mcpgo.NewResource("file:///a.md", "a")},
+			ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")},
+			Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+		},
+	}
 	b := &Bifrost{MCPManager: manager}
 
 	clients, err := b.GetMCPClients()
@@ -8697,6 +9004,16 @@ func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
 
 	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
 		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
+	}
+
+	// The discovered lists are the caller's own copies too, so sorting or editing one cannot
+	// change what the manager serves.
+	clients[0].Resources[0] = mcpgo.NewResource("file:///edited.md", "edited")
+	clients[0].ResourceTemplates[0].Name = "edited"
+	clients[0].Prompts[0].Name = "edited"
+	served := manager.discovery
+	if served.Resources[0].URI != "file:///b.md" || served.ResourceTemplates[0].Name != "repo" || served.Prompts[0].Name != "docs-review" {
+		t.Fatalf("editing a listed list changed the served one: resource %q, template %q, prompt %q", served.Resources[0].URI, served.ResourceTemplates[0].Name, served.Prompts[0].Name)
 	}
 }
 
@@ -8898,4 +9215,344 @@ func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
 	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
 		t.Fatalf("plugins after remove = %d, want 1", n)
 	}
+}
+
+// keyScopedUpstream serves stored responses only to the key that owns them, as OpenAI does across projects,
+// and records which bearer each call carried.
+type keyScopedUpstream struct {
+	mu    sync.Mutex
+	owner string
+	seen  []string
+}
+
+func (u *keyScopedUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth)
+	owner := u.owner
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if auth != owner {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Response with id 'resp_1' not found.","type":"invalid_request_error","param":null,"code":null}}`))
+		return
+	}
+	status := "completed"
+	if strings.HasSuffix(r.URL.Path, "/cancel") {
+		status = "cancelled"
+	}
+	_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"` + status + `","model":"gpt-4o","output":[]}`))
+}
+
+func (u *keyScopedUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newKeyScopedClient(t *testing.T, owner string) (*Bifrost, *keyScopedUpstream) {
+	t.Helper()
+	upstream := &keyScopedUpstream{owner: owner}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"gpt-4o"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"gpt-4o-mini"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A stored response is found on whichever key created it: the follow-up asks each key in turn and the
+// one that owns it serves, whatever the key weights would have picked.
+func TestResponsesLifecycle_FindsTheOwningKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("retrieve failed: %+v", err.Error)
+	}
+	if resp.ID == nil || *resp.ID != "resp_1" {
+		t.Fatalf("retrieve returned %+v", resp)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k3" {
+		t.Fatalf("selected key = %q, want k3", got)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one,sk-two,sk-three" {
+		t.Fatalf("upstream calls = %v, want each key once in id order", got)
+	}
+
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancelled, err := client.ResponsesCancelRequest(ctx, &schemas.BifrostResponsesCancelRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("cancel failed: %+v", err.Error)
+	}
+	if cancelled.Status == nil || *cancelled.Status != "cancelled" {
+		t.Fatalf("cancel returned %+v", cancelled)
+	}
+}
+
+// A response no key owns comes back as the provider's 404 after one call per key, not one per retry.
+func TestResponsesLifecycle_NotFoundOnEveryKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-nobody")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404", err)
+	}
+	if got := upstream.calls(); len(got) != 3 {
+		t.Fatalf("upstream calls = %v, want one per key", got)
+	}
+}
+
+// A caller that pins a key is answered by that key alone, as single-key selection does.
+func TestResponsesLifecycle_PinnedKeyIsTheOnlyOneAsked(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "one")
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404 from the pinned key", err)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one" {
+		t.Fatalf("upstream calls = %v, want only the pinned key", got)
+	}
+}
+
+// videoUpstream owns each video on one key and pages each key's listing one video at a time.
+type videoUpstream struct {
+	mu     sync.Mutex
+	owners map[string][]string // bearer -> video ids it owns, in listing order
+	seen   []string
+}
+
+func (u *videoUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth+" "+r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+	owned := u.owners[auth]
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	notFound := func() {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Video not found","type":"invalid_request_error"}}`))
+	}
+	if r.URL.Path == "/v1/videos" {
+		start := 0
+		if after := r.URL.Query().Get("after"); after != "" {
+			start = -1
+			for i, id := range owned {
+				if id == after {
+					start = i + 1
+				}
+			}
+			if start < 0 {
+				notFound()
+				return
+			}
+		}
+		data, last, more := "", "", false
+		if start < len(owned) {
+			data = `{"id":"` + owned[start] + `","object":"video","status":"completed","model":"sora-2","created_at":1}`
+			last = owned[start]
+			more = start+1 < len(owned)
+		}
+		body := `{"object":"list","data":[` + data + `],"has_more":` + map[bool]string{true: "true", false: "false"}[more]
+		if last != "" {
+			body += `,"last_id":"` + last + `"`
+		}
+		_, _ = w.Write([]byte(body + `}`))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/videos/")
+	for _, owned := range owned {
+		if owned == id {
+			if r.Method == http.MethodDelete {
+				_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video.deleted","deleted":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video","status":"completed","model":"sora-2","created_at":1}`))
+			return
+		}
+	}
+	notFound()
+}
+
+func (u *videoUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newVideoClient(t *testing.T, owners map[string][]string) (*Bifrost, *videoUpstream) {
+	t.Helper()
+	upstream := &videoUpstream{owners: owners}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A video is polled and deleted through whichever key created it.
+func TestVideo_RetrieveAndDeleteFindTheOwningKey(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-two": {"video_b"}})
+
+	for i := 0; i < 3; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoRetrieveRequest(ctx, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.OpenAI, ID: "video_b"})
+		if err != nil {
+			t.Fatalf("retrieve %d failed: %+v", i, err.Error)
+		}
+		if !strings.HasPrefix(resp.ID, "video_b") {
+			t.Fatalf("retrieve returned %q", resp.ID)
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k2" {
+			t.Fatalf("selected key = %q, want k2", got)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := client.VideoDeleteRequest(ctx, &schemas.BifrostVideoDeleteRequest{Provider: schemas.OpenAI, ID: "video_b"}); err != nil {
+		t.Fatalf("delete failed: %+v", err.Error)
+	}
+}
+
+// Video listing walks every key's videos once, page by page, ending with has_more false.
+func TestVideo_ListPagesAcrossKeys(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1", "v2"}, "sk-three": {"v3"}})
+
+	var ids []string
+	var after *string
+	for page := 0; page < 10; page++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: after})
+		if err != nil {
+			t.Fatalf("page %d failed: %+v", page, err.Error)
+		}
+		for _, v := range resp.Data {
+			ids = append(ids, strings.SplitN(v.ID, ":", 2)[0])
+		}
+		if resp.HasMore == nil || !*resp.HasMore {
+			if resp.After != nil {
+				t.Fatalf("last page carried a cursor %q", *resp.After)
+			}
+			break
+		}
+		if resp.After == nil {
+			t.Fatalf("page %d has more but no cursor", page)
+		}
+		after = resp.After
+	}
+	if strings.Join(ids, ",") != "v1,v2,v3" {
+		t.Fatalf("listed %v, want v1,v2,v3", ids)
+	}
+}
+
+// A provider-native cursor (the last video id, as SDKs send it) resumes on the key that knows that video.
+func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1"}, "sk-two": {"v2", "v3"}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: schemas.Ptr("v2")})
+	if err != nil {
+		t.Fatalf("list failed: %+v", err.Error)
+	}
+	if len(resp.Data) != 1 || !strings.HasPrefix(resp.Data[0].ID, "v3") {
+		t.Fatalf("list returned %+v, want v3", resp.Data)
+	}
+	if resp.HasMore == nil || !*resp.HasMore || resp.After == nil {
+		t.Fatalf("expected the listing to continue to the next key, got has_more=%v after=%v", resp.HasMore, resp.After)
+	}
+	decoded, decodeErr := schemas.DecodeSerialCursor(*resp.After)
+	if decodeErr != nil || decoded.KeyIndex != 2 {
+		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
+	}
+}
+
+// snapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }
+
+// usageEstimationTokenizerFor reports the tokenizer a cancelled stream of model is
+// estimated with under the families currently configured.
+func usageEstimationTokenizerFor(t *testing.T, model string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+		}}}},
+	}}}))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-usage-estimation")
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+	}}, model, failure)
+	if failure.ExtraFields.BilledUsage == nil || failure.ExtraFields.BilledUsage.Estimation == nil {
+		t.Fatalf("no estimate for %s: %+v", model, failure.ExtraFields.BilledUsage)
+	}
+	return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+}
+
+// UsageEstimationTokenizers reaches cancelled-stream estimation from every path that
+// carries it: Init, ReloadConfig (the path a saved config takes) and the runtime update.
+func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
+	t.Cleanup(func() { streamusage.Configure(nil) })
+	const model = "claude-opus-4-5"
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), UsageEstimationTokenizers: []string{"anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	expect := func(step, want string) {
+		t.Helper()
+		if got := usageEstimationTokenizerFor(t, model); got != want {
+			t.Fatalf("%s: %s estimated with %q, want %q", step, model, got, want)
+		}
+	}
+
+	expect("Init with anthropic", "anthropic")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with no families", "cl100k_base")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, UsageEstimationTokenizers: []string{"llama3", "Anthropic"}}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with anthropic", "anthropic")
+
+	client.UpdateUsageEstimationTokenizers([]string{"deepseek"})
+	expect("update to another family", "cl100k_base")
+
+	client.UpdateUsageEstimationTokenizers([]string{"all"})
+	expect("update to all", "anthropic")
+
+	// An unknown name is ignored with a warning; it must not enable anything.
+	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
+	expect("update to an unknown family", "cl100k_base")
 }

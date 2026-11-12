@@ -3,7 +3,7 @@ package exa
 // exaSearchBody is the wire shape of an Exa /search request.
 //
 // ExtraParams carries Exa's own options (type, category, userLocation, ...) and is merged into
-// the JSON by CheckContextAndGetRequestBody when extra-params passthrough is enabled.
+// the JSON by CheckContextAndGetRequestBodyFromInterface when extra-params passthrough is enabled.
 type exaSearchBody struct {
 	Query              string                 `json:"query"`
 	NumResults         *int                   `json:"numResults,omitempty"`

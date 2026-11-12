@@ -532,7 +532,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 // (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
 // (line 784), never onto the outer tool_result block, so every cached tool result built via the
 // unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
-// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// hoists the last CacheControl found among a tool message's content blocks onto the tool_result
 // block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
 // pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
@@ -1367,6 +1367,163 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 	}
 	if result.Thinking.Display != nil {
 		t.Errorf("expected Display to be nil for non-Opus 4.7, got %q", *result.Thinking.Display)
+	}
+}
+
+// Haiku 5.5 takes the Sonnet 5+ request surface: reasoning.effort becomes
+// adaptive thinking plus output_config.effort, and temperature/top_p/top_k are
+// dropped, since any non-default value is a 400 on this model. Unrecognised, the
+// effort fell through to the budget_tokens branch and the sampling knobs were
+// forwarded. Haiku 4.5 keeps its extended-thinking surface.
+func TestToAnthropicChatRequest_Haiku55_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-haiku-5-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Thinking == nil || result.Thinking.Type != "adaptive" {
+				t.Fatalf("expected adaptive thinking for Haiku 5.5, got %+v", result.Thinking)
+			}
+			if result.Thinking.BudgetTokens != nil {
+				t.Errorf("expected no budget_tokens for Haiku 5.5, got %v", *result.Thinking.BudgetTokens)
+			}
+			if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+				t.Errorf("expected Display to default to 'summarized' for Haiku 5.5, got %v", result.Thinking.Display)
+			}
+			if result.OutputConfig == nil || result.OutputConfig.Effort == nil || *result.OutputConfig.Effort != effort {
+				t.Errorf("expected output_config.effort %q, got %+v", effort, result.OutputConfig)
+			}
+		})
+	}
+
+	t.Run("haiku 4.5 keeps budget_tokens", func(t *testing.T) {
+		effort := "low"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5-20251001",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+			},
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: new(8192),
+				Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.Thinking == nil || result.Thinking.Type != "enabled" || result.Thinking.BudgetTokens == nil {
+			t.Errorf("expected enabled thinking with a budget for Haiku 4.5, got %+v", result.Thinking)
+		}
+		if result.OutputConfig != nil && result.OutputConfig.Effort != nil {
+			t.Errorf("expected no output_config.effort for Haiku 4.5, got %q", *result.OutputConfig.Effort)
+		}
+	})
+}
+
+func TestToAnthropicChatRequest_Haiku55_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.0
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Haiku 5.5, got %v", *result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Haiku 5.5, got %v", *result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Haiku 5.5, got %v", *result.TopK)
+	}
+}
+
+// A custom provider's own key matches no datasheet row; the worker stamps the
+// built-in provider it wraps on the context, and the converter resolves through it.
+// Without that, a model only the datasheet knows falls back to the name checks:
+// budget thinking without effort, and the sampling params forwarded.
+func TestToAnthropicChatRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	for _, tc := range []struct {
+		name        string
+		stampedBase bool
+	}{
+		{"base provider on the context", true},
+		{"no base provider on the context", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := 0.0
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.stampedBase {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+			}
+			result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("my-claude"),
+				Model:    model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Temperature:         &temp,
+					Reasoning:           &schemas.ChatReasoning{Effort: new("low")},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			rowApplied := result.Thinking != nil && result.Thinking.Type == "adaptive" &&
+				result.OutputConfig != nil && result.OutputConfig.Effort != nil && *result.OutputConfig.Effort == "low" &&
+				result.Temperature == nil
+			if rowApplied != tc.stampedBase {
+				t.Errorf("datasheet row applied = %v, want %v (thinking=%+v output_config=%+v temperature=%v)",
+					rowApplied, tc.stampedBase, result.Thinking, result.OutputConfig, result.Temperature)
+			}
+		})
 	}
 }
 
@@ -2793,5 +2950,219 @@ func TestToAnthropicChatRequest_ToolResultCacheControlSurvivesMediaPlaceholder(t
 	}
 	if toolResult == nil || toolResult.CacheControl == nil {
 		t.Fatalf("expected cache_control on the tool_result; got %+v", toolResult)
+	}
+}
+
+// TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl is the Chat
+// Completions twin of the Responses breakpoint translation test.
+func TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl(t *testing.T) {
+	body := `[
+		{"role":"user","content":[{"type":"text","text":"stable prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+		{"role":"assistant","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":[{"type":"text","text":"18C","prompt_cache_breakpoint":{"mode":"explicit"}}]}
+	]`
+	var input []schemas.ChatMessage
+	require.NoError(t, sonic.Unmarshal([]byte(body), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, result.Messages)
+	first := result.Messages[0].Content.ContentBlocks
+	require.Len(t, first, 1)
+	require.NotNil(t, first[0].CacheControl, "user breakpoint must become cache_control")
+	assert.Equal(t, schemas.CacheControlTypeEphemeral, first[0].CacheControl.Type)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl, "tool message breakpoint must become tool_result.cache_control")
+	require.NotNil(t, toolResult.Content)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
+
+	assert.Nil(t, input[0].Content.ContentBlocks[0].CacheControl, "the caller's input was mutated")
+}
+
+// openAICompatibleMessageLevelCacheControl is a turn as the AI SDK openai-compatible
+// provider sends it: cache_control on the message objects, string content, and
+// content "" on the tool-call-only assistant turn.
+const openAICompatibleMessageLevelCacheControl = `[
+  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+  {"role":"user","content":"Create notes.txt"},
+  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}],"cache_control":{"type":"ephemeral"}},
+  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
+]`
+
+func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(openAICompatibleMessageLevelCacheControl), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, result.System)
+	require.NotEmpty(t, result.System.ContentBlocks)
+	assert.NotNil(t, result.System.ContentBlocks[len(result.System.ContentBlocks)-1].CacheControl,
+		"system breakpoint must reach Anthropic")
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, 3, strings.Count(string(body), `"cache_control"`),
+		"system, tool_use and tool result breakpoints must all reach Anthropic: %s", body)
+
+	var toolUse *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUse = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolUse)
+	assert.NotNil(t, toolUse.CacheControl, "the assistant's content \"\" must not swallow its marker")
+}
+
+// A tool result carries one breakpoint on Anthropic, hoisted onto the tool_result
+// block, which ends where the last nested block ends. When nested blocks carry more
+// than one marker, the last one is the one that describes that position, including a
+// message-level marker that decoding placed on the last block.
+func TestToAnthropicChatRequest_ToolResultHoistsLastCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"user","content":"Create notes.txt"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}
+	]`), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl)
+	require.NotNil(t, toolResult.CacheControl.TTL, "the last marker, with its 1h ttl, must be the one hoisted")
+	assert.Equal(t, "1h", *toolResult.CacheControl.TTL)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
+}
+
+// invalidToolArgumentCases are function.arguments strings a client can replay
+// in an OpenAI-shaped history. OpenAI documents that the model "does not always
+// generate valid JSON", and a max_tokens cutoff leaves arguments truncated, so
+// these show up in real traffic. Anthropic needs tool_use.input to be an object.
+var invalidToolArgumentCases = map[string]string{
+	"concatenated objects": `{"query": "morning brief"}{"pattern": "brief|morning"}`,
+	"truncated at cutoff":  `{"query": "mor`,
+	"plain text":           `not json`,
+}
+
+// toolUseInputsFromBody returns the raw input of every tool_use block in an
+// Anthropic request body, in order.
+func toolUseInputsFromBody(t *testing.T, body []byte) []string {
+	t.Helper()
+	var parsed struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	var inputs []string
+	for _, msg := range parsed.Messages {
+		var blocks []struct {
+			Type  string          `json:"type"`
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(msg.Content, &blocks) != nil {
+			continue // string content
+		}
+		for _, block := range blocks {
+			if block.Type == string(AnthropicContentBlockTypeToolUse) {
+				inputs = append(inputs, string(block.Input))
+			}
+		}
+	}
+	return inputs
+}
+
+// Invalid function.arguments in a replayed assistant turn used to reach the
+// request marshal as raw bytes and fail it with a 500 ("failed to marshal request
+// body to JSON") before any provider call. They replay as {} instead: Anthropic
+// does not check history tool_use inputs against the tool schema, so the turn
+// succeeds and the model re-calls the tool after the error tool_result.
+func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"empty":            {``, `{}`},
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				req := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("find my notes")}},
+						{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+								ID:   schemas.Ptr("toolu_test_1"),
+								Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("memory_search"),
+									Arguments: tc.arguments,
+								},
+							}},
+						}},
+						{
+							Role:            schemas.ChatMessageRoleTool,
+							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_test_1")},
+							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+					Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				require.Nil(t, bifrostErr, "build failed: %+v", bifrostErr)
+				assert.Equal(t, []string{tc.wantInput}, toolUseInputsFromBody(t, body))
+			})
+		}
 	}
 }

@@ -129,12 +129,11 @@ func TestConvertMCPToolToBifrostSchema_SortsPropertiesAndDefs(t *testing.T) {
 // hashes the serialized tools. Rediscovering the same server tools must hash
 // the same.
 func TestComputeToolsHash_StableAcrossRediscovery(t *testing.T) {
-	mapping := map[string]string{"search": "search"}
 	var want string
 	for i := 0; i < 200; i++ {
 		mcpTool := decodeSchemaOrderTool(t, "search", schemaOrderInputSchema)
 		tools := map[string]schemas.ChatTool{"search": convertMCPToolToBifrostSchema(&mcpTool, defaultLogger)}
-		got := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping})
+		got := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: tools})
 		if i == 0 {
 			want = got
 			continue
@@ -160,11 +159,12 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	manager := &MCPManager{
-		credStore: &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}},
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
+		credStore:      &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}},
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
-	state, config := newSyncTestClientState("client-order", "orderclient", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
+	state, config := newSyncTestClientState("client-order", "orderclient", schemas.MCPAuthTypeHeaders)
 	config.ConnectionType = schemas.MCPConnectionTypeHTTP
 	config.ConnectionString = schemas.NewSecretVar(ts.URL)
 	manager.clientMap[config.ID] = state
@@ -179,7 +179,7 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		checker.performCheck()
 		manager.mu.RLock()
-		tool, ok := manager.clientMap[config.ID].ToolMap["orderclient-search"]
+		tool, ok := storedTools(manager, config.ID)["orderclient-search"]
 		manager.mu.RUnlock()
 		require.True(t, ok, "tick %d did not store the tool", i)
 		data, err := json.Marshal(tool)

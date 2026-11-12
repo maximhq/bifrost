@@ -409,10 +409,10 @@ A shared OAuth client whose credential permanently dies lands in the **`needs_re
 
 `needs_reauth` is sticky: the health monitor and enable/disable toggles will not flip the client back to `healthy` or `unstable`, and the **Reconnect** action is disabled for it (reconnecting cannot help when the credential itself is dead). Only a human redoing consent clears it.
 
-From the dashboard, open the client and click **Reauthorize**: Bifrost redoes the OAuth consent flow in a popup against the currently stored credentials, and on completion reconnects the client.
+From the dashboard, open the server's actions menu (**⋯**) in the MCP Server Catalog and choose **Reauthorize**. The client's **State** column and its sheet show a **Needs Reauth** badge until then. Bifrost redoes the OAuth consent flow in a popup against the currently stored credentials, and on completion reconnects the client.
 
 <Frame>
-  <img src="/media/ui-mcp-needs-reauth-reauthorize.png" alt="MCP client sheet showing the red needs_reauth badge and the Reauthorize button" />
+  <img src="/media/ui-mcp-needs-reauth-reauthorize.png" alt="MCP Server Catalog with a shared OAuth client in Needs Reauth state and Reauthorize highlighted in its actions menu" />
 </Frame>
 
 The same flow is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID):
@@ -492,7 +492,7 @@ This deletes the stored token from Bifrost and marks the OAuth configuration `re
 
 1. GitHub → **Settings → Developer settings → OAuth Apps → New OAuth App**
 2. **Homepage URL**: `https://your-bifrost-domain.com`
-3. **Authorization callback URL**: `https://your-bifrost-domain.com/api/oauth/callback`
+3. **Authorization callback URL**: `https://your-bifrost-domain.com/api/oauth/callback` (include the `server.base_path` prefix if Bifrost is served under one, for example `https://your-bifrost-domain.com/bifrost/api/oauth/callback`)
 4. Copy **Client ID** and generate a **Client Secret**
 5. Paste into the Bifrost config above
 
@@ -522,7 +522,7 @@ This deletes the stored token from Bifrost and marks the OAuth configuration `re
 1. [Google Cloud Console](https://console.cloud.google.com) → create a project
 2. Configure the OAuth consent screen
 3. Create an **OAuth 2.0 Client ID** (Web application)
-4. Add `https://your-bifrost-domain.com/api/oauth/callback` to **Authorized redirect URIs**
+4. Add `https://your-bifrost-domain.com/api/oauth/callback` (with the `server.base_path` prefix, if any) to **Authorized redirect URIs**
 5. Copy Client ID + Client Secret into the Bifrost config above
 
 </Tab>
@@ -560,7 +560,7 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 - If the client was disabled for a long stretch, background refresh was paused for it — the refresh token may have expired at the provider in the meantime
 - If the provider never issued a refresh token at all, the client will hit this at every access-token expiry; append the provider's offline-access parameters to `authorize_url` (see the warning under [Automatic refresh](#automatic-refresh))
 - Verify scopes are still sufficient
-- Re-authorize: click **Reauthorize** on the client (or `POST /api/mcp/client/{id}/reauthorize`); see [Reauthorization](#reauthorization)
+- Re-authorize: choose **Reauthorize** from the client's actions menu (or `POST /api/mcp/client/{id}/reauthorize`); see [Reauthorization](#reauthorization)
 </Accordion>
 
 <Accordion title="Callback hangs at `/api/oauth/callback`">

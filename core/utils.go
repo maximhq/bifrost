@@ -33,6 +33,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Bedrock,
 	schemas.BedrockMantle,
 	schemas.SageMaker,
+	schemas.Baseten,
 	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
@@ -221,6 +222,18 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// anthropic_key_config.workload_identity follows the same rules as oauth_key_config: only
+	// the Anthropic provider federates, and a static value wins over the config.
+	if key.AnthropicKeyConfig.HasWorkloadIdentity() {
+		if !ProviderSupportsAnthropicWorkloadIdentity(providerKey) {
+			return fmt.Errorf("anthropic_key_config.workload_identity is only supported on anthropic and on custom providers whose base_provider_type is anthropic")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.AnthropicKeyConfig.WorkloadIdentity.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -230,11 +243,19 @@ func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.OpenAI
 }
 
+// ProviderSupportsAnthropicWorkloadIdentity reports whether a provider (the base provider for a
+// custom one) exchanges anthropic_key_config.workload_identity for a bearer token.
+func ProviderSupportsAnthropicWorkloadIdentity(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Anthropic
+}
+
 // keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
 // carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
-// mints its bearer from oauth_key_config on a provider that honours it.
+// mints its bearer from oauth_key_config or workload identity on a provider that honours it.
 func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
-	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
+	return CanProviderKeyValueBeEmpty(providerKey) ||
+		(key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey)) ||
+		(key.AnthropicKeyConfig.HasWorkloadIdentity() && ProviderSupportsAnthropicWorkloadIdentity(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a
@@ -261,6 +282,34 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 		return "request failed"
 	}
 	return strings.Join(parts, " ")
+}
+
+// fallbackAttemptOf records what became of one fallback for the primary's error, which is what the
+// caller gets once the whole chain has failed (see schemas.FallbackAttempt). A nil err is a fallback
+// that was skipped before any attempt.
+func fallbackAttemptOf(fallback schemas.Fallback, err *schemas.BifrostError) schemas.FallbackAttempt {
+	attempt := schemas.FallbackAttempt{Provider: fallback.Provider, Model: fallback.Model}
+	if err == nil {
+		attempt.Skipped = true
+		return attempt
+	}
+	if err.StatusCode != nil {
+		attempt.StatusCode = new(*err.StatusCode)
+	}
+	// The nested type first, as in routingErrorSummary: a Responses stream failure's top-level type
+	// is the event name ("response.failed", "error"), not the provider's error type.
+	if err.Error != nil && err.Error.Type != nil && *err.Error.Type != "" {
+		attempt.Type = *err.Error.Type
+	} else if err.Type != nil {
+		attempt.Type = *err.Type
+	}
+	if err.Error != nil {
+		attempt.Message = err.Error.Message
+		if attempt.Message == "" && err.Error.Error != nil {
+			attempt.Message = err.Error.Error.Error()
+		}
+	}
+	return attempt
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -515,7 +564,6 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
-	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
@@ -601,6 +649,19 @@ func isBatchRequestType(reqType schemas.RequestType) bool {
 // isFileRequestType returns true if the given request type is a file API operation.
 func isFileRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
+}
+
+// isKeyScopedLookupRequest reports whether the request addresses one stored object by id through a single-key provider call;
+// core tries each key in turn because the object lives on whichever key created it.
+func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
+	switch br.RequestType {
+	case schemas.ContainerFileCreateRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	case schemas.VideoEditRequest:
+		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""
+	}
+	return isResponsesLifecycleRequestType(br.RequestType)
 }
 
 // isCachedContentRequestType returns true if the given request type is a cached content lifecycle operation.

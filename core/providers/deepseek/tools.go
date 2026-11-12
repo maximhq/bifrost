@@ -25,8 +25,8 @@ const (
 
 // deepseekSearchBody is the wire shape of a DeepSeek Search request.
 //
-// ExtraParams is never serialized as its own field; CheckContextAndGetRequestBody merges
-// it into the JSON when passthrough extra params are enabled, matching every other
+// ExtraParams is never serialized as its own field; CheckContextAndGetRequestBodyFromInterface
+// merges it into the JSON when passthrough extra params are enabled, matching every other
 // provider. Unknown fields are safe to send upstream, which DeepSeek documents it ignores.
 type deepseekSearchBody struct {
 	Query        string                 `json:"query"`
@@ -174,7 +174,7 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 		return nil, bifrostErr
 	}
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
@@ -248,7 +248,7 @@ func (provider *DeepSeekProvider) Fetch(ctx *schemas.BifrostContext, key schemas
 		return nil, err
 	}
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {

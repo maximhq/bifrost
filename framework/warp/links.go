@@ -394,7 +394,16 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		// The page reads this one as a JSON object. encoding/json rather than
 		// sonic because it sorts map keys: the same filters must give the same
 		// link, or a reordered copy stops matching the link that was issued.
-		if encoded, err := json.Marshal(filters.MetadataFilters); err == nil {
+		// One value stays a plain string, the form the page has always read; several go as an array.
+		pairs := make(map[string]any, len(filters.MetadataFilters))
+		for key, vals := range filters.MetadataFilters {
+			if len(vals) == 1 {
+				pairs[key] = vals[0]
+			} else {
+				pairs[key] = vals
+			}
+		}
+		if encoded, err := json.Marshal(pairs); err == nil {
 			values.Set("metadata_filters", string(encoded))
 		}
 	}

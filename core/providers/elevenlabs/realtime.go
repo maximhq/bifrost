@@ -3,6 +3,7 @@ package elevenlabs
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -15,17 +16,88 @@ func (provider *ElevenlabsProvider) SupportsRealtimeAPI() bool {
 	return true
 }
 
-// RealtimeWebSocketURL returns the WSS URL for the ElevenLabs Conversational AI endpoint.
-// The model parameter is used as the agent_id query parameter.
-// Format: wss://api.elevenlabs.io/v1/convai/conversation?agent_id=<model>
-func (provider *ElevenlabsProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
-	if intent == "transcription" {
-		return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
+var (
+	_ schemas.RealtimeTranslatorProvider  = (*ElevenlabsProvider)(nil)
+	_ schemas.RealtimeTranslationSelector = (*ElevenlabsProvider)(nil)
+	_ schemas.RealtimeBootstrapDialer     = (*ElevenlabsProvider)(nil)
+)
+
+// isScribeRealtimeModel reports whether a model is one of Scribe's realtime transcription models, such as
+// scribe_v2_realtime or scribe_v3_live. Any other model is an agent id.
+func isScribeRealtimeModel(model string) bool {
+	return strings.HasPrefix(model, "scribe_") && (strings.HasSuffix(model, "_realtime") || strings.HasSuffix(model, "_live"))
+}
+
+// TranslatesRealtime reports that Scribe sessions are translated to the OpenAI Realtime protocol, while
+// agent sessions keep relaying the ElevenLabs Conversational AI frames as they are.
+func (provider *ElevenlabsProvider) TranslatesRealtime(model, intent string) bool {
+	return intent == "transcription" && isScribeRealtimeModel(model)
+}
+
+// NewRealtimeTranslator builds the translator of a Scribe transcription session.
+func (provider *ElevenlabsProvider) NewRealtimeTranslator(_ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+	if !isScribeRealtimeModel(model) {
+		return nil, providerUtils.NewBifrostBadRequestError("elevenlabs translates realtime sessions of its scribe models only, not " + model)
 	}
+	return newScribeTranslator(model), nil
+}
+
+// realtimeBaseURL returns the WebSocket form of the provider's base URL.
+func (provider *ElevenlabsProvider) realtimeBaseURL() string {
 	base := provider.networkConfig.BaseURL
 	base = strings.Replace(base, "https://", "wss://", 1)
-	base = strings.Replace(base, "http://", "ws://", 1)
-	return base + "/v1/convai/conversation?agent_id=" + model, nil
+	return strings.Replace(base, "http://", "ws://", 1)
+}
+
+// scribeRealtimeURL returns the Scribe endpoint for a model and the settings a connection opens with.
+func (provider *ElevenlabsProvider) scribeRealtimeURL(model string, settings *scribeSettings) string {
+	return provider.realtimeBaseURL() + "/v1/speech-to-text/realtime?model_id=" + url.QueryEscape(model) + "&" + settings.query
+}
+
+// RealtimeWebSocketURL returns the WSS URL for a realtime session. A Scribe model with intent
+// transcription gets the Scribe endpoint with the default settings; any other model is an agent id for
+// the Conversational AI endpoint.
+// Format: wss://api.elevenlabs.io/v1/convai/conversation?agent_id=<model>
+func (provider *ElevenlabsProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+	switch {
+	case intent == "transcription" && isScribeRealtimeModel(model):
+		defaults, err := newScribeSettings(nil)
+		if err != nil {
+			return "", providerUtils.NewBifrostBadRequestError(err.Error())
+		}
+		return provider.scribeRealtimeURL(model, defaults), nil
+	case intent == "transcription":
+		return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
+	case isScribeRealtimeModel(model):
+		return "", providerUtils.NewBifrostBadRequestError(model + " is a transcription model; open the session with intent=transcription")
+	}
+	return provider.realtimeBaseURL() + "/v1/convai/conversation?agent_id=" + model, nil
+}
+
+// RealtimeWebSocketURLForBootstrap returns the Scribe endpoint with the settings the client's first
+// session.update names. Scribe cannot change them after connecting.
+func (provider *ElevenlabsProvider) RealtimeWebSocketURLForBootstrap(ctx *schemas.BifrostContext, key schemas.Key, model, intent string, frames [][]byte) (string, *schemas.BifrostError) {
+	if intent != "transcription" || !isScribeRealtimeModel(model) {
+		return provider.RealtimeWebSocketURL(ctx, key, model, intent)
+	}
+	var session json.RawMessage
+	for _, frame := range frames {
+		if providerUtils.GetJSONField(frame, "type").String() != string(schemas.RTEventSessionUpdate) {
+			continue
+		}
+		var err error
+		if session, err = providerUtils.MergeJSONObjects(session, []byte(providerUtils.GetJSONField(frame, "session").Raw)); err != nil {
+			return "", providerUtils.NewBifrostBadRequestError("invalid session in session.update: " + err.Error())
+		}
+		if scribeNamesModel(session) {
+			break
+		}
+	}
+	settings, err := newScribeSettings(session)
+	if err != nil {
+		return "", providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	return provider.scribeRealtimeURL(model, settings), nil
 }
 
 // RealtimeHeaders returns the headers required for the ElevenLabs Conversational AI WebSocket.

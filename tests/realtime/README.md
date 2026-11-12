@@ -1,12 +1,12 @@
 # Realtime API E2E Tests
 
-End-to-end tests for the Realtime API (`/v1/realtime` and the OpenAI drop-in routes) through a running Bifrost gateway, against the real providers: OpenAI's realtime models, the same models on Azure OpenAI, and Amazon Nova 2 Sonic on Bedrock. Each test drives a session the way an app does, over HTTP and WebSocket, and checks what the gateway relays, refuses and logs.
+End-to-end tests for the Realtime API (`/v1/realtime` and the OpenAI drop-in routes) through a running Bifrost gateway, against the real providers: OpenAI's realtime models, the same models on Azure OpenAI, Amazon Nova 2 Sonic on Bedrock, and ElevenLabs' Scribe and agents. Each test drives a session the way an app does, over HTTP and WebSocket, and checks what the gateway relays, refuses and logs.
 
 The suite is a Go module of its own, run with `GOWORK=off`. It spends real tokens, a few cents a run: text turns on `gpt-realtime-mini`, a few seconds of audio, and short Nova Sonic sessions.
 
 ## Running
 
-The gateway reads provider credentials from the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY` / `AZURE_ENDPOINT`, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`. The Azure resource needs a realtime deployment and a transcription deployment, named `gpt-realtime` and `gpt-4o-transcribe` by default. The region must offer Nova 2 Sonic, for example `us-east-1`, and the account needs access to `amazon.nova-2-sonic-v1:0`. Bedrock API keys cannot sign Nova's bidirectional stream, so the AWS credentials must be IAM ones.
+The gateway reads provider credentials from the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY` / `AZURE_ENDPOINT`, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`, and `ELEVENLABS_API_KEY`. The Azure resource needs a realtime deployment and a transcription deployment, named `gpt-realtime` and `gpt-4o-transcribe` by default. The region must offer Nova 2 Sonic, for example `us-east-1`, and the account needs access to `amazon.nova-2-sonic-v1:0`. Bedrock API keys cannot sign Nova's bidirectional stream, so the AWS credentials must be IAM ones.
 
 ```bash
 # from the repo root: start a gateway on this folder's profile (the databases land in tests/realtime/data/)
@@ -17,7 +17,7 @@ make test-realtime BIFROST_BASE_URL=http://localhost:8187 TESTCASE=TestTurn_Tool
 make test-realtime BIFROST_BASE_URL=http://localhost:8187 PATTERN=Nova
 ```
 
-`config.json` enforces auth, configures `openai`, `bedrock`, `azure` and a realtime-less `anthropic` from those variables, and sets a setup token so the suite can mint virtual keys through `/api`. Every test skips when the gateway does not answer `/health`, except under `make test-realtime`, which fails the run.
+`config.json` enforces auth, configures `openai`, `bedrock`, `azure`, `elevenlabs` and a realtime-less `anthropic` from those variables, and sets a setup token so the suite can mint virtual keys through `/api`. Every test skips when the gateway does not answer `/health`, except under `make test-realtime`, which fails the run.
 
 ## How a test reads
 
@@ -55,6 +55,7 @@ Provider failures that cannot be produced on demand against a real provider, suc
 |---|---|
 | `turn_test.go` | healthy OpenAI turns: text replies, server-VAD turns started by speech, tool-call round trips, one row per response |
 | `nova_test.go` | Nova 2 Sonic: text and voice turns, and its fixed session configuration |
+| `elevenlabs_test.go` | ElevenLabs: Scribe transcription sessions translated to OpenAI events and logged, the `bifrost.*` extension events sent only to a session that opts in, an agent session still relayed as it is, a Scribe model refused without the transcription intent |
 | `azure_test.go` | Azure OpenAI: text and voice turns, transcription sessions, deployment aliases, client secrets, an unknown deployment |
 | `failure_test.go` | the client leaving mid-turn, a provider error event, a model the provider refuses |
 | `protocol_test.go` | client events refused or rewritten: a second concurrent response, malformed JSON, binary frames, model prefixes in `session.update`, transcription sessions |

@@ -23,7 +23,7 @@ func (provider *ExaProvider) Search(ctx *schemas.BifrostContext, key schemas.Key
 		return nil, providerUtils.NewBifrostBadRequestError("max_results must be between 1 and 100")
 	}
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
@@ -94,7 +94,7 @@ func (provider *ExaProvider) Fetch(ctx *schemas.BifrostContext, key schemas.Key,
 		return nil, err
 	}
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {

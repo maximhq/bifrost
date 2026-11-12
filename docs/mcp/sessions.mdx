@@ -33,8 +33,9 @@ The table is **scoped to the caller's identity**: a signed-in admin sees rows vi
 | **Bound to**    | Identity column: user (with name when available), VK, or session ID                                  |
 | **Status**       | One of the per-surface statuses below                                                                |
 | **Access token expiry** | When the OAuth access token expires. `—` for header rows (no concept of access-token expiry) |
+| **Discovery**   | On a server with Per-Caller Discovery on, what Bifrost discovered with this credential and when, such as `3 tools · 1 prompt · 2 resources`, discovered 4 min ago. `Not yet` while a sign-in is pending, or until the caller connects after signing in. `Shared` on a server without Per-Caller Discovery, whose one discovery every caller uses. `-` for a credential that needs action (its discovery was deleted with it) or a session-bound one, which keeps none |
 | **Created**     | When the credential or flow was first opened                                                         |
-| Action menu      | Re-authenticate, Edit values, Complete authentication, Revoke — see [Actions](#actions)             |
+| Action menu      | Re-authenticate, Edit values, Refresh tools, Complete authentication, Revoke — see [Actions](#actions) |
 
 ---
 
@@ -97,13 +98,23 @@ Available on `active` and `needs_update` header credential rows. Clicking it:
 2. Redirects the browser to the values form pre-populated with the names of currently-stored keys (values are never shown)
 3. On submit, Bifrost runs a one-time upstream verify, replaces the credential in place, and flips status to `active`
 
+### Refresh tools (Per-Caller Discovery)
+
+Available on `active` OAuth token and header credential rows of a user or a virtual key, on a server with Per-Caller Discovery on. Clicking it discovers the caller's tools, prompts and resources again with the credential the row stores, without the caller signing in again, so tools the upstream server added since they signed in reach them. Every node serves the new discovery, and MCP clients connected to `/mcp` are told to list their tools again. The toast says how many tools the new discovery holds.
+
+- A user's session can be refreshed only by that user; a virtual key's by anyone who can see the row.
+- If discovery fails, because the upstream is down or refuses the credential, the caller keeps the tools they had and the error is shown.
+- Not offered while the server awaits admin verification, or on rows that need re-authentication or updated header values: do that first.
+
+Over the API: `POST /api/mcp/sessions/{id}/refresh`, which answers with the new tool, prompt and resource counts. See [Per-Caller Discovery](./per-caller-discovery) for how callers' discoveries are made and when they are deleted.
+
 ### Complete authentication (Pending)
 
 Available on pending flow rows. Just sends the user back to the auth URL (OAuth consent or headers submission depending on the flow's kind) so they can finish what they started.
 
 ### Revoke
 
-Available on credential rows and on stale pending flows. Hard-deletes the row.
+Available on credential rows and on stale pending flows. Hard-deletes the row. On a server with Per-Caller Discovery on, revoking a user's or virtual key's credential also deletes the discovery made with it, so their next request offers the server's connect tool instead of its tools. A session-bound credential has no discovery to delete.
 
 For pending OAuth flows, the corresponding flow row is removed first to close the race where an upstream callback could mint a brand-new token after revoke.
 
@@ -190,5 +201,6 @@ You probably revoked the credential row while a pending flow was still in flight
 
 - [Per-User OAuth](./auth/per-user-oauth) — how OAuth tokens get into this table
 - [Per-User Headers](./auth/per-user-headers) — how header credentials get into this table
+- [Per-Caller Discovery](./per-caller-discovery) — the Discovery column, Refresh tools, and what deletes a caller's discovery
 - [Server-level OAuth](./auth/oauth) — admin-side, not surfaced here
 - [Tool Filtering](./filtering) — control which per-user tools a VK can call
