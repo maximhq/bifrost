@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -21,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -583,7 +583,7 @@ func TestListAllModels_ContinuesAfterAuthorizationFilteredEmptyPages(t *testing.
 		models[2*schemas.DefaultPageSize].ID,
 		models[4*schemas.DefaultPageSize].ID,
 	}
-	body, err := json.Marshal(openai.OpenAIListModelsResponse{Object: "list", Data: models})
+	body, err := providerUtils.MarshalSorted(openai.OpenAIListModelsResponse{Object: "list", Data: models})
 	require.NoError(t, err)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
