@@ -164,7 +164,8 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context) ([]discoveryT
 					parameters = append(parameters, boundedDiscoveryText(key, discoveryMaxParameterRunes))
 				}
 			}
-			definition, err := sonic.Marshal(tool.Function)
+			// Sorted keys: a revision must not change between calls for the same tools.
+			definition, err := schemas.MarshalSorted(tool.Function)
 			if err != nil {
 				definition = nil
 			}

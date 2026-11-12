@@ -22,7 +22,8 @@ import (
 func discoveryTestTool(name, description string, params ...string) schemas.ChatTool {
 	properties := schemas.NewOrderedMap()
 	for _, p := range params {
-		properties.Set(p, map[string]interface{}{"type": "string"})
+		// Several keys per schema, so the revision checks cover nested key order.
+		properties.Set(p, map[string]interface{}{"type": "string", "description": p + " value", "minLength": 1, "title": p})
 	}
 	return schemas.ChatTool{Function: &schemas.ChatToolFunction{
 		Name:        name,
