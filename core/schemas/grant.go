@@ -314,6 +314,8 @@ type Limit struct {
 	// recorded on a log row or named in a refusal can say what it was scoped to.
 	Provider string
 	Model    string
+
+	RequestsOnly bool // a tool call's combined rate limit: only its request limit is checked, as Max Tokens is model-only
 }
 
 // Credential is what the request presented to say who it is. Kind names what it was, in the

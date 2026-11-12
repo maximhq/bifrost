@@ -5397,6 +5397,12 @@ func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []sc
 		if rateLimit == nil {
 			continue
 		}
+		if limit.RequestsOnly && rateLimit.TokenMaxLimit != nil {
+			// Max Tokens is model-only: a tool call answers to a combined row's request limit alone.
+			requestsOnly := *rateLimit
+			requestsOnly.TokenMaxLimit = nil
+			rateLimit = &requestsOnly
+		}
 		label := limitLabel(limit)
 		entityWise[label] = append(entityWise[label], rateLimit)
 	}

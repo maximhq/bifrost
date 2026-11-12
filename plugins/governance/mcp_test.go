@@ -736,6 +736,19 @@ func TestRateLimitsForRequestKind_AppliesRequestLimitScope(t *testing.T) {
 	assert.Equal(t, []string{"rl-shared", "rl-model", "rl-tokens", "rl-combined", "unknown"}, ids(RateLimitsForRequestKind(ctx, store, limits, false)))
 	assert.Equal(t, []string{"rl-shared", "rl-mcp", "rl-combined", "unknown"}, ids(RateLimitsForRequestKind(ctx, store, limits, true)))
 	assert.Equal(t, "rl-model", limits[1].ID, "the input slice is never filtered in place")
+
+	requestsOnly := func(limits []schemas.Limit) []string {
+		var out []string
+		for _, limit := range limits {
+			if limit.RequestsOnly {
+				out = append(out, limit.ID)
+			}
+		}
+		return out
+	}
+	assert.Empty(t, requestsOnly(RateLimitsForRequestKind(ctx, store, limits, false)), "a model request answers to every line of a combined row")
+	assert.Equal(t, []string{"rl-combined"}, requestsOnly(RateLimitsForRequestKind(ctx, store, limits, true)), "a tool call answers to a combined row's request limit only")
+	assert.False(t, limits[4].RequestsOnly, "the input slice is never marked in place")
 }
 
 func TestRateLimitsForRequestKind_NoAllocationWhenNothingIsDropped(t *testing.T) {
@@ -852,6 +865,43 @@ func TestEvaluateMCP_MaxTokensGovernsModelRequestsOnly(t *testing.T) {
 	result, bifrostErr := plugin.Evaluate(resolverCtx(store, "sk-bf-test"), &EvaluationRequest{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: "gpt-4o"})
 	require.NotNil(t, bifrostErr)
 	assert.Equal(t, DecisionTokenLimited, result.Decision)
+}
+
+// TestEvaluateMCP_SharedCombinedRowMaxTokensGovernsModelRequestsOnly pins the same for a legacy
+// combined rate limit two teams share, which the migration leaves combined: its spent Max Tokens
+// refuses a model request but not a tool call, while its request limit still counts and refuses tool
+// calls for both teams.
+func TestEvaluateMCP_SharedCombinedRowMaxTokensGovernsModelRequestsOnly(t *testing.T) {
+	logger := NewMockLogger()
+	combined := buildRateLimitWithUsage("rl-shared", 1000, 1000, 3, 1)
+	combined.Scope = configstoreTables.LimitScopeShared
+	teamA, teamB := buildTeam("team-a", "Team A", nil), buildTeam("team-b", "Team B", nil)
+	teamA.RateLimitID, teamB.RateLimitID = &combined.ID, &combined.ID
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})})
+	vk.TeamID, vk.Team = &teamA.ID, teamA
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*teamA, *teamB},
+		RateLimits:  []configstoreTables.TableRateLimit{*combined},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	result, bifrostErr := plugin.Evaluate(resolverCtx(store, "sk-bf-test"), &EvaluationRequest{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: "gpt-4o"})
+	require.NotNil(t, bifrostErr, "the spent Max Tokens still refuses a model request")
+	assert.Equal(t, DecisionTokenLimited, result.Decision)
+
+	for i := 0; i < 2; i++ {
+		require.Nil(t, executeTool(t, store, plugin), "tool call %d is within the shared request limit", i+1)
+	}
+	assert.Equal(t, int64(3), requestUsage(t, store, "rl-shared"), "the combined row's request limit counts tool calls")
+	assert.Equal(t, int64(1000), store.LoadRateLimit(context.Background(), "rl-shared").TokenCurrentUsage, "a tool call charges no tokens")
+
+	bifrostErr = executeTool(t, store, plugin)
+	require.NotNil(t, bifrostErr, "the fourth tool call exceeds the shared request limit")
+	assert.Equal(t, int64(3), requestUsage(t, store, "rl-shared"), "a refused tool call is not counted")
 }
 
 // TestResolveLimits_GathersTeamAndCustomerRequestLimits pins that a key answers to its team's and
