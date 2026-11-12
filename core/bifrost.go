@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/baseten"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/byteplus"
@@ -60,6 +62,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/wally"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/valyala/fasthttp"
 )
 
@@ -343,6 +346,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
@@ -519,6 +523,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.configureUsageEstimationTokenizers(config.UsageEstimationTokenizers)
 	return nil
 }
 
@@ -1034,7 +1039,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 			},
 		}
 	}
-	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1099,7 +1104,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -4568,6 +4573,21 @@ func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
 	bifrost.logger.Info("drop_excess_requests updated to: %v", value)
 }
 
+// UpdateUsageEstimationTokenizers sets, at runtime, the embedded tokenizer
+// vocabularies a cancelled stream's usage is estimated with.
+func (bifrost *Bifrost) UpdateUsageEstimationTokenizers(families []string) {
+	bifrost.configureUsageEstimationTokenizers(families)
+	bifrost.logger.Info("usage_estimation_tokenizers updated to: %v", families)
+}
+
+// configureUsageEstimationTokenizers enables the listed tokenizer families and
+// warns about names it does not know; transport validation rejects those first.
+func (bifrost *Bifrost) configureUsageEstimationTokenizers(families []string) {
+	if unknown := streamusage.Configure(families); len(unknown) > 0 && bifrost.logger != nil {
+		bifrost.logger.Warn("ignoring unknown usage_estimation_tokenizers %v; supported: %v or %q", unknown, streamusage.Families, streamusage.FamilyAll)
+	}
+}
+
 // getProviderMutex gets or creates a mutex for the given provider
 func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *sync.RWMutex {
 	mutexValue, _ := bifrost.providerMutexes.LoadOrStore(providerKey, &sync.RWMutex{})
@@ -5271,6 +5291,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return minimax.NewMiniMaxProvider(config, bifrost.logger)
 	case schemas.BytePlus:
 		return byteplus.NewBytePlusProvider(config, bifrost.logger)
+	case schemas.Baseten:
+		return baseten.NewBasetenProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
@@ -8515,6 +8537,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// a concurrent request can then reuse it and overwrite RequestType.
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
+				// The request payloads a cancelled attempt's prompt is estimated from. Only
+				// these three pointers are kept: copying the whole BifrostRequest into the
+				// closure moved it to the heap on every streamed attempt.
+				attemptChat, attemptResponses, attemptText := req.ChatRequest, req.ResponsesRequest, req.TextCompletionRequest
+				// The Anthropic stream handlers mark usage provisional per attempt; a mark left
+				// by an earlier attempt must not mark this one's usage as provisional.
+				req.Context.ClearValue(schemas.BifrostContextKeyStreamUsageProvisional)
 				pipeline := bifrost.getPluginPipeline()
 				// Mirrors the retry loop's startup check for this attempt.
 				var isPreamble func(*schemas.BifrostStreamChunk) bool
@@ -8544,6 +8573,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if result == nil && startup.IsStartupError(err) && err.ExtraFields.BilledUsage == nil && ctx.Err() == nil {
 						heldBackError.Store(true)
 						return nil, err
+					}
+					if err != nil {
+						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
@@ -9934,6 +9966,23 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
 // For streaming requests, it accumulates timing per plugin instead of creating individual spans per chunk.
+// callPostLLMHook runs one plugin's PostLLMHook and turns a panic into a plugin error,
+// which RunPostLLMHooks logs and records like any other: the response and error the hook
+// was handed pass on unchanged, so the rest of the chain and the caller never see it.
+// For streams the hooks run per chunk on the provider goroutine, which has nothing else
+// to catch a panic before it ends the process.
+func (p *PluginPipeline) callPostLLMHook(plugin schemas.LLMPlugin, pluginName string, ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (outResp *schemas.BifrostResponse, outErr *schemas.BifrostError, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			summary := providerUtils.PanicSummary(r)
+			p.logger.Error("recovered from panic in PostLLMHook for plugin %s: %s\n%s", pluginName, summary, debug.Stack())
+			outResp, outErr = resp, bifrostErr
+			err = fmt.Errorf("panic in PostLLMHook for plugin %s: %s", pluginName, summary)
+		}
+	}()
+	return plugin.PostLLMHook(ctx, resp, bifrostErr)
+}
+
 func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// If the skip plugin pipeline flag is set, skip the plugin pipeline
 	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
@@ -9965,7 +10014,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				pluginCtx = p.openStreamPostHook(ctx, pluginName)
 			}
 			start := time.Now()
-			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			resp, bifrostErr, err = p.callPostLLMHook(plugin, pluginName, pluginCtx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
@@ -9988,7 +10037,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 			}
 			pluginCtx := ctx.WithPluginScope(&pluginName)
-			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			resp, bifrostErr, err = p.callPostLLMHook(plugin, pluginName, pluginCtx, resp, bifrostErr)
 			pluginCtx.ReleasePluginScope()
 			// End span with appropriate status
 			if err != nil {

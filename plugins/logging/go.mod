@@ -7,8 +7,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/mattn/go-sqlite3 v1.14.32
-	github.com/maximhq/bifrost/core v1.15.0
-	github.com/maximhq/bifrost/framework v1.12.0
+	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/framework v1.12.1
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasthttp v1.74.0
 )
@@ -32,6 +32,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.33.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
+	github.com/a2aproject/a2a-go/v2 v2.8.0 // indirect
 	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect
@@ -92,7 +93,7 @@ require (
 	github.com/go-openapi/validate v0.26.5 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect

@@ -408,6 +408,69 @@ test.describe("Providers", () => {
       expect((await savedAlias()).vertex_endpoint).toBeUndefined();
     });
 
+    test("should route a Baseten alias to a dedicated deployment URL and back to Model APIs", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("baseten"))) {
+        await providersPage.addKnownProviderFromDropdown("baseten");
+        createdProviders.push("baseten");
+      }
+      const keyName = `Baseten-Deployment-${Date.now()}`;
+      createdKeys.push({ provider: "baseten", keyName });
+      const created = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-baseten-key",
+          models: ["*"],
+          weight: 1,
+          aliases: { "dedicated-glm": { model_id: "not-required", model_name: "zai-org/GLM-5.3" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("baseten");
+      const deploymentUrl = page.getByTestId("deployment-baseten-deployment-url");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-dedicated-glm").click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedAlias = async () => {
+        const response = await page.request.get("/api/providers/baseten/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases["dedicated-glm"];
+      };
+
+      await edit();
+      await deploymentUrl.fill("http://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toBeVisible();
+      await providersPage.keySaveBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      expect((await savedAlias()).deployment_url, "the http:// deployment URL must not be saved").toBeUndefined();
+
+      await deploymentUrl.fill("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await expect(page.getByTestId("deployment-baseten-deployment-url-error")).toHaveCount(0);
+      await save();
+      let alias = await savedAlias();
+      expect(alias.model_id).toBe("not-required");
+      expect(alias.deployment_url.value).toBe("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+
+      await edit();
+      await expect(deploymentUrl).toHaveValue("https://model-e2e.api.baseten.co/environments/production/sync/v1");
+      await deploymentUrl.fill("");
+      await save();
+      alias = await savedAlias();
+      expect(alias.deployment_url).toBeUndefined();
+    });
+
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
       if (!(await providersPage.providerExists("azure"))) {
         await providersPage.addKnownProviderFromDropdown("azure");

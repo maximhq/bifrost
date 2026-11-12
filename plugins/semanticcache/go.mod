@@ -6,9 +6,9 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.15.0
-	github.com/maximhq/bifrost/framework v1.12.0
-	github.com/maximhq/bifrost/plugins/mocker v1.6.15
+	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/framework v1.12.1
+	github.com/maximhq/bifrost/plugins/mocker v1.6.16
 	github.com/stretchr/testify v1.12.1
 )
 
@@ -71,7 +71,7 @@ require (
 	github.com/go-openapi/validate v0.26.5 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/jaswdr/faker/v2 v2.8.0 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

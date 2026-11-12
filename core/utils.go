@@ -33,6 +33,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Bedrock,
 	schemas.BedrockMantle,
 	schemas.SageMaker,
+	schemas.Baseten,
 	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,

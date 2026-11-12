@@ -1074,7 +1074,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1171,7 +1171,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1202,6 +1202,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1315,7 +1316,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockChatCompletionRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1517,7 +1518,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockChatCompletionRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1548,6 +1549,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1879,7 +1881,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockResponsesRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1975,7 +1977,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockResponsesRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -2008,6 +2010,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
 
@@ -2303,7 +2306,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockTitanEmbeddingRequest, error) {
 				return ToBedrockTitanEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2316,7 +2319,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockCohereEmbeddingRequest, error) {
 				return ToBedrockCohereEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2329,7 +2332,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockNovaEmbeddingRequest, error) {
 				return ToBedrockNovaEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2492,7 +2495,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockRerankRequest, error) {
 			return ToBedrockRerankRequest(request, modelARN)
 		},
 	)
@@ -2596,15 +2599,22 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 
 	path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageGenerationRequest, error) {
 				return ToStabilityAIImageGenerationRequest(request)
-			}
-			return ToBedrockImageGenerationRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageGenerationRequest, error) {
+				return ToBedrockImageGenerationRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2682,15 +2692,22 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	// Stability AI routing and task-type inference use the actual model ID.
 	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageEditRequest, error) {
 				return ToStabilityAIImageEditRequest(request, request.Model)
-			}
-			return ToBedrockImageEditRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageEditRequest, error) {
+				return ToBedrockImageEditRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2767,7 +2784,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockImageVariationRequest, error) {
 			return ToBedrockImageVariationRequest(request)
 		})
 	if bifrostError != nil {
@@ -4573,24 +4590,53 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 }
 
 func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
-	if request == nil || request.Params == nil {
+	if request == nil {
 		return false
 	}
-	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+	if request.Params != nil && usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
 		return true
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input)
+}
+
+func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	if extraParamsHasSafeguards(params.ExtraParams) && safeguardsSurviveStrip(ctx, model) {
 		return true
 	}
-	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+	if invokeIngressThinkingNeedsInvokePath(ctx, params.Reasoning) {
 		return true
 	}
-	for _, tool := range request.Params.Tools {
+	for _, tool := range params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
+		}
+		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
+			return true
+		}
+	}
+	return false
+}
+
+// responsesInputHasToolReference runs on every Anthropic-family Responses request, so
+// it indexes rather than ranging by value: a by-value range copies each 224-byte
+// ResponsesMessage, which cost ~0.5µs on a 200-message conversation.
+func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		toolMsg := input[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
 		}
 	}
 	return false

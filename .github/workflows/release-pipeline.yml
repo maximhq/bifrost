@@ -354,6 +354,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
@@ -477,6 +478,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
@@ -618,6 +620,7 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            inference.baseten.co:443
             api.perplexity.ai:443
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
@@ -826,6 +829,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
@@ -956,6 +960,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
@@ -1312,6 +1317,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -1411,6 +1417,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -1552,6 +1559,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -1632,6 +1640,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -1678,6 +1687,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -1768,6 +1778,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -1808,6 +1819,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -1957,6 +1969,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2137,6 +2150,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2264,6 +2278,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
@@ -2429,6 +2444,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2529,6 +2545,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2634,6 +2651,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2726,6 +2744,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -2790,6 +2809,7 @@ jobs:
             api.cerebras.ai:443
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
+            inference.baseten.co:443
             inference.runanywhere.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -2892,6 +2912,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -3026,6 +3047,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -3155,6 +3177,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -3301,6 +3324,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
           WALLY_API_KEY: ${{ secrets.WALLY_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}

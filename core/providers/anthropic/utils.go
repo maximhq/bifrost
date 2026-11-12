@@ -352,9 +352,9 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		req.MCPServers = nil
 	}
 	// Speed is both provider-gated (FastMode flag) and model-gated
-	// (Opus 4.6 and Opus 4.7+ per SupportsFastMode). Strip if either gate
-	// fails — Anthropic's API rejects speed:"fast" elsewhere with a 400.
-	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model()))) {
+	// (per-provider model list in DefaultSupportsFastMode). Strip if either
+	// gate fails — the upstream rejects speed:"fast" elsewhere with a 400.
+	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model()))) {
 		req.Speed = nil
 	}
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !caps.SupportsTaskBudgets(features.TaskBudgets) {
@@ -663,7 +663,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
-		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
@@ -1350,8 +1350,9 @@ func IsHaiku5Plus(model string) bool {
 //     ("Claude Fable 5 and Claude Mythos 5 use adaptive thinking, which is
 //     always on ... thinking: {type: "disabled"} is rejected.")
 //   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
-//     (fast mode is NOT supported on Fable — Opus 4.6/4.7/4.8 only; this is why
-//     Fable is kept separate from IsOpus47Plus, which gates SupportsFastMode).
+//     (Fable is kept separate from IsOpus47Plus, which gates the Claude API
+//     fast-mode fallback; per-host Fable support comes from DefaultSupportsFastMode
+//     and the datasheet's supports_speed).
 func IsFableFamily(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
@@ -1422,15 +1423,31 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 	return false
 }
 
-// DefaultSupportsFastMode: speed:"fast" is a research preview on Opus 4.6 and
-// Opus 4.7+ (which covers 4.8 and 5); every other model rejects it with a 400.
-func DefaultSupportsFastMode(model string) bool {
+// DefaultSupportsFastMode reports whether speed:"fast" is accepted for a
+// (provider, model) pair when the datasheet has no supports_fast_mode value.
+// The model lists differ per host, so the provider decides which one applies:
+//   - Vertex: Claude Fable 5.2 only (cite: V-fast). Google serves fast mode on the
+//     latest version of a family plus a 30-day window for the retiring one; a
+//     later model is carried by the datasheet rather than this fallback.
+//   - Everywhere else: the Claude API research preview on Opus 4.6 and Opus 4.7+
+//     (which covers 4.8 and 5). Every other model rejects it with a 400.
+func DefaultSupportsFastMode(provider schemas.ModelProvider, model string) bool {
+	if provider == schemas.Vertex {
+		return isFable52(model)
+	}
 	if IsOpus47Plus(model) {
 		return true
 	}
 	m := strings.ToLower(model)
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+}
+
+// isFable52 matches Claude Fable 5.2 in its plain, dotted, Vertex "@date" and
+// date-suffixed forms.
+func isFable52(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "fable") && (strings.Contains(m, "5-2") || strings.Contains(m, "5.2"))
 }
 
 // DefaultSupportsSafeguards is the name-detection fallback for the Claude Code
@@ -2061,9 +2078,9 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 //
 // Override-aware: the datasheet's supports_computer_toolset decides when set, so
 // a model gaining the toolset is a catalog change. The provider gate stays in
-// code because the toolset is GA on the Claude API and Google Cloud only.
+// code because only the Claude API, Google Cloud and Bedrock serve the toolset.
 func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
-	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) && caps.Provider() != schemas.Bedrock {
 		return false
 	}
 	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))
@@ -2606,10 +2623,11 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 		}
 	}
 	// Check for fast mode. Only add the beta header when both the provider
-	// supports fast mode AND the model does (Opus 4.6 and Opus 4.7+ per
-	// SupportsFastMode); otherwise sending the header guarantees a 400.
-	if req.Speed != nil {
-		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
+	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
+	// speed field alone.
+	if req.Speed != nil && !features.FastModeHeaderless {
+		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
@@ -2617,9 +2635,9 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// can carry no top-level speed at all. Gate on the entry's own model — that is the
 	// one that would run fast — and take it verbatim rather than alias-resolving it,
 	// since it names an Anthropic model directly, not a Bifrost alias.
-	if !hasProvider || features.FastMode {
+	if (!hasProvider || features.FastMode) && !features.FastModeHeaderless {
 		for _, fb := range req.nativeFallbacks() {
-			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(fb.Model)) {
+			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(provider, fb.Model)) {
 				headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 				break
 			}
@@ -3377,7 +3395,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
-	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
+	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode && !f.FastModeHeaderless },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },

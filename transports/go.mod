@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/transports/v2
 go 1.27.3
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.5.0
+	github.com/a2aproject/a2a-go/v2 v2.8.0
 	github.com/andybalholm/brotli v1.2.7
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
@@ -16,18 +16,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v1.5.0
-	github.com/maximhq/bifrost/core v1.15.0
-	github.com/maximhq/bifrost/framework v1.12.0
-	github.com/maximhq/bifrost/plugins/compat v0.5.4
-	github.com/maximhq/bifrost/plugins/governance v1.12.0
-	github.com/maximhq/bifrost/plugins/logging v1.12.0
-	github.com/maximhq/bifrost/plugins/maxim v1.7.15
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.15
-	github.com/maximhq/bifrost/plugins/otel v1.6.5
-	github.com/maximhq/bifrost/plugins/prompts v1.1.15
-	github.com/maximhq/bifrost/plugins/routing v1.3.0
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.5
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.5
+	github.com/maximhq/bifrost/core v1.15.1
+	github.com/maximhq/bifrost/framework v1.12.1
+	github.com/maximhq/bifrost/plugins/compat v0.5.5
+	github.com/maximhq/bifrost/plugins/governance v1.12.1
+	github.com/maximhq/bifrost/plugins/logging v1.12.1
+	github.com/maximhq/bifrost/plugins/maxim v1.7.16
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.16
+	github.com/maximhq/bifrost/plugins/otel v1.6.6
+	github.com/maximhq/bifrost/plugins/prompts v1.1.16
+	github.com/maximhq/bifrost/plugins/routing v1.3.1
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.6
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.6
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -137,7 +137,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/cel-go v0.30.0 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
@@ -157,7 +157,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.15 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.16 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

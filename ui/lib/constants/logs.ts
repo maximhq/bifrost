@@ -36,6 +36,7 @@ export const KnownProvidersNames = [
 	"wafer",
 	"minimax",
 	"byteplus",
+	"baseten",
 	"wally",
 	"databricks",
 	"cloudflare",
@@ -78,6 +79,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"databricks",
 	"cloudflare",
 	"byteplus",
+	"baseten",
 	"github-copilot",
 ] as const;
 
@@ -195,6 +197,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	minimax: "MiniMax",
 	byteplus: "BytePlus",
+	baseten: "Baseten",
 	wally: "Wally",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",

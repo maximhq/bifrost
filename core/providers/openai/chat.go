@@ -189,7 +189,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return openaiReq
 	case schemas.Mistral:
 		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applyMistralCompatibility()
+		openaiReq.applyMistralCompatibility(caps)
 		return openaiReq
 	case schemas.MiniMax:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -198,6 +198,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.BytePlus:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBytePlusCompatibility()
+		return openaiReq
+	case schemas.Baseten:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBasetenCompatibility()
 		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -245,7 +249,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
-			openaiReq.applyMistralCompatibility()
+			openaiReq.applyMistralCompatibility(caps)
 		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
 			*openaiReq.Reasoning.Effort == "none" {
 			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
@@ -386,8 +390,14 @@ func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelC
 	}
 }
 
-// applyMistralCompatibility applies Mistral-specific transformations to the request
-func (req *OpenAIChatRequest) applyMistralCompatibility() {
+// mistralLegacyEffortControl is the ladder used when the datasheet publishes none for a
+// Mistral model: older Mistral reasoning models accept only "none" and "high".
+var mistralLegacyEffortControl = &schemas.EffortControl{Levels: []string{schemas.ReasoningEffortNone, schemas.ReasoningEffortHigh}}
+
+// applyMistralCompatibility applies Mistral-specific transformations to the request.
+// Reasoning effort follows the model's datasheet ladder (per-model on Mistral today, e.g.
+// low/high/max on GLM 5.3), falling back to the legacy none/high clamp without one.
+func (req *OpenAIChatRequest) applyMistralCompatibility(caps schemas.ModelCaps) {
 	// Mistral uses max_tokens instead of max_completion_tokens
 	if req.MaxCompletionTokens != nil {
 		req.MaxTokens = req.MaxCompletionTokens
@@ -400,11 +410,8 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		req.ToolChoice.ChatToolChoiceStruct = nil
 	}
 
-	// Mistral only support reasoning effort "none" and "high"
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
-		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
-			req.Reasoning.Effort = schemas.Ptr("high")
-		}
+		req.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(*req.Reasoning.Effort, mistralLegacyEffortControl))
 	}
 
 	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included
@@ -456,6 +463,63 @@ func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
 	maps.Copy(extraParams, req.ExtraParams)
 	extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
 	req.ExtraParams = extraParams
+}
+
+// applyBasetenCompatibility fits the request to Baseten's chat schema, which sets
+// additionalProperties:false, so any key it does not define is a 400. It defines
+// max_tokens but not max_completion_tokens, so the limit moves there. The OpenAI-
+// and Anthropic-only fields below are not in the schema and are dropped. Its
+// message roles are system, user, assistant and tool, so developer becomes system.
+// Baseten-native fields (min_p, chat_template_args, ...) still reach the wire as
+// extra params.
+func (req *OpenAIChatRequest) applyBasetenCompatibility() {
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
+	}
+	p := &req.ChatParameters
+	p.ServiceTier = nil
+	p.Audio = nil
+	p.Metadata = nil
+	p.Modalities = nil
+	p.SafetyIdentifier = nil
+	p.Prediction = nil
+	p.PromptCacheKey = nil
+	p.PromptCacheRetention = nil
+	p.PromptCacheOptions = nil
+	p.Store = nil
+	p.Verbosity = nil
+	p.WebSearchOptions = nil
+	p.Speed = nil
+	p.InferenceGeo = nil
+	p.MCPServers = nil
+	p.Container = nil
+	p.CacheControl = nil
+	p.TaskBudget = nil
+	p.ContextManagement = nil
+	p.IncludeServerSideToolInvocations = nil
+	req.PromptCacheIsolationKey = nil
+	for i := range req.Messages {
+		if req.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Messages[i].Role = schemas.ChatMessageRoleSystem
+		}
+	}
+}
+
+// clampBasetenResponsesEffort fits an effort to the minimal..high range Baseten's
+// /v1/responses accepts: none becomes minimal, its lowest level, and xhigh or max
+// become high.
+func clampBasetenResponsesEffort(effort *string) *string {
+	if effort == nil {
+		return nil
+	}
+	switch *effort {
+	case schemas.ReasoningEffortNone:
+		return schemas.Ptr(schemas.ReasoningEffortMinimal)
+	case schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax:
+		return schemas.Ptr(schemas.ReasoningEffortHigh)
+	}
+	return effort
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that

@@ -830,6 +830,60 @@ func TestRunInjectedLoops_ErrorBillsEarlierTurns(t *testing.T) {
 	assert.Equal(t, 7, err.ExtraFields.BilledUsage.PromptTokens)
 }
 
+// A turn cancelled mid-stream carries estimated usage. Adding the earlier turns must keep
+// its estimation marker, or logging takes the sum for provider-reported usage and keeps
+// the partial tokens and cost it captured before the cancel.
+func TestRunInjectedLoops_CancelledTurnKeepsEstimationWhenBillingEarlierTurns(t *testing.T) {
+	set := testInjectedSet(t)
+	cancelled := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: "request cancelled"},
+			ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{
+				PromptTokens: 20, CompletionTokens: 4, TotalTokens: 24,
+				Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+			}},
+		}
+	}
+	assertEstimated := func(t *testing.T, err *schemas.BifrostError, wantPrompt int) {
+		t.Helper()
+		require.NotNil(t, err)
+		billed := err.ExtraFields.BilledUsage
+		require.NotNil(t, billed)
+		assert.Equal(t, wantPrompt, billed.PromptTokens, "the earlier turn is added to the estimate")
+		assert.Equal(t, &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"}, billed.Estimation)
+	}
+
+	calls := 0
+	chatDispatch := func(*schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 1 {
+			return chatTurnResponse("", "tool_calls", 10, chatToolCall("c1", "web_search")), nil
+		}
+		return nil, cancelled()
+	}
+	_, err := runInjectedChatLoop(&schemas.BifrostChatRequest{Model: "m"}, set, chatDispatch, searchResult)
+	assertEstimated(t, err, 30)
+
+	rcalls := 0
+	responsesDispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		rcalls++
+		if rcalls == 1 {
+			return &schemas.BifrostResponsesResponse{
+				Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+				Usage:  &schemas.ResponsesResponseUsage{InputTokens: 7, OutputTokens: 1, TotalTokens: 8},
+			}, nil
+		}
+		return nil, cancelled()
+	}
+	_, err = runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, responsesDispatch, searchResult)
+	assertEstimated(t, err, 27)
+
+	// A first-turn cancel has no earlier turn to add: the estimate passes through untouched.
+	lone := cancelled()
+	billEarlierTurns(lone, nil)
+	assertEstimated(t, lone, 20)
+}
+
 // The last upstream reply's raw bytes stay on the assembled response: logging
 // (store_raw_request_response) and send_back_raw_response clients read them there. The
 // Anthropic converter, not the loop, decides not to return them as the whole answer.

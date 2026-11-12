@@ -673,6 +673,58 @@ func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_MistralReasoningEffortFollowsDatasheet pins that Mistral
+// (direct and on Vertex) maps reasoning effort onto the model's datasheet ladder
+// instead of rewriting every non-"none" value to "high" (issue #9731). A model with
+// no published ladder keeps the legacy none/high clamp.
+func TestToOpenAIChatRequest_MistralReasoningEffortFollowsDatasheet(t *testing.T) {
+	ladder := &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "high", "max"}}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if (p == schemas.Mistral && m == "zai-glm-5-3") || (p == schemas.Vertex && m == "mistral-medium-3") {
+			return ladder
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		effort   string
+		expected string
+	}{
+		{name: "mistral keeps low", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "low", expected: "low"},
+		{name: "mistral keeps max", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "max", expected: "max"},
+		{name: "mistral snaps medium up to high", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "medium", expected: "high"},
+		{name: "mistral snaps minimal to low", provider: schemas.Mistral, model: "zai-glm-5-3", effort: "minimal", expected: "low"},
+		{name: "vertex mistral keeps max", provider: schemas.Vertex, model: "mistral-medium-3", effort: "max", expected: "max"},
+		{name: "no ladder keeps legacy clamp", provider: schemas.Mistral, model: "magistral-medium-latest", effort: "low", expected: "high"},
+		{name: "no ladder keeps none", provider: schemas.Mistral, model: "magistral-medium-latest", effort: "none", expected: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}},
+			}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Reasoning)
+			require.NotNil(t, out.Reasoning.Effort)
+			require.Equal(t, tt.expected, *out.Reasoning.Effort)
+			// The caller's request is reused for fallbacks, so the clamp must not write through to it.
+			require.Equal(t, tt.effort, *req.Params.Reasoning.Effort)
+		})
+	}
+}
+
 // TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
 // OpenAI rejects at the effective reasoning effort are dropped for OpenAI and Azure.
 func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
@@ -1148,7 +1200,7 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)
@@ -1233,7 +1285,7 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 			wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 				ctx,
 				bifrostReq,
-				func() (providerUtils.RequestBodyWithExtraParams, error) {
+				func() (*OpenAIChatRequest, error) {
 					return ToOpenAIChatRequest(ctx, bifrostReq), nil
 				},
 			)
@@ -1323,7 +1375,7 @@ func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelPr
 	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		bifrostReq,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenAIChatRequest, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
 	)

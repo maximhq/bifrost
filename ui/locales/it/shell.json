@@ -353,6 +353,12 @@
 		"descriptionStuckEnterprise": "Il rilascio è ancora in corso. Ricarica tra un minuto per ricontrollare. Se non funziona, contatta l'amministratore della tua distribuzione Bifrost.",
 		"waitingEnterprise": "In attesa del completamento del rilascio…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Non è stato possibile caricare una parte della dashboard",
+		"bannerDescription": "Controlla la rete, il proxy o le estensioni del browser, poi ricarica.",
+		"screenTitle": "Non è stato possibile caricare questa pagina",
+		"screenDescription": "Il browser non è riuscito a scaricare alcuni file della dashboard. Un proxy, un firewall o un'estensione del browser potrebbe bloccarli. Controlla la rete e ricarica."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Espandi checklist di configurazione",
 		"setupChecklist": "Checklist di configurazione",

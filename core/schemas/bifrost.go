@@ -46,6 +46,8 @@ type BifrostConfig struct {
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
+
+	UsageEstimationTokenizers []string // Tokenizer families for cancelled-stream usage estimation; process-wide, see streamusage.Configure
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -89,6 +91,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	Baseten       ModelProvider = "baseten"
 	Wally         ModelProvider = "wally"
 )
 
@@ -143,6 +146,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
+	Baseten,
 	Wally,
 }
 
@@ -454,6 +458,7 @@ const (
 	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
 	BifrostContextKeyDeferredGuardrail                   BifrostContextKey = "bifrost-deferred-guardrail"                 // *DeferredGuardrailResult (set by enterprise guardrails plugin — output guardrail results that finish after the response was delivered; the log writer holds the row until they land)
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
+	BifrostContextKeyStreamUsageProvisional              BifrostContextKey = "bifrost-stream-usage-provisional"           // bool (set by the Anthropic stream handlers - DO NOT SET THIS MANUALLY) - true while only the provisional message_start usage has arrived this attempt
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
