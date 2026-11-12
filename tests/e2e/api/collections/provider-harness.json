@@ -318661,6 +318661,421 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Transcription of audio with no speech returns an empty transcript (no-speech transcription) (provider error fixture)",
+      "description": "Local fixture regression, no live provider calls. Audio with no speech (silence, white noise, music) makes OpenAI answer response_format text, srt or vtt with 200 and an empty or newline-only body. HandleOpenAITranscriptionRequest (core/providers/openai/openai.go), shared by OpenAI, Azure, Groq, OpenRouter, Baseten and vLLM, rejected any empty body before checking the format, so the gateway returned 500 \"empty response received from provider\" for a valid empty transcript. The empty-body check now applies only to the JSON formats. A live model may still emit a word for noise, so the empty answer comes from tests/e2e/api/runners/provider-error-fixture.mjs: upstream-transcribe-empty answers \"\" and upstream-transcribe-newline answers \"\\n\". Start the fixture, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. 341.1 to 341.5 are red before the fix (500) and green after (200, empty body). 341.6 pins that a JSON format with an empty body is still an error.",
+      "item": [
+        {
+          "name": "[NO-CONTENT] 341.1 openai/upstream-transcribe-empty /v1/audio/transcriptions text with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('text, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('text, empty body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.2 openai/upstream-transcribe-newline /v1/audio/transcriptions text with a newline body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-newline",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('text, newline body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('text, newline body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.3 openai/upstream-transcribe-empty /v1/audio/transcriptions srt with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "srt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('srt, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('srt, empty body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.4 openai/upstream-transcribe-newline /v1/audio/transcriptions vtt with a newline body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-newline",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "vtt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vtt, newline body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('vtt, newline body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.5 openai/upstream-transcribe-empty OpenAI drop-in /openai/v1/audio/transcriptions text with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('drop-in text, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The OpenAI drop-in writes a plain-text format back as the bare transcript.",
+                  "pm.test('drop-in text, empty body: body is the empty transcript, not an error', function () {",
+                  "  pm.expect(body.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] 341.6 openai/upstream-transcribe-empty /v1/audio/transcriptions json with an empty body is still an empty-response error (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A JSON format has nothing to decode in an empty body, so it stays an error.",
+                  "var body = pm.response.text();",
+                  "pm.test('json, empty body: reported as an empty provider response', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + body.slice(0, 300)).to.equal(500);",
+                  "  pm.expect(body, 'error body: ' + body.slice(0, 300)).to.include('empty response received from provider');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
