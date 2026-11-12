@@ -27943,6 +27943,49 @@ func TestSQLite_LegacyRateLimitSharedWithAStoredHolderStaysCombined(t *testing.T
 	}
 }
 
+// TestSQLite_LegacyRateLimitWhoseDerivedIDAnotherOwnerHoldsStaysCombined pins that config.json does not
+// split a combined row when the store already holds its derived request-limit id for another owner, as
+// the migration refuses to: the row keeps its request limit and the stored row keeps its owner and limit.
+func TestSQLite_LegacyRateLimitWhoseDerivedIDAnotherOwnerHoldsStaysCombined(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	limit := func(n int64) *int64 { return &n }
+	dir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, dir)
+	configData.Governance = &configstore.GovernanceConfig{
+		RateLimits: []configstoreTables.TableRateLimit{
+			{ID: "rl-x", TokenMaxLimit: limit(1000), TokenResetDuration: bifrost.Ptr("1h"), RequestMaxLimit: limit(5), RequestResetDuration: bifrost.Ptr("1h")},
+		},
+		Teams: []configstoreTables.TableTeam{{ID: "team-y", Name: "team-y", RateLimitID: bifrost.Ptr("rl-x")}},
+	}
+	createConfigFile(t, dir, configData)
+
+	// Another team's request limit already stands under the id the split would take.
+	derivedID := configstoreTables.LegacyRequestLimitID("rl-x")
+	store, err := configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, &testLogger{})
+	require.NoError(t, err)
+	now := time.Now()
+	require.NoError(t, store.DB().Create(&configstoreTables.TableTeam{ID: "team-z", Name: "team-z", CreatedAt: now, UpdatedAt: now}).Error)
+	require.NoError(t, store.DB().Create(&configstoreTables.TableRateLimit{ID: derivedID, RequestMaxLimit: limit(7), RequestResetDuration: bifrost.Ptr("1m"), TeamID: bifrost.Ptr("team-z"), CreatedAt: now, UpdatedAt: now, TokenLastReset: now, RequestLastReset: now}).Error)
+	store.Close(ctx)
+
+	loaded, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer loaded.Close(ctx)
+	db := loaded.ConfigStore.DB()
+
+	var row configstoreTables.TableRateLimit
+	require.NoError(t, db.First(&row, "id = ?", "rl-x").Error)
+	require.NotNil(t, row.RequestMaxLimit, "the row was split over another owner's request limit")
+	assert.EqualValues(t, 5, *row.RequestMaxLimit)
+	var other configstoreTables.TableRateLimit
+	require.NoError(t, db.First(&other, "id = ?", derivedID).Error)
+	require.NotNil(t, other.TeamID)
+	assert.Equal(t, "team-z", *other.TeamID, "the stored request limit changed owner")
+	require.NotNil(t, other.RequestMaxLimit)
+	assert.EqualValues(t, 7, *other.RequestMaxLimit)
+}
+
 // TestSQLite_RequestLimitsFromConfig pins the config.json form: governance.rate_limits[] items naming
 // an owner are stored as that owner's request limits with their scopes (an omitted one meaning
 // shared), and an unchanged file writes nothing on the next load.

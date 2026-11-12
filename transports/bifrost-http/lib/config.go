@@ -1260,6 +1260,48 @@ func (s *legacyRequestLimitSplit) referencedElsewhere(id string, own []holderRow
 	return false
 }
 
+// derivedIDTakenByAnother reports whether a stored row already holds derivedID for an owner other than
+// the holder, which the migration refuses to split over: writing the split there would lose that row.
+// The stored row is the holder's own when one of own selects its owner. On an error the row stays
+// combined.
+func (s *legacyRequestLimitSplit) derivedIDTakenByAnother(derivedID string, own []holderRow) bool {
+	if s.db == nil {
+		return false
+	}
+	var stored []configstoreTables.TableRateLimit
+	if err := s.db.Select("id", "model_config_id", "team_id", "customer_id").Where("id = ?", derivedID).Limit(1).Find(&stored).Error; err != nil {
+		logger.Warn("failed to read the stored rate limit %s; its source stays combined: %v", derivedID, err)
+		return true
+	}
+	if len(stored) == 0 {
+		return false
+	}
+	var ownerTable, ownerID string
+	switch existing := stored[0]; {
+	case existing.ModelConfigID != nil:
+		ownerTable, ownerID = configstoreTables.TableModelConfig{}.TableName(), *existing.ModelConfigID
+	case existing.TeamID != nil:
+		ownerTable, ownerID = configstoreTables.TableTeam{}.TableName(), *existing.TeamID
+	case existing.CustomerID != nil:
+		ownerTable, ownerID = configstoreTables.TableCustomer{}.TableName(), *existing.CustomerID
+	}
+	for _, row := range own {
+		if ownerTable == "" || row.table != ownerTable {
+			continue
+		}
+		var n int64
+		if err := s.db.Table(row.table).Where("id = ?", ownerID).Where(row.where, row.args...).Count(&n).Error; err != nil {
+			logger.Warn("failed to read the owner of rate limit %s; its source stays combined: %v", derivedID, err)
+			return true
+		}
+		if n > 0 {
+			return false
+		}
+	}
+	logger.Warn("the id %s for a split request limit is already taken by another stored rate limit; its source stays combined", derivedID)
+	return true
+}
+
 // split takes the request limit off the row rateLimitID names, when that row can be split. own
 // selects the holder's stored rows, which may reference the row without making it shared.
 func (s *legacyRequestLimitSplit) split(rateLimitID *string, own ...holderRow) (configstoreTables.TableRateLimit, bool) {
@@ -1285,7 +1327,7 @@ func (s *legacyRequestLimitSplit) split(rateLimitID *string, own ...holderRow) (
 	if _, taken := s.indexOf[derivedID]; taken {
 		return configstoreTables.TableRateLimit{}, false
 	}
-	if s.referencedElsewhere(rl.ID, own) {
+	if s.referencedElsewhere(rl.ID, own) || s.derivedIDTakenByAnother(derivedID, own) {
 		return configstoreTables.TableRateLimit{}, false
 	}
 	limit := configstoreTables.TableRateLimit{
