@@ -13,23 +13,27 @@ import (
 // TraceFilters narrows the trace list, the span list and the Tracing overview. ProjectIDs is the
 // caller's visible projects; an empty list means every project.
 type TraceFilters struct {
-	ProjectIDs   []string   `json:"project_ids,omitempty"`
-	Sources      []string   `json:"sources,omitempty"`
-	Kinds        []string   `json:"kinds,omitempty"`  // span list only
-	Models       []string   `json:"models,omitempty"` // span list only
-	Environments []string   `json:"environments,omitempty"`
-	Tags         []string   `json:"tags,omitempty"`
-	SessionID    string     `json:"session_id,omitempty"`
-	UserID       string     `json:"user_id,omitempty"`
-	ExperimentID string     `json:"experiment_id,omitempty"`
-	TraceID      string     `json:"trace_id,omitempty"`
-	Status       string     `json:"status,omitempty"` // "error" = with errors, "ok" = without, "in_progress"
-	Search       string     `json:"search,omitempty"` // name, input and output
-	StartTime    *time.Time `json:"start_time,omitempty"`
-	EndTime      *time.Time `json:"end_time,omitempty"`
-	MinCost      *float64   `json:"min_cost,omitempty"`
-	MinTokens    *int       `json:"min_tokens,omitempty"`
-	MinDuration  *float64   `json:"min_duration_ms,omitempty"`
+	ProjectIDs   []string `json:"project_ids,omitempty"`
+	Sources      []string `json:"sources,omitempty"`
+	Kinds        []string `json:"kinds,omitempty"`  // span list only
+	Models       []string `json:"models,omitempty"` // span list only
+	Environments []string `json:"environments,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	SessionID    string   `json:"session_id,omitempty"`
+	UserID       string   `json:"user_id,omitempty"`
+	ExperimentID string   `json:"experiment_id,omitempty"`
+	TraceID      string   `json:"trace_id,omitempty"`
+	Name         string   `json:"name,omitempty"`           // exact name
+	ParentSpanID string   `json:"parent_span_id,omitempty"` // span list only
+	// ExcludeTraceRows leaves out the span that stands for a Langfuse trace object: its span id is the trace id.
+	ExcludeTraceRows bool       `json:"-"`
+	Status           string     `json:"status,omitempty"` // "error" = with errors, "ok" = without, "in_progress"
+	Search           string     `json:"search,omitempty"` // name, input and output
+	StartTime        *time.Time `json:"start_time,omitempty"`
+	EndTime          *time.Time `json:"end_time,omitempty"`
+	MinCost          *float64   `json:"min_cost,omitempty"`
+	MinTokens        *int       `json:"min_tokens,omitempty"`
+	MinDuration      *float64   `json:"min_duration_ms,omitempty"`
 }
 
 // TraceSearchResult is one page of traces.
@@ -127,6 +131,19 @@ type TraceReadStore interface {
 	GetTraceFilterData(ctx context.Context, projectIDs []string) (*TraceFilterData, error)
 	ListTraceUploads(ctx context.Context, projectID string, ids []string) ([]*TraceUpload, error)
 	ListProjectTraceKeys(ctx context.Context, projectID string, limit int) ([]TraceKey, error)
+	SearchTraceScores(ctx context.Context, filters TraceScoreFilters, limit, offset int) ([]*TraceScore, error)
+}
+
+// TraceScoreFilters narrows a listing of scores across the traces of one project.
+type TraceScoreFilters struct {
+	ProjectID string
+	IDs       []string
+	Names     []string
+	Sources   []string
+	TraceIDs  []string
+	SpanIDs   []string
+	From      *time.Time
+	To        *time.Time
 }
 
 // traceLike adds a case-insensitive substring match on the given columns, OR-ed together.
@@ -176,6 +193,9 @@ func (s *RDBLogStore) applyTraceFilters(query *gorm.DB, filters TraceFilters) *g
 	}
 	if filters.TraceID != "" {
 		query = query.Where("trace_id = ?", filters.TraceID)
+	}
+	if filters.Name != "" {
+		query = query.Where("name = ?", filters.Name)
 	}
 	switch filters.Status {
 	case TraceSpanStatusError:
@@ -275,6 +295,15 @@ func (s *RDBLogStore) applyTraceSpanFilters(query *gorm.DB, filters TraceFilters
 	}
 	if filters.TraceID != "" {
 		query = query.Where("trace_id = ?", filters.TraceID)
+	}
+	if filters.Name != "" {
+		query = query.Where("name = ?", filters.Name)
+	}
+	if filters.ParentSpanID != "" {
+		query = query.Where("parent_span_id = ?", filters.ParentSpanID)
+	}
+	if filters.ExcludeTraceRows {
+		query = query.Where("span_id <> trace_id")
 	}
 	switch filters.Status {
 	case TraceSpanStatusError, TraceSpanStatusOK:
@@ -527,4 +556,25 @@ func (s *RDBLogStore) ListProjectTraceKeys(ctx context.Context, projectID string
 	var keys []TraceKey
 	err := s.db.WithContext(ctx).Model(&Trace{}).Select("project_id", "trace_id").Where("project_id = ?", projectID).Limit(limit).Find(&keys).Error
 	return keys, err
+}
+
+// SearchTraceScores lists a project's scores, newest first.
+func (s *RDBLogStore) SearchTraceScores(ctx context.Context, filters TraceScoreFilters, limit, offset int) ([]*TraceScore, error) {
+	query := s.db.WithContext(ctx).Where("project_id = ?", filters.ProjectID)
+	for column, values := range map[string][]string{"id": filters.IDs, "name": filters.Names, "source": filters.Sources, "trace_id": filters.TraceIDs, "span_id": filters.SpanIDs} {
+		if len(values) > 0 {
+			query = query.Where(column+" IN ?", values)
+		}
+	}
+	if filters.From != nil {
+		query = query.Where("created_at >= ?", *filters.From)
+	}
+	if filters.To != nil {
+		query = query.Where("created_at <= ?", *filters.To)
+	}
+	var scores []*TraceScore
+	if err := query.Order("created_at DESC, id DESC").Limit(limit).Offset(offset).Find(&scores).Error; err != nil {
+		return nil, fmt.Errorf("failed to search trace scores: %w", err)
+	}
+	return scores, nil
 }
