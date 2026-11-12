@@ -2848,8 +2848,20 @@ func (s *BifrostHTTPServer) virtualKeyCache() handlers.VirtualKeyCache {
 // RegisterTraceIngestRoutes starts the trace ingest service and mounts the /tracing routes. It is a
 // no-op without a logs store and a config store: there is nowhere to keep traces or tracing keys.
 func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
-	if s.Config.LogsStore == nil || s.Config.ConfigStore == nil {
+	if !s.ensureTraceIngest() {
 		return
+	}
+	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
+}
+
+// ensureTraceIngest builds the trace ingest service and its handler once. It reports false when
+// tracing cannot run: there is no logs store or no config store.
+func (s *BifrostHTTPServer) ensureTraceIngest() bool {
+	if s.Config.LogsStore == nil || s.Config.ConfigStore == nil {
+		return false
+	}
+	if s.TraceIngest != nil {
+		return true
 	}
 	s.TraceIngest = traceingest.NewService(s.Config.LogsStore, s.Config.ConfigStore, traceingest.Config{
 		RetentionDays: func() int {
@@ -2867,7 +2879,7 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 		s.TraceIngest.SetPricer(s.Config.ModelCatalog)
 	}
 	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
-	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
+	return true
 }
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
@@ -3152,6 +3164,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.RelaysHandler != nil {
 		s.RelaysHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.ensureTraceIngest() {
+		// The Tracing dashboard API: trace list and detail, overview, projects and tracing keys.
+		handlers.NewTracesHandler(s.Config.LogsStore, s.Config.ConfigStore, s.TraceIngestHandler, logger).RegisterRoutes(s.Router, middlewares...)
 	}
 	// Going ahead with API handlers
 	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)

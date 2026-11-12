@@ -450,6 +450,7 @@ type DirtyTrace struct {
 
 // TraceStore is the storage surface of the Tracing feature. Every LogStore implements it.
 type TraceStore interface {
+	TraceReadStore
 	BatchCreateTraceSpanParts(ctx context.Context, parts []*TraceSpanPart) (int, error)
 	ListTraceSpanParts(ctx context.Context, projectID, traceID, spanID string) ([]*TraceSpanPart, error)
 	ListTraceSpanPartsForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error)
