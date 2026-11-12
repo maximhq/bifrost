@@ -108,18 +108,23 @@ type Service struct {
 	cfg    Config
 	logger schemas.Logger
 	hooks  []SpanHook
+	pricer Pricer
 
 	requests chan *commitRequest
 	done     chan struct{}
 	wg       sync.WaitGroup
 	closing  sync.Once
 
-	mu       sync.Mutex
-	keys     map[string]cachedKey  // by key hash
-	masks    map[string]cachedMask // by project id
-	projects map[string]cachedProject
-	rates    map[string]*rateWindow // by key id
-	touched  map[string]time.Time   // by key id
+	mu sync.Mutex
+	// spanWriteMu serializes the fold commit with enrichment writes. See write and updateEnrichment.
+	spanWriteMu sync.Mutex
+	keys        map[string]cachedKey  // by key hash
+	masks       map[string]cachedMask // by project id
+	projects    map[string]cachedProject
+	rates       map[string]*rateWindow // by key id
+	touched     map[string]time.Time   // by key id
+	// retries schedules another look at traces whose calls are not all linked yet.
+	retries map[logstore.TraceKey]matchRetry
 }
 
 type cachedKey struct {
@@ -140,6 +145,11 @@ type cachedMask struct {
 type compiledMask struct {
 	pattern     *regexp.Regexp
 	replacement string
+}
+
+type matchRetry struct {
+	attempt int
+	at      time.Time
 }
 
 type rateWindow struct {
@@ -168,7 +178,7 @@ func NewService(store logstore.TraceStore, config ConfigStore, cfg Config, logge
 		store: store, config: config, cfg: cfg.withDefaults(), logger: logger,
 		requests: make(chan *commitRequest, 1024), done: make(chan struct{}),
 		keys: make(map[string]cachedKey), masks: make(map[string]cachedMask), projects: make(map[string]cachedProject),
-		rates: make(map[string]*rateWindow), touched: make(map[string]time.Time),
+		rates: make(map[string]*rateWindow), touched: make(map[string]time.Time), retries: make(map[logstore.TraceKey]matchRetry),
 	}
 	s.wg.Add(2)
 	go s.commitLoop()
@@ -537,6 +547,9 @@ type spanRef struct {
 
 // write stores a batch: the parts first, then every span they touch, refolded.
 func (s *Service) write(ctx context.Context, batch []*commitRequest) error {
+	// Enrichment patches spans this commit may also write; see updateEnrichment.
+	s.spanWriteMu.Lock()
+	defer s.spanWriteMu.Unlock()
 	var parts []*logstore.TraceSpanPart
 	fresh := make(map[spanRef][]*SpanPart)
 	meta := make(map[spanRef]*commitRequest)
@@ -701,23 +714,79 @@ func (s *Service) rollupLoop() {
 	}
 }
 
-// FlushRollups rebuilds the rollup of every trace waiting for one.
+// FlushRollups links, prices and rolls up every trace waiting for it.
 func (s *Service) FlushRollups(ctx context.Context) error {
+	if err := s.requeueDueRetries(ctx, time.Now()); err != nil {
+		return err
+	}
 	for {
 		dirty, err := s.store.ListDirtyTraces(ctx, 200)
 		if err != nil {
 			return err
 		}
 		for _, trace := range dirty {
+			retry, err := s.enrichTrace(ctx, trace.TraceKey)
+			if err != nil {
+				return err
+			}
 			if _, err := s.store.RecomputeTraceRollup(ctx, trace.ProjectID, trace.TraceID); err != nil {
 				return err
 			}
 			if err := s.store.ClearTraceDirty(ctx, trace); err != nil {
 				return err
 			}
+			s.scheduleRetry(trace.TraceKey, retry)
 		}
 		if len(dirty) < 200 {
 			return nil
 		}
 	}
+}
+
+// scheduleRetry books the next look at a trace, or forgets it once every call is linked or the
+// retries are used up.
+func (s *Service) scheduleRetry(key logstore.TraceKey, retry bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, scheduled := s.retries[key]
+	if !retry {
+		// Every link is final. One last pass still comes, after the longest delay, to refresh the
+		// snapshots: the gateway can fill in a cost after a row is final (a pricing recalculation).
+		// After that pass the trace is forgotten. The entry is one small value per trace for at most
+		// the longest delay.
+		final := len(matchRetryDelays)
+		if scheduled && current.attempt >= final {
+			if current.at.After(time.Now()) {
+				return // the last pass is still to come: a pass for a new part does not cancel it
+			}
+			delete(s.retries, key)
+			return
+		}
+		s.retries[key] = matchRetry{attempt: final, at: time.Now().Add(matchRetryDelays[final-1])}
+		return
+	}
+	if scheduled && current.at.After(time.Now()) {
+		return // already booked: a new part of the trace does not restart the schedule
+	}
+	if current.attempt >= len(matchRetryDelays) {
+		delete(s.retries, key)
+		return
+	}
+	s.retries[key] = matchRetry{attempt: current.attempt + 1, at: time.Now().Add(matchRetryDelays[current.attempt])}
+}
+
+// requeueDueRetries marks the traces whose retry time has come.
+func (s *Service) requeueDueRetries(ctx context.Context, now time.Time) error {
+	var due []logstore.TraceKey
+	s.mu.Lock()
+	for key, retry := range s.retries {
+		if !retry.at.After(now) {
+			due = append(due, key)
+			// The booked pass has fired: the pass it causes may settle the entry.
+			retry.at = time.Time{}
+			s.retries[key] = retry
+		}
+	}
+	s.mu.Unlock()
+	return s.store.MarkTracesDirty(ctx, due)
 }
