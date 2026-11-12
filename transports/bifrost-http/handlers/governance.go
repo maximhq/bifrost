@@ -834,6 +834,11 @@ func BudgetsFromSingleBudgetUpdate(req *UpdateBudgetRequest, existing *configsto
 	}
 	if req.ResetConfig != nil {
 		b.ResetConfig = req.ResetConfig
+	} else if !configstoreTables.IsQuarterlyDuration(b.ResetDuration) {
+		// The kept quarter setting only means something on a quarterly window. An update that moves
+		// the budget to another window without naming reset_config leaves it behind, rather than
+		// carry it onto a window it is invalid for and have the save refuse the whole request.
+		b.ResetConfig = nil
 	}
 	if b.MaxLimit == 0 || b.ResetDuration == "" {
 		return nil
