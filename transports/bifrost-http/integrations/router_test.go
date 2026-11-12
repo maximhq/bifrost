@@ -2083,6 +2083,7 @@ type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
 	skipKeySelection bool
 	skipModelCheck   bool
+	modelListFilter  schemas.PassthroughModelListFilter
 }
 
 // GetName identifies the isolated test plugin.
@@ -2102,6 +2103,7 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	p.request = &snapshot
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
 	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
+	p.modelListFilter, _ = ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
 }
@@ -2136,6 +2138,7 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 			require.Equal(t, schemas.PassthroughStreamRequest, plugin.request.RequestType, "native Codex responses must not use the buffered API path")
 			require.True(t, plugin.skipKeySelection)
 			require.False(t, plugin.skipModelCheck, "a responses turn runs a model, so the model allowlist still applies")
+			require.Nil(t, plugin.modelListFilter, "a responses turn is not a model list")
 			require.Equal(t, "https://chatgpt.com", plugin.request.PassthroughRequest.UpstreamURL)
 			require.Equal(t, "/backend-api/codex/responses", plugin.request.PassthroughRequest.Path)
 			require.Equal(t, body, string(plugin.request.PassthroughRequest.Body))
@@ -2161,12 +2164,14 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	ctx.Request.Header.Set("ChatGPT-Account-ID", "synthetic-workspace")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
 	ctx.Request.Header.Set("Cookie", "session=synthetic; auth-openid=synthetic-gateway-token")
+	ctx.Request.Header.Set("If-None-Match", `"cached-etag"`)
 	r.Handler(&ctx)
 	require.Equal(t, 403, ctx.Response.StatusCode())
 	require.NotNil(t, plugin.request)
 	require.Equal(t, schemas.PassthroughRequest, plugin.request.RequestType)
 	require.True(t, plugin.skipKeySelection)
 	require.True(t, plugin.skipModelCheck, "a model list runs no model, so a restricted model allowlist must not refuse it")
+	require.NotNil(t, plugin.modelListFilter, "governance trims the list with the filter the route registers")
 	req := plugin.request.PassthroughRequest
 	require.Equal(t, fasthttp.MethodGet, req.Method)
 	require.Equal(t, "https://chatgpt.com", req.UpstreamURL)
@@ -2176,6 +2181,7 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	require.Equal(t, "synthetic-workspace", req.SafeHeaders["chatgpt-account-id"])
 	require.NotContains(t, req.SafeHeaders, "x-bf-vk")
 	require.NotContains(t, req.SafeHeaders, "cookie")
+	require.NotContains(t, req.SafeHeaders, "if-none-match", "a 304 would keep a list filtered under an older access")
 }
 
 // geminiPassthroughAccount initializes only Gemini for the synthetic Interactions passthrough tests.

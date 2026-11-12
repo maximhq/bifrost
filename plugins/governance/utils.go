@@ -146,6 +146,31 @@ func (p *GovernancePlugin) filterModelsForAccess(access schemas.Access, models [
 	return filtered
 }
 
+// filterPassthroughModelList trims a raw passthrough model list to the models access allows, using the filter the transport registered for the route.
+func (p *GovernancePlugin) filterPassthroughModelList(ctx *schemas.BifrostContext, access schemas.Access, provider string, resp *schemas.BifrostPassthroughResponse) {
+	filter, ok := ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
+	if !ok || filter == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	body, err := filter(resp.Body, func(model string) bool {
+		return access != nil && access.IsModelAllowed(provider, model)
+	})
+	if err != nil {
+		// Fail open: every turn is still checked against the allowlist.
+		p.logger.Warn("governance: passthrough model list left unfiltered: %v", err)
+		return
+	}
+	resp.Body = body
+	// The upstream ETag names the unfiltered list.
+	for _, headers := range []map[string]string{resp.Headers, resp.ExtraFields.ProviderResponseHeaders} {
+		for k := range headers {
+			if strings.EqualFold(k, "etag") {
+				delete(headers, k)
+			}
+		}
+	}
+}
+
 // validateRequiredHeaders checks that all configured required headers are present in the request.
 // Headers are compared case-insensitively (both sides lowercased).
 // Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.

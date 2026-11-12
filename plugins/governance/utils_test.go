@@ -1,8 +1,14 @@
 package governance
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -51,4 +57,84 @@ func TestParseVirtualKeyFromFastHTTPRequest_OcpApimSubscriptionKeyNonVirtualKeyI
 	if vk := ParseVirtualKeyFromFastHTTPRequest(ctx); vk != nil {
 		t.Fatalf("virtual key should not be set from a non-VK Ocp-Apim-Subscription-Key value, got %#v", *vk)
 	}
+}
+
+// csvModelListFilter stands in for a provider's list format: the body is comma-separated model names.
+func csvModelListFilter(body []byte, keep func(string) bool) ([]byte, error) {
+	if string(body) == "malformed" {
+		return nil, errors.New("malformed")
+	}
+	var kept []string
+	for _, m := range strings.Split(string(body), ",") {
+		if keep(m) {
+			kept = append(kept, m)
+		}
+	}
+	return []byte(strings.Join(kept, ",")), nil
+}
+
+func modelListResponse(status int, body string) *schemas.BifrostPassthroughResponse {
+	return &schemas.BifrostPassthroughResponse{
+		StatusCode:  status,
+		Headers:     map[string]string{"Etag": `"abc"`, "Content-Type": "application/json"},
+		Body:        []byte(body),
+		ExtraFields: schemas.BifrostResponseExtraFields{ProviderResponseHeaders: map[string]string{"Etag": `"abc"`}},
+	}
+}
+
+// A passthrough model list is trimmed by the same access the responses turns are checked against.
+func TestFilterPassthroughModelList(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-6.1-sol", "regex:gpt-5\\.6-.*"}},
+	})
+	plugin := newAccessTestPlugin(t, vk, nil)
+	const list = "gpt-6.1-sol,gpt-6-astra,gpt-5.6-terra,codex-auto-review"
+
+	run := func(ctx *schemas.BifrostContext, resp *schemas.BifrostPassthroughResponse) {
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		plugin.filterPassthroughModelList(ctx, access, "openai", resp)
+	}
+
+	t.Run("keeps allowed models and drops the upstream etag", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, schemas.PassthroughModelListFilter(csvModelListFilter))
+		resp := modelListResponse(200, list)
+		run(ctx, resp)
+		assert.Equal(t, "gpt-6.1-sol,gpt-5.6-terra", string(resp.Body))
+		assert.Equal(t, map[string]string{"Content-Type": "application/json"}, resp.Headers)
+		assert.Empty(t, resp.ExtraFields.ProviderResponseHeaders)
+	})
+
+	t.Run("a credential that resolves to nothing lists nothing", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-unknown")
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, schemas.PassthroughModelListFilter(csvModelListFilter))
+		resp := modelListResponse(200, list)
+		run(ctx, resp)
+		assert.Empty(t, string(resp.Body))
+	})
+
+	t.Run("untouched without a registered filter", func(t *testing.T) {
+		resp := modelListResponse(200, list)
+		run(presentCtx("sk-bf-test"), resp)
+		assert.Equal(t, list, string(resp.Body))
+		assert.Contains(t, resp.Headers, "Etag")
+	})
+
+	t.Run("untouched on an upstream error", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, schemas.PassthroughModelListFilter(csvModelListFilter))
+		resp := modelListResponse(401, list)
+		run(ctx, resp)
+		assert.Equal(t, list, string(resp.Body))
+	})
+
+	t.Run("fails open when the body cannot be read", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, schemas.PassthroughModelListFilter(csvModelListFilter))
+		resp := modelListResponse(200, "malformed")
+		run(ctx, resp)
+		assert.Equal(t, "malformed", string(resp.Body))
+		assert.Contains(t, resp.Headers, "Etag")
+	})
 }

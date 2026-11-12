@@ -179,6 +179,13 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		ModelFreePath: func(method, path string) bool {
 			return method == fasthttp.MethodGet && path == chatGPTCodexModelsPath
 		},
+		// The list is trimmed to the models the caller's access allows, so the picker offers nothing a turn would refuse.
+		ModelList: func(method, path string) schemas.PassthroughModelListFilter {
+			if method == fasthttp.MethodGet && path == chatGPTCodexModelsPath {
+				return filterCodexModelList
+			}
+			return nil
+		},
 		StripPrefix: []string{
 			chatGPTPassthroughPrefix,
 		},

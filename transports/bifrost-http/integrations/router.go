@@ -570,6 +570,9 @@ type PassthroughConfig struct {
 	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
 	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
 	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
+
+	// ModelList, when it returns a filter, is a model-list request whose response governance trims to the caller's access.
+	ModelList func(method, path string) schemas.PassthroughModelListFilter
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -3807,6 +3810,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
+	if cfg.ModelList != nil {
+		if filter := cfg.ModelList(string(ctx.Method()), path); filter != nil {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, filter)
+			// A 304 would leave the client on a list filtered under an older access.
+			delete(safeHeaders, "if-none-match")
+		}
 	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
