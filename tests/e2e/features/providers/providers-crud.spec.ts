@@ -549,6 +549,40 @@ test.describe("Providers", () => {
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
     });
+
+    test("should add MachGen from the provider list and save a key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("machgen"))) {
+        await providersPage.addKnownProviderFromDropdown("machgen");
+        createdProviders.push("machgen");
+      }
+      await expect(providersPage.getProviderItem("machgen")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("machgen");
+
+      const keyData = createProviderKeyData({
+        name: `MachGen-Key-${Date.now()}`,
+        value: "MGA_e2e-machgen-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "machgen", keyName: keyData.name });
+
+      // Model discovery runs on save and fails against a fake key; the key must still save.
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/machgen/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; models?: string[] }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.models).toEqual(["*"]);
+    });
   });
 
   test.describe("Custom Providers", () => {
