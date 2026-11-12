@@ -53,6 +53,7 @@ func (h *TracesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.PUT("/api/traces/keys/{id}", lib.ChainMiddlewares(h.updateKey, middlewares...))
 	r.DELETE("/api/traces/keys/{id}", lib.ChainMiddlewares(h.deleteKey, middlewares...))
 	r.GET("/api/traces/trace/{project_id}/{trace_id}", lib.ChainMiddlewares(h.getTrace, middlewares...))
+	r.GET("/api/traces/uploads/{id}", lib.ChainMiddlewares(h.getUpload, middlewares...))
 	for _, register := range tracesHandlerExtensions {
 		register(h, r, middlewares...)
 	}
@@ -597,4 +598,35 @@ func (h *TracesHandler) deleteKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.invalidate()
 	SendJSON(ctx, map[string]any{"deleted": true})
+}
+
+// getUpload serves the bytes of a file an SDK uploaded beside its spans: a Braintrust attachment,
+// Langfuse media. It is sent as a download with nosniff, so an uploaded HTML or SVG file can never
+// run as a page of the dashboard's origin.
+func (h *TracesHandler) getUpload(ctx *fasthttp.RequestCtx) {
+	id, _ := ctx.UserValue("id").(string)
+	storeCtx, cancel := h.storeContext()
+	defer cancel()
+	upload, data, err := h.store.ReadTraceUploadBytes(storeCtx, id)
+	if err != nil {
+		h.fail(ctx, "load upload", err)
+		return
+	}
+	if upload.Status != logstore.TraceUploadStatusDone {
+		SendError(ctx, fasthttp.StatusNotFound, "upload has no content yet")
+		return
+	}
+	contentType := upload.ContentType
+	disposition := "attachment"
+	if strings.HasPrefix(contentType, "image/") && contentType != "image/svg+xml" || strings.HasPrefix(contentType, "audio/") || strings.HasPrefix(contentType, "video/") {
+		disposition = "inline" // media the viewer shows in place; none of these can run script
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	ctx.Response.Header.Set("X-Content-Type-Options", "nosniff")
+	ctx.Response.Header.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	ctx.Response.Header.Set("Content-Disposition", disposition)
+	ctx.SetContentType(contentType)
+	ctx.SetBody(data)
 }

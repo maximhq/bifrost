@@ -220,6 +220,8 @@ func (p *SpanPart) Span(projectID, source string, stored *logstore.TraceSpan) *l
 			span.Cost, span.CostEstimated = stored.Cost, true
 		}
 	}
+	// Derive the tree parent and the duration now, so the span reads the same before it is stored.
+	_ = span.SerializeFields()
 	return span
 }
 
