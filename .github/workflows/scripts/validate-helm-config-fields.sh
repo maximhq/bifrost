@@ -2271,6 +2271,91 @@ for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reason
   fi
 done
 
+###############################################################################
+# 2.1.49 config.schema.json sync: usage estimation tokenizers, datasheet overrides,
+# Baseten (alias deployment_url, semantic cache provider)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.49 config.schema.json sync${NC}"
+
+cat > "$TMPDIR/values-2149.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    usageEstimationTokenizers: ["anthropic", "llama3"]
+  providers:
+    baseten:
+      keys:
+        - name: "baseten-key"
+          value: "env.BASETEN_API_KEY"
+          aliases:
+            my-llama:
+              model_id: "not-required"
+              deployment_url: "https://model-abc.api.baseten.co/environments/production/sync/v1"
+  datasheetOverrides:
+    - provider: "openai"
+      model: "gpt-4o"
+      mode: "chat"
+      pricing_patch:
+        input_cost_per_token: 0.0000022
+        max_output_tokens: null
+      params_patch:
+        supports_reasoning: false
+    - provider: "openai"
+      model: "ft:gpt-4o-mini:acme:support"
+      mode: "chat"
+      is_custom: true
+VALS
+render_config "$TMPDIR/values-2149.yaml"
+assert_field_value 'client.usage_estimation_tokenizers' '.client.usage_estimation_tokenizers' '["anthropic", "llama3"]'
+assert_field_value 'providers.baseten alias deployment_url' '.providers.baseten.keys.[0].aliases.my-llama.deployment_url' '"https://model-abc.api.baseten.co/environments/production/sync/v1"'
+assert_field_value 'datasheet_overrides[0].pricing_patch (null kept for merge patch)' '.datasheet_overrides.[0].pricing_patch' '{"input_cost_per_token": 2.2e-06, "max_output_tokens": None}'
+assert_field_value 'datasheet_overrides[0].params_patch' '.datasheet_overrides.[0].params_patch' '{"supports_reasoning": False}'
+assert_field_value 'datasheet_overrides[1].is_custom' '.datasheet_overrides.[1].is_custom' 'true'
+
+# An explicit [] must render: with config.json as the source of truth it removes stored
+# overrides. Omitted, the key stays out of config.json and stored overrides are left alone.
+cat > "$TMPDIR/values-2149-empty.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  datasheetOverrides: []
+VALS
+render_config "$TMPDIR/values-2149-empty.yaml"
+assert_field_value 'datasheet_overrides [] kept' '.datasheet_overrides' '[]'
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; c = json.load(open('$TMPDIR/config.json')); sys.exit(0 if 'datasheet_overrides' not in c and 'usage_estimation_tokenizers' not in c.get('client', {}) else 1)"; then
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 0
+else
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 1
+fi
+
+if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set bifrost.plugins.semanticCache.enabled=true \
+     --set bifrost.plugins.semanticCache.config.provider=baseten > "$TMPDIR/render-err.txt" 2>&1; then
+  report_result 'semanticCache provider baseten is accepted' 0
+else
+  report_result 'semanticCache provider baseten is accepted' 1
+  head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'bifrost.client.usageEstimationTokenizers=["gpt2"]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai"}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","is_custom":true}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","params_patch":{"provider":"y"}}]'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "{$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "values don't meet the specifications" "$TMPDIR/render-err.txt"; then
+    report_result "{$bad} is rejected" 0
+  else
+    report_result "{$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
 echo ""
 echo "======================================================================"
 echo "🏁 Config JSON Field Validation Complete!"

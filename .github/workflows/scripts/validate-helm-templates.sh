@@ -799,6 +799,76 @@ expect_render_failure "postgresql: schema rejects non-string arguments" "extraAr
 expect_render_failure "postgresql: schema rejects non-string PVC annotations" "annotations" \
   --set 'postgresql.primary.persistence.annotations.invalid=42'
 
+# Bundled Redis: metrics.enabled runs a redis_exporter sidecar, and master.extraEnv/envFrom
+# reach the Redis container. With both off the pod is unchanged.
+REDIS_BUNDLED=(--set vectorStore.enabled=true --set vectorStore.type=redis --set vectorStore.redis.enabled=true)
+cat > "$VALUES_DIR/redis-metrics.yaml" << 'VALS'
+vectorStore:
+  redis:
+    master:
+      extraEnv:
+        - name: REDIS_ARGS
+          value: "--maxmemory 400mb"
+      envFrom:
+        - configMapRef:
+            name: redis-tuning
+    metrics:
+      enabled: true
+      port: 9200
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        labels:
+          release: kube-prometheus-stack
+VALS
+
+check_workload "redis: no exporter, metrics port or ServiceMonitor by default" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "bifrost-redis-master")
+c = rd["spec"]["template"]["spec"]["containers"]
+assert [x["name"] for x in c] == ["redis"], "Redis manifest contract failed: %s" % [x["name"] for x in c]
+assert [e["name"] for e in c[0]["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH"], "Redis manifest contract failed"
+assert "envFrom" not in c[0] and "annotations" not in rd["spec"]["template"]["metadata"], "Redis manifest contract failed"
+assert [p["name"] for p in rs["spec"]["ports"]] == ["redis"], "Redis manifest contract failed"
+assert not any(d.get("kind") == "ServiceMonitor" for d in docs), "ServiceMonitor unexpectedly rendered"' \
+  "${REDIS_BUNDLED[@]}"
+
+check_workload "redis: extraEnv, envFrom, exporter sidecar, metrics port and ServiceMonitor render" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "bifrost-redis-master")
+sm = next(d for d in docs if d.get("kind") == "ServiceMonitor")
+redis, exporter = rd["spec"]["template"]["spec"]["containers"]
+assert [e["name"] for e in redis["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH", "REDIS_ARGS"], "Redis manifest contract failed"
+assert redis["envFrom"] == [{"configMapRef": {"name": "redis-tuning"}}], "Redis manifest contract failed"
+env = {e["name"]: e for e in exporter["env"]}
+assert exporter["name"] == "metrics" and exporter["image"].startswith("oliver006/redis_exporter:"), "Redis manifest contract failed"
+assert env["REDIS_ADDR"]["value"] == "redis://localhost:6379" and env["REDIS_EXPORTER_WEB_LISTEN_ADDRESS"]["value"] == ":9200", "Redis manifest contract failed"
+assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {"name": "bifrost-redis", "key": "password"}, "Redis manifest contract failed"
+assert exporter["ports"][0]["containerPort"] == 9200, "Redis manifest contract failed"
+assert "readinessProbe" not in exporter, "exporter readiness would gate the Redis Service endpoints"
+assert rd["spec"]["template"]["metadata"]["annotations"] == {"prometheus.io/scrape": "true", "prometheus.io/port": "9200", "prometheus.io/path": "/metrics"}, "Redis manifest contract failed"
+assert {"name": "metrics", "port": 9200, "targetPort": "metrics", "protocol": "TCP"} in rs["spec"]["ports"], "Redis manifest contract failed"
+assert all(rs["metadata"]["labels"].get(k) == v for k, v in sm["spec"]["selector"]["matchLabels"].items()), "ServiceMonitor does not select the Redis Service"
+assert sm["spec"]["endpoints"] == [{"port": "metrics", "path": "/metrics", "interval": "30s"}], "ServiceMonitor contract failed"
+assert sm["metadata"]["labels"]["release"] == "kube-prometheus-stack", "ServiceMonitor contract failed"' \
+  "${REDIS_BUNDLED[@]}" -f "$VALUES_DIR/redis-metrics.yaml"
+
+check_workload "redis: exporter carries no password when auth is disabled" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+exporter = rd["spec"]["template"]["spec"]["containers"][1]
+assert [e["name"] for e in exporter["env"]] == ["REDIS_ADDR", "REDIS_EXPORTER_WEB_LISTEN_ADDRESS"], "Redis manifest contract failed"' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.auth.enabled=false --set vectorStore.redis.metrics.enabled=true
+
+check_workload "redis: external Redis renders no bundled workload or ServiceMonitor" \
+  'assert not any(d["metadata"]["name"].startswith("bifrost-redis") or d.get("kind") == "ServiceMonitor" for d in docs), "bundled Redis resources unexpectedly rendered"' \
+  "${REDIS_BUNDLED[@]}" -f "$VALUES_DIR/redis-metrics.yaml" \
+  --set vectorStore.redis.external.enabled=true --set vectorStore.redis.external.host=redis.example.com
+
+expect_render_failure "redis: schema rejects an extraEnv entry without a name" "name" \
+  --set-json 'vectorStore.redis.master.extraEnv=[{"value":"x"}]'
+expect_render_failure "redis: schema rejects an out-of-range metrics port" "port" \
+  --set vectorStore.redis.metrics.port=70000
+
 # token_exchange in config.schema.json requires client_id unless use_idp_credentials is true or
 # the profile is id_jag; the values schema must refuse what config.json validation would.
 TOKEN_EXCHANGE_CLIENT=(

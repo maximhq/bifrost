@@ -829,6 +829,15 @@
               },
               "description": "Additional allowed headers for CORS and WebSocket"
             },
+            "usageEstimationTokenizers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+              },
+              "uniqueItems": true,
+              "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. Empty counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+            },
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
@@ -1506,7 +1515,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -5313,6 +5324,13 @@
             "$ref": "#/$defs/relay"
           }
         },
+        "datasheetOverrides": {
+          "type": "array",
+          "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Rendered directly as top-level datasheet_overrides in config.json and matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so UI edits stand until the entry itself changes. With config.json as the source of truth, an explicit list (including []) removes stored overrides it does not name; omit the key to leave them alone.",
+          "items": {
+            "$ref": "#/$defs/datasheetOverride"
+          }
+        },
         "agents": {
           "type": "array",
           "description": "Declarative A2A agent registrations synced into the database at startup, reconciled by name with hash-based change detection. Rendered directly as top-level agents in config.json. In config.json source-of-truth mode, stored registrations absent from this list are pruned.",
@@ -6811,11 +6829,86 @@
                 "affinity": {
                   "type": "object",
                   "description": "Affinity rules for the Redis pod assignment"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the Redis container, appended after REDIS_PASSWORD / REDISCLI_AUTH (e.g. REDIS_ARGS, REDISEARCH_ARGS for redis-stack-server)",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "envFrom": {
+                  "type": "array",
+                  "description": "Kubernetes EnvFromSource entries (secretRef / configMapRef) for the Redis container",
+                  "items": {
+                    "type": "object"
+                  }
                 }
               }
             },
             "metrics": {
-              "type": "object"
+              "type": "object",
+              "description": "Prometheus metrics for the bundled Redis via an oliver006/redis_exporter sidecar",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Run the redis_exporter sidecar, add a metrics port to the Redis Service and prometheus.io/* scrape annotations to the pod"
+                },
+                "image": {
+                  "type": "object",
+                  "properties": {
+                    "repository": { "type": "string" },
+                    "tag": { "type": "string" },
+                    "pullPolicy": {
+                      "type": "string",
+                      "enum": ["Always", "IfNotPresent", "Never"]
+                    }
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Port the exporter serves /metrics on (default: 9121)"
+                },
+                "resources": {
+                  "type": "object",
+                  "description": "Resource requests and limits for the exporter container"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the exporter container (e.g. REDIS_EXPORTER_CHECK_KEYS)",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "serviceMonitor": {
+                  "type": "object",
+                  "description": "Prometheus Operator ServiceMonitor for the exporter (requires the monitoring.coreos.com/v1 CRDs)",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "namespace": {
+                      "type": "string",
+                      "description": "Namespace for the ServiceMonitor (default: release namespace)"
+                    },
+                    "interval": {
+                      "type": "string",
+                      "description": "Scrape interval, e.g. 30s (default: Prometheus global)"
+                    },
+                    "scrapeTimeout": {
+                      "type": "string",
+                      "description": "Scrape timeout, e.g. 10s"
+                    },
+                    "labels": {
+                      "type": "object",
+                      "description": "Extra labels on the ServiceMonitor, e.g. the release label your Prometheus selects on",
+                      "additionalProperties": { "type": "string" }
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -7028,6 +7121,54 @@
           "not": {"required": ["path"]}
         }
       ],
+      "additionalProperties": false
+    },
+    "datasheetOverride": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "not": { "required": ["provider"] },
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": {
+        "required": ["mode"],
+        "properties": { "mode": { "pattern": "\\S" } }
+      },
       "additionalProperties": false
     },
     "relay": {
@@ -8733,6 +8874,10 @@
                   "use_deployments_endpoint": {
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
+                  },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment. Requests for this alias go there instead of Model APIs, and model_id is the served model name (Engine-Builder and BEI deployments ignore it). Must be https (can use env. prefix)."
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",

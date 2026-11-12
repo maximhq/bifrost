@@ -4,9 +4,19 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.48
+**Latest Version:** 2.1.49
 
 ## Changelog
+
+### Upcoming
+
+- `vectorStore.redis.metrics.enabled` now works: it was in the values schema but no template read it. It runs an `oliver006/redis_exporter` sidecar (`metrics.image`, `metrics.port` default 9121, `metrics.resources`, `metrics.extraEnv`) that uses the Redis password, and adds a `metrics` port to the Redis Service and `prometheus.io/*` scrape annotations to the pod. Applies to the embedded Redis only. Pod-spec only, no config.json change.
+- Added `vectorStore.redis.metrics.serviceMonitor` (`enabled`, `namespace`, `interval`, `scrapeTimeout`, `labels`): a Prometheus Operator ServiceMonitor for the Redis exporter.
+- Added `vectorStore.redis.master.extraEnv` and `vectorStore.redis.master.envFrom`: extra environment variables for the embedded Redis container (e.g. `REDIS_ARGS`, `REDISEARCH_ARGS`), appended after `REDIS_PASSWORD` / `REDISCLI_AUTH`.
+- Added `bifrost.client.usageEstimationTokenizers` (`client.usage_estimation_tokenizers`): the tokenizer families (`anthropic`, `deepseek`, `llama2`, `llama3`, `all`) used to estimate usage for a cancelled or timed-out stream.
+- Added `bifrost.datasheetOverrides` (`datasheet_overrides`): pricing and model-parameter merge patches that survive datasheet syncs. An explicit list, `[]` included, is rendered and prunes stored overrides when config.json is the source of truth.
+- Added the Baseten per-alias `deployment_url` to the provider key schema. Before this, an alias that set it failed schema validation.
+- Added `byteplus` and `baseten` to the allowed `bifrost.plugins.semanticCache.config.provider` values.
 
 ### 2.1.48
 
@@ -1044,6 +1054,13 @@ vectorStore:
     # external:
     #   enabled: true
     #   host: "redis.example.com"
+    master:
+      extraEnv: [] # Extra EnvVar entries for the Redis container, e.g. REDIS_ARGS
+      envFrom: [] # secretRef / configMapRef sources for the Redis container
+    metrics:
+      enabled: false # redis_exporter sidecar + `metrics` Service port (9121) + prometheus.io annotations
+      serviceMonitor:
+        enabled: false # Prometheus Operator ServiceMonitor
 ```
 
 #### Qdrant

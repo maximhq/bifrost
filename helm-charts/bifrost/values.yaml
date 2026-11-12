@@ -399,6 +399,7 @@ bifrost:
     # requiredHeaders: []                    # Headers that must be present on every request
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
+    # usageEstimationTokenizers: ["anthropic", "llama3"] # Tokenizer families (anthropic, deepseek, llama2, llama3, all) used to estimate usage of a cancelled or timed-out stream the provider never reported; empty counts every model with o200k_base/cl100k_base. Each family preloads at startup and keeps 4-18 MB in memory
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # skipAccessProfileUserVirtualKeyCreation: false # Enterprise: when true, a user's first access profile does not create a virtual key for them
@@ -520,6 +521,18 @@ bifrost:
   #     - name: "anthropic-key"
   #       value: "sk-ant-..."
   #       weight: 1
+  #
+  # # Baseten example: Model APIs by default; an alias with deployment_url sends that model to a
+  # # dedicated deployment's OpenAI-compatible base URL instead (must be https)
+  # baseten:
+  #   keys:
+  #     - name: "baseten-key"
+  #       value: "env.BASETEN_API_KEY"
+  #       weight: 1
+  #       aliases:
+  #         my-llama:
+  #           model_id: "not-required"   # Engine-Builder and BEI deployments ignore it
+  #           deployment_url: "https://model-<id>.api.baseten.co/environments/production/sync/v1"
   #
   # # Azure OpenAI example (requires azure_key_config)
   # azure:
@@ -1892,6 +1905,29 @@ bifrost:
   #         path: "/"
   #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
 
+  # Datasheet overrides: edits to the synced model datasheet (pricing and model parameters) that
+  # survive every datasheet sync. Rendered directly as top-level `datasheet_overrides` in config.json
+  # and matched by (provider, model, mode). Both patches are RFC 7386 JSON merge patches: a key sets
+  # the value, null clears it, an omitted key keeps the upstream value. A file entry is applied when
+  # it changes, so UI edits stand until the entry itself changes. With sourceOfTruth "config.json",
+  # an explicit list (including []) removes stored overrides it does not name; omit the key to leave them.
+  # datasheetOverrides:
+  #   - provider: "openai"
+  #     model: "gpt-4o"
+  #     mode: "chat"                         # omit to apply the pricing patch to every mode of the model
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000022
+  #       max_output_tokens: 16384
+  #     params_patch:
+  #       supports_reasoning: false
+  #   - provider: "openai"
+  #     model: "ft:gpt-4o-mini:acme:support"
+  #     mode: "chat"                         # required when is_custom is true
+  #     is_custom: true                      # adds an entry the upstream datasheet does not list
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000003
+  #       output_cost_per_token: 0.0000012
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
@@ -2366,8 +2402,51 @@ vectorStore:
 
       affinity: {}
 
+      # Extra environment variables for the Redis container, appended after the chart's own
+      # REDIS_PASSWORD / REDISCLI_AUTH. Standard Kubernetes EnvVar entries (value or valueFrom).
+      # redis-stack-server reads REDIS_ARGS and module args such as REDISEARCH_ARGS from here.
+      extraEnv: []
+        # - name: REDIS_ARGS
+        #   value: "--maxmemory 400mb --maxmemory-policy allkeys-lru"
+        # - name: REDISEARCH_ARGS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: redis-tuning
+        #       key: redisearch-args
+
+      # Environment variables for the Redis container from secrets/configmaps
+      envFrom: []
+        # - configMapRef:
+        #     name: redis-tuning
+
+    # Prometheus metrics for the bundled Redis: runs an oliver006/redis_exporter sidecar in the
+    # Redis pod, adds a `metrics` port to the Redis Service and prometheus.io/* scrape annotations
+    # to the pod. The exporter authenticates with the same password as Redis when auth is enabled.
     metrics:
       enabled: false
+      image:
+        repository: oliver006/redis_exporter
+        tag: "v1.97.0"
+        pullPolicy: IfNotPresent
+      port: 9121
+      resources: {}
+        # limits:
+        #   cpu: 100m
+        #   memory: 64Mi
+        # requests:
+        #   cpu: 25m
+        #   memory: 32Mi
+      # Extra environment variables for the exporter, e.g. REDIS_EXPORTER_CHECK_KEYS
+      extraEnv: []
+        # - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+        #   value: "true"
+      # ServiceMonitor for the Prometheus Operator (requires the monitoring.coreos.com/v1 CRDs)
+      serviceMonitor:
+        enabled: false
+        # namespace: monitoring   # Namespace for the ServiceMonitor (default: release namespace)
+        # interval: "30s"
+        # scrapeTimeout: "10s"
+        # labels: {}              # Extra labels, e.g. the release label your Prometheus selects on
 
   # Qdrant configuration
   qdrant:

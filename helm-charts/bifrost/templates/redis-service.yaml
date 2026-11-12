@@ -14,6 +14,12 @@ spec:
       targetPort: redis
       protocol: TCP
       name: redis
+    {{- if .Values.vectorStore.redis.metrics.enabled }}
+    - port: {{ .Values.vectorStore.redis.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "bifrost.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: redis
