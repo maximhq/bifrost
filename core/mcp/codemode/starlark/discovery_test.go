@@ -102,7 +102,9 @@ func TestListToolFilesWithoutQueryKeepsCompleteListing(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := *complete.Content.ContentStr
-		for _, args := range []string{"", "{}", "null", `{"query":""}`, `{"query":"   "}`, `{"limit":3}`, `{"query":null}`} {
+		for _, args := range []string{"", "{}", "null", `{"query":""}`, `{"query":"   "}`, `{"limit":3}`, `{"query":null}`,
+			// limit is ignored, not validated, without a query.
+			`{"limit":0}`, `{"limit":99}`, `{"limit":"x"}`, `{"query":"","limit":0}`, `{"query":" ","limit":2.5}`} {
 			if got := listToolFiles(t, mode, args); got != want {
 				t.Fatalf("%s binding, args %q: listing changed\nwant:\n%s\ngot:\n%s", level, args, want, got)
 			}

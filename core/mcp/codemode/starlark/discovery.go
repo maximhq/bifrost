@@ -97,7 +97,7 @@ type discoveryTool struct {
 }
 
 // parseListToolFilesArgs reads the optional query and limit. An empty query
-// means the complete listing; limit is only checked when it is given.
+// means the complete listing, and limit is then ignored, not validated.
 func parseListToolFilesArgs(raw string) (string, int, error) {
 	limit := discoveryDefaultLimit
 	if strings.TrimSpace(raw) == "" {
@@ -117,6 +117,9 @@ func parseListToolFilesArgs(raw string) (string, int, error) {
 			return "", limit, fmt.Errorf("query must be at most %d characters", discoveryMaxQueryRunes)
 		}
 		query = strings.TrimSpace(text)
+	}
+	if query == "" {
+		return "", limit, nil
 	}
 	if value, ok := args["limit"]; ok && value != nil {
 		n, isNumber := value.(float64)

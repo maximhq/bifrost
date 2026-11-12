@@ -525,8 +525,10 @@ func (r MCPCodeModeDiscoveryRanker) Timeout() time.Duration {
 // Validate rejects a ranker that cannot be called safely. An empty URL is valid
 // and disables the external ranker.
 func (r MCPCodeModeDiscoveryRanker) Validate() error {
-	if r.TimeoutSeconds < 0 || time.Duration(r.TimeoutSeconds)*time.Second > MaxCodeModeDiscoveryRankerTimeout {
-		return fmt.Errorf("code mode discovery ranker timeout_seconds must be between 0 and %d", int(MaxCodeModeDiscoveryRankerTimeout.Seconds()))
+	maxSeconds := int(MaxCodeModeDiscoveryRankerTimeout / time.Second)
+	// Compared in seconds: converting first would overflow for huge values.
+	if r.TimeoutSeconds < 0 || r.TimeoutSeconds > maxSeconds {
+		return fmt.Errorf("code mode discovery ranker timeout_seconds must be between 0 and %d", maxSeconds)
 	}
 	if r.URL == "" {
 		return nil
