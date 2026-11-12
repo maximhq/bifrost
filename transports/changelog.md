@@ -1,3 +1,5 @@
+[feat]: add an optional stop reason column to the logs table [@Constantine3](https://github.com/Constantine3)
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

@@ -318427,6 +318427,78 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Log list stop reason (#9846)",
+      "description": "The logs table can show stop reason only if GET /api/logs returns it. The list SELECT omitted stop_reason even though it was stored and filterable. Seed a small OpenAI chat completion, then poll flat and grouped log lists by its exact request ID and compare stop_reason with the response finish_reason. Red before the list projection fix, green after; requires logging and access to management log APIs. No provider conversion changes are involved.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log list stop reason preserves finish_reason - #9846",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('log list stop reason: seed succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var expected = pm.response.json().choices[0].finish_reason;",
+                  "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('log list stop reason: seed carries finish reason and request id', function () {",
+                  "  pm.expect(expected, raw).to.be.a('string').and.not.empty;",
+                  "  pm.expect(requestId, raw).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkList(grouped, attempt) {",
+                  "  var url = pm.variables.get('baseUrl') + '/api/logs?request_id=' + encodeURIComponent(requestId) + '&limit=10&roots_only=' + grouped;",
+                  "  pm.sendRequest({url: url, method: 'GET'}, function (err, res) {",
+                  "    pm.test('log list stop reason: list responds (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    var logs = res.json().logs || [];",
+                  "    // Only wait for the asynchronous writer; a terminal row missing stop_reason fails immediately.",
+                  "    if ((logs.length === 0 || logs[0].status === 'processing') && attempt < 10) {",
+                  "      setTimeout(function () { checkList(grouped, attempt + 1); }, 1000);",
+                  "      return;",
+                  "    }",
+                  "    pm.test('log list stop reason: persisted reason survives projection (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(logs.length, res.text()).to.equal(1);",
+                  "      pm.expect(logs[0].id, res.text()).to.equal(requestId);",
+                  "      pm.expect(logs[0].stop_reason, res.text()).to.equal(expected);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "checkList(false, 0);",
+                  "checkList(true, 0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }

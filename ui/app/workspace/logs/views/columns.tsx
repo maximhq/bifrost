@@ -625,6 +625,16 @@ export const createColumns = (
 			},
 		},
 		{
+			id: "stop_reason",
+			header: t("logs.detail.stopReason"),
+			size: 150,
+			cell: ({ row }) => (
+				<TruncatedLabel className="font-mono text-xs" data-testid="logs-stop-reason-cell">
+					{row.original.stop_reason || "-"}
+				</TruncatedLabel>
+			),
+		},
+		{
 			accessorKey: "input",
 			header: t("labels.message"),
 			size: 350,

@@ -392,6 +392,7 @@ test.describe("LLM Logs", () => {
       // A reload and a freshly opened log keep the same filter.
       await logsPage.closeLogDetails();
       await page.reload();
+      await expect(logsPage.tableRows).toHaveCount(1);
       await logsPage.viewLogDetails(0);
       await expect(count).toHaveText("1/5");
       await expect(sheet.getByText(userText)).toHaveCount(0);
@@ -405,6 +406,7 @@ test.describe("LLM Logs", () => {
       await expect(sheet.getByText(userText)).toBeVisible();
       await logsPage.closeLogDetails();
       await page.reload();
+      await expect(logsPage.tableRows).toHaveCount(1);
       await logsPage.viewLogDetails(0);
       await expect(count).toHaveCount(0);
       await expect(sheet.getByText(assistantText)).toBeVisible();
@@ -1468,5 +1470,89 @@ test.describe("LLM Logs", () => {
       expect(url).toMatch(/start_time=\d+/);
       expect(url).toMatch(/end_time=\d+/);
     });
+  });
+});
+
+test.describe("LLM Logs columns", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("should toggle and persist the stop reason column", async ({ page, logsPage }) => {
+    const timestamp = new Date().toISOString();
+    const reasons = ["stop", "length", "content_filter", "tool_calls", "provider_specific_reason", "", null, undefined];
+    await page.route((url) => url.pathname === "/api/logs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ json: {
+        logs: reasons.map((stopReason, index) => ({
+          id: `stop-reason-${index}`,
+          object: "chat.completion",
+          timestamp,
+          created_at: timestamp,
+          provider: "openai",
+          model: "synthetic-model",
+          number_of_retries: 0,
+          fallback_index: 0,
+          status: "success",
+          stream: false,
+          latency: 120,
+          cost: 0,
+          stop_reason: stopReason,
+          input_history: [],
+          responses_input_history: [],
+        })),
+        pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+        stats: {
+          total_requests: reasons.length,
+          success_rate: 100,
+          user_facing_success_rate: 100,
+          user_facing_total_requests: reasons.length,
+          average_latency: 120,
+          total_tokens: 0,
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_cost: 0,
+        },
+        has_logs: true,
+      } });
+    });
+    await logsPage.goto();
+
+    const header = logsPage.logsTable.getByRole("columnheader", { name: /Stop Reason/ });
+    const cells = page.getByTestId("logs-stop-reason-cell");
+    const trigger = page.getByTestId("column-config-trigger");
+    const toggle = page.getByTestId("column-visibility-stop_reason");
+    await expect(header).toHaveCount(0);
+    await trigger.click();
+    await expect(toggle).toHaveAccessibleName("Stop Reason");
+    await expect(toggle).not.toBeChecked();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toBeVisible();
+    await expect(cells).toHaveText(reasons.map((reason) => reason || "-"));
+    await expect.poll(() => new URL(page.url()).searchParams.get("cols")?.split(",")).toContain("stop_reason");
+
+    // The URL restores the column on reload; a clean URL restores it from localStorage.
+    await page.reload();
+    await expect(header).toBeVisible();
+    await logsPage.goto();
+    await expect(header).toBeVisible();
+    await expect(cells).toHaveText(reasons.map((reason) => reason || "-"));
+
+    await trigger.click();
+    await toggle.click();
+    await expect(toggle).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toHaveCount(0);
+    await expect(cells).toHaveCount(0);
+    await logsPage.goto();
+    await expect(header).toHaveCount(0);
+
+    await trigger.click();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await page.getByTestId("column-reset-default").click();
+    await expect(toggle).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toHaveCount(0);
   });
 });

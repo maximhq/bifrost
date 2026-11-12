@@ -1742,7 +1742,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",

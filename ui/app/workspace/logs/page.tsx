@@ -718,6 +718,7 @@ export default function LogsPage() {
 		() => ({
 			timestamp: t("labels.time"),
 			request_type: t("labels.type"),
+			stop_reason: t("logs.detail.stopReason"),
 			input: t("labels.message"),
 			provider: t("labels.provider"),
 			model: t("labels.model"),
@@ -739,7 +740,19 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project", "client_ip"],
+		() => [
+			"stop_reason",
+			"session",
+			"service_tier",
+			"virtual_key",
+			"routing_rule",
+			"team",
+			"customer",
+			"user",
+			"business_unit",
+			"project",
+			"client_ip",
+		],
 		[],
 	);
 

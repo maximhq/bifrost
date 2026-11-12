@@ -753,3 +753,56 @@ func TestSearchLogsSortsMissingCostAndLatencyLast(t *testing.T) {
 		})
 	}
 }
+
+func TestLogListsPreserveStopReasons(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	t.Cleanup(func() { require.NoError(t, store.Close(ctx)) })
+	sessionID := "stop-reason-session"
+	reasons := []*string{schemas.Ptr("stop"), schemas.Ptr("length"), schemas.Ptr("content_filter"), schemas.Ptr("tool_calls"), schemas.Ptr("provider_specific"), schemas.Ptr(""), nil}
+	want := make(map[string]*string, len(reasons))
+	for i, reason := range reasons {
+		id := "stop-reason-" + string(rune('a'+i))
+		want[id] = reason
+		require.NoError(t, store.Create(ctx, &Log{
+			ID: id, Timestamp: time.Now().UTC(), Object: "chat_completion", Provider: "openai",
+			Model: "gpt-4", Status: "success", ParentRequestID: &sessionID, StopReason: reason,
+		}))
+	}
+	check := func(t *testing.T, logs []Log) {
+		t.Helper()
+		require.Len(t, logs, len(want))
+		for _, log := range logs {
+			require.Contains(t, want, log.ID)
+			assert.Equal(t, want[log.ID], log.StopReason, "stop reason for %s", log.ID)
+		}
+	}
+	t.Run("search", func(t *testing.T) {
+		result, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 50})
+		require.NoError(t, err)
+		check(t, result.Logs)
+	})
+	t.Run("session", func(t *testing.T) {
+		result, err := store.GetSessionLogs(ctx, sessionID, PaginationOptions{Limit: 50})
+		require.NoError(t, err)
+		check(t, result.Logs)
+	})
+}
+
+func BenchmarkLogListSelectColumns(b *testing.B) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = sqlDB.Close() })
+	store := &RDBLogStore{db: db}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		store.listSelectColumns()
+	}
+}
