@@ -52,7 +52,8 @@
 		"signInToBifrost": "Se connecter à Bifrost",
 		"publishedBy": "Publiée par <code0>{{host}}</code0>",
 		"localhostWarning": "Cette application ne revient que vers votre propre ordinateur ; son nom ne peut donc pas être vérifié. N’importe quelle application exécutée localement pourrait l’utiliser.",
-		"deviceSignInConfirm": "Continuez uniquement si vous avez lancé cette connexion vous-même et que le code saisi correspond à celui affiché dans votre terminal."
+		"deviceSignInConfirm": "Continuez uniquement si vous avez lancé cette connexion vous-même et que le code saisi correspond à celui affiché dans votre terminal.",
+		"denyButton": "Ce n’était pas moi - refuser"
 	},
 	"setup": {
 		"instructionsIntro": "Le jeton d’installation est un secret que l’opérateur définit sur le serveur. Définissez-le de l’une des deux manières suivantes, puis redémarrez Bifrost :",
@@ -78,6 +79,8 @@
 		"continue": "Continuer",
 		"signedInTitle": "Vous êtes connecté",
 		"signedInBody": "Revenez à votre terminal pour terminer. Vous pouvez fermer cette fenêtre.",
+		"deniedTitle": "Connexion refusée",
+		"deniedBody": "La connexion a été annulée et votre terminal ne sera pas connecté. Vous pouvez fermer cette fenêtre.",
 		"verifyFailed": "Ce code n’a pas pu être vérifié. Relancez la connexion depuis votre terminal.",
 		"invalidLink": "Le lien de connexion n’est pas une adresse web valide. Vérifiez l’URL de l’émetteur configurée sur la passerelle.",
 		"unreachable": "Impossible de joindre Bifrost. Vérifiez votre connexion et réessayez."

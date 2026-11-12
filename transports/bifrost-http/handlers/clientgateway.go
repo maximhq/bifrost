@@ -103,6 +103,12 @@ func clientGatewayDeviceVerificationURL(issuer string) string {
 	return strings.TrimRight(issuer, "/") + "/oauth/device"
 }
 
+// clientGatewayDeviceDeniedURL is where the consent page sends the browser after
+// the user refuses a device grant; the page confirms the sign-in was cancelled.
+func clientGatewayDeviceDeniedURL(issuer string) string {
+	return clientGatewayDeviceVerificationURL(issuer) + "?denied=1"
+}
+
 // clientGatewayDeviceApprovedURL is where the consent page sends the browser after
 // a device grant is approved; the page tells the user to return to their client.
 func clientGatewayDeviceApprovedURL(issuer string) string {

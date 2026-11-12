@@ -316,6 +316,27 @@ func TestConsentOAuth2AuthorizeRequest_AtomicPendingTransition(t *testing.T) {
 	assert.Equal(t, "code-hash-1", *got.CodeHash)
 }
 
+// TestDenyOAuth2AuthorizeRequest_OnlyFromPending pins that refusing a sign-in on the consent page
+// moves a pending request to revoked, and never undoes a consent that already won.
+func TestDenyOAuth2AuthorizeRequest_OnlyFromPending(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	seedAuthorizeRequest(t, s, "req-pending", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+	seedAuthorizeRequest(t, s, "req-consented", tables.OAuth2AuthorizeRequestStatusConsented, nil, time.Now().Add(time.Minute))
+
+	require.NoError(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"))
+	got, err := s.GetOAuth2AuthorizeRequestByID(ctx, "req-pending")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusRevoked, got.Status)
+
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"), ErrNotFound, "a refused request cannot be refused again")
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-consented"), ErrNotFound, "a consented request is not undone")
+	got, err = s.GetOAuth2AuthorizeRequestByID(ctx, "req-consented")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "missing"), ErrNotFound)
+}
+
 func TestOAuth2AuthorizeRequest_DeviceCodeLookups(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()

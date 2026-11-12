@@ -103,6 +103,15 @@ func (m *mockOAuth2Store) ConsentOAuth2AuthorizeRequest(_ context.Context, req *
 	return nil
 }
 
+func (m *mockOAuth2Store) DenyOAuth2AuthorizeRequest(_ context.Context, id string) error {
+	existing, ok := m.authReqs[id]
+	if !ok || existing.Status != configtables.OAuth2AuthorizeRequestStatusPending {
+		return configstore.ErrNotFound
+	}
+	existing.Status = configtables.OAuth2AuthorizeRequestStatusRevoked
+	return nil
+}
+
 func (m *mockOAuth2Store) GetOAuth2SigningKey(_ context.Context) (*configtables.OAuth2SigningKey, error) {
 	if m.signingErr != nil {
 		return nil, m.signingErr

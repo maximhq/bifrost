@@ -51,6 +51,7 @@
 		"publishedBy": "Publicado por <code0>{{host}}</code0>",
 		"localhostWarning": "Esta aplicación solo regresa a tu propio equipo, por lo que no se puede verificar su nombre. Cualquier aplicación que se ejecute localmente podría usarlo.",
 		"deviceSignInConfirm": "Continúa solo si iniciaste este inicio de sesión tú mismo y el código que introdujiste coincide con el de tu terminal.",
+		"denyButton": "No fui yo: denegar",
 		"signInRedirectBody": "Esta autorización requiere una cuenta de Bifrost con sesión iniciada. Te llevamos a iniciar sesión y volverás directamente aquí.",
 		"signInToBifrost": "Inicia sesión en Bifrost"
 	},
@@ -78,6 +79,8 @@
 		"continue": "Continuar",
 		"signedInTitle": "Has iniciado sesión",
 		"signedInBody": "Vuelve a tu terminal para terminar. Puedes cerrar esta ventana.",
+		"deniedTitle": "Inicio de sesión denegado",
+		"deniedBody": "Se canceló el inicio de sesión y tu terminal no iniciará sesión. Puedes cerrar esta ventana.",
 		"verifyFailed": "No se pudo verificar este código. Vuelve a iniciar la sesión desde tu terminal.",
 		"invalidLink": "El enlace de inicio de sesión no es una dirección web válida. Revisa la URL del emisor configurada en el gateway.",
 		"unreachable": "No se pudo conectar con Bifrost. Comprueba tu conexión e inténtalo de nuevo."

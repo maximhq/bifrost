@@ -323845,6 +323845,194 @@
               }
             }
           ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway device authorization for a sign-in the user will deny - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-code/harness"
+              }
+            ],
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/device_authorization",
+            "body": {
+              "mode": "raw",
+              "raw": "surface=claude_code"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a second device sign-in starts for the deny case', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.device_code, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.user_code, pm.response.text()).to.match(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);",
+                  "  pm.collectionVariables.set('cc_gateway_deny_device_code', body.device_code);",
+                  "  pm.collectionVariables.set('cc_gateway_deny_user_code', body.user_code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway verification page opens consent for the sign-in to deny - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/device/verify",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_code\": \"{{cc_gateway_deny_user_code_lower}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cc_gateway_deny_user_code_lower', String(pm.collectionVariables.get('cc_gateway_deny_user_code') || '').toLowerCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the user code leads to the consent page for the sign-in to deny', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var consentURL = pm.response.json().consent_url;",
+                  "  pm.expect(consentURL, pm.response.text()).to.match(/\\/oauth\\/consent\\?flow=[^#&]+/);",
+                  "  var flow = decodeURIComponent(consentURL.match(/[?&]flow=([^#&]+)/)[1]);",
+                  "  var token = consentURL.indexOf('#t=') === -1 ? '' : decodeURIComponent(consentURL.split('#t=')[1]);",
+                  "  pm.collectionVariables.set('cc_gateway_deny_flow', flow);",
+                  "  pm.collectionVariables.set('cc_gateway_deny_consent_token', token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway consent page denies the device sign-in - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{cc_gateway_deny_consent_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{cc_gateway_deny_flow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deny\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('denying the sign-in sends the browser to the denied page', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var redirect = pm.response.json().redirect_url;",
+                  "  pm.expect(redirect, pm.response.text()).to.match(/\\/oauth\\/device\\?denied=1$/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic claude-code-gateway denied device code polls as access_denied - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:device_code"
+                },
+                {
+                  "key": "device_code",
+                  "value": "{{cc_gateway_deny_device_code}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a denied device code is answered access_denied, not authorization_pending', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.equal('access_denied');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
