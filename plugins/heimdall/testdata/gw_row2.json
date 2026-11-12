@@ -1,0 +1,251 @@
+{
+  "app": "Other",
+  "attempt_trail": [
+    {
+      "attempt": 0,
+      "key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+      "key_name": "k1",
+      "triggered_rotation": false
+    }
+  ],
+  "business_unit_id": null,
+  "business_unit_name": null,
+  "content_hidden": false,
+  "content_summary": "[scenario:gw] look up order o1 lookup_order:{\"order_id\":\"o1\"} Order o1 is shipped.",
+  "created_at": "2026-11-07T17:14:52.119844109Z",
+  "customer_id": null,
+  "customer_name": null,
+  "fallback_index": 0,
+  "id": "a9d0f908-e5ef-49d5-a793-bf31322f4cee",
+  "input_history": [
+    {
+      "content": "[scenario:gw] look up order o1",
+      "role": "user"
+    },
+    {
+      "content": null,
+      "refusal": null,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"order_id\":\"o1\"}",
+            "name": "shop-lookup_order"
+          },
+          "id": "call_gw1",
+          "index": 0,
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "lookup_order:{\"order_id\":\"o1\"}",
+      "role": "tool",
+      "tool_call_id": "call_gw1"
+    }
+  ],
+  "is_large_payload_request": false,
+  "is_large_payload_response": false,
+  "latency": 21.000033,
+  "model": "mock-model",
+  "number_of_retries": 0,
+  "object": "chat_completion",
+  "output_message": {
+    "content": "Order o1 is shipped.",
+    "role": "assistant"
+  },
+  "overhead_breakdown": [
+    {
+      "duration_us": 9.087,
+      "name": "worker-handoff"
+    },
+    {
+      "duration_us": 27.679,
+      "name": "miscellaneous"
+    },
+    {
+      "duration_us": 18.113,
+      "name": "pipeline-pre"
+    },
+    {
+      "duration_us": 67.726,
+      "name": "plugin.telemetry"
+    },
+    {
+      "duration_us": 2.814,
+      "name": "plugin.prompts"
+    },
+    {
+      "duration_us": 105.351,
+      "name": "plugin.logging"
+    },
+    {
+      "duration_us": 35.561,
+      "name": "plugin.governance"
+    },
+    {
+      "duration_us": 6.581,
+      "name": "plugin.routing"
+    },
+    {
+      "duration_us": 14.188,
+      "name": "plugin.compat"
+    },
+    {
+      "duration_us": 4.253,
+      "name": "plugin.model-catalog-resolver"
+    },
+    {
+      "duration_us": 8.864,
+      "name": "queue-wait"
+    },
+    {
+      "duration_us": 2.769,
+      "name": "worker-setup"
+    },
+    {
+      "duration_us": 27.255,
+      "name": "key-pool"
+    },
+    {
+      "duration_us": 3.475,
+      "name": "key.selection"
+    },
+    {
+      "duration_us": 94.017,
+      "name": "provider-internal"
+    },
+    {
+      "duration_us": 149.923,
+      "name": "attribute-population"
+    },
+    {
+      "duration_us": 16.293,
+      "name": "convertor"
+    },
+    {
+      "duration_us": 1868.161,
+      "name": "request-marshal"
+    },
+    {
+      "duration_us": 9.698,
+      "name": "response-finalize"
+    },
+    {
+      "duration_us": 43.843,
+      "name": "response-parse"
+    },
+    {
+      "duration_us": 28.456,
+      "name": "pipeline-post"
+    },
+    {
+      "duration_us": 17.255,
+      "name": "transport-response-headers"
+    },
+    {
+      "duration_us": 17659.505,
+      "name": "response-marshal"
+    },
+    {
+      "duration_us": 259.2659999999996,
+      "name": "scheduling"
+    }
+  ],
+  "overhead_latency": 20.480133,
+  "params": {
+    "tools": [
+      {
+        "function": {
+          "description": "chaosmock tool issue_refund",
+          "name": "shop-issue_refund",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "chaosmock tool lookup_order",
+          "name": "shop-lookup_order",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "parent_request_id": null,
+  "plugin_logs": "{\"compat\":[{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"model catalog has no supported-parameter list for model mock-model, no params dropped\",\"timestamp\":1794071692021},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"no param values converted for model mock-model (openai)\",\"timestamp\":1794071692021},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"model catalog has no supported-parameter list for model mock-model, no params dropped\",\"timestamp\":1794071692119},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"no param values converted for model mock-model (openai)\",\"timestamp\":1794071692119}]}",
+  "project_id": null,
+  "project_name": null,
+  "provider": "openai",
+  "raw_request": "",
+  "raw_response": "",
+  "routing_engine_logs": "[1794071692021] [governance] [info] - Skipping load balancing for model mock-model: provider openai already set\n[1794071692119] [core] [info] - MCP agent continuation pinned to openai/mock-model, the route that served the first turn\n",
+  "routing_rule_id": null,
+  "routing_rule_name": null,
+  "selected_key": {
+    "blacklisted_models": [],
+    "id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+    "models": [
+      "*"
+    ],
+    "name": "k1",
+    "value": {
+      "value": ""
+    },
+    "weight": 1
+  },
+  "selected_key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+  "selected_key_name": "k1",
+  "selected_prompt_id": null,
+  "selected_prompt_name": null,
+  "selected_prompt_version": null,
+  "session_id": "spike-gw",
+  "status": "success",
+  "stop_reason": "stop",
+  "stream": false,
+  "team_id": null,
+  "team_name": null,
+  "timestamp": "2026-11-07T17:14:52.119844109Z",
+  "token_usage": {
+    "completion_tokens": 5,
+    "prompt_tokens": 10,
+    "total_tokens": 15
+  },
+  "tools": [
+    {
+      "function": {
+        "description": "chaosmock tool issue_refund",
+        "name": "shop-issue_refund",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "chaosmock tool lookup_order",
+        "name": "shop-lookup_order",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "upstream_latency": 0.5199,
+  "user_agent": "curl/8.18.0",
+  "user_id": null,
+  "user_name": null,
+  "virtual_key_id": null,
+  "virtual_key_name": null
+}

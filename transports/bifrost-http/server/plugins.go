@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/heimdall"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
@@ -203,6 +204,27 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
 
+	case heimdall.PluginName:
+		heimdallConfig := &heimdall.Config{}
+		if pluginConfig != nil {
+			var err error
+			if heimdallConfig, err = MarshalPluginConfig[heimdall.Config](pluginConfig); err != nil {
+				return nil, fmt.Errorf("failed to marshal heimdall plugin config: %w", err)
+			}
+		}
+		return heimdall.Init(ctx, heimdallConfig, logger, heimdall.Deps{
+			Account:     lib.NewBaseAccount(bifrostConfig),
+			LogStore:    bifrostConfig.LogsStore,
+			ConfigStore: bifrostConfig.ConfigStore,
+			Catalog:     bifrostConfig.ModelCatalog,
+			ClientSettings: func() heimdall.ClientSettings {
+				return heimdall.ClientSettings{
+					ContentLoggingDisabled:     bifrostConfig.ClientConfig.DisableContentLogging,
+					ObjectStorageHiddenContent: bifrostConfig.ClientConfig.RetainContentInObjectStorage,
+				}
+			},
+		})
+
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
@@ -370,6 +392,16 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// including post_builtin ones like the enterprise load balancer (which would otherwise run
 	// after this builtin and never get a chance to pick the provider first).
 	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
+
+	// 11. Heimdall (if configured in PluginConfigs; off by default). Placed in post_builtin just before the
+	// catalog resolver so a rollout can swap a route routing has already chosen.
+	heimdallConfig := s.getPluginConfig(heimdall.PluginName)
+	if heimdallConfig != nil && heimdallConfig.Enabled {
+		s.registerPluginWithStatus(ctx, heimdall.PluginName, nil, heimdallConfig.Config, false)
+	} else {
+		s.markPluginDisabled(heimdall.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(heimdall.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt-1))
 
 	return nil
 }

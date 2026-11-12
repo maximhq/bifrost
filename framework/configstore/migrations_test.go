@@ -5825,3 +5825,62 @@ func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
 	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity(), "the stored federation config must survive the refused rollback")
 	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
 }
+
+func TestMigrationAddHeimdallTables(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=1"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, migrationAddHeimdallTables(ctx, db, testMigrationLogger))
+	// Running it again is safe.
+	require.NoError(t, migrationAddHeimdallTables(ctx, db, testMigrationLogger))
+
+	for _, table := range []any{&tables.TableHeimdallRun{}, &tables.TableHeimdallRunSession{}, &tables.TableHeimdallReplay{}, &tables.TableHeimdallRollout{}, &tables.TableHeimdallRolloutEvent{}} {
+		require.True(t, mg.HasTable(table), "%T should exist", table)
+	}
+	for _, idx := range []struct {
+		table any
+		name  string
+	}{
+		{&tables.TableHeimdallRun{}, "idx_heimdall_runs_status_created"},
+		{&tables.TableHeimdallRun{}, "idx_heimdall_runs_candidate"},
+		{&tables.TableHeimdallRunSession{}, "idx_heimdall_run_sessions_critical"},
+		{&tables.TableHeimdallReplay{}, "idx_heimdall_replays_run_session"},
+		{&tables.TableHeimdallReplay{}, "idx_heimdall_replays_attempt"},
+		{&tables.TableHeimdallRolloutEvent{}, "idx_heimdall_rollout_events_rollout"},
+	} {
+		assert.True(t, mg.HasIndex(idx.table, idx.name), "%s should exist", idx.name)
+	}
+	assert.True(t, mg.HasColumn(&tables.TableHeimdallRun{}, "max_calls"))
+	assert.True(t, mg.HasColumn(&tables.TableHeimdallRunSession{}, "snapshot_json"))
+
+	// Replays of a session are unique by run, session, arm and attempt.
+	now := time.Now()
+	require.NoError(t, db.Create(&tables.TableHeimdallRun{ID: "r1", Status: "queued", BaselineProvider: "openai", BaselineModel: "a", CreatedAt: now}).Error)
+	require.NoError(t, db.Create(&tables.TableHeimdallRunSession{RunID: "r1", SessionID: "s1", Eligibility: "eligible"}).Error)
+	replay := tables.TableHeimdallReplay{ID: "p1", RunID: "r1", SessionID: "s1", Arm: "baseline", Attempt: 1, CreatedAt: now}
+	require.NoError(t, db.Create(&replay).Error)
+	duplicate := replay
+	duplicate.ID = "p2"
+	assert.Error(t, db.Create(&duplicate).Error, "the same run, session, arm and attempt must be rejected")
+
+	// A session or replay needs a run, and deleting a run takes them with it.
+	assert.Error(t, db.Create(&tables.TableHeimdallRunSession{RunID: "ghost", SessionID: "s1"}).Error)
+	require.NoError(t, db.Delete(&tables.TableHeimdallRun{}, "id = ?", "r1").Error)
+	var sessions, replays int64
+	require.NoError(t, db.Model(&tables.TableHeimdallRunSession{}).Count(&sessions).Error)
+	require.NoError(t, db.Model(&tables.TableHeimdallReplay{}).Count(&replays).Error)
+	assert.Zero(t, sessions+replays, "deleting a run must delete its sessions and replays")
+
+	// It has no way back: dropping the tables would delete every verdict.
+	steps := map[string]bool{}
+	for _, step := range configstoreMigrationSteps {
+		for _, id := range step.IDs {
+			steps[id] = true
+		}
+	}
+	assert.True(t, steps["add_heimdall_tables"], "the migration must be registered")
+}

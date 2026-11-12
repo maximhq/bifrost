@@ -1,0 +1,299 @@
+{
+  "app": "Other",
+  "attempt_trail": [
+    {
+      "attempt": 0,
+      "key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+      "key_name": "k1",
+      "triggered_rotation": false
+    }
+  ],
+  "business_unit_id": null,
+  "business_unit_name": null,
+  "content_hidden": false,
+  "content_summary": "[scenario:cr] look up order o1 {\"status\":\"shipped\"} Order o1 is shipped.",
+  "created_at": "2026-11-07T17:15:00.828546662Z",
+  "customer_id": null,
+  "customer_name": null,
+  "fallback_index": 0,
+  "id": "842c136f-e1d1-4441-b5f4-8c4417f6b759",
+  "input_history": [
+    {
+      "content": "[scenario:cr] look up order o1",
+      "role": "user"
+    },
+    {
+      "content": null,
+      "refusal": null,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"order_id\":\"o1\"}",
+            "name": "client_lookup"
+          },
+          "id": "call_cr",
+          "index": 0,
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "{\"status\":\"shipped\"}",
+      "role": "tool",
+      "tool_call_id": "call_cr"
+    }
+  ],
+  "is_large_payload_request": false,
+  "is_large_payload_response": false,
+  "latency": 2.318941,
+  "model": "mock-model",
+  "number_of_retries": 0,
+  "object": "chat_completion",
+  "output_message": {
+    "content": "Order o1 is shipped.",
+    "role": "assistant"
+  },
+  "overhead_breakdown": [
+    {
+      "duration_us": 10.172,
+      "name": "worker-handoff"
+    },
+    {
+      "duration_us": 62.588,
+      "name": "plugin.telemetry"
+    },
+    {
+      "duration_us": 9.767,
+      "name": "plugin.prompts"
+    },
+    {
+      "duration_us": 123.661,
+      "name": "plugin.logging"
+    },
+    {
+      "duration_us": 55.675,
+      "name": "plugin.governance"
+    },
+    {
+      "duration_us": 17.391,
+      "name": "plugin.compat"
+    },
+    {
+      "duration_us": 322.984,
+      "name": "request-unmarshal"
+    },
+    {
+      "duration_us": 61.82,
+      "name": "transport-context"
+    },
+    {
+      "duration_us": 31.164,
+      "name": "handle-setup"
+    },
+    {
+      "duration_us": 21.787,
+      "name": "plugin.routing"
+    },
+    {
+      "duration_us": 4.882,
+      "name": "plugin.model-catalog-resolver"
+    },
+    {
+      "duration_us": 50.557,
+      "name": "miscellaneous"
+    },
+    {
+      "duration_us": 12.595,
+      "name": "pipeline-pre"
+    },
+    {
+      "duration_us": 16.58,
+      "name": "queue-wait"
+    },
+    {
+      "duration_us": 3.472,
+      "name": "worker-setup"
+    },
+    {
+      "duration_us": 31.401,
+      "name": "key-pool"
+    },
+    {
+      "duration_us": 3.637,
+      "name": "key.selection"
+    },
+    {
+      "duration_us": 91.086,
+      "name": "provider-internal"
+    },
+    {
+      "duration_us": 127.137,
+      "name": "attribute-population"
+    },
+    {
+      "duration_us": 25.668,
+      "name": "convertor"
+    },
+    {
+      "duration_us": 132.833,
+      "name": "request-marshal"
+    },
+    {
+      "duration_us": 10.951,
+      "name": "response-finalize"
+    },
+    {
+      "duration_us": 47.597,
+      "name": "response-parse"
+    },
+    {
+      "duration_us": 44.226,
+      "name": "pipeline-post"
+    },
+    {
+      "duration_us": 12.444,
+      "name": "transport-response-headers"
+    },
+    {
+      "duration_us": 35.064,
+      "name": "response-marshal"
+    },
+    {
+      "duration_us": 327.83100000000013,
+      "name": "scheduling"
+    }
+  ],
+  "overhead_latency": 1.69497,
+  "params": {
+    "tools": [
+      {
+        "function": {
+          "description": "look up an order",
+          "name": "client_lookup",
+          "parameters": {
+            "properties": {
+              "order_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "chaosmock tool issue_refund",
+          "name": "shop-issue_refund",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "chaosmock tool lookup_order",
+          "name": "shop-lookup_order",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "parent_request_id": null,
+  "plugin_logs": "{\"compat\":[{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"model catalog has no supported-parameter list for model mock-model, no params dropped\",\"timestamp\":1794071700828},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"no param values converted for model mock-model (openai)\",\"timestamp\":1794071700828}]}",
+  "project_id": null,
+  "project_name": null,
+  "provider": "openai",
+  "raw_request": "",
+  "raw_response": "",
+  "routing_engine_logs": "[1794071700828] [governance] [info] - Skipping load balancing for model mock-model: provider openai already set\n",
+  "routing_rule_id": null,
+  "routing_rule_name": null,
+  "selected_key": {
+    "blacklisted_models": [],
+    "id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+    "models": [
+      "*"
+    ],
+    "name": "k1",
+    "value": {
+      "value": ""
+    },
+    "weight": 1
+  },
+  "selected_key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+  "selected_key_name": "k1",
+  "selected_prompt_id": null,
+  "selected_prompt_name": null,
+  "selected_prompt_version": null,
+  "session_id": "spike-cr",
+  "status": "success",
+  "stop_reason": "stop",
+  "stream": false,
+  "team_id": null,
+  "team_name": null,
+  "timestamp": "2026-11-07T17:15:00.828546662Z",
+  "token_usage": {
+    "completion_tokens": 5,
+    "prompt_tokens": 10,
+    "total_tokens": 15
+  },
+  "tools": [
+    {
+      "function": {
+        "description": "look up an order",
+        "name": "client_lookup",
+        "parameters": {
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "chaosmock tool issue_refund",
+        "name": "shop-issue_refund",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "chaosmock tool lookup_order",
+        "name": "shop-lookup_order",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "upstream_latency": 0.623971,
+  "user_agent": "curl/8.18.0",
+  "user_id": null,
+  "user_name": null,
+  "virtual_key_id": null,
+  "virtual_key_name": null
+}

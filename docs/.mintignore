@@ -2,3 +2,6 @@
 openapi/paths/
 openapi/schemas/
 openapi/openapi.yaml
+
+# Heimdall design notes, not published
+heimdall/

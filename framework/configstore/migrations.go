@@ -588,6 +588,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_heimdall_tables"}, run: migrationAddHeimdallTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1244,6 +1245,27 @@ func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping the relay tables would permanently delete endpoints, their credentials and virtual-key grants", migrationName)
+		},
+	})
+}
+
+// migrationAddHeimdallTables creates the tables of the Heimdall plugin: runs, their sessions and replays, and
+// rollouts with their events. It only adds tables, so older binaries ignore them.
+func migrationAddHeimdallTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_heimdall_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(
+				&tables.TableHeimdallRun{},
+				&tables.TableHeimdallRunSession{},
+				&tables.TableHeimdallReplay{},
+				&tables.TableHeimdallRollout{},
+				&tables.TableHeimdallRolloutEvent{},
+			)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the Heimdall tables would permanently delete every run, verdict and rollout history", migrationName)
 		},
 	})
 }

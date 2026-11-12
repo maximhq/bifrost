@@ -4228,7 +4228,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, heimdall, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -4451,6 +4451,75 @@
                     "is_enterprise": {
                       "type": "boolean",
                       "description": "Enable enterprise mode features"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "heimdall"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Heimdall plugin, which replays recorded agent sessions against a candidate model. Off unless the plugin entry is enabled.",
+                  "properties": {
+                    "max_concurrency": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 8,
+                      "description": "Replay worker pool size"
+                    },
+                    "max_sessions": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 200,
+                      "description": "Most sessions one run may select"
+                    },
+                    "max_steps": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 20,
+                      "description": "Most steps a session may have to be replayed"
+                    },
+                    "call_timeout": {
+                      "type": "string",
+                      "default": "120s",
+                      "description": "Timeout for one replayed model call, as a Go duration such as 120s"
+                    },
+                    "retention_days": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 7,
+                      "description": "Days a run and its stored session snapshots are kept"
+                    },
+                    "allow_unauthenticated_mutations": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Let POST routes through when dashboard auth is off. Demo only."
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "description": "Numbers a run takes when its request sets none",
+                      "properties": {
+                        "baseline_runs": { "type": "integer", "minimum": 2, "maximum": 5, "default": 3, "description": "Replays of each session on the original model" },
+                        "candidate_runs": { "type": "integer", "minimum": 2, "maximum": 5, "default": 3, "description": "Replays of each session on the candidate" },
+                        "margin": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "default": 0.1, "description": "How much worse the candidate may be and still pass" },
+                        "min_sessions": { "type": "integer", "minimum": 1, "default": 30, "description": "Scored sessions needed for a PASS" },
+                        "min_coverage": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.8, "description": "Share of the selected sessions that must be scored" },
+                        "max_noise": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.3, "description": "How far the original model may differ from its own recording" },
+                        "max_critical_sessions": { "type": "integer", "minimum": 1, "default": 1, "description": "Sessions with a new critical finding that fail the run" },
+                        "resamples": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 2000, "description": "Bootstrap resamples" }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false

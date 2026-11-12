@@ -1,0 +1,256 @@
+{
+  "app": "Other",
+  "attempt_trail": [
+    {
+      "attempt": 0,
+      "key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+      "key_name": "k1",
+      "triggered_rotation": false
+    }
+  ],
+  "business_unit_id": null,
+  "business_unit_name": null,
+  "content_hidden": false,
+  "content_summary": "[scenario:gw] look up order o1",
+  "created_at": "2026-11-07T17:14:52.021324817Z",
+  "customer_id": null,
+  "customer_name": null,
+  "fallback_index": 0,
+  "id": "da0d88a5-41aa-4156-8022-f4967b138db2",
+  "input_history": [
+    {
+      "content": "[scenario:gw] look up order o1",
+      "role": "user"
+    }
+  ],
+  "is_large_payload_request": false,
+  "is_large_payload_response": false,
+  "latency": 163.0779,
+  "model": "mock-model",
+  "number_of_retries": 0,
+  "object": "chat_completion",
+  "output_message": {
+    "content": null,
+    "refusal": null,
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"order_id\":\"o1\"}",
+          "name": "shop-lookup_order"
+        },
+        "id": "call_gw1",
+        "index": 0,
+        "type": "function"
+      }
+    ]
+  },
+  "overhead_breakdown": [
+    {
+      "duration_us": 13.256,
+      "name": "plugin.telemetry"
+    },
+    {
+      "duration_us": 5.624,
+      "name": "plugin.prompts"
+    },
+    {
+      "duration_us": 214.331,
+      "name": "plugin.logging"
+    },
+    {
+      "duration_us": 36.794,
+      "name": "plugin.governance"
+    },
+    {
+      "duration_us": 12.667,
+      "name": "plugin.compat"
+    },
+    {
+      "duration_us": 74977.973,
+      "name": "request-unmarshal"
+    },
+    {
+      "duration_us": 47.095,
+      "name": "transport-context"
+    },
+    {
+      "duration_us": 28.035,
+      "name": "handle-setup"
+    },
+    {
+      "duration_us": 16.51,
+      "name": "plugin.routing"
+    },
+    {
+      "duration_us": 3.167,
+      "name": "plugin.model-catalog-resolver"
+    },
+    {
+      "duration_us": 25.526,
+      "name": "miscellaneous"
+    },
+    {
+      "duration_us": 10.73,
+      "name": "pipeline-pre"
+    },
+    {
+      "duration_us": 9.791,
+      "name": "queue-wait"
+    },
+    {
+      "duration_us": 2.743,
+      "name": "worker-setup"
+    },
+    {
+      "duration_us": 25.079,
+      "name": "key-pool"
+    },
+    {
+      "duration_us": 2.662,
+      "name": "key.selection"
+    },
+    {
+      "duration_us": 932.651,
+      "name": "provider-internal"
+    },
+    {
+      "duration_us": 4154.559,
+      "name": "attribute-population"
+    },
+    {
+      "duration_us": 22.759,
+      "name": "convertor"
+    },
+    {
+      "duration_us": 13438.666,
+      "name": "request-marshal"
+    },
+    {
+      "duration_us": 8.55,
+      "name": "response-finalize"
+    },
+    {
+      "duration_us": 68367.043,
+      "name": "response-parse"
+    },
+    {
+      "duration_us": 27.33,
+      "name": "pipeline-post"
+    },
+    {
+      "duration_us": 214.32400000002235,
+      "name": "scheduling"
+    }
+  ],
+  "overhead_latency": 162.597865,
+  "params": {
+    "tools": [
+      {
+        "function": {
+          "description": "chaosmock tool issue_refund",
+          "name": "shop-issue_refund",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "chaosmock tool lookup_order",
+          "name": "shop-lookup_order",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "parent_request_id": null,
+  "plugin_logs": "{\"compat\":[{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"model catalog has no supported-parameter list for model mock-model, no params dropped\",\"timestamp\":1794071692021},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"no param values converted for model mock-model (openai)\",\"timestamp\":1794071692021},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"model catalog has no supported-parameter list for model mock-model, no params dropped\",\"timestamp\":1794071692119},{\"plugin_name\":\"compat\",\"level\":\"debug\",\"message\":\"no param values converted for model mock-model (openai)\",\"timestamp\":1794071692119}]}",
+  "project_id": null,
+  "project_name": null,
+  "provider": "openai",
+  "raw_request": "",
+  "raw_response": "",
+  "routing_engine_logs": "[1794071692021] [governance] [info] - Skipping load balancing for model mock-model: provider openai already set\n",
+  "routing_rule_id": null,
+  "routing_rule_name": null,
+  "selected_key": {
+    "blacklisted_models": [],
+    "id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+    "models": [
+      "*"
+    ],
+    "name": "k1",
+    "value": {
+      "value": ""
+    },
+    "weight": 1
+  },
+  "selected_key_id": "70a37db5-7528-4b0d-9682-23fd8820305f",
+  "selected_key_name": "k1",
+  "selected_prompt_id": null,
+  "selected_prompt_name": null,
+  "selected_prompt_version": null,
+  "session_id": "spike-gw",
+  "status": "success",
+  "stop_reason": "tool_calls",
+  "stream": false,
+  "team_id": null,
+  "team_name": null,
+  "timestamp": "2026-11-07T17:14:52.021324817Z",
+  "token_usage": {
+    "completion_tokens": 5,
+    "prompt_tokens": 10,
+    "total_tokens": 15
+  },
+  "tool_call_names": [
+    "shop-lookup_order"
+  ],
+  "tool_calls": [
+    {
+      "function": {
+        "arguments": "{\"order_id\":\"o1\"}",
+        "name": "shop-lookup_order"
+      },
+      "id": "call_gw1",
+      "index": 0,
+      "type": "function"
+    }
+  ],
+  "tools": [
+    {
+      "function": {
+        "description": "chaosmock tool issue_refund",
+        "name": "shop-issue_refund",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "chaosmock tool lookup_order",
+        "name": "shop-lookup_order",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "upstream_latency": 0.480035,
+  "user_agent": "curl/8.18.0",
+  "user_id": null,
+  "user_name": null,
+  "virtual_key_id": null,
+  "virtual_key_name": null
+}
