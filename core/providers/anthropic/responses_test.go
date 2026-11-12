@@ -4456,3 +4456,479 @@ func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertBifrostMessagesToAnthropicMessages_PendingReasoningFlushedAtEnd(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Prove that sqrt(2) is irrational.")},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "step 1"}},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoning}, true, caps)
+	if len(msgs) != 2 {
+		t.Fatalf("expected user + assistant, got %d: %+v", len(msgs), msgs)
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) == 0 || blocks[0].Type != AnthropicContentBlockTypeThinking {
+		t.Fatalf("expected leading thinking block, got %+v", blocks)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningBeforeTextUnchanged(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "r"}},
+		},
+	}
+	assistant := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("answer")},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoning, assistant}, true, caps)
+	if len(msgs) != 2 {
+		t.Fatalf("expected user + assistant, got %d: %+v", len(msgs), msgs)
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) < 2 || blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[len(blocks)-1].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("expected [thinking,...,text], got %+v", blocks)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_NoReasoningNoTrailingAssistant(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user}, true, caps)
+	if len(msgs) != 1 || msgs[0].Role != AnthropicMessageRoleUser {
+		t.Fatalf("expected only user message, got %+v", msgs)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_TrailingReasoningAfterToolCall(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What is the weather?")},
+	}
+	reasoningA := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning A"}},
+		},
+	}
+	functionCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("call_1"),
+			Name:      schemas.Ptr("get_weather"),
+			Arguments: schemas.Ptr(`{"city": "SF"}`),
+		},
+	}
+	reasoningB := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning B"}},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoningA, functionCall, reasoningB}, true, caps)
+	if len(msgs) != 2 {
+		t.Fatalf("expected user + assistant, got %d: %+v", len(msgs), msgs)
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	// Expect order: thinking A, tool_use, thinking B
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks [thinking A, tool_use, thinking B], got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning A" {
+		t.Fatalf("block 0: expected thinking A, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeToolUse {
+		t.Fatalf("block 1: expected tool_use, got %+v", blocks[1])
+	}
+	if blocks[2].Type != AnthropicContentBlockTypeThinking || blocks[2].Thinking == nil || *blocks[2].Thinking != "reasoning B" {
+		t.Fatalf("block 2: expected thinking B, got %+v", blocks[2])
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_NoTrailingReasoningWhenPrefillDisabled(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "trailing reasoning"}},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoning}, true, caps)
+	// With prefill disabled, the trailing reasoning should NOT produce a trailing assistant message
+	// Only the user message should remain (the reasoning is dropped, same as before this PR)
+	if len(msgs) != 1 || msgs[0].Role != AnthropicMessageRoleUser {
+		t.Fatalf("expected only user message when prefill disabled, got %d messages: %+v", len(msgs), msgs)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningAfterToolCallStaysInTurn(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What is the weather in SF?")},
+	}
+	reasoningA := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning A"}},
+		},
+	}
+	functionCall := schemas.ResponsesMessage{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("get_weather"), Arguments: schemas.Ptr(`{"city":"SF"}`)},
+	}
+	reasoningB := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning B"}},
+		},
+	}
+	functionOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature":"62F"}`)}},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoningA, functionCall, reasoningB, functionOutput}, true, caps)
+	// Expect exactly 3 messages: user, assistant (thinking A + tool_use + thinking B in turn), tool_result user.
+	// NO trailing assistant message after the tool result — reasoning B must stay in the turn that issued the call.
+	if len(msgs) != 3 {
+		t.Fatalf("expected user + assistant + tool_result, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != AnthropicMessageRoleUser {
+		t.Fatalf("msg 0: expected user, got %+v", msgs[0])
+	}
+	if msgs[1].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("msg 1: expected assistant, got %+v", msgs[1])
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks [thinking A, tool_use, thinking B], got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning A" {
+		t.Fatalf("block 0: expected thinking A, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeToolUse {
+		t.Fatalf("block 1: expected tool_use, got %+v", blocks[1])
+	}
+	if blocks[2].Type != AnthropicContentBlockTypeThinking || blocks[2].Thinking == nil || *blocks[2].Thinking != "reasoning B" {
+		t.Fatalf("block 2: expected thinking B, got %+v", blocks[2])
+	}
+	if msgs[2].Role != AnthropicMessageRoleUser {
+		t.Fatalf("msg 2: expected user (tool result), got %+v", msgs[2])
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningAfterUnsupportedToolCallStaysInTurn(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("run the command")},
+	}
+	shellCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("shell_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+					Commands: []string{"pwd"},
+				},
+			},
+			ResponsesShellCall: &schemas.ResponsesShellCall{
+				Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+			},
+		},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning after shell"}},
+		},
+	}
+	shellOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("shell_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+					Stdout:  "/tmp",
+					Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+				}},
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, shellCall, reasoning, shellOutput}, true, caps)
+	// Unsupported shell_call is emitted as an assistant text turn; its output as a
+	// following user/tool-result turn. Reasoning after the shell_call must remain in
+	// the assistant turn that issued it, leading that turn (no trailing assistant).
+	if len(msgs) != 3 {
+		t.Fatalf("expected user + assistant + tool_result, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != AnthropicMessageRoleUser || msgs[1].Role != AnthropicMessageRoleAssistant || msgs[2].Role != AnthropicMessageRoleUser {
+		t.Fatalf("unexpected roles: %+v", []string{string(msgs[0].Role), string(msgs[1].Role), string(msgs[2].Role)})
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks [thinking, unsupported-call text], got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning after shell" {
+		t.Fatalf("block 0: expected thinking leading turn, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("block 1: expected text block for unsupported call, got %+v", blocks[1])
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningAfterUnsupportedCallBeforeSupportedOutputStaysInTurn(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("run tools")},
+	}
+	functionCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("call_1"),
+			Name:      schemas.Ptr("get_weather"),
+			Arguments: schemas.Ptr(`{"city":"NYC"}`),
+		},
+	}
+	shellCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("shell_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+					Commands: []string{"pwd"},
+				},
+			},
+			ResponsesShellCall: &schemas.ResponsesShellCall{
+				Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+			},
+		},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning after unsupported call"}},
+		},
+	}
+	functionOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("sunny")},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, functionCall, shellCall, reasoning, functionOutput}, true, caps)
+	// Expect: user, assistant(function_call turn), assistant(shell_call turn with leading reasoning), user(tool_result)
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages [user, assistant(tool_use), assistant(unsupported+reasoning), user(tool_result)], got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != AnthropicMessageRoleUser || msgs[1].Role != AnthropicMessageRoleAssistant || msgs[2].Role != AnthropicMessageRoleAssistant || msgs[3].Role != AnthropicMessageRoleUser {
+		t.Fatalf("unexpected roles: %v", []string{string(msgs[0].Role), string(msgs[1].Role), string(msgs[2].Role), string(msgs[3].Role)})
+	}
+	if len(msgs[1].Content.ContentBlocks) != 1 || msgs[1].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolUse {
+		t.Fatalf("msg 1: expected [tool_use], got %+v", msgs[1].Content.ContentBlocks)
+	}
+	blocks := msgs[2].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("msg 2: expected [thinking, text] in unsupported-call turn, got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning after unsupported call" {
+		t.Fatalf("msg 2 block 0: expected thinking leading turn, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("msg 2 block 1: expected text for unsupported call, got %+v", blocks[1])
+	}
+	// tool result for call_1 must be in final user message, not followed by trailing assistant
+	if len(msgs[3].Content.ContentBlocks) == 0 || msgs[3].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolResult {
+		t.Fatalf("msg 3: expected tool_result, got %+v", msgs[3].Content.ContentBlocks)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningAfterUnsupportedCallBeforeComputerOutputStaysInTurn(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("use tools")},
+	}
+	computerCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("comp_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesComputerToolCallAction: &schemas.ResponsesComputerToolCallAction{
+					Type: "screenshot",
+				},
+			},
+		},
+	}
+	shellCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("shell_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+					Commands: []string{"pwd"},
+				},
+			},
+			ResponsesShellCall: &schemas.ResponsesShellCall{
+				Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+			},
+		},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning after unsupported call"}},
+		},
+	}
+	computerOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("comp_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesComputerToolCallOutput: &schemas.ResponsesComputerToolCallOutputData{
+					Type:   "computer_screenshot",
+					FileID: schemas.Ptr("file_1"),
+				},
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, computerCall, shellCall, reasoning, computerOutput}, true, caps)
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages [user, assistant(computer), assistant(unsupported+reasoning), user(tool_result)], got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != AnthropicMessageRoleUser || msgs[1].Role != AnthropicMessageRoleAssistant || msgs[2].Role != AnthropicMessageRoleAssistant || msgs[3].Role != AnthropicMessageRoleUser {
+		t.Fatalf("unexpected roles: %v", []string{string(msgs[0].Role), string(msgs[1].Role), string(msgs[2].Role), string(msgs[3].Role)})
+	}
+	if len(msgs[1].Content.ContentBlocks) != 1 || msgs[1].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolUse {
+		t.Fatalf("msg 1: expected [tool_use] for computer_call, got %+v", msgs[1].Content.ContentBlocks)
+	}
+	blocks := msgs[2].Content.ContentBlocks
+	if len(blocks) != 2 || blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning after unsupported call" || blocks[1].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("msg 2: expected [thinking, text] in unsupported-call turn, got %+v", blocks)
+	}
+	if len(msgs[3].Content.ContentBlocks) == 0 || msgs[3].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolResult {
+		t.Fatalf("msg 3: expected tool_result, got %+v", msgs[3].Content.ContentBlocks)
+	}
+}
+
+func TestConvertBifrostMessagesToAnthropicMessages_EndFlushReasoningBeforeTextInLastAssistant(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	reasoningA := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning A"}},
+		},
+	}
+	assistantText := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+	}
+	reasoningB := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning B"}},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, reasoningA, assistantText, reasoningB}, true, caps)
+	if len(msgs) != 2 {
+		t.Fatalf("expected [user, assistant], got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[1].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("msg 1: expected assistant, got %+v", msgs[1])
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks [thinking A, thinking B, text], got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning A" {
+		t.Fatalf("block 0: expected thinking A, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeThinking || blocks[1].Thinking == nil || *blocks[1].Thinking != "reasoning B" {
+		t.Fatalf("block 1: expected thinking B (before text), got %+v", blocks[1])
+	}
+	if blocks[2].Type != AnthropicContentBlockTypeText || blocks[2].Text == nil || *blocks[2].Text != "hello" {
+		t.Fatalf("block 2: expected text hello, got %+v", blocks[2])
+	}
+}

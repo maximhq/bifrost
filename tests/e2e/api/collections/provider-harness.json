@@ -318427,6 +318427,119 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Anthropic non-streamed reasoning flush at max_tokens (#9888)",
+      "description": "Pins that a non-streamed Anthropic Messages response ending mid-thinking (stop_reason max_tokens) preserves the thinking blocks in the response content.\n\nBug (#9888): When a provider returns a non-streamed response cut off by max_tokens during reasoning, the thinking blocks accumulated before the truncation were discarded by convertBifrostMessagesToAnthropicMessages because pendingReasoningContentBlocks was not flushed at end-of-output. The response returned empty content despite usage.output_tokens > 0 and stop_reason max_tokens.\n\nThis case exercises the /anthropic/v1/messages endpoint with a reasoning model and a small max_tokens cap to force truncation during thinking. It asserts that the response contains thinking blocks (non-empty content), stop_reason is max_tokens, and usage is preserved.",
+      "item": [
+        {
+          "name": "anthropic/claude-opus-4-7 /anthropic/v1/messages non-streamed reasoning truncated at max_tokens preserves thinking blocks - #9888",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic non-streamed: reasoning truncated at max_tokens preserves thinking blocks - #9888', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  // Must have thinking content (non-empty content array with thinking blocks)",
+                  "  pm.expect(j.content, 'response must have content array with thinking blocks: ' + raw.slice(0, 300)).to.be.an('array');",
+                  "  var hasThinking = j.content.some(function (c) { return c && c.type === 'thinking'; });",
+                  "  pm.expect(hasThinking, 'content must include at least one thinking block: ' + raw.slice(0, 300)).to.be.true;",
+                  "  // Must report stop_reason max_tokens (not end_turn)",
+                  "  pm.expect(j.stop_reason, 'stop_reason must be max_tokens for truncated reasoning: ' + raw.slice(0, 300)).to.equal('max_tokens');",
+                  "  // Must preserve usage with output_tokens > 0",
+                  "  pm.expect(j.usage && j.usage.output_tokens, 'usage.output_tokens must be > 0: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":16,\"thinking\":{\"type\":\"adaptive\"},\"messages\":[{\"role\":\"user\",\"content\":\"Five people—Alice, Ben, Cara, Dan, Els—each own exactly one pet (cat, dog, fish, bird, hamster) and live on exactly one floor (1–5) of an apartment building. Dan lives on floor 3. The bird owner lives directly above the cat owner. Cara owns the fish. Ben lives one floor below Alice. Els owns neither a dog nor a cat. Determine each person’s pet and floor, working through every constraint step by step, and state the full assignment.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-4-6 /anthropic/v1/messages non-streamed reasoning truncated at max_tokens preserves thinking blocks - #9888",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openrouter converted: reasoning truncated at max_tokens preserves thinking blocks - #9888', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.content, 'response must have content array with thinking blocks: ' + raw.slice(0, 300)).to.be.an('array');",
+                  "  var hasThinking = j.content.some(function (c) { return c && c.type === 'thinking'; });",
+                  "  pm.expect(hasThinking, 'content must include at least one thinking block: ' + raw.slice(0, 300)).to.be.true;",
+                  "  pm.expect(j.stop_reason, 'stop_reason must be max_tokens for truncated reasoning: ' + raw.slice(0, 300)).to.equal('max_tokens');",
+                  "  pm.expect(j.usage && j.usage.output_tokens, 'usage.output_tokens must be > 0: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-4-6\",\"max_tokens\":16,\"thinking\":{\"type\":\"adaptive\"},\"messages\":[{\"role\":\"user\",\"content\":\"Five people—Alice, Ben, Cara, Dan, Els—each own exactly one pet (cat, dog, fish, bird, hamster) and live on exactly one floor (1–5) of an apartment building. Dan lives on floor 3. The bird owner lives directly above the cat owner. Cara owns the fish. Ben lives one floor below Alice. Els owns neither a dog nor a cat. Determine each person’s pet and floor, working through every constraint step by step, and state the full assignment.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

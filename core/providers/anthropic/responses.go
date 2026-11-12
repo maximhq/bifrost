@@ -5893,6 +5893,11 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	}
 	var toolCallGroups []toolCallGroup
 	var currentToolCallIDs map[string]bool // IDs of tool calls in the current pending batch
+	// lastUnsupportedCallCommitted marks that the most recently appended assistant
+	// message is the text representation of an unsupported tool call (never tracked
+	// in pendingToolCalls). Used to reattach reasoning that arrives after such a call
+	// before its output into the same turn.
+	lastUnsupportedCallCommitted := false
 
 	// knownToolUseIDs is the set of tool_use ids that are actually committed to the
 	// output as tool_use/server_tool_use blocks. A tool_result whose id is not in
@@ -6099,15 +6104,24 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 		// Matched results whose group was already flushed in an earlier call still
 		// have a valid tool_use, so emit them as a standalone tool_result message.
+		appendedUserMessage := false
 		if len(remaining) > 0 {
 			anthropicMessages = append(anthropicMessages, AnthropicMessage{
 				Role:    AnthropicMessageRoleUser,
 				Content: AnthropicContent{ContentBlocks: remaining},
 			})
+			appendedUserMessage = true
 		}
 
 		// Orphans (no matching tool_use anywhere) become user text.
+		before := len(anthropicMessages)
 		appendOrphanToolResultsAsUserText(orphaned)
+		if len(anthropicMessages) > before {
+			appendedUserMessage = true
+		}
+		if len(pendingToolOutputTexts) > 0 || appendedUserMessage {
+			lastUnsupportedCallCommitted = false
+		}
 	}
 
 	// Helper to flush pending tool calls with tool call ID tracking
@@ -6120,6 +6134,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				ContentBlocks: copied,
 			}
 			anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
+			lastUnsupportedCallCommitted = false
 
 			// Record this tool call group for matching with tool results
 			if len(currentToolCallIDs) > 0 {
@@ -6259,6 +6274,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					},
 				}
 				anthropicMessages = append(anthropicMessages, assistantReasoningMsg)
+				lastUnsupportedCallCommitted = false
 				pendingReasoningContentBlocks = nil
 			}
 
@@ -6266,6 +6282,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			anthropicMsg := convertBifrostMessageToAnthropicMessage(caps, &msg, &pendingReasoningContentBlocks)
 			if anthropicMsg != nil {
 				anthropicMessages = append(anthropicMessages, *anthropicMsg)
+				lastUnsupportedCallCommitted = false
 				// Register any tool_use ids carried on a regular assistant message so
 				// later tool_result blocks referencing them are not treated as orphans.
 				for _, b := range anthropicMsg.Content.ContentBlocks {
@@ -6370,6 +6387,37 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
+			// Attach any reasoning that arrived after the tool call to the pending
+			// tool calls so it is committed in the SAME assistant turn as the
+			// tool_use it follows (issue #7768 ordering rule). Without this,
+			// reasoning buffered between a function_call and its function_call_output
+			// is left pending when flushPendingToolCallsWithTracking() commits the
+			// tool-use turn, then stranded by the end-of-input flush in a NEW trailing
+			// assistant turn after the tool_result — out of its turn (#9888 review).
+			// Mirrors the function_call branch at L6308-6311. When no tool call is
+			// pending, reasoning is left alone; the end-of-input flush handles it.
+			if len(pendingToolCalls) > 0 && len(pendingReasoningContentBlocks) > 0 {
+				pendingToolCalls = append(pendingToolCalls, pendingReasoningContentBlocks...)
+				pendingReasoningContentBlocks = nil
+			} else if lastUnsupportedCallCommitted && len(pendingReasoningContentBlocks) > 0 {
+				// A supported result following an unsupported call (e.g. [function_call,
+				// shell_call, reasoning, function_call_output]): the unsupported call
+				// flushed the tracked tool calls and was committed as its own assistant
+				// turn with the flag set. Attach buffered reasoning to that turn so it
+				// stays with the unsupported call, before this output is buffered.
+				if n := len(anthropicMessages); n > 0 && anthropicMessages[n-1].Role == AnthropicMessageRoleAssistant {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					blocks := anthropicMessages[n-1].Content.ContentBlocks
+					if len(blocks) > 0 {
+						anthropicMessages[n-1].Content.ContentBlocks = append(copied, blocks...)
+					} else {
+						anthropicMessages[n-1].Content.ContentBlocks = copied
+					}
+					pendingReasoningContentBlocks = nil
+					lastUnsupportedCallCommitted = false
+				}
+			}
 			// Flush any pending tool calls first before processing tool results (with tracking)
 			flushPendingToolCallsWithTracking()
 
@@ -6663,9 +6711,36 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					pendingReasoningContentBlocks = nil
 				}
 				anthropicMessages = append(anthropicMessages, *unsupportedToolMsg)
+				lastUnsupportedCallCommitted = true
 			}
 
 		case schemas.ResponsesMessageTypeComputerCallOutput:
+			// Attach any reasoning that arrived after the tool call to the pending
+			// tool calls so it is committed in the SAME assistant turn as the
+			// tool_use it follows (issue #7768 ordering rule). Without this,
+			// reasoning buffered between a computer_call and its computer_call_output
+			// is stranded in a trailing assistant turn after the tool result.
+			// Mirrors the function_call branch at L6308-6311.
+			if len(pendingToolCalls) > 0 && len(pendingReasoningContentBlocks) > 0 {
+				pendingToolCalls = append(pendingToolCalls, pendingReasoningContentBlocks...)
+				pendingReasoningContentBlocks = nil
+			} else if lastUnsupportedCallCommitted && len(pendingReasoningContentBlocks) > 0 {
+				// A supported result following an unsupported call (e.g. [computer_call,
+				// shell_call, reasoning, computer_call_output]): attach buffered reasoning
+				// to the unsupported call's assistant turn before this output is buffered.
+				if n := len(anthropicMessages); n > 0 && anthropicMessages[n-1].Role == AnthropicMessageRoleAssistant {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					blocks := anthropicMessages[n-1].Content.ContentBlocks
+					if len(blocks) > 0 {
+						anthropicMessages[n-1].Content.ContentBlocks = append(copied, blocks...)
+					} else {
+						anthropicMessages[n-1].Content.ContentBlocks = copied
+					}
+					pendingReasoningContentBlocks = nil
+					lastUnsupportedCallCommitted = false
+				}
+			}
 			// Flush any pending tool calls first before processing tool results (with tracking)
 			flushPendingToolCallsWithTracking()
 
@@ -6686,6 +6761,32 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			schemas.ResponsesMessageTypeShellCallOutput,
 			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
+			// Attach any reasoning that arrived after the tool call to the pending
+			// tool calls so it is committed in the SAME assistant turn as the
+			// tool_use it follows (issue #7768 ordering rule). Without this,
+			// reasoning buffered between a tool call and its *CallOutput is stranded
+			// in a trailing assistant turn after the tool result. Mirrors the
+			// function_call branch at L6308-6311.
+			if len(pendingToolCalls) > 0 && len(pendingReasoningContentBlocks) > 0 {
+				pendingToolCalls = append(pendingToolCalls, pendingReasoningContentBlocks...)
+				pendingReasoningContentBlocks = nil
+			} else if lastUnsupportedCallCommitted && len(pendingReasoningContentBlocks) > 0 {
+				// Unsupported calls (shell/local_shell/apply_patch/custom) are not tracked
+				// in pendingToolCalls. Attach reasoning buffered after such a call to the
+				// assistant message holding that call so it stays in the same turn.
+				if n := len(anthropicMessages); n > 0 && anthropicMessages[n-1].Role == AnthropicMessageRoleAssistant {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					blocks := anthropicMessages[n-1].Content.ContentBlocks
+					if len(blocks) > 0 {
+						anthropicMessages[n-1].Content.ContentBlocks = append(copied, blocks...)
+					} else {
+						anthropicMessages[n-1].Content.ContentBlocks = copied
+					}
+					pendingReasoningContentBlocks = nil
+					lastUnsupportedCallCommitted = false
+				}
+			}
 			flushPendingToolCallsWithTracking()
 
 			// Held until the next flush so a later function_call_output still leads the turn.
@@ -6705,6 +6806,45 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 	// Flush any remaining pending tool calls (with tracking)
 	flushPendingToolCallsWithTracking()
+
+	// Flush any reasoning still held when the output ends (e.g. max_tokens during thinking)
+	if len(pendingReasoningContentBlocks) > 0 && !(isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false) {
+		copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+		copy(copied, pendingReasoningContentBlocks)
+		if n := len(anthropicMessages); n > 0 && anthropicMessages[n-1].Role == AnthropicMessageRoleAssistant {
+			blocks := anthropicMessages[n-1].Content.ContentBlocks
+			if len(blocks) > 0 {
+				// Insert pending reasoning after leading thinking/redacted_thinking/
+				// tool_use/server_tool_use blocks, before the first text block. This
+				// keeps thinking leading its turn (so [thinking, text] becomes
+				// [thinking, pending-thinking, text]) while preserving tool-use order
+				// ([thinking, tool_use] becomes [thinking, tool_use, pending-thinking]).
+				insertAt := 0
+				for insertAt < len(blocks) {
+					switch blocks[insertAt].Type {
+					case AnthropicContentBlockTypeThinking, AnthropicContentBlockTypeRedactedThinking,
+						AnthropicContentBlockTypeToolUse, AnthropicContentBlockTypeServerToolUse:
+						insertAt++
+						continue
+					}
+					break
+				}
+				merged := make([]AnthropicContentBlock, 0, len(blocks)+len(copied))
+				merged = append(merged, blocks[:insertAt]...)
+				merged = append(merged, copied...)
+				merged = append(merged, blocks[insertAt:]...)
+				anthropicMessages[n-1].Content.ContentBlocks = merged
+			} else {
+				anthropicMessages[n-1].Content.ContentBlocks = copied
+			}
+		} else {
+			anthropicMessages = append(anthropicMessages, AnthropicMessage{
+				Role:    AnthropicMessageRoleAssistant,
+				Content: AnthropicContent{ContentBlocks: copied},
+			})
+		}
+		pendingReasoningContentBlocks = nil
+	}
 
 	// Trim trailing whitespace from the last assistant message
 	// ContentStr is converted to a single text ContentBlock during message conversion
