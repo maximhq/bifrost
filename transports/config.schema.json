@@ -1204,9 +1204,21 @@
                 "type": "string",
                 "description": "Business unit name"
               },
+              "budgets": {
+                "type": "array",
+                "description": "Inline budget configurations for this business unit, matched by id. One budget per reset_duration is recommended. Only the business unit's own calendar_aligned is read; calendar_aligned on an entry is ignored.",
+                "items": {
+                  "$ref": "#/$defs/budget_line"
+                }
+              },
               "budget_id": {
                 "type": "string",
-                "description": "Associated budget ID"
+                "description": "Deprecated: use budgets. ID of a budget declared in governance.budgets that this business unit holds, alongside any inline budgets."
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "When true, the business unit's budgets and rate limit reset at calendar boundaries (start of hour, day, week, month, quarter or year) instead of rolling windows.",
+                "default": false
               },
               "rate_limit_id": {
                 "type": "string",

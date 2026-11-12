@@ -1030,6 +1030,24 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	}
 }
 
+// ignoreBudgetBusinessUnitIDs clears business_unit_id on every governance.budgets entry, with a
+// warning. A business unit's budgets are declared on the business unit (business_units[].budgets, or
+// its budget_id), so a governance.budgets row does not name a unit itself; honouring the field would
+// give a unit a budget its own entry knows nothing about.
+func ignoreBudgetBusinessUnitIDs(configData *ConfigData, warn func(string, ...any)) {
+	if configData == nil || configData.Governance == nil {
+		return
+	}
+	for i := range configData.Governance.Budgets {
+		budget := &configData.Governance.Budgets[i]
+		if budget.BusinessUnitID == nil {
+			continue
+		}
+		warn("config.json sets business_unit_id on budget %q in governance.budgets, which is not read: declare a business unit's budgets on the business unit (business_units[].budgets)", budget.ID)
+		budget.BusinessUnitID = nil
+	}
+}
+
 // promoteCalendarAligned ORs each child's legacy calendar_aligned input into
 // the owner's flag and clears the child field. Treats a nil child pointer as
 // "not set" — only explicit true contributes.
@@ -1182,6 +1200,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
 		promoteDeprecatedCalendarAligned(&configData)
+		ignoreBudgetBusinessUnitIDs(&configData, logger.Warn)
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
