@@ -50,7 +50,8 @@
 			"budgetLimits": "Budgetlimits",
 			"updateAction": "Kunde aktualisieren",
 			"createAction": "Kunde erstellen",
-			"calendarAlignHelp": "Das Aktivieren der Kalenderausrichtung setzt die Budgetnutzung für diesen Kunden auf <bold0>$0.00</bold0> und die Token-/Anfrage-Ratenlimit-Zähler auf <bold1>0</bold1> zurück. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderausrichtung kann jedoch später deaktiviert werden. Dies wird wirksam, sobald du speicherst."
+			"calendarAlignHelp": "Das Aktivieren der Kalenderausrichtung setzt die Budgetnutzung für diesen Kunden auf <bold0>$0.00</bold0> und die Token-/Anfrage-Ratenlimit-Zähler auf <bold1>0</bold1> zurück. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderausrichtung kann jedoch später deaktiviert werden. Dies wird wirksam, sobald du speicherst.",
+			"limitsCheckFailed": "Es konnte nicht geprüft werden, was die Ausgaben dieses Kunden regelt. Budget und Ratenlimit können daher noch nicht angezeigt werden."
 		},
 		"detail": {
 			"title": "Kundendetails",
