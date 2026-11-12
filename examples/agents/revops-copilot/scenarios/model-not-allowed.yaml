@@ -1,0 +1,8 @@
+description: The identity asks for a model outside its access profile (BLOCKED_MODEL).
+surface: 3-llm-governance
+kind: llm
+model: ${BLOCKED_MODEL}
+prompt: ping
+expect:
+  surface: 3-llm-governance
+  code: model_blocked  # a budget or rate limit refusal is the same surface
