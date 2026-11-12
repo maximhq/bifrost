@@ -318756,7 +318756,7 @@
           ]
         },
         {
-          "name": "[EXPECT-4XX] machgen video delete is unsupported (DELETE /v1/videos/{id})",
+          "name": "[EXPECT-400] machgen video delete is unsupported (DELETE /v1/videos/{id})",
           "request": {
             "method": "DELETE",
             "header": [],
@@ -318778,8 +318778,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('degrades to a 4xx, not a 5xx', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
+                  "pm.test('delete is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('refusal is the unsupported-operation error for machgen', function () {",
+                  "  var text = pm.response.text();",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('machgen');",
                   "});"
                 ]
               }
