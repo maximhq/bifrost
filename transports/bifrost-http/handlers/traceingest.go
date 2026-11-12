@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -206,10 +207,28 @@ func (h *TraceIngestHandler) receiveUpload(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusRequestEntityTooLarge, "upload is larger than the 25 MB limit")
 		return
 	}
+	if !uploadMatchesID(id, body) {
+		SendError(ctx, fasthttp.StatusBadRequest, "the bytes do not match the SHA-256 hash the upload was created for")
+		return
+	}
 	// The stored copy must outlive the request buffer, which fasthttp reuses.
 	if err := store.SaveTraceUploadBytes(storeCtx, id, append([]byte(nil), body...)); err != nil {
 		h.fail(ctx, err)
 		return
 	}
 	SendJSON(ctx, map[string]any{"id": id, "status": logstore.TraceUploadStatusDone})
+}
+
+// uploadMatchesID checks the bytes of an upload whose id is derived from its content. A Langfuse
+// media id ("lf" + the base64 SHA-256 without +, / and =, cut short, then "-" + the project) can be
+// computed by anyone who knows the file, so the bytes must hash to it. Other ids are random tokens.
+func uploadMatchesID(id string, body []byte) bool {
+	hashed, ok := strings.CutPrefix(id, "lf")
+	if !ok {
+		return true
+	}
+	prefix, _, _ := strings.Cut(hashed, "-")
+	sum := sha256.Sum256(body)
+	encoded := strings.NewReplacer("+", "", "/", "", "=", "").Replace(base64.StdEncoding.EncodeToString(sum[:]))
+	return prefix != "" && strings.HasPrefix(encoded, prefix)
 }
