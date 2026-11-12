@@ -1240,18 +1240,11 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		req.PathParams[keyStr] = valueStr
 	})
 
-	// Skip body copy for large payloads.
-	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
-	// because the large-payload-mode flag is only set later inside the handler hook.
-	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
-		cl := int64(ctx.Request.Header.ContentLength())
-		// Skip body copy when CL exceeds threshold OR CL is unknown (streaming/
-		// chunked, e.g. after streaming decompression deletes the header).
-		if cl > threshold || cl < 0 {
-			return
-		}
-	}
-	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+	switch pluginRequestBodyMode(ctx) {
+	case pluginBodySkip:
+		return
+	case pluginBodySource:
+		req.BodySource = multipartFormBodySource{req: &ctx.Request}
 		return
 	}
 	body := ctx.Request.Body()
@@ -1259,6 +1252,66 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		req.Body = make([]byte, len(body))
 		copy(req.Body, body)
 	}
+}
+
+// pluginBodyMode is how fasthttpToHTTPRequest gives the request body to transport plugins.
+type pluginBodyMode int
+
+const (
+	pluginBodyCopy   pluginBodyMode = iota // copied into HTTPRequest.Body
+	pluginBodySkip                         // a large payload streamed to the provider: not given
+	pluginBodySource                       // a multipart form: given as HTTPRequest.BodySource
+)
+
+// pluginRequestBodyMode picks how transport plugins see the request body.
+//
+// Large payloads are not given at all. The threshold is checked first (set by
+// RequestThresholdMiddleware before this middleware runs) because the large-payload-mode flag is
+// only set later inside the handler hook. A body over the threshold, or of unknown length
+// (streaming/chunked, e.g. after streaming decompression deletes the header), is skipped.
+//
+// Multipart forms are given as a stream. fasthttp parses a multipart body while reading the
+// request and keeps files over 16 MB in temp files, so copying it into HTTPRequest.Body means
+// rebuilding the whole form in memory, once per transport phase, and writing that copy back
+// deletes the temp files and makes the handler parse the form again fully in memory. A 55 MB
+// Files API upload cost ~500 MiB that way.
+func pluginRequestBodyMode(ctx *fasthttp.RequestCtx) pluginBodyMode {
+	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
+		cl := int64(ctx.Request.Header.ContentLength())
+		if cl > threshold || cl < 0 {
+			return pluginBodySkip
+		}
+	}
+	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return pluginBodySkip
+	}
+	if len(ctx.Request.Header.MultipartFormBoundary()) > 0 {
+		return pluginBodySource
+	}
+	return pluginBodyCopy
+}
+
+// multipartFormBodySource streams a request's multipart form for transport plugins. Open
+// serializes the parsed form (its temp files included) through a pipe, so the form is never held
+// in memory as one body. The form is the one fasthttp parsed while reading the request, or is
+// parsed on the first Open and cached on the request, where the handler reuses it.
+type multipartFormBodySource struct {
+	req *fasthttp.Request
+}
+
+func (s multipartFormBodySource) Size() int64 { return -1 }
+
+func (s multipartFormBodySource) Open() (io.ReadCloser, error) {
+	form, err := s.req.MultipartForm()
+	if err != nil {
+		return nil, err
+	}
+	boundary := string(s.req.Header.MultipartFormBoundary())
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(fasthttp.WriteMultipartForm(pw, form, boundary))
+	}()
+	return pr, nil
 }
 
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
@@ -1279,8 +1332,11 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	for key, value := range req.Query {
 		ctx.Request.URI().QueryArgs().Set(key, value)
 	}
-	// Apply body if set
-	if req.Body != nil {
+	// Apply the body only when a plugin changed it: rewriting an unchanged body is a full copy,
+	// and on a multipart request it deletes the parsed form's temp files. Where the body was not
+	// copied into req.Body, a non-nil Body can only have been set by a plugin, and comparing
+	// would read the very body the copy was skipped for.
+	if req.Body != nil && (pluginRequestBodyMode(ctx) != pluginBodyCopy || !bytes.Equal(req.Body, ctx.Request.Body())) {
 		ctx.Request.SetBody(req.Body)
 	}
 	return true

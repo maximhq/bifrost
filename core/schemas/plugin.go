@@ -42,12 +42,18 @@ const (
 // HTTPRequest is a serializable representation of an HTTP request.
 // Used for plugin HTTP transport interception (supports both native .so and WASM plugins).
 // This type is pooled for allocation control - use AcquireHTTPRequest and ReleaseHTTPRequest.
+//
+// Body holds a copy of the request body. For a multipart/form-data request (a file upload)
+// the transport does not copy the body: Body is nil and BodySource streams the form instead,
+// valid only during the hook call. A plugin that replaces the body sets Body, which the
+// transport then writes over the original request body.
 type HTTPRequest struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
 	Headers    map[string]string `json:"headers"`
 	Query      map[string]string `json:"query"`
 	Body       []byte            `json:"body"`
+	BodySource BodySource        `json:"-"`           // Read-only body handle, set instead of Body for bodies too large to copy
 	PathParams map[string]string `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
 }
 
@@ -199,6 +205,7 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	req.Method = ""
 	req.Path = ""
 	req.Body = nil
+	req.BodySource = nil
 	httpRequestPool.Put(req)
 }
 
