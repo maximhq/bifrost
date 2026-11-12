@@ -9691,3 +9691,40 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
 	}
 }
+
+// plainFileProvider is a provider that does not stream uploads (no FileSourceUploader).
+type plainFileProvider struct{ schemas.Provider }
+
+// streamingFileProvider is a provider that streams BifrostFileUploadRequest.FileSource.
+type streamingFileProvider struct{ schemas.Provider }
+
+func (streamingFileProvider) UploadsFileSource() {}
+
+// TestPrepareFileUploadContent asserts an upload passed as a FileSource is read into File only
+// for a provider that needs the bytes, and is left as a handle for one that streams it.
+func TestPrepareFileUploadContent(t *testing.T) {
+	newReq := func() *schemas.BifrostFileUploadRequest {
+		return &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	}
+
+	req := newReq()
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.File) != "file-bytes" {
+		t.Errorf("plain provider: File = %q, want the source read into memory", req.File)
+	}
+
+	req = newReq()
+	if err := prepareFileUploadContent(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.File != nil {
+		t.Errorf("streaming provider: File = %q, want nil (the file must stay a stream)", req.File)
+	}
+
+	req = &schemas.BifrostFileUploadRequest{File: []byte("sdk-bytes")}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil || string(req.File) != "sdk-bytes" {
+		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
+	}
+}
