@@ -174,6 +174,8 @@ const (
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 //	B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
 //	V-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
+//	V-fast = Claude fast mode on Vertex AI (supported models, locations, no beta header):
+//	     https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
 //	Az-platform = https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
 //	MCP-excl = MCP connector explicit Bedrock/Vertex exclusion:
 //	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
@@ -194,6 +196,7 @@ type ProviderFeatureSupport struct {
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
 	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
+	ToolSearchHeaderless   bool // tool search served without (and rejecting) the tool-search-tool-* beta header
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
 	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
@@ -208,6 +211,7 @@ type ProviderFeatureSupport struct {
 	ContainerBasic         bool // Bare string-form container id — universally supported (cite: A)
 	Context1M              bool // 1M context window — context-1m-2025-08-07 (cite: A)
 	FastMode               bool // Opus 4.6 research preview — fast-mode-2026-02-01 (cite: A)
+	FastModeHeaderless     bool // speed:"fast" served without the fast-mode-* beta header (Vertex); the header is never added and is stripped if a client sends it
 	RedactThinking         bool // redact-thinking-2026-02-12 (cite: A) — note Bedrock has its own "thinking encryption" (different mechanism)
 	TaskBudgets            bool // output_config.task_budget — task-budgets-2026-03-13 (cite: A)
 	InferenceGeo           bool // inference_geo field — Claude API only; Bedrock/Vertex/Azure use their own region-routing mechanisms (cite: A)
@@ -252,7 +256,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
-	// InferenceGeo, FastMode, TaskBudgets, AdvisorTool, StructuredOutputs,
+	// InferenceGeo, TaskBudgets, AdvisorTool, StructuredOutputs,
 	// PromptCachingScope (per A overview "Automatic prompt caching" row =
 	//     claudeApi + azureAiBeta only; not yet rolled out to Vertex),
 	// FilesAPI, WebFetch, CodeExecution, AdvancedToolUse, RedactThinking.
@@ -279,6 +283,8 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
 		FallbackCredit:         true, // fallback credit is documented on Google Cloud
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Vertex (verified live with the beta forwarded; without it display:"updates" 400s).
+		FastMode:               true, // speed:"fast" GA on Vertex for the models DefaultSupportsFastMode lists (Fable 5.2); global/us/eu locations only, Vertex 400s elsewhere (cite: V-fast)
+		FastModeHeaderless:     true, // V-fast: "No anthropic-beta header is required"
 		Safeguards:             true, // Claude Code auto-mode classifier — Vertex shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, so this is model-gated the same way as Anthropic direct's own model list (Sonnet 5 / Opus 4.7+ / Fable) via SupportsSafeguards.
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
@@ -447,9 +453,11 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	schemas.VLLM: {},
 	schemas.SGL:  {},
 	// GitHub documents no feature list, so the cells are what the first-party
-	// VS Code Copilot Chat client sends.
+	// VS Code Copilot Chat client sends. Tool search works with no beta header or
+	// advanced-tool-use-2025-11-20, but tool-search-tool-2025-10-19 is a 400.
 	schemas.GithubCopilot: {
 		ToolSearch:             true,
+		ToolSearchHeaderless:   true,
 		AdvancedToolUse:        true,
 		ContextEditing:         true,
 		ContextManagementField: true,

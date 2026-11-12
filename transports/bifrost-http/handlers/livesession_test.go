@@ -129,7 +129,7 @@ func (r *capturingLiveIO) sent() (upstream, client []string) {
 // newLiveOwnerTestGateway returns a gateway over a real client with one OpenAI key, so admission
 // selects a key and opens billing the way the handlers do, and the given store for ownership.
 // Each extra name is configured as a custom provider on OpenAI's API with its own key.
-func newLiveOwnerTestGateway(t *testing.T, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
+func newLiveOwnerTestGateway(t testing.TB, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
 	t.Helper()
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
@@ -158,7 +158,7 @@ func newLiveOwnerTestGateway(t *testing.T, store configstore.ConfigStore, extra 
 
 // liveCallerCtx is the pre-request context of a caller, as the pre-request pipeline leaves it:
 // with a Grant whose identity carries the resolved virtual key when the caller presented one.
-func liveCallerCtx(t *testing.T, vkID string) *schemas.BifrostContext {
+func liveCallerCtx(t testing.TB, vkID string) *schemas.BifrostContext {
 	t.Helper()
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	t.Cleanup(cancel)

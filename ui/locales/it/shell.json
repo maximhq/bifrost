@@ -14,6 +14,7 @@
 		"logsSettings": "Impostazioni dei log",
 		"models": "Modelli",
 		"modelCatalog": "Catalogo modelli",
+		"datasheet": "Editor delle schede tecniche",
 		"modelProviders": "Provider di modelli",
 		"budgetsLimits": "Budget e limiti",
 		"routingRules": "Regole di routing",
@@ -96,6 +97,7 @@
 		"logsSettings": "Configurazione dei log",
 		"models": "Configura i modelli",
 		"modelCatalog": "Panoramica di provider, chiavi e utilizzo",
+		"datasheet": "Modifica limiti, funzionalità e prezzi dei modelli",
 		"modelProviders": "Configura i modelli",
 		"budgetsLimits": "Budget e rate limit",
 		"routingRules": "Regole di routing intelligente",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "La tua organizzazione ha scelto di rilasciare una nuova versione di Bifrost. Il rilascio procede un'istanza alla volta. Questa pagina si ricaricherà automaticamente al termine del rilascio su tutte le istanze.",
 		"descriptionStuckEnterprise": "Il rilascio è ancora in corso. Ricarica tra un minuto per ricontrollare. Se non funziona, contatta l'amministratore della tua distribuzione Bifrost.",
 		"waitingEnterprise": "In attesa del completamento del rilascio…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "Non è stato possibile caricare una parte della dashboard",
+		"bannerDescription": "Controlla la rete, il proxy o le estensioni del browser, poi ricarica.",
+		"screenTitle": "Non è stato possibile caricare questa pagina",
+		"screenDescription": "Il browser non è riuscito a scaricare alcuni file della dashboard. Un proxy, un firewall o un'estensione del browser potrebbe bloccarli. Controlla la rete e ricarica."
 	},
 	"onboarding": {
 		"expandSetupChecklist": "Espandi checklist di configurazione",

@@ -44141,6 +44141,786 @@
         }
       }
     },
+    "/api/models/datasheet": {
+      "get": {
+        "operationId": "listDatasheetEntries",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List datasheet entries",
+        "description": "Lists the synced model datasheet as the datasheet editor shows it: one entry per (provider, model, mode) with the upstream values, the effective values after datasheet overrides, the overrides that apply, and the patched fields whose upstream value changed since the override was saved. Custom entries and overrides whose model is no longer in the datasheet are included.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Case-insensitive substring match on the model name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Only entries for this provider",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "overridden_only",
+            "in": "query",
+            "description": "Only entries with at least one datasheet override",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50, maximum 500)",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "mode": {
+                            "type": "string"
+                          },
+                          "is_custom": {
+                            "type": "boolean"
+                          },
+                          "upstream": {
+                            "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "effective": {
+                            "description": "Values after datasheet overrides; null when no row exists",
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                                "additionalProperties": true,
+                                "properties": {
+                                  "model": {
+                                    "type": "string"
+                                  },
+                                  "provider": {
+                                    "type": "string"
+                                  },
+                                  "mode": {
+                                    "type": "string"
+                                  },
+                                  "context_length": {
+                                    "type": "integer"
+                                  },
+                                  "max_input_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "max_output_tokens": {
+                                    "type": "integer"
+                                  },
+                                  "is_deprecated": {
+                                    "type": "boolean"
+                                  },
+                                  "input_cost_per_token": {
+                                    "type": "number"
+                                  },
+                                  "output_cost_per_token": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "overrides": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "model": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                                },
+                                "is_custom": {
+                                  "type": "boolean",
+                                  "description": "The entry is absent from the upstream datasheet"
+                                },
+                                "pricing_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                                },
+                                "params_patch": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                                },
+                                "baseline": {
+                                  "type": "object",
+                                  "description": "Upstream value of every patched key when the override was last saved",
+                                  "properties": {
+                                    "pricing": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    },
+                                    "params": {
+                                      "type": "object",
+                                      "additionalProperties": true
+                                    }
+                                  }
+                                },
+                                "config_hash": {
+                                  "type": "string",
+                                  "description": "Set when the override came from config.json"
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              }
+                            }
+                          },
+                          "drifted_fields": {
+                            "type": "array",
+                            "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "total_count": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/entry": {
+      "get": {
+        "operationId": "getDatasheetEntry",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a datasheet entry",
+        "description": "Returns one datasheet entry with its model-parameters record before and after datasheet overrides.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "Datasheet mode of the entry, e.g. chat. Every datasheet entry has a mode, so omit it only to read a mode-wide override whose model the datasheet does not list; otherwise the request returns 404",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "is_custom": {
+                          "type": "boolean"
+                        },
+                        "upstream": {
+                          "description": "Upstream values; null for a custom entry or an override whose model left the datasheet",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "effective": {
+                          "description": "Values after datasheet overrides; null when no row exists",
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "A datasheet pricing entry (the governance_model_pricing row shape)",
+                              "additionalProperties": true,
+                              "properties": {
+                                "model": {
+                                  "type": "string"
+                                },
+                                "provider": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "context_length": {
+                                  "type": "integer"
+                                },
+                                "max_input_tokens": {
+                                  "type": "integer"
+                                },
+                                "max_output_tokens": {
+                                  "type": "integer"
+                                },
+                                "is_deprecated": {
+                                  "type": "boolean"
+                                },
+                                "input_cost_per_token": {
+                                  "type": "number"
+                                },
+                                "output_cost_per_token": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "overrides": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "mode": {
+                                "type": "string",
+                                "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                              },
+                              "is_custom": {
+                                "type": "boolean",
+                                "description": "The entry is absent from the upstream datasheet"
+                              },
+                              "pricing_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                              },
+                              "params_patch": {
+                                "type": "object",
+                                "additionalProperties": true,
+                                "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                              },
+                              "baseline": {
+                                "type": "object",
+                                "description": "Upstream value of every patched key when the override was last saved",
+                                "properties": {
+                                  "pricing": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  },
+                                  "params": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                  }
+                                }
+                              },
+                              "config_hash": {
+                                "type": "string",
+                                "description": "Set when the override came from config.json"
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              }
+                            }
+                          }
+                        },
+                        "drifted_fields": {
+                          "type": "array",
+                          "description": "Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "upstream_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        "effective_params": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides": {
+      "put": {
+        "operationId": "saveDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Save a datasheet override",
+        "description": "Creates or replaces the datasheet override for a (provider, model, mode) target. Both patches are RFC 7386 JSON merge patches applied on top of the synced datasheet after every sync, so the values survive datasheet updates. Saving re-records the upstream baseline, which clears drift. A body with no patches for a non-custom target removes that target's override and restores the upstream entry.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "description": "Required when is_custom is true"
+                  },
+                  "is_custom": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "pricing_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are datasheet pricing fields; null clears a value, an omitted key keeps upstream"
+                  },
+                  "params_patch": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Keys are model-parameters fields; provider cannot be patched"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Override saved, or removed when the body carried no patches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "override": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "description": "A user edit of one datasheet entry, re-applied on top of the synced datasheet after every sync.",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            },
+                            "mode": {
+                              "type": "string",
+                              "description": "Datasheet mode; empty applies the pricing patch to every mode of the model"
+                            },
+                            "is_custom": {
+                              "type": "boolean",
+                              "description": "The entry is absent from the upstream datasheet"
+                            },
+                            "pricing_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)"
+                            },
+                            "params_patch": {
+                              "type": "object",
+                              "additionalProperties": true,
+                              "description": "RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)"
+                            },
+                            "baseline": {
+                              "type": "object",
+                              "description": "Upstream value of every patched key when the override was last saved",
+                              "properties": {
+                                "pricing": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                },
+                                "params": {
+                                  "type": "object",
+                                  "additionalProperties": true
+                                }
+                              }
+                            },
+                            "config_hash": {
+                              "type": "string",
+                              "description": "Set when the override came from config.json"
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/datasheet/overrides/{id}": {
+      "delete": {
+        "operationId": "deleteDatasheetOverride",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Delete a datasheet override",
+        "description": "Removes a datasheet override, restoring the upstream values it replaced.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Override deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/models/base": {
       "get": {
         "operationId": "listBaseModels",
@@ -47548,7 +48328,7 @@
       "post": {
         "operationId": "refreshMCPClientTools",
         "summary": "Refresh MCP client tools",
-        "description": "Re-discovers an MCP client's tools from its upstream server immediately,\ninstead of waiting for the periodic connection checker's next tick (the\nclient's tool_sync_interval, or the global mcp_tool_sync_interval —\n10 minutes by default).\n\nUse it after adding, removing, or re-describing a tool on the upstream\nMCP server. Unlike reconnect, this applies to every client type,\nincluding per-call clients (any per-user auth type, and any shared http\nclient with needs_session_stickiness false/omitted), which hold no\npersistent connection and so have no other on-demand refresh path.\n\nHow the refresh runs depends on the client: a sticky client with a live\nconnection is re-listed over it; a per-call client goes through an\nephemeral connect-discover-close cycle; a sticky client whose connection\nis currently down is reconnected, which re-discovers as part of the dial.\n\nThe freshly discovered set is persisted and the hosted /mcp surface is\nre-synced automatically, exactly as for every other discovery path.\nA refresh also re-reads the server's instructions, which costs one extra\nhandshake for a sticky http or sse client because tools/list cannot\ncarry that field. STDIO clients are skipped: Bifrost owns the\nsubprocess, so its instructions cannot change without a reconnect. This\nis the only way to pick up instructions edited upstream without\nrestarting, since MCP defines no change notification for them.\nRejected with 400 when the client is not in a state where discovery\nmeans anything: disabled (enable it first), needs_reauth (reauthorize\nit first), or still pending_verification (complete the one-time admin\nverification instead — refreshing a client awaiting that flow would\nbypass it). 404 if no client is registered under the given ID.\n",
+        "description": "Re-discovers an MCP client's tools from its upstream server immediately,\ninstead of waiting for the periodic connection checker's next tick (the\nclient's tool_sync_interval, or the global mcp_tool_sync_interval —\n10 minutes by default).\n\nUse it after adding, removing, or re-describing a tool on the upstream\nMCP server. Unlike reconnect, this applies to every connection mode,\nincluding per-call clients (any per-user auth type, and any shared http\nclient with needs_session_stickiness false/omitted), which hold no\npersistent connection and so have no other on-demand refresh path. The\nexception is a client with per_user_discovery on, which keeps no tool\nlist of its own: refresh a per_user_oauth or per_user_headers caller's\ntools with POST /api/mcp/sessions/{id}/refresh instead. A\ntoken_exchange caller has no session, so their discovery is made again\nonly after it is deleted.\n\nHow the refresh runs depends on the client: a sticky client with a live\nconnection is re-listed over it; a per-call client goes through an\nephemeral connect-discover-close cycle; a sticky client whose connection\nis currently down is reconnected, which re-discovers as part of the dial.\n\nThe freshly discovered set is persisted and the hosted /mcp surface is\nre-synced automatically, exactly as for every other discovery path.\nA refresh also re-reads the server's instructions, which costs one extra\nhandshake for a sticky http or sse client because tools/list cannot\ncarry that field. STDIO clients are skipped: Bifrost owns the\nsubprocess, so its instructions cannot change without a reconnect. This\nis the only way to pick up instructions edited upstream without\nrestarting, since MCP defines no change notification for them.\nRejected with 400 when the client is not in a state where discovery\nmeans anything: disabled (enable it first), needs_reauth (reauthorize\nit first), or still pending_verification (complete the one-time admin\nverification instead — refreshing a client awaiting that flow would\nbypass it), and for a client with per_user_discovery on. 404 if no\nclient is registered under the given ID.\n",
         "tags": [
           "MCP"
         ],
@@ -47794,7 +48574,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reauthorize an MCP client",
-        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": refreshes the retained admin discovery\n  credential used for periodic tool-list refresh, whether or not it\n  needs repair; end-user credentials are untouched either way. It also\n  verifies a client back in pending_verification because\n  per_user_discovery was turned off, the same way\n  POST /api/mcp/client/{id}/initiate-verification does: the admin signs\n  in on the client's existing OAuth registration.\n\nA client still in its first sign-in (declared in config.json and not\nyet verified) gets 400: use initiate-verification instead. So does a\nper_user_oauth client with per_user_discovery on, which keeps no admin\ncredential to refresh; POST /api/mcp/client/{id}/reregister still\napplies to it.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -47830,7 +48610,7 @@
             }
           },
           "400": {
-            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)",
+            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), or has per_user_discovery on and so keeps no admin credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -47841,16 +48621,6 @@
           },
           "404": {
             "description": "MCP client not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The admin discovery credential for this per_user_oauth client does not need repair or does not exist",
             "content": {
               "application/json": {
                 "schema": {
@@ -47971,7 +48741,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify a pending per-user-headers MCP client",
-        "description": "Completes the admin verification for an MCP client with auth_type\n\"per_user_headers\". The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list; each\nend-user still submits their own values at runtime. Synchronous; no\nbrowser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification (declared via config.json), and a\nvoluntary refresh of an already-verified client's retained admin\ndiscovery credential — resubmitting sample values always re-runs\nverification and upserts the credential back to active, whether or not\nit currently needs repair (mirrors POST /reauthorize for OAuth-based\nclients).\n",
+        "description": "Completes the admin verification for an MCP client with auth_type\n\"per_user_headers\". The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list; each\nend-user still submits their own values at runtime. Synchronous; no\nbrowser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification (declared via config.json), and a\nvoluntary refresh of an already-verified client's retained admin\ndiscovery credential — resubmitting sample values always re-runs\nverification and upserts the credential back to active, whether or not\nit currently needs repair (mirrors POST /reauthorize for OAuth-based\nclients).\n\nA client with per_user_discovery on is verified the same way, but\nkeeps neither the sample values nor the tools they discover: each\ncaller's tools are discovered with their own values. Once it is\nverified it has no admin credential to refresh, and a repeat call gets\n400.\n",
         "tags": [
           "MCP"
         ],
@@ -48035,7 +48805,7 @@
                     },
                     "tools_count": {
                       "type": "integer",
-                      "description": "Number of tools discovered during verification"
+                      "description": "Number of tools discovered during verification. A client with per_user_discovery on does not keep them."
                     }
                   }
                 }
@@ -48043,7 +48813,7 @@
             }
           },
           "400": {
-            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, or user_headers is missing required keys",
+            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, user_headers is missing required keys, or the client has per_user_discovery on and is already verified",
             "content": {
               "application/json": {
                 "schema": {
@@ -48092,7 +48862,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify a pending or repair a needs_reauth token_exchange MCP client",
-        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token, either the\none an identity-authenticated bearer request carries or, when the\nrequest carries none, the access token from the admin's own Bifrost\nsign-in (an SSO dashboard session), refreshed first when it has\nexpired or is about to. There is no manual token input. Bifrost\nexchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token or Bifrost\nsign-in instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n",
+        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token, either the\none an identity-authenticated bearer request carries or, when the\nrequest carries none, the access token from the admin's own Bifrost\nsign-in (an SSO dashboard session), refreshed first when it has\nexpired or is about to. There is no manual token input. Bifrost\nexchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token or Bifrost\nsign-in instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n\nA client with per_user_discovery on is verified the same way, but\nkeeps neither the exchanged token nor the tools it discovers: each\ncaller's tools are discovered with their own exchanged token. Once it\nis verified it has no admin credential to refresh, and a repeat call\ngets 400.\n",
         "tags": [
           "MCP"
         ],
@@ -48134,7 +48904,7 @@
                     },
                     "tools_count": {
                       "type": "integer",
-                      "description": "Number of tools discovered during verification"
+                      "description": "Number of tools discovered during verification. A client with per_user_discovery on does not keep them."
                     }
                   }
                 }
@@ -48142,7 +48912,7 @@
             }
           },
           "400": {
-            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), the\nrequest has nothing to exchange (no identity-provider token and no\nsign-in of the admin's own, as with an API key: sign in with your\nidentity provider and retry), or the admin's Bifrost sign-in has\nexpired (sign in to Bifrost again and retry)\n",
+            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), the\nrequest has nothing to exchange (no identity-provider token and no\nsign-in of the admin's own, as with an API key: sign in with your\nidentity provider and retry), the admin's Bifrost sign-in has\nexpired (sign in to Bifrost again and retry), or the client has\nper_user_discovery on and is already verified\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -48366,7 +49136,7 @@
     "/api/mcp/sessions/{id}": {
       "delete": {
         "summary": "Revoke an MCP session",
-        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
+        "description": "Revokes a session by primary key. Accepts these row kinds:\n- OAuth token rows → hard-deletes the token plus any pending OAuth flow\n  for the same binding, so a callback that has not yet claimed that flow\n  cannot undo the revoke\n- Header credential rows → hard-deletes the credential plus any pending\n  header submission flow for the same binding\n- Pending per-user-headers flow rows → hard-deletes just the flow\n- Pending per-user OAuth flow rows → hard-deletes just the flow, so a\n  callback that has not yet claimed it can no longer mint a token. A\n  callback already completing at that moment can still save its token,\n  which then appears as a session that can be revoked\n\nRevoking a user or virtual-key credential on an MCP client with\n`per_user_discovery` on also deletes the caller's discovery made with\nit, so their next request offers the client's `<name>-connect` tool.\n\nBifrost does **not** call the upstream provider's revoke endpoint —\nrevocation is local. Per-user-headers credentials never call upstream.\n",
         "operationId": "revokeMcpSession",
         "x-mint": {
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
@@ -48614,6 +49384,16 @@
           },
           "502": {
             "description": "Discovery with the stored credential failed; the caller keeps their existing discovery"
+          },
+          "503": {
+            "description": "The config store is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -91911,6 +92691,22 @@
                           "p99_latency": {
                             "type": "number"
                           },
+                          "avg_overhead": {
+                            "type": "number",
+                            "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                          },
+                          "p90_overhead": {
+                            "type": "number",
+                            "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p95_overhead": {
+                            "type": "number",
+                            "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p99_overhead": {
+                            "type": "number",
+                            "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
                           "total_requests": {
                             "type": "integer",
                             "format": "int64"
@@ -96432,6 +97228,22 @@
                                   "p99_latency": {
                                     "type": "number"
                                   },
+                                  "avg_overhead": {
+                                    "type": "number",
+                                    "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                                  },
+                                  "p90_overhead": {
+                                    "type": "number",
+                                    "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
+                                  "p95_overhead": {
+                                    "type": "number",
+                                    "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
+                                  "p99_overhead": {
+                                    "type": "number",
+                                    "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                                  },
                                   "total_requests": {
                                     "type": "integer",
                                     "format": "int64"
@@ -96843,6 +97655,11 @@
                                   "error": {
                                     "type": "integer",
                                     "format": "int64"
+                                  },
+                                  "cancelled": {
+                                    "type": "integer",
+                                    "format": "int64",
+                                    "description": "Calls the caller cancelled"
                                   }
                                 }
                               }
@@ -97849,14 +98666,9 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Comma-separated list of statuses to filter by",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
             "schema": {
-              "type": "string",
-              "enum": [
-                "processing",
-                "success",
-                "error"
-              ]
+              "type": "string"
             }
           },
           {
@@ -97942,6 +98754,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "compare_to_previous",
+            "in": "query",
+            "description": "When true, also return the same statistics for the immediately preceding window of equal length, so callers can render change-vs-previous-period. Requires a bounded window (start_time and end_time, or period); an unbounded all-time filter has no preceding window, and the response then omits `previous` with `has_previous_period` false. A failure to compute the previous period degrades to `has_previous_period` false rather than failing the request.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "security": [
@@ -97958,26 +98779,91 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "MCP tool log statistics",
-                  "properties": {
-                    "total_executions": {
-                      "type": "integer",
-                      "description": "Total number of tool executions"
+                  "description": "MCP tool log statistics for the requested window. The current period's fields are at the top level, so a request without `compare_to_previous` returns exactly the MCPToolLogStats shape.",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "MCP tool log statistics",
+                      "properties": {
+                        "total_executions": {
+                          "type": "integer",
+                          "description": "Total number of tool executions, including calls still running"
+                        },
+                        "success_count": {
+                          "type": "integer",
+                          "description": "Finished calls that succeeded"
+                        },
+                        "error_count": {
+                          "type": "integer",
+                          "description": "Finished calls that failed"
+                        },
+                        "cancelled_count": {
+                          "type": "integer",
+                          "description": "Finished calls the caller cancelled"
+                        },
+                        "success_rate": {
+                          "type": "number",
+                          "description": "Percentage of finished calls (succeeded, failed or cancelled) that succeeded, as on the LLM logs stats"
+                        },
+                        "average_latency": {
+                          "type": "number",
+                          "description": "Average execution latency in milliseconds, over finished calls"
+                        },
+                        "total_cost": {
+                          "type": "number",
+                          "description": "Total cost in dollars of finished calls"
+                        }
+                      }
                     },
-                    "success_rate": {
-                      "type": "number",
-                      "description": "Success rate percentage"
-                    },
-                    "average_latency": {
-                      "type": "number",
-                      "description": "Average execution latency in milliseconds"
-                    },
-                    "total_cost": {
-                      "type": "number",
-                      "description": "Total cost in dollars for all executions"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "has_previous_period": {
+                          "type": "boolean",
+                          "description": "True when `previous` is populated. False when the comparison was not requested, the window is unbounded, or the previous-period query failed."
+                        },
+                        "previous": {
+                          "allOf": [
+                            {
+                              "type": "object",
+                              "description": "MCP tool log statistics",
+                              "properties": {
+                                "total_executions": {
+                                  "type": "integer",
+                                  "description": "Total number of tool executions, including calls still running"
+                                },
+                                "success_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls that succeeded"
+                                },
+                                "error_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls that failed"
+                                },
+                                "cancelled_count": {
+                                  "type": "integer",
+                                  "description": "Finished calls the caller cancelled"
+                                },
+                                "success_rate": {
+                                  "type": "number",
+                                  "description": "Percentage of finished calls (succeeded, failed or cancelled) that succeeded, as on the LLM logs stats"
+                                },
+                                "average_latency": {
+                                  "type": "number",
+                                  "description": "Average execution latency in milliseconds, over finished calls"
+                                },
+                                "total_cost": {
+                                  "type": "number",
+                                  "description": "Total cost in dollars of finished calls"
+                                }
+                              }
+                            }
+                          ],
+                          "description": "The same statistics for the preceding window of equal length, ending immediately before the requested window starts. Present only when `compare_to_previous` is true and `has_previous_period` is true."
+                        }
+                      }
                     }
-                  }
+                  ]
                 }
               }
             }
@@ -98012,9 +98898,27 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get available MCP log filter data",
-        "description": "Returns all unique filter data from MCP tool logs (tool names, server labels).\n",
+        "description": "Returns the values each MCP log filter can take, read from the MCP tool logs of the last 30 days.\n",
         "tags": [
           "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "dimensions",
+            "in": "query",
+            "description": "Comma-separated dimensions to return. One or more of `tool_names`, `server_labels`, `apps`, `user_agents`, `virtual_keys`, `users`, `teams`, `customers`, `business_units`, `projects`. Unrecognised values are ignored, and asking for none returns every dimension.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Free-text search within the requested dimensions. Passing it bypasses the response cache.",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "security": [
           {
@@ -98067,6 +98971,100 @@
                         }
                       },
                       "description": "All unique virtual keys"
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Client apps detected from the callers' User-Agent, for the `apps` dimension."
+                    },
+                    "user_agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Raw caller User-Agent strings, for the `user_agents` dimension."
+                    },
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Users that appear in the MCP logs, for the `users` dimension. A user with no recorded name is listed with an empty name."
+                    },
+                    "teams": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Teams that appear in the MCP logs, for the `teams` dimension, including every team of a call recorded under several."
+                    },
+                    "customers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Customers that appear in the MCP logs, for the `customers` dimension, including every customer of a call recorded under several."
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Business units that appear in the MCP logs, for the `business_units` dimension, including every business unit of a call recorded under several."
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An id and its display name, as offered by a filter dimension.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Projects that appear in the MCP logs, for the `projects` dimension."
                     }
                   }
                 }
@@ -98093,7 +99091,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get MCP tool call volume histogram",
-        "description": "Returns time-bucketed MCP tool call volume with success/error breakdown.\n",
+        "description": "Returns time-bucketed volume of finished MCP tool calls with a success, error and cancelled breakdown.\n",
         "tags": [
           "Logging"
         ],
@@ -98117,7 +99115,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Comma-separated list of statuses to filter by (processing, success, error)",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
             "schema": {
               "type": "string"
             }
@@ -98245,6 +99243,11 @@
                           "error": {
                             "type": "integer",
                             "format": "int64"
+                          },
+                          "cancelled": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Calls the caller cancelled"
                           }
                         }
                       }
@@ -98431,6 +99434,221 @@
                           },
                           "total_cost": {
                             "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "bucket_size_seconds": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp-logs/histogram/latency": {
+      "get": {
+        "operationId": "getMCPLogsLatencyHistogram",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get MCP tool call latency histogram",
+        "description": "Returns time-bucketed latency percentiles (avg, p90, p95, p99) of finished MCP tool calls, in the\nshape of `/api/logs/histogram/latency`. MCP tool calls record no Bifrost overhead, so the overhead\nfields are always 0.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "tool_names",
+            "in": "query",
+            "description": "Comma-separated list of tool names to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "server_labels",
+            "in": "query",
+            "description": "Comma-separated list of server labels to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by (processing, success, error, cancelled, input_required)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "llm_request_ids",
+            "in": "query",
+            "description": "Comma-separated list of LLM request IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter (milliseconds)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in tool arguments and results",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP latency histogram retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Time-bucketed latency histogram",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "Time-bucketed latency percentiles",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "avg_latency": {
+                            "type": "number"
+                          },
+                          "p90_latency": {
+                            "type": "number"
+                          },
+                          "p95_latency": {
+                            "type": "number"
+                          },
+                          "p99_latency": {
+                            "type": "number"
+                          },
+                          "avg_overhead": {
+                            "type": "number",
+                            "description": "Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead."
+                          },
+                          "p90_overhead": {
+                            "type": "number",
+                            "description": "90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p95_overhead": {
+                            "type": "number",
+                            "description": "95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "p99_overhead": {
+                            "type": "number",
+                            "description": "99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls."
+                          },
+                          "total_requests": {
+                            "type": "integer",
+                            "format": "int64"
                           }
                         }
                       }
@@ -116853,7 +118071,8 @@
           "cloudflare",
           "typesafe",
           "minimax",
-          "byteplus"
+          "byteplus",
+          "baseten"
         ]
       },
       "Fallback": {
@@ -117069,6 +118288,34 @@
                 },
                 "error": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "fallback_attempts": {
+            "type": "array",
+            "description": "Set when the primary and every fallback failed and the primary's error was returned: what became of each fallback, in chain order. A fallback refused before reaching its provider (for example by a virtual key that does not allow it) is only visible here.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "status_code": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "skipped": {
+                  "type": "boolean",
+                  "description": "The fallback was never attempted (no provider config, or the request type has no fallback support)"
                 }
               }
             }
@@ -140223,6 +141470,46 @@
             "type": "number",
             "minimum": 0,
             "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_creation_input_token_cost_above_12hr": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Priority cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for priority requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Flex cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for flex requests with OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Ultrafast cache creation cost for OpenAI 12h TTL entries."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache creation above 272k context for ultrafast requests with OpenAI 12h TTL entries."
           },
           "cache_read_input_token_cost_fast": {
             "type": "number",

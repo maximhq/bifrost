@@ -4,17 +4,25 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.47
+**Latest Version:** 2.1.48
 
 ## Changelog
 
 ### Upcoming
 
-- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): sign in with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
-- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`mcp.client_configs[].oauth_config.resource`): the OAuth resource indicator, discovered from the MCP server when omitted.
-- Added `serviceMonitor` for scraping Bifrost's native `/metrics` endpoint via the Prometheus Operator. Set `serviceMonitor.enabled: true` to render a `ServiceMonitor` targeting the `http` service port. The `monitoring.coreos.com/v1` CRDs (e.g. from kube-prometheus-stack) must be present when the manifest is applied; rendering itself does not require them, so offline GitOps templating works without cluster access. Supports `additionalLabels` (to match your Prometheus `serviceMonitorSelector`, e.g. `release: kube-prometheus-stack`), `namespace`, `path`, `interval`, `scrapeTimeout`, `scheme`, `tlsConfig`, `honorLabels`, `relabelings`, and `metricRelabelings`. Disabled by default.
-- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for authenticating the scrape. Bifrost's auth middleware is global, so once auth is enabled — via either `bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled` — the `/metrics` endpoint returns `401` to an unauthenticated scrape and the target silently sits at `up=0`. `serviceMonitor.basicAuth.enabled: true` sends the admin credentials, inheriting the Secret **and** its key names from whichever of those two auth configs the deployment already uses, so rotating the admin password rotates the scrape credentials too. Setting `serviceMonitor.basicAuth.existingSecret` explicitly overrides that inheritance entirely: its keys then come from `serviceMonitor.basicAuth.usernameKey` / `passwordKey`, defaulting to `username` / `password` rather than the auth config's key names. Rendering fails with an actionable message if no credentials Secret can be resolved (e.g. inline `adminUsername` / `adminPassword`, which Prometheus cannot read), or if `serviceMonitor.authorization` has no `credentials`.
-- Added the `app.kubernetes.io/component: server` label to the primary `Service` metadata so the `ServiceMonitor` selects only the ClusterIP service and not the SQLite headless service (both otherwise share the same labels). This is an additive label; the service's pod selector is unchanged.
+- Added `serviceMonitor`: renders a Prometheus Operator `ServiceMonitor` that scrapes `/metrics` on the `http` port. Disabled by default; the `monitoring.coreos.com/v1` CRDs must exist when the manifest is applied, not when it is rendered.
+- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` to authenticate the scrape when auth is enabled. `basicAuth` inherits the Secret and keys of the active `bifrost.governance.authConfig` or `bifrost.authConfig`; rendering fails if no Secret can be resolved.
+- Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
+
+### 2.1.48
+
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise it.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`resource`): the OAuth resource indicator, discovered when omitted.
+- Added `workloadIdentity.additionalTrustedIssuers` to every `bifrost.scim.config` provider (enterprise): issuers whose workload tokens can be mapped to service accounts.
+- Added `storage.logsStore.captureClientIp` (`logs_store.capture_client_ip`): record the caller's IP on logs. Off by default.
+- Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
+- `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
+- `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
 
 ### 2.1.47
 

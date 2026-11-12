@@ -31,6 +31,7 @@ import (
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -224,20 +225,21 @@ type ConfigData struct {
 	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
 	// the same value from its own identical config/env rather than relying on a
 	// per-process generated value.
-	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-	Providers         map[string]configstore.ProviderConfig `json:"providers"`
-	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
-	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-	Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-	Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-	Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
-	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
-	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
-	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+	SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+	Providers          map[string]configstore.ProviderConfig `json:"providers"`
+	FrameworkConfig    *framework.FrameworkConfig            `json:"framework,omitempty"`
+	MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
+	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
+	LogsStoreConfig    *logstore.Config                      `json:"logs_store,omitempty"`
+	Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+	WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 	// ProxyConfig is the global outbound proxy (the dashboard's proxy settings page), not a
 	// provider's own proxy_config.
 	ProxyConfig *GlobalProxyFileConfig `json:"proxy_config,omitempty"`
@@ -490,6 +492,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Agents != nil
 	case "relays":
 		return cd.Relays != nil
+	case "datasheet_overrides":
+		return cd.DatasheetOverrides != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -561,31 +565,32 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
-		Version           int                                   `json:"version,omitempty"`
-		EnvLabel          string                                `json:"env_label,omitempty"`
-		DisableOnboarding *bool                                 `json:"disable_onboarding,omitempty"`
-		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
-		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
-		Server            *ServerConfig                         `json:"server,omitempty"`
-		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
-		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
-		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-		Providers         map[string]configstore.ProviderConfig `json:"providers"`
-		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-		Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-		Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
-		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
-		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
-		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
-		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
-		Warp              *WarpFileConfig                       `json:"warp,omitempty"`
-		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+		Version            int                                   `json:"version,omitempty"`
+		EnvLabel           string                                `json:"env_label,omitempty"`
+		DisableOnboarding  *bool                                 `json:"disable_onboarding,omitempty"`
+		SourceOfTruth      string                                `json:"source_of_truth,omitempty"`
+		FrameworkConfig    json.RawMessage                       `json:"framework,omitempty"`
+		Server             *ServerConfig                         `json:"server,omitempty"`
+		Client             *configstore.ClientConfig             `json:"client"`
+		EncryptionKey      *schemas.SecretVar                    `json:"encryption_key"`
+		AuthConfig         *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+		Providers          map[string]configstore.ProviderConfig `json:"providers"`
+		MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+		Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
+		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
+		LogsStoreConfig    json.RawMessage                       `json:"logs_store,omitempty"`
+		Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+		WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		ProxyConfig        *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
+		Warp               *WarpFileConfig                       `json:"warp,omitempty"`
+		SkillsRegistry     *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -608,6 +613,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Webhooks = temp.Webhooks
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
+	cd.DatasheetOverrides = temp.DatasheetOverrides
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -1481,6 +1487,30 @@ func NormalizeHiddenRequestTypes(types []string) []string {
 	return out
 }
 
+// NormalizeUsageEstimationTokenizers trims, lowercases and de-duplicates the tokenizer
+// families a cancelled stream's usage is estimated with, preserving the caller's order.
+// A name that is neither an embedded family nor "all" is an error. A list with nothing
+// left returns nil, so "base encodings only" has one representation in the store and hash.
+func NormalizeUsageEstimationTokenizers(families []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]struct{}, len(families))
+	for _, f := range families {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "" {
+			continue
+		}
+		if f != streamusage.FamilyAll && !slices.Contains(streamusage.Families, f) {
+			return nil, fmt.Errorf("usage_estimation_tokenizers: unknown tokenizer %q; supported: %s or %q", f, strings.Join(streamusage.Families, ", "), streamusage.FamilyAll)
+		}
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
 func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.InitialPoolSize == 0 {
 		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
@@ -1517,6 +1547,12 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 // fails loudly at startup instead of diverging in-memory state from what the
 // operator wrote — and stays wrong (re-warned, unpersisted) on every restart.
 func validateClientConfig(cc *configstore.ClientConfig) error {
+	// PUT /api/config rejects an unknown tokenizer family; config.json and stored rows
+	// reach the runtime here, so a typo fails boot instead of silently counting with
+	// the base encodings.
+	if _, err := NormalizeUsageEstimationTokenizers(cc.UsageEstimationTokenizers); err != nil {
+		return err
+	}
 	// The /api/config handler rejects an over-max auth_code_ttl, but config.json
 	// and any DB row written before the cap existed bypass that path. Fail fast
 	// here, the point where every config source converges, so a leaked one-time
@@ -2045,7 +2081,27 @@ func mergeProviderWithHash(
 		return
 	}
 	// Provider exists in DB - compare hashes
-	if existingCfg.ConfigHash != providerCfgInFile.ConfigHash {
+	hashMatches := existingCfg.ConfigHash == providerCfgInFile.ConfigHash
+	if !hashMatches {
+		if legacy, err := providerCfgInFile.ConfigHashMatchesLegacyOverrideOrder(string(provider), existingCfg.ConfigHash); err == nil && legacy {
+			// Same file provider, hashed by an older build with unsorted request_path_overrides:
+			// keep the stored keys and move the stored hash to the sorted form so this search runs once.
+			logger.Debug("provider %s carries a pre-sorted request_path_overrides hash, keeping stored version", provider)
+			existingCfg.ConfigHash = providerCfgInFile.ConfigHash
+			hashMatches = true
+		}
+	}
+	if !hashMatches && providerCfgInFile.ConfigHashLegacyOverrideOrderUnverifiable(existingCfg.ConfigHash) {
+		// Too many overrides to tell an older build's unsorted hash from a file edit. The provider's
+		// own settings come from the file, as they did on every boot before the hash was sorted, but
+		// keys are reconciled one by one so those added through the API or dashboard are not dropped.
+		// The stored hash then carries the sorted-overrides marker, so this runs on the upgrade boot
+		// only and later edits take the normal mismatch path below.
+		logger.Warn("provider %s has too many request_path_overrides to verify its stored config hash, syncing settings from config file and keeping API-added keys", provider)
+		noteConfigFileApplied("provider", string(provider))
+		providerCfgInFile.Keys = reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		providersInConfigStore[provider] = providerCfgInFile
+	} else if !hashMatches {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		noteConfigFileApplied("provider", string(provider))
@@ -3821,15 +3877,15 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 					continue
 				}
 				if target.KeyID != nil && strings.TrimSpace(*target.KeyID) != "" {
-					return fmt.Errorf("routing rule %q target cannot set key_id together with provider_key_name", governanceConfig.RoutingRules[i].ID)
+					return fmt.Errorf("routing rule %s target cannot set key_id together with provider_key_name", routingRuleLabel(governanceConfig.RoutingRules[i]))
 				}
 				if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
-					return fmt.Errorf("routing rule %q target provider_key_name requires provider to be set", governanceConfig.RoutingRules[i].ID)
+					return fmt.Errorf("routing rule %s target provider_key_name requires provider to be set", routingRuleLabel(governanceConfig.RoutingRules[i]))
 				}
 
 				keyID, err := resolveProviderKeyIDByProviderAndName(*target.Provider, keyName)
 				if err != nil {
-					return fmt.Errorf("routing rule %q target provider_key_name resolution failed: %w", governanceConfig.RoutingRules[i].ID, err)
+					return fmt.Errorf("routing rule %s target provider_key_name resolution failed: %w", routingRuleLabel(governanceConfig.RoutingRules[i]), err)
 				}
 				target.KeyID = bifrost.Ptr(keyID)
 				target.ProviderKeyName = nil
@@ -3846,15 +3902,15 @@ func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governa
 					continue
 				}
 				if strings.TrimSpace(fallback.KeyID) != "" {
-					return fmt.Errorf("routing rule %q fallback cannot set key_id together with provider_key_name", governanceConfig.RoutingRules[i].ID)
+					return fmt.Errorf("routing rule %s fallback cannot set key_id together with provider_key_name", routingRuleLabel(governanceConfig.RoutingRules[i]))
 				}
 				if strings.TrimSpace(string(fallback.Provider)) == "" {
-					return fmt.Errorf("routing rule %q fallback provider_key_name requires provider to be set", governanceConfig.RoutingRules[i].ID)
+					return fmt.Errorf("routing rule %s fallback provider_key_name requires provider to be set", routingRuleLabel(governanceConfig.RoutingRules[i]))
 				}
 
 				keyID, err := resolveProviderKeyIDByProviderAndName(string(fallback.Provider), keyName)
 				if err != nil {
-					return fmt.Errorf("routing rule %q fallback provider_key_name resolution failed: %w", governanceConfig.RoutingRules[i].ID, err)
+					return fmt.Errorf("routing rule %s fallback provider_key_name resolution failed: %w", routingRuleLabel(governanceConfig.RoutingRules[i]), err)
 				}
 				fallback.KeyID = keyID
 				fallback.ProviderKeyName = nil
@@ -4247,6 +4303,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 	}
 
+	// Give ID-less file rules the ID of the stored rule with the same (name, scope,
+	// scope_id), or a fresh one. Runs after scope normalization (the match key depends on
+	// it) and before sanitization (its keep-persisted fallback looks rules up by ID).
+	var routingRuleIDOmitted map[string]bool
+	configData.Governance.RoutingRules, routingRuleIDOmitted = resolveRoutingRuleIDs(configData.Governance.RoutingRules, governanceConfig.RoutingRules)
+
 	// Sanitize routing rules with an unresolvable scope_id BEFORE the merge loop
 	// and before pruneGovernanceConfigToFile treats configData.Governance.RoutingRules
 	// as the new authoritative snapshot (it both computes the prune keep-set from it
@@ -4283,10 +4345,10 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				scopeID = *rule.ScopeID
 			}
 			if existing, ok := existingRoutingRulesByID[rule.ID]; ok && routingScopeResolves(existing) {
-				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); keeping last persisted version", rule.ID, scopeID, rule.Scope)
+				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); keeping last persisted version", routingRuleLabel(rule), scopeID, rule.Scope)
 				sanitizedRoutingRules = append(sanitizedRoutingRules, existing)
 			} else {
-				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); removing rule", rule.ID, scopeID, rule.Scope)
+				logger.Warn("routing rule %s: scope_id %q does not resolve to an existing %s (use the entity's id, not its name); removing rule", routingRuleLabel(rule), scopeID, rule.Scope)
 			}
 			continue
 		}
@@ -4298,7 +4360,13 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	routingRulesToAdd := make([]configstoreTables.TableRoutingRule, 0)
 	routingRulesToUpdate := make([]configstoreTables.TableRoutingRule, 0)
 	for i, newRoutingRule := range configData.Governance.RoutingRules {
-		fileRoutingRuleHash, err := configstore.GenerateRoutingRuleHash(newRoutingRule)
+		// A rule declared without an id is hashed as written (ID ""), never with the ID it
+		// adopted, so the stored hash stays the same across restarts.
+		hashInput := newRoutingRule
+		if routingRuleIDOmitted[hashInput.ID] {
+			hashInput.ID = ""
+		}
+		fileRoutingRuleHash, err := configstore.GenerateRoutingRuleHash(hashInput)
 		if err != nil {
 			logger.Warn("failed to generate routing rule hash for %s: %v", newRoutingRule.ID, err)
 			continue
@@ -4327,6 +4395,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	}
 
 	routingRulesToDelete := routingRulePruneCandidates(governanceConfig.RoutingRules, configData)
+	routingRulesToAdd, routingRulesToUpdate = dropRoutingRulePriorityConflicts(
+		governanceConfig.RoutingRules, existingRoutingRulesByID, configData.Governance.RoutingRules,
+		routingRulesToAdd, routingRulesToUpdate, routingRulesToDelete)
 	// Merge PricingOverrides by ID with hash comparison
 	pricingOverridesToAdd := make([]configstoreTables.TablePricingOverride, 0)
 	pricingOverridesToUpdate := make([]configstoreTables.TablePricingOverride, 0)
@@ -5056,6 +5127,260 @@ func dropRoutingRulesByID(rules []configstoreTables.TableRoutingRule, ids []stri
 		kept = append(kept, rule)
 	}
 	return kept
+}
+
+// routingRuleLabel names a routing rule in logs and errors. Rules declared in config.json
+// without an id have none until resolveRoutingRuleIDs runs, so they are named by name and scope.
+func routingRuleLabel(rule configstoreTables.TableRoutingRule) string {
+	if rule.ID != "" {
+		return strconv.Quote(rule.ID)
+	}
+	return fmt.Sprintf("%q (%s, no id)", rule.Name, routingRuleScopeLabel(rule))
+}
+
+// routingRuleScopeLabel renders a rule's scope for log messages, e.g. `scope global` or `scope team "t1"`.
+func routingRuleScopeLabel(rule configstoreTables.TableRoutingRule) string {
+	scope := rule.Scope
+	if scope == "" {
+		scope = "global"
+	}
+	if rule.ScopeID == nil || *rule.ScopeID == "" {
+		return "scope " + scope
+	}
+	return fmt.Sprintf("scope %s %q", scope, *rule.ScopeID)
+}
+
+// routingRuleNameKey is the identity of a config.json routing rule declared without an id:
+// (scope, scope_id, name), the columns of the idx_routing_rule_scope_name unique index.
+func routingRuleNameKey(rule configstoreTables.TableRoutingRule) string {
+	scopeID := ""
+	if rule.ScopeID != nil {
+		scopeID = *rule.ScopeID
+	}
+	return rule.Scope + "\x00" + scopeID + "\x00" + rule.Name
+}
+
+// resolveRoutingRuleIDs assigns IDs to config.json routing rules that omit one. A rule with an
+// id keeps it and is matched by ID as before. A rule without one adopts the ID of the stored
+// rule with the same (scope, scope_id, name), or gets a new UUID when none exists, so editing
+// such a rule updates it in place instead of inserting a second row at the same priority.
+//
+// It returns the rules to merge and the set of IDs that were filled in here. The caller hashes
+// those rules with an empty ID, which keeps their stored config hash stable across restarts
+// and leaves the hash of every rule that declares an id unchanged.
+//
+// A rule without an id is skipped with a warning when its name is ambiguous: another rule in
+// the file has the same (scope, scope_id, name), or more than one stored rule does (possible
+// only for global rules, whose NULL scope_id the unique index does not compare).
+func resolveRoutingRuleIDs(fileRules, existing []configstoreTables.TableRoutingRule) ([]configstoreTables.TableRoutingRule, map[string]bool) {
+	hasIDLess := false
+	for _, rule := range fileRules {
+		if rule.ID == "" {
+			hasIDLess = true
+			break
+		}
+	}
+	if !hasIDLess {
+		return fileRules, nil
+	}
+
+	// Drop file rules that share a name key with an ID-less rule declared before them, and
+	// ID-less rules that share one with any earlier rule. Keys held only by rules with ids
+	// keep today's behavior.
+	seen := make(map[string]configstoreTables.TableRoutingRule, len(fileRules))
+	seenIDLess := make(map[string]bool)
+	kept := make([]configstoreTables.TableRoutingRule, 0, len(fileRules))
+	for _, rule := range fileRules {
+		key := routingRuleNameKey(rule)
+		if first, ok := seen[key]; ok && (rule.ID == "" || seenIDLess[key]) {
+			logger.Warn("routing rule %s: rule %s in config.json already uses name %q in %s; a rule without an id is matched by its name, so names must be unique within a scope. Skipping this rule", routingRuleLabel(rule), routingRuleLabel(first), rule.Name, routingRuleScopeLabel(rule))
+			continue
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = rule
+		}
+		if rule.ID == "" {
+			seenIDLess[key] = true
+		}
+		kept = append(kept, rule)
+	}
+
+	// A stored rule claimed by an explicit id in the file is never a name match.
+	claimed := make(map[string]bool, len(kept))
+	for _, rule := range kept {
+		if rule.ID != "" {
+			claimed[rule.ID] = true
+		}
+	}
+	candidates := make(map[string][]string)
+	for _, rule := range existing {
+		if claimed[rule.ID] {
+			continue
+		}
+		key := routingRuleNameKey(rule)
+		candidates[key] = append(candidates[key], rule.ID)
+	}
+
+	resolved := make([]configstoreTables.TableRoutingRule, 0, len(kept))
+	idOmitted := make(map[string]bool)
+	for _, rule := range kept {
+		if rule.ID != "" {
+			resolved = append(resolved, rule)
+			continue
+		}
+		matches := candidates[routingRuleNameKey(rule)]
+		switch len(matches) {
+		case 0:
+			rule.ID = uuid.NewString()
+		case 1:
+			rule.ID = matches[0]
+		default:
+			logger.Warn("routing rule %s: %d stored rules (%s) share this name in %s, so the rule cannot be matched without an id. Add the id of the rule to update to config.json, or delete the duplicates. Skipping this rule", routingRuleLabel(rule), len(matches), strings.Join(matches, ", "), routingRuleScopeLabel(rule))
+			continue
+		}
+		idOmitted[rule.ID] = true
+		resolved = append(resolved, rule)
+	}
+	return resolved, idOmitted
+}
+
+// dropRoutingRulePriorityConflicts removes config.json routing rule adds and updates that would
+// leave two rules at the same (scope, scope_id, priority), which SyncRoutingRules rejects and
+// which would otherwise fail the whole governance sync and stop startup. The usual cause is a
+// rule whose id (or, without an id, whose name) changed: in split mode the old row is not
+// pruned and still holds the priority.
+//
+// The check runs on the state after the sync: stored rules minus deletes, with updates applied,
+// plus adds. Rules the sync leaves as they are win over rules it would write; among rules it
+// would write, the one declared first in config.json wins. A skipped add is not written; a
+// skipped update leaves the stored version in place, restored into stored from storedByID (the
+// pre-merge snapshot). Restoring can move a rule back onto a priority another write now takes,
+// so the check repeats until nothing more is skipped.
+func dropRoutingRulePriorityConflicts(
+	stored []configstoreTables.TableRoutingRule,
+	storedByID map[string]configstoreTables.TableRoutingRule,
+	fileRules []configstoreTables.TableRoutingRule,
+	toAdd, toUpdate []configstoreTables.TableRoutingRule,
+	toDelete []string,
+) ([]configstoreTables.TableRoutingRule, []configstoreTables.TableRoutingRule) {
+	if len(toAdd) == 0 && len(toUpdate) == 0 {
+		return toAdd, toUpdate
+	}
+	fileOrder := make(map[string]int, len(fileRules))
+	for i, rule := range fileRules {
+		fileOrder[rule.ID] = i
+	}
+	deleted := make(map[string]bool, len(toDelete))
+	for _, id := range toDelete {
+		deleted[id] = true
+	}
+	storedIndex := make(map[string]int, len(stored))
+	for j, rule := range stored {
+		storedIndex[rule.ID] = j
+	}
+	pending := make(map[string]bool, len(toAdd)+len(toUpdate))
+	for _, rule := range toAdd {
+		pending[rule.ID] = true
+	}
+	for _, rule := range toUpdate {
+		pending[rule.ID] = true
+	}
+	skipped := make(map[string]bool)
+
+	priorityKey := func(rule configstoreTables.TableRoutingRule) string {
+		scopeID := ""
+		if rule.ScopeID != nil {
+			scopeID = *rule.ScopeID
+		}
+		return rule.Scope + "\x00" + scopeID + "\x00" + strconv.Itoa(rule.Priority)
+	}
+	skip := func(rule configstoreTables.TableRoutingRule, holder configstoreTables.TableRoutingRule) {
+		pending[rule.ID] = false
+		skipped[rule.ID] = true
+		action := "not adding it"
+		if j, ok := storedIndex[rule.ID]; ok {
+			stored[j] = storedByID[rule.ID]
+			action = "keeping its last persisted version"
+		}
+		if _, inFile := fileOrder[holder.ID]; inFile {
+			logger.Warn("routing rule %s (%q) from config.json: priority %d in %s is also set on rule %s (%q) in config.json; %s. Give each rule in a scope its own priority", routingRuleLabel(rule), rule.Name, rule.Priority, routingRuleScopeLabel(rule), routingRuleLabel(holder), holder.Name, action)
+			return
+		}
+		logger.Warn("routing rule %s (%q) from config.json: priority %d in %s is already held by stored rule %s (%q), which is not in config.json; %s. Delete rule %s, or restore the id or name the config entry had before, to apply it", routingRuleLabel(rule), rule.Name, rule.Priority, routingRuleScopeLabel(rule), routingRuleLabel(holder), holder.Name, action, routingRuleLabel(holder))
+	}
+
+	for {
+		groups := make(map[string][]configstoreTables.TableRoutingRule)
+		var order []string
+		addToGroup := func(rule configstoreTables.TableRoutingRule) {
+			key := priorityKey(rule)
+			if _, ok := groups[key]; !ok {
+				order = append(order, key)
+			}
+			groups[key] = append(groups[key], rule)
+		}
+		for _, rule := range stored {
+			if !deleted[rule.ID] {
+				addToGroup(rule)
+			}
+		}
+		for _, rule := range toAdd {
+			if pending[rule.ID] {
+				addToGroup(rule)
+			}
+		}
+
+		changed := false
+		for _, key := range order {
+			group := groups[key]
+			if len(group) < 2 {
+				continue
+			}
+			var writes, settled []configstoreTables.TableRoutingRule
+			for _, rule := range group {
+				if pending[rule.ID] {
+					writes = append(writes, rule)
+				} else {
+					settled = append(settled, rule)
+				}
+			}
+			if len(writes) == 0 {
+				continue
+			}
+			if len(settled) > 0 {
+				for _, rule := range writes {
+					skip(rule, settled[0])
+				}
+				changed = true
+				continue
+			}
+			sort.SliceStable(writes, func(a, b int) bool { return fileOrder[writes[a].ID] < fileOrder[writes[b].ID] })
+			for _, rule := range writes[1:] {
+				skip(rule, writes[0])
+			}
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+
+	if len(skipped) == 0 {
+		return toAdd, toUpdate
+	}
+	keptAdds := make([]configstoreTables.TableRoutingRule, 0, len(toAdd))
+	for _, rule := range toAdd {
+		if !skipped[rule.ID] {
+			keptAdds = append(keptAdds, rule)
+		}
+	}
+	keptUpdates := make([]configstoreTables.TableRoutingRule, 0, len(toUpdate))
+	for _, rule := range toUpdate {
+		if !skipped[rule.ID] {
+			keptUpdates = append(keptUpdates, rule)
+		}
+	}
+	return keptAdds, keptUpdates
 }
 
 // pruneGovernanceConfigToFile removes DB-only governance rows for file-present collections.
@@ -7088,6 +7413,8 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 			logger.Warn("failed to set pricing overrides from config file: %v", err)
 		}
 	}
+
+	loadDatasheetOverridesFromFile(ctx, config, configData)
 }
 
 // initEncryption initializes encryption from config data or environment variables.

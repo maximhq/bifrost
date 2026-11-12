@@ -36,6 +36,7 @@ export const KnownProvidersNames = [
 	"wafer",
 	"minimax",
 	"byteplus",
+	"baseten",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
@@ -77,10 +78,15 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"databricks",
 	"cloudflare",
 	"byteplus",
+	"baseten",
 	"github-copilot",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
+
+// MCP logs also have input_required: the server asked the caller for input, and the retry is its own row.
+export const MCPStatuses = [...Statuses, "input_required"] as const;
+export type MCPStatus = (typeof MCPStatuses)[number];
 
 export const RequestTypes = [
 	"list_models",
@@ -190,6 +196,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	minimax: "MiniMax",
 	byteplus: "BytePlus",
+	baseten: "Baseten",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
@@ -300,6 +307,7 @@ export const StatusBarColors = {
 	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
+	input_required: "bg-amber-500",
 } as const;
 
 export const RequestTypeLabels = {

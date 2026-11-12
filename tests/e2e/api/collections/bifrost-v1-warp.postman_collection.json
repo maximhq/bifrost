@@ -2383,7 +2383,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
+                  "warp.prerequest({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\",\"query_usage_by\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             },
@@ -2393,7 +2393,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
+                  "warp.test({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\",\"query_usage_by\"],\"answerAll\":[\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             }
@@ -5096,7 +5096,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Cannot quote a vendor price list\",\"ask\":\"What does gpt-4o cost per million tokens?\",\"expect\":{\"maxToolCalls\":4,\"answerAny\":[\"can['’]t (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|cannot (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|don['’]t have|do not have|no access|not (visible|available|something I can)|outside (of )?(what|bifrost)|only (see|have|cover)|isn['’]t (in|something)|doesn['’]t (include|record|store|show)\",\"not (the )?(model['’]s )?list price|effective (rate|cost)|blended|what (you|we) (paid|spent)\"]}});"
+                  "warp.prerequest({\"name\":\"Cannot quote a vendor price list\",\"ask\":\"What does gpt-4o cost per million tokens?\",\"expect\":{\"maxToolCalls\":4,\"answerAny\":[\"can['’]t (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|cannot (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|don['’]t have|do not have|no access|not (visible|available|something I can)|outside (of )?(what|bifrost)|only (see|have|cover)|isn['’]t (in|something)|doesn['’]t (include|record|store|show)\",\"not (the )?(model['’]s )?list price|effective (rate|cost)|blended|what (you|we) (paid|spent)|(across|in|on) (this|the|your) deployment\"]}});"
                 ]
               }
             },
@@ -5106,7 +5106,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Cannot quote a vendor price list\",\"ask\":\"What does gpt-4o cost per million tokens?\",\"expect\":{\"maxToolCalls\":4,\"answerAny\":[\"can['’]t (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|cannot (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|don['’]t have|do not have|no access|not (visible|available|something I can)|outside (of )?(what|bifrost)|only (see|have|cover)|isn['’]t (in|something)|doesn['’]t (include|record|store|show)\",\"not (the )?(model['’]s )?list price|effective (rate|cost)|blended|what (you|we) (paid|spent)\"]}});"
+                  "warp.test({\"name\":\"Cannot quote a vendor price list\",\"ask\":\"What does gpt-4o cost per million tokens?\",\"expect\":{\"maxToolCalls\":4,\"answerAny\":[\"can['’]t (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|cannot (see|access|tell|check|know|look up|recall|remember|share|provide|compare|quote)|don['’]t have|do not have|no access|not (visible|available|something I can)|outside (of )?(what|bifrost)|only (see|have|cover)|isn['’]t (in|something)|doesn['’]t (include|record|store|show)\",\"not (the )?(model['’]s )?list price|effective (rate|cost)|blended|what (you|we) (paid|spent)|(across|in|on) (this|the|your) deployment\"]}});"
                 ]
               }
             }

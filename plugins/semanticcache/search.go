@@ -331,7 +331,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 		return nil, fmt.Errorf("cached response is not a string")
 	}
 	var cachedResponse schemas.BifrostResponse
-	if err := json.Unmarshal([]byte(responseStr), &cachedResponse); err != nil {
+	if err := unmarshalCachedResponse([]byte(responseStr), &cachedResponse); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
@@ -360,7 +360,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 		defer close(streamChan)
 		for i, chunkStr := range streamArray {
 			var cachedResponse schemas.BifrostResponse
-			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
+			if err := unmarshalCachedResponse([]byte(chunkStr), &cachedResponse); err != nil {
 				plugin.logger.Warn("Failed to unmarshal stream chunk %d, skipping: %v", i, err)
 				continue
 			}

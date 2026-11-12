@@ -239,6 +239,15 @@ func TestIsClefModel(t *testing.T) {
 	}
 }
 
+func TestIsBasetenDecisionModel(t *testing.T) {
+	for _, model := range []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "Decision-Models/baseten-mammoth-27b-latest"} {
+		assert.True(t, IsBasetenDecisionModel(model), model)
+	}
+	for _, model := range []string{"zai-org/GLM-5.3", "baseten/decision-models/baseten-joey-2b-latest", "decision-models", ""} {
+		assert.False(t, IsBasetenDecisionModel(model), model)
+	}
+}
+
 func TestIsPerplexityDeciderModel(t *testing.T) {
 	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
 		assert.True(t, IsPerplexityDeciderModel(model), model)
@@ -291,4 +300,28 @@ func TestIsOllamaDecisionModel(t *testing.T) {
 	for _, model := range []string{"llama3.1:latest", "ollama/nimble", "", ":nimble", "tev2"} {
 		assert.False(t, IsOllamaDecisionModel(model), model)
 	}
+}
+
+// Deep copies feed prompt-cache injection and provider converters; a dropped ttl
+// silently turns a 12h breakpoint into 30m.
+func TestDeepCopy_PromptCacheBreakpointTTL(t *testing.T) {
+	bp := func() *PromptCacheBreakpoint { return &PromptCacheBreakpoint{Mode: Ptr("explicit"), TTL: Ptr("12h")} }
+
+	chat := ChatMessage{Role: ChatMessageRoleSystem, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+		{Type: ChatContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	chatCopy := DeepCopyChatMessage(chat)
+	got := chatCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, got.TTL)
+	assert.Equal(t, "12h", *got.TTL)
+	assert.NotSame(t, chat.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, got.TTL)
+
+	resp := ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+		{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	respCopy := DeepCopyResponsesMessage(resp)
+	gotResp := respCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, gotResp.TTL)
+	assert.Equal(t, "12h", *gotResp.TTL)
+	assert.NotSame(t, resp.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, gotResp.TTL)
 }

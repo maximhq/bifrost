@@ -14,6 +14,7 @@
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle",
 		"modelCatalog": "Modellkatalog",
+		"datasheet": "Datenblatt-Editor",
 		"modelProviders": "Modellanbieter",
 		"budgetsLimits": "Budgets und Limits",
 		"routingRules": "Routing-Regeln",
@@ -96,6 +97,7 @@
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle konfigurieren",
 		"modelCatalog": "Übersicht über Anbieter, Schlüssel und Nutzung",
+		"datasheet": "Modelllimits, Fähigkeiten und Preise bearbeiten",
 		"modelProviders": "Modelle konfigurieren",
 		"budgetsLimits": "Budgets und Ratenbegrenzungen",
 		"routingRules": "Intelligente Routing-Regeln",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "Deine Organisation hat sich für den Rollout einer neuen Bifrost-Version entschieden. Der Rollout erfolgt Instanz für Instanz. Diese Seite wird automatisch neu geladen, sobald der Rollout auf allen Instanzen abgeschlossen ist.",
 		"descriptionStuckEnterprise": "Der Rollout läuft noch. Lade die Seite in einer Minute neu, um erneut zu prüfen. Wenn das nicht hilft, wende dich an den Administrator deiner Bifrost-Bereitstellung.",
 		"waitingEnterprise": "Warte auf den Abschluss des Rollouts…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "Ein Teil des Dashboards konnte nicht geladen werden",
+		"bannerDescription": "Prüfe dein Netzwerk, deinen Proxy oder deine Browser-Erweiterungen und lade dann neu.",
+		"screenTitle": "Diese Seite konnte nicht geladen werden",
+		"screenDescription": "Dein Browser konnte einige Dashboard-Dateien nicht herunterladen. Möglicherweise blockiert ein Proxy, eine Firewall oder eine Browser-Erweiterung sie. Prüfe dein Netzwerk und lade neu."
 	},
 	"onboarding": {
 		"expandSetupChecklist": "Einrichtungs-Checkliste aufklappen",

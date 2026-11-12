@@ -635,7 +635,8 @@
 			"success": "成功",
 			"error": "錯誤",
 			"processing": "處理中",
-			"cancelled": "已取消"
+			"cancelled": "已取消",
+			"input_required": "需要輸入"
 		},
 		"rowsPerPage": "每頁行數",
 		"resetZoom": "重置縮放",
@@ -939,6 +940,9 @@
 		"copyToClipboard": "複製到剪貼簿",
 		"stats": {
 			"totalExecutions": "總執行次數",
+			"executions": "執行次數",
+			"ofAllExecutions": "佔此時段內所有 MCP 工具呼叫的比例",
+			"perExecution": "{{value}}/次呼叫",
 			"successRate": "成功率",
 			"avgLatency": "平均延遲",
 			"totalCost": "總費用"
@@ -968,7 +972,6 @@
 			"toolName": "工具名稱",
 			"server": "伺服器",
 			"virtualKey": "虛擬金鑰",
-			"llmRequestId": "LLM 請求 ID",
 			"metadata": "中繼資料",
 			"deleteFailed": "刪除日誌失敗",
 			"invalidDate": "無效日期",
@@ -983,6 +986,11 @@
 			"localNative": "本地 · 原生",
 			"requestId": "請求 ID",
 			"decision": "決策",
+			"mcpApps": "MCP Apps",
+			"appsHost": "呼叫方支援 MCP Apps",
+			"appOnly": "僅限應用程式的工具",
+			"opensUi": "開啟 {{uri}}",
+			"calledAs": "以 {{name}} 呼叫",
 			"nativeTool": "原生工具",
 			"mcpTool": "MCP 工具",
 			"inspectionTime": "檢查耗時",
@@ -1008,8 +1016,13 @@
 		"showOriginal": "顯示原始值",
 		"arguments": "引數",
 		"result": "結果",
+		"inputRequested": "要求的輸入",
+		"retryLater": "伺服器要求呼叫端稍後重試，未要求任何輸入。",
+		"inputAnswered": "已回答",
+		"rounds": "輪次",
 		"execution": "執行",
 		"errorDetails": "錯誤詳情",
+		"errorNoMessage": "工具呼叫失敗，但沒有回傳錯誤訊息。",
 		"pluginLogs": "外掛日誌",
 		"loading": "正在載入 MCP 日誌…",
 		"native": "原生",
@@ -1024,11 +1037,14 @@
 			"succeeded": "成功",
 			"failed": "失敗",
 			"cancelled": "已取消",
+			"inputRequired": "需要輸入",
+			"retryLater": "稍後重試",
 			"processing": "處理中",
 			"approvedDescription": "執行前已獲允許。此記錄中沒有實際執行結果。",
 			"blockedDescription": "在執行前被阻止。",
 			"observedDescription": "已捕獲工具活動，但執行結果未知。",
-			"executionDescription": "已記錄的工具執行結果。"
+			"inputRequiredDescription": "MCP 伺服器在完成前向呼叫方要求輸入。回答該要求的重試是獨立的項目。",
+			"retryLaterDescription": "MCP 伺服器要求呼叫端稍後重試，未要求任何輸入。重試是一筆單獨的記錄。"
 		},
 		"noResults": "未找到結果，請嘗試調整篩選條件或時間範圍。",
 		"observedRoundTrip": "觀測往返時延"
@@ -1208,6 +1224,8 @@
 		"searchAgents": "搜尋代理商",
 		"agentCorrelationID": "代理關聯 ID",
 		"exactAgentCorrelationID": "確切的代理關聯 ID",
+		"roundTripID": "往返 ID",
+		"exactRoundTripID": "精確往返 ID",
 		"nothingRecorded": "在此時間範圍內沒有任何記錄",
 		"topics": "主題",
 		"searchTopics": "搜尋主題"

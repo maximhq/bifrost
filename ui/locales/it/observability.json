@@ -637,7 +637,8 @@
 			"success": "Successo",
 			"error": "Errore",
 			"processing": "In elaborazione",
-			"cancelled": "Annullato"
+			"cancelled": "Annullato",
+			"input_required": "Richiede input"
 		},
 		"rowsPerPage": "Righe per pagina",
 		"resetZoom": "Reimposta zoom",
@@ -944,6 +945,9 @@
 		"copyToClipboard": "Copia negli appunti",
 		"stats": {
 			"totalExecutions": "Totale esecuzioni",
+			"executions": "Esecuzioni",
+			"ofAllExecutions": "Di tutte le chiamate ai tool MCP in questo intervallo",
+			"perExecution": "{{value}}/chiamata",
 			"successRate": "Tasso di successo",
 			"avgLatency": "Latenza media",
 			"totalCost": "Costo totale"
@@ -973,7 +977,6 @@
 			"toolName": "Nome strumento",
 			"server": "Server",
 			"virtualKey": "Chiave virtuale",
-			"llmRequestId": "ID richiesta LLM",
 			"metadata": "Metadati",
 			"deleteFailed": "Eliminazione log non riuscita",
 			"invalidDate": "Data non valida",
@@ -988,6 +991,11 @@
 			"localNative": "Locale · Nativo",
 			"requestId": "ID richiesta",
 			"decision": "Decisione",
+			"mcpApps": "MCP Apps",
+			"appsHost": "Il chiamante supporta MCP Apps",
+			"appOnly": "Strumento solo per app",
+			"opensUi": "Apre {{uri}}",
+			"calledAs": "Chiamato come {{name}}",
 			"nativeTool": "Strumento nativo",
 			"mcpTool": "Strumento MCP",
 			"inspectionTime": "Tempo di ispezione",
@@ -1013,8 +1021,13 @@
 		"showOriginal": "Mostra valori originali",
 		"arguments": "Argomenti",
 		"result": "Risultato",
+		"inputRequested": "Input richiesto",
+		"retryLater": "Il server ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input.",
+		"inputAnswered": "Risposta",
+		"rounds": "Round",
 		"execution": "Esecuzione",
 		"errorDetails": "Dettagli errore",
+		"errorNoMessage": "La chiamata al tool non è riuscita e non ha restituito alcun messaggio di errore.",
 		"pluginLogs": "Log dei plugin",
 		"loading": "Caricamento log MCP...",
 		"native": "Nativo",
@@ -1029,11 +1042,14 @@
 			"succeeded": "Riuscito",
 			"failed": "Non riuscito",
 			"cancelled": "Annullato",
+			"inputRequired": "Richiede input",
+			"retryLater": "Riprova più tardi",
 			"processing": "In elaborazione",
 			"approvedDescription": "Consentito prima dell'esecuzione. In questa voce non è registrato alcun risultato di esecuzione.",
 			"blockedDescription": "Bloccato prima dell'esecuzione.",
 			"observedDescription": "L'attività del tool è stata acquisita, ma l'esito dell'esecuzione non è noto.",
-			"executionDescription": "Esito dell'esecuzione del tool registrato."
+			"inputRequiredDescription": "Il server MCP ha chiesto un input al chiamante prima di completare. Il nuovo tentativo che risponde è una voce separata.",
+			"retryLaterDescription": "Il server MCP ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input. Il nuovo tentativo è una voce separata."
 		},
 		"noResults": "Nessun risultato trovato. Prova a modificare i filtri e/o l'intervallo di tempo.",
 		"observedRoundTrip": "Round trip osservato"
@@ -1213,6 +1229,8 @@
 		"searchAgents": "Cerca agent",
 		"agentCorrelationID": "ID di correlazione agent",
 		"exactAgentCorrelationID": "ID di correlazione agent esatto",
+		"roundTripID": "ID di andata e ritorno",
+		"exactRoundTripID": "ID di andata e ritorno esatto",
 		"nothingRecorded": "Nulla registrato in questo intervallo di tempo",
 		"topics": "Argomenti",
 		"searchTopics": "Cerca argomenti"

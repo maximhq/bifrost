@@ -952,6 +952,44 @@ expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenE
   "${OKTA_SCIM[@]}" \
   --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
 
+# Workload identity's additional trusted issuers ride on the SSO provider's config, keyed by
+# name: the chart passes them through as declared, and the values schema refuses an issuer the
+# gateway would, so the error shows at render time. Workloads are mapped to service accounts in
+# the dashboard, so there is nothing else to render.
+WI='bifrost.scim.config.workloadIdentity.additionalTrustedIssuers'
+check_config "scim: workload identity trusted issuers render as declared" \
+  'issuers = cfg["scim_config"]["config"]["workloadIdentity"]["additionalTrustedIssuers"]
+assert [i["name"] for i in issuers] == ["AWS prod", "Okta workloads"], "issuers changed: %r" % issuers
+assert issuers[0] == {"name": "AWS prod", "kind": "aws", "issuerUrl": "https://abc.tokens.sts.global.api.aws", "audiences": ["https://bifrost.example"]}, "aws issuer changed: %r" % issuers[0]
+assert issuers[1]["machineCheck"] == {"kind": "claim_prefix", "claim": "preferred_username", "value": "service-account-"}, "machine check changed: %r" % issuers[1]
+assert "workload_identity" not in cfg, "config.json must not carry workload identity mappings"' \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=AWS prod" --set "$WI[0].kind=aws" \
+  --set "$WI[0].issuerUrl=https://abc.tokens.sts.global.api.aws" --set "$WI[0].audiences[0]=https://bifrost.example" \
+  --set "$WI[1].name=Okta workloads" --set "$WI[1].kind=generic" \
+  --set "$WI[1].issuerUrl=https://acme.okta.com/oauth2/default" --set "$WI[1].audiences[0]=api://bifrost" \
+  --set "$WI[1].identityClaim=azp" --set "$WI[1].machineCheck.kind=claim_prefix" \
+  --set "$WI[1].machineCheck.claim=preferred_username" --set "$WI[1].machineCheck.value=service-account-"
+expect_render_failure "scim: schema rejects a trusted issuer with an id, since issuers are known by name" "additional properties 'id' not allowed" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].id=aws-prod" --set "$WI[0].name=AWS prod" --set "$WI[0].kind=aws" \
+  --set "$WI[0].issuerUrl=https://abc.tokens.sts.global.api.aws" --set "$WI[0].audiences[0]=a"
+expect_render_failure "scim: schema rejects an empty claim_prefix, which would match people's tokens" "machineCheck/value" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=Okta" --set "$WI[0].kind=generic" --set "$WI[0].issuerUrl=https://acme.okta.com/oauth2/default" \
+  --set "$WI[0].audiences[0]=a" --set "$WI[0].identityClaim=azp" \
+  --set "$WI[0].machineCheck.kind=claim_prefix" --set "$WI[0].machineCheck.claim=preferred_username" --set "$WI[0].machineCheck.value="
+expect_render_failure "scim: schema rejects a generic trusted issuer without its identity claim" "missing property 'identityClaim'" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=Okta" --set "$WI[0].kind=generic" --set "$WI[0].issuerUrl=https://acme.okta.com/oauth2/default" \
+  --set "$WI[0].audiences[0]=a" --set "$WI[0].machineCheck.kind=any"
+expect_render_failure "scim: schema rejects a trusted issuer URL with a query" "issuerUrl" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=X" --set "$WI[0].kind=aws" --set "$WI[0].issuerUrl=https://idp.example/?" --set "$WI[0].audiences[0]=a"
+expect_render_failure "scim: schema rejects a trusted issuer URL with user info" "issuerUrl" \
+  "${OKTA_SCIM[@]}" \
+  --set "$WI[0].name=X" --set "$WI[0].kind=aws" --set "$WI[0].issuerUrl=https://u:p@idp.example" --set "$WI[0].audiences[0]=a"
+
 # Relays render as top-level relays exactly as declared, and relay_grants reach virtual keys,
 # projects and access profiles, as declared: an explicit relay_grants: [] stays in the rendered key
 # (the key hash records it) and an omitted one stays omitted.

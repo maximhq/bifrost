@@ -637,7 +637,8 @@
 			"success": "Sucesso",
 			"error": "Erro",
 			"processing": "Processamento",
-			"cancelled": "Cancelado"
+			"cancelled": "Cancelado",
+			"input_required": "Requer entrada"
 		},
 		"rowsPerPage": "Linhas por página",
 		"resetZoom": "Reiniciar zoom",
@@ -944,6 +945,9 @@
 		"copyToClipboard": "Copiar para a área de transferência",
 		"stats": {
 			"totalExecutions": "Total de Execuçãos",
+			"executions": "Execuções",
+			"ofAllExecutions": "De todas as chamadas de ferramentas MCP nesta janela",
+			"perExecution": "{{value}}/chamada",
 			"successRate": "Taxa de Sucesso",
 			"avgLatency": "Latência média",
 			"totalCost": "Custo total"
@@ -973,7 +977,6 @@
 			"toolName": "Nome da Ferramenta",
 			"server": "Servidor",
 			"virtualKey": "Chave virtual",
-			"llmRequestId": "Pedido LLM",
 			"metadata": "Metadados",
 			"deleteFailed": "Falha ao apagar o log",
 			"invalidDate": "Data inválida",
@@ -988,6 +991,11 @@
 			"localNative": "Local · Nativo",
 			"requestId": "Pedido",
 			"decision": "Decisão",
+			"mcpApps": "MCP Apps",
+			"appsHost": "O chamador suporta MCP Apps",
+			"appOnly": "Ferramenta apenas para apps",
+			"opensUi": "Abre {{uri}}",
+			"calledAs": "Chamada como {{name}}",
 			"nativeTool": "Ferramenta Nativa",
 			"mcpTool": "Ferramenta",
 			"inspectionTime": "Tempo de inspecção",
@@ -1013,8 +1021,13 @@
 		"showOriginal": "Mostrar os valores originais",
 		"arguments": "Argumentos",
 		"result": "Resultado",
+		"inputRequested": "Entrada solicitada",
+		"retryLater": "O servidor pediu ao chamador que tentasse novamente mais tarde, sem solicitar nenhuma entrada.",
+		"inputAnswered": "Respondido",
+		"rounds": "Rodadas",
 		"execution": "Execução",
 		"errorDetails": "Detalhes do Erro",
+		"errorNoMessage": "A chamada da ferramenta falhou sem uma mensagem de erro.",
 		"pluginLogs": "Registos de 'Plugin'",
 		"loading": "A carregar os logs...",
 		"native": "Nativo",
@@ -1029,11 +1042,14 @@
 			"succeeded": "Sucesso",
 			"failed": "Falha",
 			"cancelled": "Cancelado",
+			"inputRequired": "Requer entrada",
+			"retryLater": "Tentar novamente mais tarde",
 			"processing": "Processamento",
 			"approvedDescription": "Permitido antes da execução. Nenhum resultado de execução é gravado neste item.",
 			"blockedDescription": "Bloqueado antes da execução.",
 			"observedDescription": "A atividade da ferramenta foi capturada, mas seu resultado de execução não é conhecido.",
-			"executionDescription": "Resultado da execução da ferramenta gravada."
+			"inputRequiredDescription": "O servidor MCP pediu uma entrada ao chamador antes de concluir. A nova tentativa que a responde é uma entrada separada.",
+			"retryLaterDescription": "O servidor MCP pediu ao chamador que tentasse novamente mais tarde, sem solicitar nenhuma entrada. A nova tentativa é uma entrada separada."
 		},
 		"noResults": "Não foram encontrados resultados. Tente ajustar seus filtros e/ou intervalo de tempo.",
 		"observedRoundTrip": "Viagem de ida e volta observada"
@@ -1213,6 +1229,8 @@
 		"searchAgents": "Pesquisar agentes",
 		"agentCorrelationID": "ID de correlação do agente",
 		"exactAgentCorrelationID": "ID de correlação do agente exato",
+		"roundTripID": "ID de ida e volta",
+		"exactRoundTripID": "ID de ida e volta exato",
 		"nothingRecorded": "Nada registado neste intervalo de tempo",
 		"topics": "Tópicos",
 		"searchTopics": "Pesquisar tópicos"

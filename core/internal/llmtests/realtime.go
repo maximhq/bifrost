@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -87,12 +89,118 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 
 		t.Logf("connected to Realtime endpoint: %s", wsURL)
 
-		if testConfig.Provider == schemas.Elevenlabs {
+		translating, translated := provider.(schemas.RealtimeTranslatorProvider)
+		switch {
+		case testConfig.Provider == schemas.Elevenlabs:
 			runElevenLabsRealtimeTest(t, conn, testConfig)
-		} else {
+		case translated:
+			translator, bifrostErr := translating.NewRealtimeTranslator(key, testConfig.RealtimeModel)
+			if bifrostErr != nil {
+				t.Fatalf("failed to create the realtime translator for provider %s: %v", testConfig.Provider, bifrostErr)
+			}
+			runTranslatedRealtimeTest(t, conn, translator)
+		default:
 			runOpenAIRealtimeTest(t, conn, testConfig)
 		}
 	})
+}
+
+// runTranslatedRealtimeTest drives a session of a provider whose protocol is translated. It speaks
+// OpenAI Realtime to the translator, as a gateway client does, and the translator speaks the
+// provider's protocol on the socket.
+func runTranslatedRealtimeTest(t *testing.T, conn *ws.Conn, translator schemas.RealtimeTranslator) {
+	var events []string
+	var done []byte
+	var text strings.Builder
+
+	// forward writes what a translation asks of the provider and records what it tells the client.
+	forward := func(translation schemas.RealtimeTranslation) {
+		t.Helper()
+		for _, frame := range translation.Provider {
+			if err := conn.WriteMessage(ws.TextMessage, frame); err != nil {
+				t.Fatalf("failed to write a frame to the provider: %v", err)
+			}
+		}
+		for _, frame := range translation.Client {
+			eventType := extractEventType(frame)
+			events = append(events, eventType)
+			switch eventType {
+			case "response.output_text.delta":
+				var delta struct {
+					Delta string `json:"delta"`
+				}
+				_ = json.Unmarshal(frame, &delta)
+				text.WriteString(delta.Delta)
+			case "response.done":
+				done = frame
+			case "error":
+				t.Fatalf("the translator reported an error: %s", frame)
+			}
+		}
+	}
+	send := func(event string) {
+		t.Helper()
+		parsed, err := schemas.ParseRealtimeEvent([]byte(event))
+		if err != nil {
+			t.Fatalf("invalid client event %s: %v", event, err)
+		}
+		translation, err := translator.ToProvider(parsed)
+		if err != nil {
+			t.Fatalf("the translator refused %s: %v", event, err)
+		}
+		forward(translation)
+	}
+	readUntil := func(eventType string) {
+		t.Helper()
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		for !slices.Contains(events, eventType) {
+			_, frame, err := conn.ReadMessage()
+			if err != nil {
+				var closeErr *ws.CloseError
+				if errors.As(err, &closeErr) {
+					forward(translator.Close(closeErr.Code, closeErr.Text))
+				}
+				t.Fatalf("the provider ended the session before %s (events so far: %v): %v", eventType, events, err)
+			}
+			translation, err := translator.ToClient(frame)
+			if err != nil {
+				t.Fatalf("the translator could not read a provider frame: %v", err)
+			}
+			forward(translation)
+		}
+	}
+
+	forward(translator.Open())
+	if !slices.Contains(events, "session.created") {
+		t.Fatalf("expected session.created from Open, got %v", events)
+	}
+	send(`{"type":"session.update","session":{"type":"realtime","output_modalities":["text"]}}`)
+	readUntil("session.updated")
+	send(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello in exactly two words."}]}}`)
+	send(`{"type":"response.create"}`)
+	readUntil("response.done")
+
+	if strings.TrimSpace(text.String()) == "" {
+		t.Errorf("expected response.output_text.delta events with text, got %v", events)
+	}
+	var result struct {
+		Response struct {
+			Status string `json:"status"`
+			Usage  struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(done, &result); err != nil {
+		t.Fatalf("invalid response.done: %v", err)
+	}
+	if result.Response.Status != "completed" {
+		t.Errorf("expected a completed response, got %q", result.Response.Status)
+	}
+	if result.Response.Usage.InputTokens == 0 {
+		t.Errorf("expected response.done to carry the turn's usage, got %s", done)
+	}
+	t.Logf("translated Realtime test passed (%d events, reply %q)", len(events), strings.TrimSpace(text.String()))
 }
 
 // runOpenAIRealtimeTest drives an OpenAI Realtime session using text modality only.

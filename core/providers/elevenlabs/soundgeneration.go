@@ -95,7 +95,7 @@ func (provider *ElevenlabsProvider) soundGeneration(ctx *schemas.BifrostContext,
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*ElevenlabsSoundGenerationRequest, error) {
 			return soundReq, nil
 		})
 	if bifrostErr != nil {

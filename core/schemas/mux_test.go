@@ -259,6 +259,209 @@ func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) 
 	}
 }
 
+func TestToResponsesMessages_KeepsTextBeforeToolCalls(t *testing.T) {
+	text := "Let me list the files first."
+	cm := &ChatMessage{
+		Role:    ChatMessageRoleAssistant,
+		Content: &ChatMessageContent{ContentStr: &text},
+		ChatAssistantMessage: &ChatAssistantMessage{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{ID: Ptr("call_1"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Bash"), Arguments: `{"command":"ls -la"}`}},
+				{ID: Ptr("call_2"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Read"), Arguments: `{"file_path":"README.md"}`}},
+			},
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (text message + 2 function_calls), got %d", len(out))
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeMessage {
+		t.Fatalf("expected first item to be a message, got %#v", out[0].Type)
+	}
+	if out[0].Role == nil || *out[0].Role != ResponsesInputMessageRoleAssistant {
+		t.Fatalf("expected assistant role, got %#v", out[0].Role)
+	}
+	if out[0].Content == nil || len(out[0].Content.ContentBlocks) != 1 || out[0].Content.ContentBlocks[0].Text == nil || *out[0].Content.ContentBlocks[0].Text != text {
+		t.Fatalf("expected text %q in first item, got %#v", text, out[0].Content)
+	}
+	for i, name := range []string{"Bash", "Read"} {
+		fc := out[i+1]
+		if fc.Type == nil || *fc.Type != ResponsesMessageTypeFunctionCall || fc.ResponsesToolMessage == nil || fc.ResponsesToolMessage.Name == nil || *fc.ResponsesToolMessage.Name != name {
+			t.Fatalf("expected item %d to be function_call %q, got %#v", i+1, name, fc)
+		}
+	}
+
+	// Round trip back to chat must yield one assistant turn carrying both the text and the calls.
+	back := ToChatMessages(out)
+	if len(back) != 1 {
+		t.Fatalf("expected round trip to yield 1 assistant message, got %d: %#v", len(back), back)
+	}
+	if back[0].Content == nil || back[0].Content.ContentStr == nil || *back[0].Content.ContentStr != text {
+		t.Fatalf("expected round-tripped message to keep text %q, got %#v", text, back[0].Content)
+	}
+	if back[0].ChatAssistantMessage == nil || len(back[0].ChatAssistantMessage.ToolCalls) != 2 {
+		t.Fatalf("expected round-tripped message to keep 2 tool calls, got %#v", back[0].ChatAssistantMessage)
+	}
+}
+
+func TestToResponsesMessages_BlockTextBeforeToolCallsMatchesStringShape(t *testing.T) {
+	text := "Let me list the files first."
+	cm := &ChatMessage{
+		Role:    ChatMessageRoleAssistant,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeText, Text: &text}}},
+		ChatAssistantMessage: &ChatAssistantMessage{
+			ToolCalls: []ChatAssistantMessageToolCall{{ID: Ptr("call_1"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Bash"), Arguments: `{"command":"ls -la"}`}}},
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) != 2 {
+		t.Fatalf("expected text message + function_call, got %d", len(out))
+	}
+	msg := out[0]
+	if msg.Status == nil || *msg.Status != "completed" {
+		t.Fatalf("expected status completed on the text message, got %#v", msg.Status)
+	}
+	if msg.Content == nil || len(msg.Content.ContentBlocks) != 1 {
+		t.Fatalf("expected one content block, got %#v", msg.Content)
+	}
+	block := msg.Content.ContentBlocks[0]
+	if block.Type != ResponsesOutputMessageContentTypeText || block.Text == nil || *block.Text != text {
+		t.Fatalf("expected output_text %q, got %#v", text, block)
+	}
+	if block.ResponsesOutputMessageContentText == nil || block.ResponsesOutputMessageContentText.Annotations == nil || block.ResponsesOutputMessageContentText.LogProbs == nil {
+		t.Fatalf("expected annotations and logprobs to be set, got %#v", block.ResponsesOutputMessageContentText)
+	}
+	if out[1].Type == nil || *out[1].Type != ResponsesMessageTypeFunctionCall {
+		t.Fatalf("expected function_call second, got %#v", out[1].Type)
+	}
+}
+
+// DeepSeek disables thinking when a replayed tool-call turn lacks Reasoning, so reasoning,
+// text and calls must come back on the same assistant turn.
+func TestToChatMessages_RoundTripKeepsReasoningTextAndCallsOnOneTurn(t *testing.T) {
+	reasoning := "I should list the directory first."
+	text := "Let me list the files."
+	cm := &ChatMessage{
+		Role:    ChatMessageRoleAssistant,
+		Content: &ChatMessageContent{ContentStr: &text},
+		ChatAssistantMessage: &ChatAssistantMessage{
+			Reasoning: &reasoning,
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{ID: Ptr("call_1"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Bash"), Arguments: `{"command":"ls -la"}`}},
+				{ID: Ptr("call_2"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Read"), Arguments: `{"file_path":"README.md"}`}},
+			},
+		},
+	}
+	user := ChatMessage{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("List the files.")}}
+	toolResult := ChatMessage{Role: ChatMessageRoleTool, Content: &ChatMessageContent{ContentStr: Ptr("README.md")}, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}}
+
+	var items []ResponsesMessage
+	items = append(items, user.ToResponsesMessages()...)
+	items = append(items, cm.ToResponsesMessages()...)
+	items = append(items, toolResult.ToResponsesMessages()...)
+	back := ToChatMessages(items)
+
+	if len(back) != 3 {
+		t.Fatalf("expected user, assistant, tool messages, got %d: %#v", len(back), back)
+	}
+	a := back[1]
+	if a.Role != ChatMessageRoleAssistant || a.ChatAssistantMessage == nil {
+		t.Fatalf("expected an assistant turn, got %#v", a)
+	}
+	if a.ChatAssistantMessage.Reasoning == nil || *a.ChatAssistantMessage.Reasoning != reasoning {
+		t.Fatalf("expected reasoning %q on the tool-call turn, got %#v", reasoning, a.ChatAssistantMessage.Reasoning)
+	}
+	if a.Content == nil || a.Content.ContentStr == nil || *a.Content.ContentStr != text {
+		t.Fatalf("expected text %q on the tool-call turn, got %#v", text, a.Content)
+	}
+	if len(a.ChatAssistantMessage.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls on the turn, got %d", len(a.ChatAssistantMessage.ToolCalls))
+	}
+	if back[2].Role != ChatMessageRoleTool {
+		t.Fatalf("expected tool result after the assistant turn, got %#v", back[2])
+	}
+}
+
+// TestToResponsesMessages_AssistantTextBlocksMatchStringContent pins that
+// assistant text sent as content blocks converts like string content: an
+// output_text block with annotations and logprobs, and a completed status.
+func TestToResponsesMessages_AssistantTextBlocksMatchStringContent(t *testing.T) {
+	text := "Let me list the files first."
+	toolCalls := []ChatAssistantMessageToolCall{
+		{ID: Ptr("call_1"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Bash"), Arguments: `{"command":"ls"}`}},
+	}
+	cases := []struct {
+		name    string
+		content *ChatMessageContent
+		calls   []ChatAssistantMessageToolCall
+	}{
+		{name: "string", content: &ChatMessageContent{ContentStr: &text}},
+		{name: "blocks", content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeText, Text: &text}}}},
+		{name: "string with tool calls", content: &ChatMessageContent{ContentStr: &text}, calls: toolCalls},
+		{name: "blocks with tool calls", content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeText, Text: &text}}}, calls: toolCalls},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := &ChatMessage{Role: ChatMessageRoleAssistant, Content: tc.content}
+			if tc.calls != nil {
+				cm.ChatAssistantMessage = &ChatAssistantMessage{ToolCalls: tc.calls}
+			}
+			out := cm.ToResponsesMessages()
+			if len(out) == 0 || out[0].Content == nil || len(out[0].Content.ContentBlocks) != 1 {
+				t.Fatalf("expected a text message first, got %#v", out)
+			}
+			msg := out[0]
+			if msg.Status == nil || *msg.Status != "completed" {
+				t.Errorf("status = %v, want completed", msg.Status)
+			}
+			block := msg.Content.ContentBlocks[0]
+			if block.Type != ResponsesOutputMessageContentTypeText {
+				t.Errorf("block type = %q, want %q", block.Type, ResponsesOutputMessageContentTypeText)
+			}
+			raw, err := json.Marshal(block)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(raw), `"annotations":[]`) || !strings.Contains(string(raw), `"logprobs":[]`) {
+				t.Errorf("output_text block = %s, want empty annotations and logprobs arrays", raw)
+			}
+		})
+	}
+}
+
+func TestToBifrostResponsesResponse_KeepsTextAlongsideToolCalls(t *testing.T) {
+	text := "I'll list the files.\n\n"
+	finish := string(BifrostFinishReasonToolCalls)
+	cr := &BifrostChatResponse{
+		ID: "chatcmpl-1",
+		Choices: []BifrostResponseChoice{{
+			FinishReason: &finish,
+			ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{
+				Message: &ChatMessage{
+					Role:    ChatMessageRoleAssistant,
+					Content: &ChatMessageContent{ContentStr: &text},
+					ChatAssistantMessage: &ChatAssistantMessage{
+						ToolCalls: []ChatAssistantMessageToolCall{{ID: Ptr("call_1"), Type: Ptr("function"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("Bash"), Arguments: `{"command":"ls -la"}`}}},
+					},
+				},
+			},
+		}},
+	}
+
+	resp := cr.ToBifrostResponsesResponse()
+	if len(resp.Output) != 2 {
+		t.Fatalf("expected 2 output items (message + function_call), got %d", len(resp.Output))
+	}
+	if resp.Output[0].Type == nil || *resp.Output[0].Type != ResponsesMessageTypeMessage {
+		t.Fatalf("expected first output item to be the text message, got %#v", resp.Output[0].Type)
+	}
+	if resp.Output[1].Type == nil || *resp.Output[1].Type != ResponsesMessageTypeFunctionCall {
+		t.Fatalf("expected second output item to be function_call, got %#v", resp.Output[1].Type)
+	}
+}
+
 func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T) {
 	// A chat tool message with array content must become a function_call_output whose
 	// output blocks use the Responses spellings; OpenAI rejects "text" there with
@@ -2393,6 +2596,67 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_DropsMCPCallItems pins #9721 on the Responses->Chat fallback: the
+// mcp_call items an Anthropic mcp_tool_use / mcp_tool_result block becomes have no chat
+// equivalent and no role, so they must be dropped rather than emitted as roleless messages.
+func TestToChatMessages_DropsMCPCallItems(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_call","id":"call_1","name":"analyze_image","arguments":"{}","server_label":"4_5v_mcp"},
+		{"type":"mcp_call","status":"completed","call_id":"call_1","output":"a red pixel"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 2 {
+		t.Fatalf("expected only the two user messages, got %d messages: %+v", len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != ChatMessageRoleUser {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, ChatMessageRoleUser)
+		}
+	}
+}
+
+// TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent pins the rest of the #9721
+// class: every typed Responses item that Chat Completions cannot express (MCP siblings,
+// server-tool calls, item references) is dropped instead of becoming a roleless message,
+// while the roleless items the converter does render (function_call / _output) survive.
+func TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"user","content":"look"},
+		{"type":"mcp_list_tools","id":"lt_1","server_label":"docs"},
+		{"type":"mcp_approval_request","id":"ar_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"mcp_approval_response","approval_request_id":"ar_1","approve":true},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"type":"code_interpreter_call","id":"ci_1","status":"completed"},
+		{"type":"item_reference","id":"msg_prev"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	wantRoles := []ChatMessageRole{ChatMessageRoleUser, ChatMessageRoleAssistant, ChatMessageRoleTool, ChatMessageRoleUser}
+	if len(got) != len(wantRoles) {
+		t.Fatalf("expected %d messages, got %d: %+v", len(wantRoles), len(got), got)
+	}
+	for i, msg := range got {
+		if msg.Role != wantRoles[i] {
+			t.Fatalf("chat[%d] role = %q, want %q", i, msg.Role, wantRoles[i])
+		}
+	}
+	if got[1].ChatAssistantMessage == nil || len(got[1].ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("chat[1] should carry the function_call as one tool call: %+v", got[1])
+	}
+}
+
 func TestUsageConvertersKeepIterations(t *testing.T) {
 	pass := ResponsesResponseUsage{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900}
 	responses := &ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: []ResponsesResponseUsage{pass}}
@@ -2408,5 +2672,67 @@ func TestUsageConvertersKeepIterations(t *testing.T) {
 	back.Iterations[0].InputTokens = 999
 	if responses.Iterations[0].InputTokens != 2000 || llm.Iterations[0].InputTokens != 2000 {
 		t.Fatal("converted Iterations alias the source")
+	}
+}
+
+// TestChatToResponsesKeepsPromptCacheBreakpoint guards the caller's prompt-caching intent across the
+// chat -> Responses conversion. A message block's prompt_cache_breakpoint was not copied, so a chat
+// request the compat plugin routes to Responses (openai/gpt-5.6-sol, whose datasheet disables
+// reasoning with tool calls on chat) reached OpenAI with its explicit 12h breakpoint gone and was
+// cached at the default TTL. The single-block system message is the shape the provider harness sends.
+func TestChatToResponsesKeepsPromptCacheBreakpoint(t *testing.T) {
+	breakpoint := &PromptCacheBreakpoint{Mode: Ptr("explicit"), TTL: Ptr("12h")}
+	img := &ChatInputImage{URL: "https://example.com/a.png"}
+	for _, tc := range []struct {
+		name   string
+		role   ChatMessageRole
+		blocks []ChatContentBlock
+	}{
+		{"system single text block", ChatMessageRoleSystem, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("manual"), PromptCacheBreakpoint: breakpoint},
+		}},
+		{"user text and image", ChatMessageRoleUser, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("manual"), PromptCacheBreakpoint: breakpoint},
+			{Type: ChatContentBlockTypeImage, ImageURLStruct: img, PromptCacheBreakpoint: breakpoint},
+		}},
+		{"unmarked block stays unmarked", ChatMessageRoleUser, []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("plain")},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := ChatMessage{Role: tc.role, Content: &ChatMessageContent{ContentBlocks: tc.blocks}}
+			out := msg.ToResponsesMessages()
+			if len(out) != 1 || out[0].Content == nil || len(out[0].Content.ContentBlocks) != len(tc.blocks) {
+				t.Fatalf("unexpected conversion %+v", out)
+			}
+			for j, block := range out[0].Content.ContentBlocks {
+				if !reflect.DeepEqual(block.PromptCacheBreakpoint, tc.blocks[j].PromptCacheBreakpoint) {
+					t.Errorf("block %d: prompt_cache_breakpoint = %+v, want %+v", j, block.PromptCacheBreakpoint, tc.blocks[j].PromptCacheBreakpoint)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkToChatMessages measures the Responses->Chat fallback on a typical multi-turn
+// history (text, a function call round trip, and server-tool items that are dropped).
+func BenchmarkToChatMessages(b *testing.B) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[
+		{"role":"system","content":"be brief"},
+		{"role":"user","content":"look"},
+		{"type":"function_call","call_id":"fc_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"fc_1","output":"ok"},
+		{"role":"assistant","content":[{"type":"output_text","text":"done"}]},
+		{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","server_label":"docs"},
+		{"type":"web_search_call","id":"ws_1","status":"completed"},
+		{"role":"user","content":"reply OK"}
+	]`), &input); err != nil {
+		b.Fatalf("unmarshal input: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ToChatMessages(input)
 	}
 }

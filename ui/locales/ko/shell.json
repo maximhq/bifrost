@@ -14,6 +14,7 @@
 		"logsSettings": "로그 설정",
 		"models": "모델",
 		"modelCatalog": "모델 카탈로그",
+		"datasheet": "데이터시트 편집기",
 		"modelProviders": "모델 공급자",
 		"budgetsLimits": "예산 및 한도",
 		"routingRules": "라우팅 규칙",
@@ -96,6 +97,7 @@
 		"logsSettings": "로그 구성",
 		"models": "모델 구성",
 		"modelCatalog": "공급자, 키, 사용량 개요",
+		"datasheet": "모델 한도, 기능, 가격 편집",
 		"modelProviders": "모델 구성",
 		"budgetsLimits": "예산 및 속도 제한",
 		"routingRules": "지능형 라우팅 규칙",
@@ -350,6 +352,12 @@
 		"descriptionWaitingEnterprise": "귀하의 조직은 Bifrost의 새 버전을 출시하기로 결정했습니다. 출시는 한 번에 하나의 인스턴스로 진행됩니다. 모든 인스턴스에 걸쳐 출시가 완료되면 이 페이지가 자동으로 다시 로드됩니다.",
 		"descriptionStuckEnterprise": "출시가 아직 진행 중입니다. 잠시 후 다시 확인하려면 새로고침하세요. 그래도 문제가 해결되지 않으면 Bifrost 배포 관리자에게 문의하세요.",
 		"waitingEnterprise": "출시가 완료되기를 기다리는 중…"
+	},
+	"assetLoadFailed": {
+		"bannerTitle": "대시보드 일부를 불러오지 못했습니다",
+		"bannerDescription": "네트워크, 프록시 또는 브라우저 확장 프로그램을 확인한 후 새로고침하세요.",
+		"screenTitle": "이 페이지를 불러오지 못했습니다",
+		"screenDescription": "브라우저가 일부 대시보드 파일을 다운로드하지 못했습니다. 프록시, 방화벽 또는 브라우저 확장 프로그램이 차단하고 있을 수 있습니다. 네트워크를 확인하고 새로고침하세요."
 	},
 	"onboarding": {
 		"expandSetupChecklist": "설정 체크리스트 펼치기",

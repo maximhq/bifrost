@@ -344,6 +344,10 @@
 		"removeAria": "{{label}} entfernen"
 	},
 	"validation": {
+		"modeIsRequired": "Modus ist erforderlich",
+		"valueMustBeAPositiveWholeNumber": "Muss eine positive ganze Zahl sein",
+		"mustBeAJsonObject": "Muss ein JSON-Objekt sein",
+		"providerCannotBePatched": "provider kann nicht gepatcht werden; er identifiziert den Eintrag",
 		"customProviderNameIsRequired": "Name des benutzerdefinierten Anbieters ist erforderlich",
 		"endpointIsRequired": "Endpunkt ist erforderlich",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Client-ID, Client-Secret und Tenant-ID sind für die Entra-ID-Authentifizierung erforderlich",
@@ -507,6 +511,7 @@
 		"grpcHostPortFormat": "Muss für gRPC im Format <host>:<port> vorliegen (z. B. {{example}})",
 		"invalidInput": "Ungültige Eingabe",
 		"vertexEndpointId": "Gib eine Vertex-Endpunkt-ID ein oder füge eine unterstützte Endpunkt-URL ein",
+		"basetenDeploymentUrl": "Die Deployment-URL muss eine absolute https-URL ohne Anmeldedaten, Query oder Fragment sein",
 		"mcp": {
 			"privateKeyRequired": "Für private_key_jwt ist ein privater Schlüssel erforderlich",
 			"secretRequiredForMethod": "Für die Wahl der Übertragungsart ist ein Client-Secret erforderlich",
