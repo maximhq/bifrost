@@ -1,10 +1,12 @@
 import type {
+	TraceComment,
 	TraceConnectInfo,
 	TraceDetail,
 	TraceFilters,
 	TraceHistogramResponse,
 	TracePagination,
 	TraceProject,
+	TraceScore,
 	TraceSearchResponse,
 	TraceSessionSearchResponse,
 	TraceSpanSearchResponse,
@@ -44,6 +46,47 @@ export const tracesApi = baseApi.injectEndpoints({
 		getTrace: builder.query<TraceDetail, { projectId: string; traceId: string }>({
 			query: ({ projectId, traceId }) => ({ url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}` }),
 			providesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }],
+		}),
+		// Review: a reviewer's scores and comments on a trace or on one of its spans.
+		saveTraceScore: builder.mutation<
+			{ score: TraceScore },
+			{
+				projectId: string;
+				traceId: string;
+				data: { id?: string; span_id?: string; name: string; value?: number; string_value?: string; comment?: string };
+			}
+		>({
+			query: ({ projectId, traceId, data }) => ({
+				url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}/scores`,
+				method: "POST",
+				body: data,
+			}),
+			invalidatesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }, "Traces"],
+		}),
+		deleteTraceScore: builder.mutation<void, { projectId: string; traceId: string; id: string }>({
+			query: ({ projectId, traceId, id }) => ({
+				url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}/scores/${encodeURIComponent(id)}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }, "Traces"],
+		}),
+		addTraceComment: builder.mutation<
+			{ comment: TraceComment },
+			{ projectId: string; traceId: string; data: { span_id?: string; text: string } }
+		>({
+			query: ({ projectId, traceId, data }) => ({
+				url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}/comments`,
+				method: "POST",
+				body: data,
+			}),
+			invalidatesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }],
+		}),
+		deleteTraceComment: builder.mutation<void, { projectId: string; traceId: string; id: string }>({
+			query: ({ projectId, traceId, id }) => ({
+				url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}/comments/${encodeURIComponent(id)}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }],
 		}),
 		getTraceConnectInfo: builder.query<TraceConnectInfo, void>({
 			query: () => ({ url: "/traces/connect" }),
@@ -93,6 +136,10 @@ export const {
 	useGetTraceHistogramQuery,
 	useGetTraceQuery,
 	useGetTraceConnectInfoQuery,
+	useSaveTraceScoreMutation,
+	useDeleteTraceScoreMutation,
+	useAddTraceCommentMutation,
+	useDeleteTraceCommentMutation,
 	useGetTraceProjectsQuery,
 	useCreateTraceProjectMutation,
 	useUpdateTraceProjectMutation,
