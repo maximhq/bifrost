@@ -3,6 +3,7 @@ package lib
 import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/valyala/fasthttp"
 )
 
 // contextGrant returns the grant a request context carries, installing one when it carries none.
@@ -118,4 +119,26 @@ func identityWith(current schemas.Identity, credential schemas.Credential, user 
 		user = current.User()
 	}
 	return grant.NewIdentity(credential, user, current.VirtualKey(), current.Teams(), current.Customers(), current.BusinessUnits(), current.Project())
+}
+
+// preAuthenticatedKey marks a request whose credential an earlier middleware verified and removed.
+// Typed and unexported, so only MarkPreAuthenticated can set it.
+const preAuthenticatedKey schemas.BifrostContextKey = "bifrost-pre-authenticated"
+
+// Methods a request can be pre-authenticated by.
+const (
+	PreAuthClientGateway    = "client_gateway"    // a client gateway bearer (Claude Code /login)
+	PreAuthWorkloadIdentity = "workload_identity" // an enterprise workload identity token
+)
+
+// MarkPreAuthenticated records that a middleware verified the request's credential and removed it,
+// so later auth middlewares do not challenge it again. Call it only after verification.
+func MarkPreAuthenticated(ctx *fasthttp.RequestCtx, method string) {
+	ctx.SetUserValue(preAuthenticatedKey, method)
+}
+
+// PreAuthenticated returns the method an earlier middleware authenticated ctx with, if any.
+func PreAuthenticated(ctx *fasthttp.RequestCtx) (string, bool) {
+	method, ok := ctx.UserValue(preAuthenticatedKey).(string)
+	return method, ok && method != ""
 }
