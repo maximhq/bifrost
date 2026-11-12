@@ -146,7 +146,7 @@ func normalizeDocsArgs(server, tool string, servers []string) (string, string) {
 	if parsedServer == "" {
 		parsedServer = strings.TrimSpace(server)
 	}
-	tool = normalizeVFSPath(tool)
+	tool = normalizeVFSPath(tool, nil)
 	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
 		tool = tool[i+1:]
 	}

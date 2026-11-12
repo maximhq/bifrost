@@ -259,8 +259,10 @@ func isKnownServer(name string, servers []string) bool {
 
 // normalizeVFSPath strips the decorations callers commonly add to a VFS path:
 // surrounding whitespace, a trailing "()", a leading "./" or "/", a "servers/"
-// prefix in any case, a trailing "/" and a ".pyi" or ".py" extension.
-func normalizeVFSPath(p string) string {
+// prefix in any case, a trailing "/" and a ".pyi" or ".py" extension. A path
+// that exactly names one of servers keeps its extension-like suffix, so a
+// server named "acme.py" is not read as "acme".
+func normalizeVFSPath(p string, servers []string) string {
 	p = strings.TrimSpace(p)
 	p = strings.TrimSuffix(p, "()")
 	p = strings.TrimPrefix(p, "./")
@@ -269,6 +271,9 @@ func normalizeVFSPath(p string) string {
 		p = p[len("servers/"):]
 	}
 	p = strings.TrimRight(p, "/")
+	if isKnownServer(p, servers) {
+		return p
+	}
 	if trimmed, ok := strings.CutSuffix(p, ".pyi"); ok {
 		return trimmed
 	}
@@ -300,7 +305,7 @@ func splitDottedToolReference(path string, servers []string) (serverName, toolNa
 // <server>.<tool> and the spellings normalizeVFSPath strips. servers lists the connected server
 // names, used to keep dotted server names whole.
 func parseVFSFilePath(fileName string, servers []string) (serverName, toolName string, isToolLevel bool) {
-	basePath := normalizeVFSPath(fileName)
+	basePath := normalizeVFSPath(fileName, servers)
 
 	// Defensive validation: reject paths with path traversal attempts
 	if strings.Contains(basePath, "..") {
