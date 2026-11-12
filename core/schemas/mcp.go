@@ -494,6 +494,54 @@ type MCPToolManagerConfig struct {
 	MaxInstructionsTotal  int                `json:"max_instructions_total,omitempty"`
 	CodeModeLimits        *MCPCodeModeLimits `json:"code_mode_limits,omitempty"`        // Per-execution code mode budgets; nil keeps the defaults
 	OAuthPrivateAllowlist []string           `json:"oauth_private_allowlist,omitempty"` // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
+	// CodeModeDiscoveryRanker sends listToolFiles queries to an external HTTP ranker; nil uses only the built-in lexical ranking
+	CodeModeDiscoveryRanker *MCPCodeModeDiscoveryRanker `json:"code_mode_discovery_ranker,omitempty"`
+}
+
+// Bounds on MCPCodeModeDiscoveryRanker.TimeoutSeconds.
+const (
+	DefaultCodeModeDiscoveryRankerTimeout = 5 * time.Second
+	MaxCodeModeDiscoveryRankerTimeout     = 30 * time.Second
+)
+
+// MCPCodeModeDiscoveryRanker configures an optional external ranker for
+// listToolFiles(query=...). Bifrost POSTs the query and the tools the caller can
+// already see to URL, and falls back to its lexical ranking on any failure.
+// An empty URL disables the external ranker.
+type MCPCodeModeDiscoveryRanker struct {
+	URL            string `json:"url"`                       // http(s) endpoint that receives the ranking request
+	TokenFile      string `json:"token_file,omitempty"`      // Optional file holding a bearer token, read on every request so it can rotate
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Bound on one ranking call; 0 uses the 5s default, at most 30
+}
+
+// Timeout returns the bound on one ranking call, with the default applied.
+func (r MCPCodeModeDiscoveryRanker) Timeout() time.Duration {
+	if r.TimeoutSeconds <= 0 {
+		return DefaultCodeModeDiscoveryRankerTimeout
+	}
+	return time.Duration(r.TimeoutSeconds) * time.Second
+}
+
+// Validate rejects a ranker that cannot be called safely. An empty URL is valid
+// and disables the external ranker.
+func (r MCPCodeModeDiscoveryRanker) Validate() error {
+	if r.TimeoutSeconds < 0 || time.Duration(r.TimeoutSeconds)*time.Second > MaxCodeModeDiscoveryRankerTimeout {
+		return fmt.Errorf("code mode discovery ranker timeout_seconds must be between 0 and %d", int(MaxCodeModeDiscoveryRankerTimeout.Seconds()))
+	}
+	if r.URL == "" {
+		return nil
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil {
+		return fmt.Errorf("code mode discovery ranker url is invalid: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("code mode discovery ranker url must be an absolute http or https URL")
+	}
+	if u.User != nil {
+		return fmt.Errorf("code mode discovery ranker url must not carry credentials; use token_file")
+	}
+	return nil
 }
 
 // MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.

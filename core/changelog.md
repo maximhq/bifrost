@@ -1,3 +1,4 @@
+- feat: code mode - `listToolFiles` takes an optional `query` and `limit` and returns a ranked shortlist of the caller's visible tool files, ranked lexically or by an optional external HTTP ranker (`MCPToolManagerConfig.CodeModeDiscoveryRanker`) with a lexical fallback; without `query` the listing is unchanged
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
 - fix: anthropic - Messages requests routed to Bedrock keep `toolset_name` on replayed `tool_use` blocks, so a computer toolset turn no longer fails with a 400 on its paired `tool_result`
