@@ -255,7 +255,11 @@
 			"vertexEndpoint": "ID ou URL do endpoint Vertex",
 			"vertexEndpointHint": "O ID do modelo acima é o nome do modelo servido enviado no corpo. Usa as credenciais do Google desta chave. Compatível com chat e conversão de Responses para chat.",
 			"vertexEndpointPlaceholder": "2222222222 ou https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Insira um ID de endpoint Vertex ou cole uma URL de endpoint compatível."
+			"vertexEndpointInvalid": "Insira um ID de endpoint Vertex ou cole uma URL de endpoint compatível.",
+			"patternBadge": "Padrão",
+			"patternHint": "Comece um nome com regex: para cobrir vários modelos. No ID do modelo, $1 insere o primeiro grupo de captura: regex:(claude-.*) com global.anthropic.$1 envia claude-opus-5 como global.anthropic.claude-opus-5. Os modelos permitidos da chave também precisam incluir esses nomes.",
+			"canonicalPatternPlaceholder": "ex.: $1",
+			"canonicalModelNamePatternHint": "O nome canônico usado para roteamento e preços. Pode usar grupos de captura como $1. Em branco, usa o ID do modelo expandido."
 		},
 		"saveChanges": "Guardar alterações",
 		"saving": "A guardar...",
