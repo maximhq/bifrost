@@ -5,10 +5,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Input } from "@/components/ui/input";
 import { getLocale } from "@/lib/i18n";
 import { getErrorMessage } from "@/lib/store";
-import { useGetComplexitySuggestionQuery, useTestComplexitySuggestionPhrasesMutation } from "@/lib/store/apis/governanceApi";
+import { useGetComplexitySuggestionQuery } from "@/lib/store/apis/governanceApi";
 import { COMPLEXITY_TIER_VALUES, DecisionTier, Suggestion, UNMATCHED_TIER } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
-import { ChevronDown, FlaskConical, History, LoaderCircle, X } from "lucide-react";
+import { ChevronDown, History, LoaderCircle, X } from "lucide-react";
 import { DragEvent, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { proposedTier, routingSplit, StagedSuggestion } from "./suggestions.utils";
@@ -42,7 +42,6 @@ interface Props {
 	stagingLocked?: boolean;
 	onDismiss: (groups: Suggestion[]) => void;
 	onRestore: (group: Suggestion) => void;
-	onTest: (group: Suggestion) => void;
 }
 
 const GRID =
@@ -74,7 +73,6 @@ export default function SuggestionGroupsTable({
 	stagingLocked = false,
 	onDismiss,
 	onRestore,
-	onTest,
 }: Props) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
 	const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -300,7 +298,6 @@ export default function SuggestionGroupsTable({
 									onEditStaged={(from, to) => onEditStaged(group.id, from, to)}
 									onDismiss={() => onDismiss([group])}
 									onRestore={() => onRestore(group)}
-									onTest={() => onTest(group)}
 								/>
 							))}
 						</div>
@@ -354,7 +351,6 @@ interface RowProps {
 	onEditStaged: (from: string, to: string) => boolean;
 	onDismiss: () => void;
 	onRestore: () => void;
-	onTest: () => void;
 }
 
 function GroupRow({
@@ -378,7 +374,6 @@ function GroupRow({
 	onEditStaged,
 	onDismiss,
 	onRestore,
-	onTest,
 }: RowProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
 	const id = group.id;
@@ -572,13 +567,7 @@ function GroupRow({
 			</div>
 
 			{accepted && staged && (
-				<AcceptedDetails
-					group={group}
-					staged={staged}
-					canUpdate={canUpdate && !stagingLocked}
-					tierLabel={tierLabel}
-					onEdit={onEditStaged}
-				/>
+				<AcceptedDetails group={group} staged={staged} canUpdate={canUpdate && !stagingLocked} onEdit={onEditStaged} />
 			)}
 
 			{expanded && (
@@ -610,17 +599,6 @@ function GroupRow({
 					<div className="space-y-2">
 						<h4 className="font-medium">{t("howOftenHeading")}</h4>
 						<GroupExamples id={id} routerId={group.router_id} count={group.request_count} />
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							className="h-7"
-							onClick={onTest}
-							data-testid={`complexity-suggestion-test-${id}`}
-						>
-							<FlaskConical className="size-3.5" />
-							{t("testPhrases")}
-						</Button>
 					</div>
 				</div>
 			)}
@@ -628,51 +606,21 @@ function GroupRow({
 	);
 }
 
-// AcceptedDetails shows what an accepted group adds: a replay of its examples
-// against the bank with its phrases, and the phrases, editable until Save.
+// AcceptedDetails shows what an accepted group adds: its phrases, editable
+// until Save.
 function AcceptedDetails({
 	group,
 	staged,
 	canUpdate,
-	tierLabel,
 	onEdit,
 }: {
 	group: Suggestion;
 	staged: StagedSuggestion;
 	canUpdate: boolean;
-	tierLabel: (tier: string) => string;
 	onEdit: (from: string, to: string) => boolean;
 }) {
-	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
-	const [runTest, { data, isLoading, isError }] = useTestComplexitySuggestionPhrasesMutation();
-	const phrasesKey = staged.phrases.join("\u0000");
-	// Replayed when the staged phrases or their tier change, keyed by their
-	// text so a new array of the same phrases does not replay again.
-	useEffect(() => {
-		const phrases = phrasesKey.split("\u0000").map((text) => ({ tier: staged.tier, text }));
-		void runTest({ routerId: group.router_id, suggestion_id: group.id, phrases });
-	}, [group.id, group.router_id, staged.tier, phrasesKey, runTest]);
-	const examples = data?.examples ?? [];
-	const moved = examples.filter((example) => example.with_phrases.accepted && example.with_phrases.tier === staged.tier).length;
-
 	return (
 		<div className="space-y-2 px-3 pb-3 pl-[3.25rem]" data-testid={`complexity-suggestion-accepted-${group.id}`}>
-			<div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm border px-3 py-2 text-xs">
-				<span className="text-muted-foreground">{t("evidenceReplay")}</span>
-				<span data-testid={`complexity-suggestion-replay-${group.id}`}>
-					{isLoading ? (
-						<LoaderCircle className="text-muted-foreground size-3.5 animate-spin" />
-					) : isError ? (
-						t("replayFailed")
-					) : examples.length === 0 ? (
-						t("noReadableExamples")
-					) : moved === examples.length ? (
-						t("replayAll", { count: examples.length, tier: tierLabel(staged.tier) })
-					) : (
-						t("replaySome", { moved, count: examples.length, tier: tierLabel(staged.tier), rest: examples.length - moved })
-					)}
-				</span>
-			</div>
 			{staged.phrases.map((phrase) => (
 				<StagedPhraseInput
 					key={phrase}

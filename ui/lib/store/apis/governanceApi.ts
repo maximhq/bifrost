@@ -45,14 +45,10 @@ import {
 import {
 	AnalyzerConfig,
 	ModelRouter,
-	ModelRouterClassifyInput,
-	ModelRouterClassifyResponse,
 	ModelRouterDefaults,
 	ModelRouterList,
 	ModelRouterRouting,
 	ModelRouterTarget,
-	PhraseTestRequest,
-	PhraseTestResult,
 	SemanticStatusInfo,
 	DecisionTier,
 	SuggestionDetail,
@@ -955,10 +951,6 @@ export const governanceApi = baseApi.injectEndpoints({
 			query: ({ id, ...body }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}`, method: "PUT", body }),
 			invalidatesTags: ["ModelRouters", "ComplexityAnalyzerConfig"],
 		}),
-		// Classifies statements with a router as it is served now. Nothing is saved.
-		classifyWithModelRouter: builder.mutation<ModelRouterClassifyResponse, { id: string; inputs: ModelRouterClassifyInput[] }>({
-			query: ({ id, inputs }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/classify`, method: "POST", body: { inputs } }),
-		}),
 		// Replaces the model each tier gets.
 		setModelRouterTargets: builder.mutation<ModelRouter, { id: string; targets: ModelRouterTarget[] }>({
 			query: ({ id, targets }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/targets`, method: "PUT", body: { targets } }),
@@ -1032,9 +1024,6 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: { status },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
-		}),
-		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest & { routerId: string }>({
-			query: ({ routerId, ...body }) => ({ url: suggestionsUrl(routerId, "/test"), method: "POST", body }),
 		}),
 		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number; routerId: string }>({
 			query: ({ limit, routerId }) => ({
@@ -1152,7 +1141,6 @@ export const {
 	useGetModelRoutersQuery,
 	useGetModelRouterQuery,
 	useGetModelRouterDefaultsQuery,
-	useClassifyWithModelRouterMutation,
 	useCreateModelRouterMutation,
 	useUpdateModelRouterMutation,
 	useSetModelRouterTargetsMutation,
@@ -1165,7 +1153,6 @@ export const {
 	useGetComplexitySuggestionPagesInfiniteQuery,
 	useGetComplexitySuggestionQuery,
 	useUpdateComplexitySuggestionStatusMutation,
-	useTestComplexitySuggestionPhrasesMutation,
 	useGetComplexitySuggestionRunsQuery,
 	useGetComplexitySuggestionRunEstimateQuery,
 	useStartComplexitySuggestionRunMutation,

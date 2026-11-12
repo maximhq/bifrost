@@ -14,7 +14,6 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import PhraseTestDialog from "./phraseTestDialog";
 import RunNowDialog from "./runNowDialog";
 import SuggestionGroupsTable, { GroupList } from "./suggestionGroupsTable";
 import SuggestionImpactView from "./suggestionImpactView";
@@ -86,7 +85,6 @@ export default function SuggestionsTab({
 	const { t: tTier } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const [list, setList] = useState<GroupList>("pending");
 	const [view, setView] = useQueryState("view", suggestionsViewParser);
-	const [testing, setTesting] = useState<Suggestion | null>(null);
 	const [runDialogOpen, setRunDialogOpen] = useState(false);
 	// The group a flagged phrase in the impact view leads back to, opened when
 	// the list shows again.
@@ -326,7 +324,6 @@ export default function SuggestionsTab({
 							stagingLocked={stagingLocked}
 							onDismiss={(rows) => setStatus(rows, "dismissed")}
 							onRestore={(row) => setStatus([row], "open")}
-							onTest={setTesting}
 						/>
 					)}
 				</>
@@ -338,16 +335,6 @@ export default function SuggestionsTab({
 				routerId={routerId}
 				lookbackDays={lookbackDays}
 				onStarted={setAwaitedRun}
-			/>
-
-			<PhraseTestDialog
-				suggestion={testing}
-				onOpenChange={(open) => !open && setTesting(null)}
-				canStage={canUpdate && !stagingLocked && list === "pending"}
-				onStage={(suggestion, tier, phrases) => {
-					if (onStage(suggestion, tier, phrases) > 0) toast.success(t("acceptedGroups", { count: 1 }), TOAST_POSITION);
-					else toast.info(remainingPhrases === 0 ? t("atCap") : t("alreadyInBank"), TOAST_POSITION);
-				}}
 			/>
 		</div>
 	);
