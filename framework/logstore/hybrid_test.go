@@ -2851,3 +2851,26 @@ func TestHybridLogStoreForwardsRetentionInterval(t *testing.T) {
 	hybrid := &HybridLogStore{inner: &retentionIntervalStore{interval: want}}
 	assert.Equal(t, want, hybrid.RetentionInterval())
 }
+
+// TestHybridTraceUploadBytesGoToTheObjectStore pins upload bytes with an object store: the bytes
+// are stored as an object, the row keeps only the key, and a read fetches the object.
+func TestHybridTraceUploadBytesGoToTheObjectStore(t *testing.T) {
+	ctx := context.Background()
+	hybrid, inner, objects := newTestHybrid(t)
+	assert.True(t, hybrid.TraceUploadsAvailable())
+	require.NoError(t, hybrid.CreateTraceUpload(ctx, &TraceUpload{ID: "u1", ProjectID: "p1", Source: TraceSourceBraintrust}))
+	require.NoError(t, hybrid.SaveTraceUploadBytes(ctx, "u1", []byte("attachment")))
+
+	row, err := inner.FindTraceUpload(ctx, "u1")
+	require.NoError(t, err)
+	assert.Empty(t, row.Data, "the row holds no bytes")
+	require.NotEmpty(t, row.ObjectKey)
+	stored, err := objects.Get(ctx, row.ObjectKey)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("attachment"), stored)
+
+	upload, data, err := hybrid.ReadTraceUploadBytes(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("attachment"), data)
+	assert.Equal(t, int64(10), upload.SizeBytes)
+}

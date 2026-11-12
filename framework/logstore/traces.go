@@ -452,6 +452,7 @@ type DirtyTrace struct {
 type TraceStore interface {
 	BatchCreateTraceSpanParts(ctx context.Context, parts []*TraceSpanPart) (int, error)
 	ListTraceSpanParts(ctx context.Context, projectID, traceID, spanID string) ([]*TraceSpanPart, error)
+	ListTraceSpanPartsForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error)
 	UpsertTraceSpans(ctx context.Context, spans []*TraceSpan) error
 	ListTraceSpans(ctx context.Context, projectID, traceID string) ([]*TraceSpan, error)
 	FindTraceSpans(ctx context.Context, projectID string, keys []TraceSpanKey) ([]*TraceSpan, error)
@@ -472,6 +473,12 @@ type TraceStore interface {
 	CreateTraceUpload(ctx context.Context, upload *TraceUpload) error
 	FindTraceUpload(ctx context.Context, id string) (*TraceUpload, error)
 	CompleteTraceUpload(ctx context.Context, id, status, objectKey string, data []byte) error
+	// TraceUploadsAvailable reports whether the store has somewhere to keep upload bytes.
+	TraceUploadsAvailable() bool
+	SaveTraceUploadBytes(ctx context.Context, id string, data []byte) error
+	// CompleteTraceUploadRow rewrites an upload row whole.
+	CompleteTraceUploadRow(ctx context.Context, upload *TraceUpload) error
+	ReadTraceUploadBytes(ctx context.Context, id string) (*TraceUpload, []byte, error)
 	DeleteTraces(ctx context.Context, keys []TraceKey) error
 	DeleteExpiredTraceRowsBatch(ctx context.Context, now time.Time, batchSize int) (int64, error)
 }
@@ -543,6 +550,22 @@ func (s *RDBLogStore) ListTraceSpanParts(ctx context.Context, projectID, traceID
 	var parts []*TraceSpanPart
 	err := s.db.WithContext(ctx).
 		Where("project_id = ? AND trace_id = ? AND span_id = ?", projectID, traceID, spanID).
+		Order("received_at ASC, id ASC").
+		Find(&parts).Error
+	if err != nil {
+		return nil, err
+	}
+	return parts, nil
+}
+
+// ListTraceSpanPartsForSpans returns the parts of several spans of one trace in receive order.
+func (s *RDBLogStore) ListTraceSpanPartsForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error) {
+	if len(spanIDs) == 0 {
+		return nil, nil
+	}
+	var parts []*TraceSpanPart
+	err := s.db.WithContext(ctx).
+		Where("project_id = ? AND trace_id = ? AND span_id IN ?", projectID, traceID, spanIDs).
 		Order("received_at ASC, id ASC").
 		Find(&parts).Error
 	if err != nil {
@@ -987,10 +1010,46 @@ func (s *RDBLogStore) CompleteTraceUpload(ctx context.Context, id, status, objec
 	if len(data) > 0 {
 		upload.SizeBytes = int64(len(data))
 	}
+	return s.saveTraceUpload(ctx, upload)
+}
+
+// CompleteTraceUploadRow rewrites an upload row whole.
+func (s *RDBLogStore) CompleteTraceUploadRow(ctx context.Context, upload *TraceUpload) error {
+	return s.saveTraceUpload(ctx, upload)
+}
+
+func (s *RDBLogStore) saveTraceUpload(ctx context.Context, upload *TraceUpload) error {
 	if s.replacesOnInsert() {
 		return s.db.WithContext(ctx).Create(upload).Error
 	}
 	return s.db.WithContext(ctx).Save(upload).Error
+}
+
+// ErrTraceUploadsUnavailable is returned when the store has nowhere to keep upload bytes: ClickHouse
+// with no object store configured.
+var ErrTraceUploadsUnavailable = fmt.Errorf("trace uploads need an object store on this log store")
+
+// TraceUploadsAvailable reports whether upload bytes can be kept on the row. ClickHouse is a poor
+// home for blobs, so there uploads need an object store.
+func (s *RDBLogStore) TraceUploadsAvailable() bool {
+	return !s.replacesOnInsert()
+}
+
+// SaveTraceUploadBytes stores an upload's bytes on its row and marks it done.
+func (s *RDBLogStore) SaveTraceUploadBytes(ctx context.Context, id string, data []byte) error {
+	if !s.TraceUploadsAvailable() {
+		return ErrTraceUploadsUnavailable
+	}
+	return s.CompleteTraceUpload(ctx, id, TraceUploadStatusDone, "", data)
+}
+
+// ReadTraceUploadBytes loads an upload and its bytes.
+func (s *RDBLogStore) ReadTraceUploadBytes(ctx context.Context, id string) (*TraceUpload, []byte, error) {
+	upload, err := s.FindTraceUpload(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	return upload, upload.Data, nil
 }
 
 // traceChildTables are the tables that hold a trace's rows, the rollup row last so a trace stays
