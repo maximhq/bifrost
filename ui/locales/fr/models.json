@@ -2163,7 +2163,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Réinitialiser l’utilisation du budget ?",
-		"description": "Vous avez modifié un montant de budget ou une fréquence de réinitialisation pour ce(tte) {{owner}}. Réinitialisez l’utilisation actuelle à 0 ou conservez les compteurs existants. Dans les deux cas, la fenêtre de réinitialisation conserve son début et sa fin actuels."
+		"description": "Vous avez modifié les budgets de ce {{owner}}. Réinitialiser remet à 0 l'utilisation actuelle de chaque budget. Conserver garde les compteurs existants. La fenêtre de réinitialisation garde son début et sa fin actuels dans les deux cas."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Rechercher des modèles de décision…",

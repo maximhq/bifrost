@@ -2163,7 +2163,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Repor a utilização do orçamento?",
-		"description": "Alterou um montante de orçamento ou a frequência de reposição neste {{owner}}. Reponha a utilização atual para 0, ou preserve os contadores existentes. A janela de reposição mantém o início e o fim atuais em qualquer dos casos."
+		"description": "Você alterou os orçamentos deste {{owner}}. Redefinir zera o uso atual de cada orçamento. Preservar mantém os contadores existentes. A janela de redefinição mantém o início e o fim atuais em ambos os casos."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Pesquisar modelos de decisão…",

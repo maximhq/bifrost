@@ -2163,7 +2163,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Reimpostare l'utilizzo del budget?",
-		"description": "Hai modificato l'importo di un budget o la frequenza di reimpostazione di questo/a {{owner}}. Reimposta l'utilizzo attuale a 0 oppure mantieni i contatori esistenti. In entrambi i casi la finestra di reimpostazione conserva il suo inizio e la sua fine attuali."
+		"description": "Hai modificato i budget di questo {{owner}}. Reimposta azzera l'utilizzo attuale di ogni budget. Mantieni conserva i contatori esistenti. La finestra di reset mantiene inizio e fine attuali in entrambi i casi."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Cerca modelli decisionali…",

@@ -2161,7 +2161,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "要重置預算用量嗎？",
-		"description": "你變更了此{{owner}}的預算金額或重置頻率。可將目前用量重置為 0，或保留現有計數。無論選擇哪種，重置視窗都會保持目前的起訖時間。"
+		"description": "你變更了此{{owner}}的預算。重設會將每個預算的目前用量歸零。保留會保留現有計數。無論哪種方式，重設週期的開始與結束時間都維持不變。"
 	},
 	"decisionModel": {
 		"searchDecisionModels": "搜尋決策模型…",
