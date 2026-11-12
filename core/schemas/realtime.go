@@ -346,6 +346,13 @@ type RealtimeLegacyWebRTCProvider interface {
 	ExchangeLegacyRealtimeWebRTCSDP(ctx *BifrostContext, key Key, sdp string, session json.RawMessage, model string) (string, *BifrostError)
 }
 
+// RealtimeNativeProvider is an optional interface for a provider whose Live endpoint a client may speak to
+// directly, such as the Google GenAI SDK. The gateway relays the client's frames as they are and only
+// addresses the first one, the setup, to the model it resolved on the key it selected.
+type RealtimeNativeProvider interface {
+	NativeRealtimeSetup(ctx *BifrostContext, key Key, setup []byte, model string) ([]byte, *BifrostError)
+}
+
 // RealtimeUsageExtractor lets providers parse terminal-turn usage/output from
 // their native wire payloads without coupling handlers to a specific protocol.
 type RealtimeUsageExtractor interface {

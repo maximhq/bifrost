@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -59,8 +60,6 @@ func TestVertexLiveIsRealtimeCapableButNotOverWebRTC(t *testing.T) {
 	assert.False(t, provider.SupportsRealtimeWebRTC())
 	_, bifrostErr := provider.ExchangeRealtimeWebRTCSDP(nil, schemas.Key{}, liveModel, "sdp", nil)
 	assert.NotNil(t, bifrostErr)
-	_, err := provider.ToBifrostRealtimeEvent(nil)
-	assert.Error(t, err, "a translated session never uses the provider's own event conversion")
 }
 
 func TestVertexLiveURLFollowsTheLocation(t *testing.T) {
@@ -148,6 +147,50 @@ func setupModel(t *testing.T, translator schemas.RealtimeTranslator) string {
 	require.NoError(t, err)
 	require.Len(t, out.Provider, 1)
 	return gjson.GetBytes(out.Provider[0], "setup.model").String()
+}
+
+const vertexTurnFrame = `{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":79,"candidatesTokensDetails":[{"modality":"AUDIO","tokenCount":71},{"modality":"TEXT","tokenCount":8}],"promptTokensDetails":[{"modality":"TEXT","tokenCount":6}],"totalTokenCount":85}}`
+
+// A client that speaks Live itself, such as the Google GenAI SDK on /genai, names the model by a resource path with its
+// own project and location. Live gets the key's: the gateway holds the credentials, and the key decides where it runs.
+func TestVertexLiveNativeSetupAddressesTheModelOnTheKeysProject(t *testing.T) {
+	provider := &VertexProvider{}
+	setup := []byte(`{"setup":{"model":"projects/client-project/locations/europe-west4/publishers/google/models/gemini-3.8-live","generationConfig":{"responseModalities":["AUDIO"]},"sessionResumption":{}}}`)
+
+	rewritten, bifrostErr := provider.NativeRealtimeSetup(liveAliasContext(t, "", ""), liveTestKey("key-project", "us"), setup, liveModel)
+	require.Nil(t, bifrostErr)
+	assert.JSONEq(t, `{"setup":{"model":"projects/key-project/locations/us/publishers/google/models/gemini-3.8-live","generationConfig":{"responseModalities":["AUDIO"]},"sessionResumption":{}}}`, string(rewritten),
+		"only the model changes, every other setting reaches Live as the client wrote it")
+
+	rewritten, bifrostErr = provider.NativeRealtimeSetup(liveAliasContext(t, "alias-project", "eu"), liveTestKey("key-project", "us"), setup, liveModel)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "projects/alias-project/locations/eu/publishers/google/models/gemini-3.8-live", gjson.GetBytes(rewritten, "setup.model").String(),
+		"an alias that overrides the location moves the session with it")
+
+	_, bifrostErr = provider.NativeRealtimeSetup(liveAliasContext(t, "", ""), liveTestKey("", "us"), setup, liveModel)
+	require.NotNil(t, bifrostErr, "a key with no project has nowhere to run the session")
+	assert.Contains(t, bifrostErr.Error.Message, "project_id")
+}
+
+// The frames of a Live client are classified as Gemini's are, and the usage Vertex AI reports, which names the response
+// fields candidates*, is read off the frame that ends a turn.
+func TestVertexLiveNativeFramesAreClassifiedAsLiveFrames(t *testing.T) {
+	provider := &VertexProvider{}
+
+	event, err := provider.ToBifrostRealtimeEvent(json.RawMessage(vertexTurnFrame))
+	require.NoError(t, err)
+	assert.Equal(t, schemas.RTEventResponseDone, event.Type)
+	assert.Equal(t, vertexTurnFrame, string(event.RawData), "the frame is relayed as it came in")
+
+	audio, err := provider.ToBifrostRealtimeEvent(json.RawMessage(`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AAAA"}}]}}}`))
+	require.NoError(t, err)
+	assert.True(t, provider.ShouldStartRealtimeTurn(audio), "the model's first audio opens the turn")
+
+	usage := provider.ExtractRealtimeTurnUsage([]byte(vertexTurnFrame))
+	require.NotNil(t, usage)
+	assert.Equal(t, 6, usage.PromptTokens)
+	assert.Equal(t, 79, usage.CompletionTokens)
+	assert.Equal(t, 85, usage.TotalTokens)
 }
 
 func TestVertexLiveTranslatorNamesTheModelByItsPath(t *testing.T) {

@@ -12,6 +12,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var _ schemas.RealtimeNativeProvider = (*GeminiProvider)(nil)
+
 // liveEndpointPath is the Live API (BidiGenerateContent) WebSocket endpoint under the API host.
 const liveEndpointPath = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
@@ -100,23 +102,39 @@ func NewLiveTranslatorForModelPath(model, modelPath string) (schemas.RealtimeTra
 // served by the translator and never reaches them.
 
 // LiveSetupModel returns the model a client's setup frame asks for, which Live carries in that first
-// frame rather than the URL. A Gemini client writes it as "models/<name>"; Bifrost addresses it as
-// "<name>", optionally behind a "<provider>/" prefix.
+// frame rather than the URL. A Gemini client writes it as "models/<name>" and a Vertex AI client as a
+// resource path, "projects/<p>/locations/<l>/publishers/<pub>/models/<name>", whose project and location
+// are the client's own; Bifrost addresses it as "<name>", optionally behind a "<provider>/" prefix.
 func LiveSetupModel(frame []byte) (string, error) {
 	if !providerUtils.JSONFieldExists(frame, "setup") {
 		return "", errors.New("the first message of a gemini live session must be a setup message")
 	}
-	model := strings.TrimPrefix(strings.TrimSpace(providerUtils.GetJSONField(frame, "setup.model").String()), "models/")
+	model := strings.TrimSpace(providerUtils.GetJSONField(frame, "setup.model").String())
+	if i := strings.LastIndex(model, "/models/"); i >= 0 {
+		model = model[i+len("/models/"):]
+	} else {
+		model = strings.TrimPrefix(model, "models/")
+	}
 	if model == "" {
 		return "", errors.New("setup.model is required")
 	}
 	return model, nil
 }
 
-// LiveSetupWithModel returns the client's setup frame addressed to the model Bifrost resolved, which
-// differs from the client's when a key aliases it or the client named a provider.
-func LiveSetupWithModel(frame []byte, model string) ([]byte, error) {
-	return providerUtils.SetJSONField(frame, "setup.model", "models/"+model)
+// LiveSetupWithModelPath returns the client's setup frame addressed to the model Bifrost resolved, which
+// differs from the client's when a key aliases it or the client named a provider. modelPath is what the
+// host names models by: "models/<name>" on the Gemini API, a resource path on Vertex AI.
+func LiveSetupWithModelPath(frame []byte, modelPath string) ([]byte, error) {
+	return providerUtils.SetJSONField(frame, "setup.model", modelPath)
+}
+
+// NativeRealtimeSetup addresses a Live client's setup frame to the model Bifrost resolved.
+func (provider *GeminiProvider) NativeRealtimeSetup(_ *schemas.BifrostContext, _ schemas.Key, setup []byte, model string) ([]byte, *schemas.BifrostError) {
+	rewritten, err := LiveSetupWithModelPath(setup, "models/"+model)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError("invalid setup message: " + err.Error())
+	}
+	return rewritten, nil
 }
 
 // ToBifrostRealtimeEvent classifies one Live frame, from the client or from Live, as the event the

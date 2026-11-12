@@ -314,7 +314,7 @@ func TestRealtimeNativeGeminiThinkingTurnIsOneTurn(t *testing.T) {
 	})
 	started := session.PeekRealtimeTurnHooks()
 	conn := newRealtimeClientConn(server)
-	conn.native = true
+	conn.native = geminiLiveProtocol
 	handler := &WSRealtimeHandler{client: gateway.client}
 	done := make(chan error, 1)
 	go func() {
@@ -1484,7 +1484,7 @@ func TestGeminiLiveRouteRefusesWhatLiveWouldRefuse(t *testing.T) {
 	}{
 		"the first frame is not a setup": {`{"realtimeInput":{"text":"hi"}}`, "must be a setup message"},
 		"the setup names no model":       {`{"setup":{}}`, "setup.model is required"},
-		"the provider is not Gemini":     {`{"setup":{"model":"models/azure/gpt-realtime"}}`, "does not speak the gemini live protocol"},
+		"the provider is not Gemini":     {`{"setup":{"model":"models/azure/gpt-realtime"}}`, "provider azure cannot serve Gemini Live clients; use /v1/realtime for it"},
 	} {
 		conn := dialGeminiLive(t, url)
 		require.NoError(t, conn.WriteMessage(ws.TextMessage, []byte(tc.first)), name)
@@ -1592,7 +1592,7 @@ func TestNativeCloseFrame(t *testing.T) {
 	server, client, cleanup := dialRealtimeTestConn(t)
 	defer cleanup()
 	conn := newRealtimeClientConn(server)
-	conn.native = true
+	conn.native = geminiLiveProtocol
 	conn.writeRealtimeError(newRealtimeWireBifrostError(429, "rate_limit_exceeded", "slow down"))
 	require.NoError(t, client.SetReadDeadline(time.Now().Add(3*time.Second)))
 	_, _, err := client.ReadMessage()
