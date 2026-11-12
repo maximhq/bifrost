@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -818,6 +819,27 @@ func TestEvalsRunResultScoreNumberShipsWithTheRunTables(t *testing.T) {
 	db := setupRDBTestStore(t).DB()
 	require.NoError(t, migrationAddEvalsRunTables(context.Background(), db, testMigrationLogger))
 	assert.True(t, db.Migrator().HasColumn(&tables.TableEvalRunResult{}, "score_number"))
+}
+
+// The registered tracing migration creates its tables, and running it again after its
+// record is gone does nothing harmful.
+func TestMigrationAddTracingTables(t *testing.T) {
+	registered := false
+	for _, step := range configstoreMigrationSteps {
+		if slices.Contains(step.IDs, "add_tracing_tables") {
+			registered = true
+		}
+	}
+	require.True(t, registered, "the tracing migration runs on startup")
+
+	ctx := context.Background()
+	db := setupRDBTestStore(t).DB()
+	require.NoError(t, migrationAddTracingTables(ctx, db, testMigrationLogger))
+	for _, table := range []any{&tables.TableTraceProject{}, &tables.TableTracingKey{}} {
+		assert.True(t, db.Migrator().HasTable(table))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_tracing_tables").Error)
+	require.NoError(t, migrationAddTracingTables(ctx, db, testMigrationLogger), "a re-run over existing tables is a no-op")
 }
 
 func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
