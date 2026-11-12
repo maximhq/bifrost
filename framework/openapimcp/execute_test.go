@@ -133,6 +133,18 @@ func TestBuildRequest_Bodies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `{}`, cap.body, "a required flattened body with no fields is still sent as an object")
 
+	// DropBodyFields keeps a field out of an object body, without editing the
+	// caller's arguments; a text body is left as it is.
+	dropping, _ := petstoreExecutor(t, ts, func(o *ServerOptions) { o.DropBodyFields = []string{"tag"} })
+	args := map[string]any{"name": "Rex", "tag": "good"}
+	_, err = dropping.Execute(context.Background(), create, args)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"name":"Rex"}`, cap.body)
+	assert.Equal(t, "good", args["tag"], "the arguments are not edited")
+	_, err = dropping.Execute(context.Background(), findTool(t, syn, "putNote"), map[string]any{"body": "tag"})
+	require.NoError(t, err)
+	assert.Equal(t, "tag", cap.body)
+
 	note := findTool(t, syn, "putNote")
 	_, err = exec.Execute(context.Background(), note, map[string]any{"body": "hello"})
 	require.NoError(t, err)

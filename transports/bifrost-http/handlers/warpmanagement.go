@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -113,7 +114,79 @@ func (w *warpManagementTools) Call(ctx context.Context, catalog *warp.Management
 			text.WriteString(part.Text)
 		}
 	}
-	return text.String(), result.IsError, nil
+	return redactVirtualKeyValues(text.String()), result.IsError, nil
+}
+
+// redactVirtualKeyValues removes the value of every virtual key a management
+// result embeds, so it never reaches the model and, through it, its provider.
+// The reads that return keys are not offered at all; this covers the ones that
+// embed them, such as a customer listed with its keys. A result is the /api body,
+// or for a refusal a status line followed by it, and only a body that names a
+// virtual key is parsed.
+func redactVirtualKeyValues(result string) string {
+	if !strings.Contains(result, "virtual_key") {
+		return result
+	}
+	head, body := "", result
+	if !json.Valid([]byte(body)) {
+		i := strings.IndexByte(result, '\n')
+		if i >= 0 && strings.HasPrefix(result, "HTTP ") {
+			head, body = result[:i+1], result[i+1:]
+		}
+		// A body that names a virtual key but does not parse, such as one cut at
+		// the response limit, cannot be redacted, so it is withheld.
+		if !json.Valid([]byte(body)) {
+			return head + warpManagementWithheldResult
+		}
+	}
+	// UseNumber keeps every number as written: decoded as a float64, an id or
+	// counter past 2^53 would come back with different digits.
+	var decoded any
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return result
+	}
+	if !redactVirtualKeys(decoded, false) {
+		return result
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return result
+	}
+	return head + string(encoded)
+}
+
+// warpManagementWithheldResult replaces a result that names virtual keys but
+// could not be parsed to remove their values.
+const warpManagementWithheldResult = "[result withheld: it includes virtual keys and could not be parsed to remove their values; narrow the request, for example with a smaller page]"
+
+// redactVirtualKeys walks v and drops the value field of each virtual key: an
+// object held by a virtual_key or virtual_keys field (inKey). It reports whether
+// it removed anything.
+func redactVirtualKeys(v any, inKey bool) bool {
+	removed := false
+	switch node := v.(type) {
+	case map[string]any:
+		if inKey {
+			if _, ok := node["value"]; ok {
+				delete(node, "value")
+				removed = true
+			}
+		}
+		for field, child := range node {
+			if redactVirtualKeys(child, field == "virtual_key" || field == "virtual_keys") {
+				removed = true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if redactVirtualKeys(child, inKey) {
+				removed = true
+			}
+		}
+	}
+	return removed
 }
 
 // current returns the client and catalog for the loaded spec, building them

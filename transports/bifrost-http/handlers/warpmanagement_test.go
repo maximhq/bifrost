@@ -321,3 +321,50 @@ func TestWarpManagementCallIsBoundToItsCatalog(t *testing.T) {
 		t.Errorf("create reached /api %d times, want 1", created.Load())
 	}
 }
+
+// A management result that embeds virtual keys reaches the model without their
+// values: a customer listed with its keys, a single key, and a refusal whose body
+// follows a status line. Everything else in the result is kept, and a body that
+// names no virtual key is returned as it is.
+func TestWarpManagementRedactsVirtualKeyValues(t *testing.T) {
+	customers := `{"customers":[{"id":"c1","name":"acme","virtual_keys":[{"id":"vk1","name":"acme-key","value":"sk-bf-secret-1"}]}],"count":1}`
+	got := redactVirtualKeyValues(customers)
+	if strings.Contains(got, "sk-bf-secret-1") {
+		t.Fatalf("a customer's key value reached the result: %s", got)
+	}
+	for _, kept := range []string{`"acme"`, `"acme-key"`, `"vk1"`} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%s was dropped: %s", kept, got)
+		}
+	}
+	single := `{"virtual_key":{"id":"vk2","value":{"value":"sk-bf-secret-2","type":"plain_text"},"team":{"id":"t1","value":"kept"}}}`
+	got = redactVirtualKeyValues(single)
+	if strings.Contains(got, "sk-bf-secret-2") {
+		t.Fatalf("a key's value reached the result: %s", got)
+	}
+	if !strings.Contains(got, `"kept"`) {
+		t.Errorf("a value field outside the key itself was dropped: %s", got)
+	}
+	refusal := "HTTP 409 Conflict\n" + customers
+	got = redactVirtualKeyValues(refusal)
+	if strings.Contains(got, "sk-bf-secret-1") || !strings.HasPrefix(got, "HTTP 409 Conflict\n") {
+		t.Fatalf("a refusal's body was not redacted, or lost its status line: %s", got)
+	}
+	// Numbers are carried as written: an id past 2^53 would lose digits as a float.
+	big := `{"virtual_key":{"id":"vk3","value":"sk-bf-secret-3","budget_id":9007199254740993}}`
+	if got := redactVirtualKeyValues(big); !strings.Contains(got, "9007199254740993") || strings.Contains(got, "sk-bf-secret-3") {
+		t.Errorf("a large integer changed, or the value stayed: %s", got)
+	}
+	// A body cut at the response limit no longer parses; it is withheld, not passed on.
+	truncated := customers[:len(customers)-12] + "\n…[response truncated at 65536 bytes]"
+	if got := redactVirtualKeyValues(truncated); strings.Contains(got, "sk-bf-secret-1") || strings.Contains(got, `"value"`) {
+		t.Errorf("a truncated body kept its key value: %s", got)
+	}
+	if got := redactVirtualKeyValues("HTTP 500 Internal Server Error\n" + truncated); strings.Contains(got, "sk-bf-secret-1") || !strings.HasPrefix(got, "HTTP 500 Internal Server Error\n") {
+		t.Errorf("a truncated refusal kept its key value, or lost its status line: %s", got)
+	}
+	plain := `{"providers":[{"name":"openai","value":"x"}]}`
+	if got := redactVirtualKeyValues(plain); got != plain {
+		t.Errorf("a body naming no virtual key changed: %s", got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -388,6 +389,9 @@ func buildBifrostMCPServer(data []byte, specURL string, opts BifrostMCPOptions) 
 	var kept []openapimcp.Operation
 	kept, report.unrouted = curateBifrostMCPOperations(doc.Operations, opts)
 	report.excluded = len(doc.Operations) - len(kept)
+	for i := range kept {
+		dropStreamingArguments(&kept[i])
+	}
 	doc.Operations = kept
 	// Bifrost's spec writes dynamic query names as <placeholder> (metadata_<key>),
 	// a convention openapimcp only expands when asked to.
@@ -411,11 +415,57 @@ func buildBifrostMCPServer(data []byte, specURL string, opts BifrostMCPOptions) 
 		Headers:         bifrostMCPCallerHeaders,
 		Logger:          logger,
 		ToolFilter:      bifrostMCPToolListFilter(syn.Tools, opts.ToolAccess),
+		DropBodyFields:  bifrostMCPStreamingFields,
 	})
 	if err != nil {
 		return nil, report, fmt.Errorf("building server: %w", err)
 	}
 	return srv, report, nil
+}
+
+// bifrostMCPStreamingFields are the request body fields that ask a route to stream.
+var bifrostMCPStreamingFields = []string{"stream", "stream_options"}
+
+// dropStreamingArguments takes the streaming fields out of op's request body, so
+// no tool call asks for a stream. A tool result is one message whatever the route
+// does, and a streamed answer would reach the model as its raw event stream (every
+// chunk, with its metadata) rather than as the completion. A flattened body sends
+// only the arguments its schema declares, so without them the route answers once;
+// a body taken whole as one argument declares none, so the executor drops the
+// fields from it as well (DropBodyFields). The schema is copied, never edited in place: it may be shared with other
+// operations of the parsed document.
+func dropStreamingArguments(op *openapimcp.Operation) {
+	if op.Body == nil || op.Body.Schema == nil {
+		return
+	}
+	props, ok := op.Body.Schema["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	found := false
+	for _, field := range bifrostMCPStreamingFields {
+		if _, ok := props[field]; ok {
+			found = true
+		}
+	}
+	if !found {
+		return
+	}
+	schema := maps.Clone(op.Body.Schema)
+	trimmed := maps.Clone(props)
+	for _, field := range bifrostMCPStreamingFields {
+		delete(trimmed, field)
+	}
+	schema["properties"] = trimmed
+	if required, ok := schema["required"].([]any); ok {
+		schema["required"] = slices.DeleteFunc(slices.Clone(required), func(v any) bool {
+			name, _ := v.(string)
+			return slices.Contains(bifrostMCPStreamingFields, name)
+		})
+	}
+	body := *op.Body
+	body.Schema = schema
+	op.Body = &body
 }
 
 // bifrostMCPWrite reports whether op is one the writes switch gates: a non-GET
