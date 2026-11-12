@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -68,10 +70,24 @@ func (p *TableTraceProject) BeforeSave(_ *gorm.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to serialize trace forward target: %w", err)
 		}
-		p.ForwardJSON = new(string(data))
+		stored := string(data)
+		// The target's headers hold the user's vendor key, so the column is encrypted whenever
+		// encryption is on. The prefix says which form a row is in, so rows written before
+		// encryption was enabled still read.
+		if encrypt.IsEnabled() {
+			ciphertext, err := encrypt.Encrypt(stored)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt trace forward target: %w", err)
+			}
+			stored = traceForwardEncryptedPrefix + ciphertext
+		}
+		p.ForwardJSON = &stored
 	}
 	return nil
 }
+
+// traceForwardEncryptedPrefix marks a forward_json value that is ciphertext.
+const traceForwardEncryptedPrefix = "enc:"
 
 func (p *TableTraceProject) AfterFind(_ *gorm.DB) error {
 	if p.MaskingJSON != nil && *p.MaskingJSON != "" {
@@ -80,8 +96,16 @@ func (p *TableTraceProject) AfterFind(_ *gorm.DB) error {
 		}
 	}
 	if p.ForwardJSON != nil && *p.ForwardJSON != "" {
+		stored := *p.ForwardJSON
+		if ciphertext, encrypted := strings.CutPrefix(stored, traceForwardEncryptedPrefix); encrypted {
+			plaintext, err := encrypt.Decrypt(ciphertext)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt trace forward target: %w", err)
+			}
+			stored = plaintext
+		}
 		var forward TraceForwardTarget
-		if err := sonic.Unmarshal([]byte(*p.ForwardJSON), &forward); err != nil {
+		if err := sonic.Unmarshal([]byte(stored), &forward); err != nil {
 			return fmt.Errorf("failed to read trace forward target: %w", err)
 		}
 		p.Forward = &forward

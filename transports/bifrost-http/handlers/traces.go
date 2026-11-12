@@ -333,6 +333,9 @@ func (h *TracesHandler) listProjects(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "list tracing projects", err)
 		return
 	}
+	for _, project := range projects {
+		redactTraceForward(project)
+	}
 	SendJSON(ctx, map[string]any{"projects": projects})
 }
 
@@ -383,6 +386,7 @@ func (h *TracesHandler) createProject(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "create tracing project", err)
 		return
 	}
+	redactTraceForward(project)
 	SendJSON(ctx, map[string]any{"project": project})
 }
 
@@ -404,12 +408,14 @@ func (h *TracesHandler) updateProject(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "update tracing project", err)
 		return
 	}
+	keepStoredForwardSecrets(payload.Forward, project.Forward)
 	payload.apply(project)
 	if err := h.config.UpdateTraceProject(storeCtx, project); err != nil {
 		h.fail(ctx, "update tracing project", err)
 		return
 	}
 	h.invalidate()
+	redactTraceForward(project)
 	SendJSON(ctx, map[string]any{"project": project})
 }
 
