@@ -1602,32 +1602,17 @@ func isSearchDate(value string) bool {
 
 // prepareFetchRequest builds a BifrostFetchRequest from the HTTP body.
 //
-// DeepSeek requires an absolute HTTP(S) URL with a host and no embedded credentials, at most
-// 8192 characters. Validating here keeps an obviously malformed URL from costing a request.
+// The URL checks are the ones the core SDK entry point applies too (schemas.ValidateFetchURL):
+// an absolute HTTP(S) URL with a host and no embedded credentials, at most 8192 characters.
+// Validating here keeps an obviously malformed URL from costing a request.
 func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostFetchRequest, error) {
 	req, base, err := prepareRequest[FetchHandlerRequest](ctx, config, fetchParamsKnownFields)
 	if err != nil {
 		return nil, err
 	}
 	rawURL := strings.TrimSpace(req.URL)
-	if rawURL == "" {
-		return nil, fmt.Errorf("url is required for fetch")
-	}
-	if len(rawURL) > 8192 {
-		return nil, fmt.Errorf("url must be at most 8192 characters")
-	}
-	parsed, parseErr := url.Parse(rawURL)
-	if parseErr != nil {
-		return nil, fmt.Errorf("url is not valid")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("url must use http or https")
-	}
-	if parsed.Host == "" {
-		return nil, fmt.Errorf("url must include a host")
-	}
-	if parsed.User != nil {
-		return nil, fmt.Errorf("url must not include credentials")
+	if err := schemas.ValidateFetchURL(rawURL); err != nil {
+		return nil, err
 	}
 	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
 	if err != nil {

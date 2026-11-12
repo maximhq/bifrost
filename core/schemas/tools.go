@@ -1,5 +1,44 @@
 package schemas
 
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+)
+
+// MaxFetchURLLength is the longest Fetch URL the gateway forwards. DeepSeek documents 8192
+// characters; both entry points refuse a longer URL at the edge, before it costs a request.
+const MaxFetchURLLength = 8192
+
+// ValidateFetchURL applies the Fetch URL rules shared by the HTTP route and the core SDK
+// entry point: an absolute http(s) URL with a host, without embedded credentials, at most
+// MaxFetchURLLength characters. Both paths use this one function, so a direct SDK caller is
+// refused for exactly what a caller of POST /v1/tools/fetch is refused for.
+func ValidateFetchURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return errors.New("url is required for fetch")
+	}
+	if len(rawURL) > MaxFetchURLLength {
+		return fmt.Errorf("url must be at most %d characters", MaxFetchURLLength)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("url is not valid")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("url must use http or https")
+	}
+	if parsed.Host == "" {
+		return errors.New("url must include a host")
+	}
+	if parsed.User != nil {
+		return errors.New("url must not include credentials")
+	}
+	return nil
+}
+
 // BifrostSearchRequest is a vendor-neutral web search. Model is a routing and pricing
 // handle for the gateway; no search vendor consumes it. A filter the chosen provider
 // cannot honour is refused rather than silently dropped. Vendor-only options travel in

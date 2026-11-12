@@ -1743,11 +1743,13 @@ func (bifrost *Bifrost) FetchRequest(ctx *schemas.BifrostContext, req *schemas.B
 			},
 		}
 	}
-	if strings.TrimSpace(req.URL) == "" {
+	// The same checks the HTTP route applies: this entry point is reachable from the SDK, so a
+	// URL the route would refuse must not reach a provider just because it skipped the handler.
+	if err := schemas.ValidateFetchURL(req.URL); err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "url not provided for fetch request",
+				Message: err.Error(),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: schemas.FetchRequest,

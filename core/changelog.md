@@ -1,3 +1,6 @@
+- [fix]: a Fetch that returns no page content is not billed, matching Search's empty-result rule [@jimaldon](https://github.com/jimaldon)
+- [fix]: Fetch URLs are validated on the core SDK path too, and a null DeepSeek tools option counts as absent [@jimaldon](https://github.com/jimaldon)
+- [fix]: Exa errors keep their reason, tag and requestId, and requested page text is bounded per call [@jimaldon](https://github.com/jimaldon)
 - [fix]: DeepSeek Search keeps `rerank_score` 0 as a real score and passes `authority` -1 through as DeepSeek's unknown tier, with the mapping comments stating what the upstream contract means [@jimaldon](https://github.com/jimaldon)
 - [fix]: a crawled page Exa could not read stays a failed Fetch, keeping the page's own status in the message instead of surfacing as an Exa credential or rate-limit failure [@jimaldon](https://github.com/jimaldon)
 - [feat]: Exa provider for Search (`/search`) and Fetch (`/contents`), priced at Exa's reported cost [@Radiergummi](https://github.com/Radiergummi)
