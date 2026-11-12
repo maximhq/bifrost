@@ -355,3 +355,30 @@ func TestCommitWaitsForAnEnrichmentWrite(t *testing.T) {
 	env.service.spanWriteMu.Unlock()
 	require.NoError(t, <-done)
 }
+
+// Barrier returns only once every request queued before it is written. A project delete waits on
+// it, so a commit that resolved the project before the delete cannot land after the traces go.
+func TestBarrierWaitsForEarlierCommits(t *testing.T) {
+	env := newTestEnv(t, Config{})
+	env.service.spanWriteMu.Lock()
+	ingested := make(chan error, 1)
+	go func() {
+		ingested <- env.service.Ingest(context.Background(), env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{{TraceID: "t1", SpanID: "s", Kind: logstore.TraceSpanKindLLM, StartTime: at(0)}})
+	}()
+	// Past the commit window, so the ingest is in its own batch, blocked in write.
+	time.Sleep(50 * time.Millisecond)
+	barrier := make(chan error, 1)
+	go func() { barrier <- env.service.Barrier(context.Background()) }()
+	select {
+	case <-barrier:
+		env.service.spanWriteMu.Unlock()
+		t.Fatal("the barrier returned while an earlier commit was still being written")
+	case <-time.After(100 * time.Millisecond):
+	}
+	env.service.spanWriteMu.Unlock()
+	require.NoError(t, <-ingested)
+	require.NoError(t, <-barrier)
+	spans, err := env.store.ListTraceSpans(context.Background(), "p1", "t1")
+	require.NoError(t, err)
+	assert.Len(t, spans, 1, "the earlier commit is stored when the barrier returns")
+}
