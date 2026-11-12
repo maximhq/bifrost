@@ -1929,6 +1929,24 @@
 		"overCounted": "Die gemessenen Spans ({{measured}}) überschreiten den berechneten Overhead ({{overhead}}); der Upstream-Akkumulator zählt möglicherweise zu viel."
 	},
 	"tracing": {
+		"review": {
+			"tab": "Review",
+			"activityTab": "Activity",
+			"scoreName": "Score name",
+			"scoreValue": "Value (number or label)",
+			"note": "Note",
+			"addScore": "Add score",
+			"noScores": "No scores on this span yet.",
+			"deleteScore": "Delete score",
+			"by": "by {{author}}",
+			"sourceSdk": "SDK",
+			"sourceEvaluator": "Evaluator",
+			"sourceHuman": "Reviewer",
+			"commentPlaceholder": "Leave a note for your team",
+			"addComment": "Comment",
+			"noComments": "No comments on this span yet.",
+			"deleteComment": "Delete comment"
+		},
 		"title": "Tracing",
 		"subtitle": "Traces pushed by your observability SDKs. A model call served by this gateway is counted once, with the gateway's numbers.",
 		"searchPlaceholder": "Search name, input or output",

@@ -161,3 +161,56 @@ func TestTracingKeysAndProjectsAPI(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", "/api/traces/keys/"+keyID, nil, nil))
 	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "DELETE", "/api/traces/keys/"+keyID, nil, nil))
 }
+
+// TestTraceReviewScoresAndComments pins human review: a reviewer's score lands on the trace and in
+// its rollup at once, an edit replaces it, a score from an SDK cannot be overwritten through the
+// review route, the author is never taken from the request body, and comments round-trip.
+func TestTraceReviewScoresAndComments(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	start := time.Now().UTC().Add(-time.Minute)
+	end := start.Add(time.Second)
+	require.NoError(t, env.store.UpsertTraceSpans(ctx, []*logstore.TraceSpan{{ProjectID: "p1", TraceID: "t1", SpanID: "root", Source: logstore.TraceSourceOTel, Name: "run", Kind: logstore.TraceSpanKindTask, StartTime: start, EndTime: &end}}))
+	require.NoError(t, env.store.UpsertTraceScores(ctx, []*logstore.TraceScore{{ID: "sdk-score", ProjectID: "p1", TraceID: "t1", Name: "auto", Value: new(0.1), Source: logstore.TraceAuthorSDK}}))
+	base := "/api/traces/trace/p1/t1"
+
+	var created struct {
+		Score logstore.TraceScore `json:"score"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", base+"/scores", map[string]any{"name": "correctness", "value": 0.5, "span_id": "root", "author": "someone-else"}, &created))
+	assert.Equal(t, logstore.TraceAuthorHuman, created.Score.Source)
+	assert.Empty(t, created.Score.Author, "the author comes from the signed-in user, never from the body")
+	trace, err := env.store.FindTrace(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, trace.ScoresParsed["correctness"], "the rollup is rebuilt with the review")
+
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", base+"/scores", map[string]any{"id": created.Score.ID, "name": "correctness", "value": 1}, nil))
+	scores, err := env.store.ListTraceScores(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Len(t, scores, 2, "an edit replaces the score")
+	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "POST", base+"/scores", map[string]any{"id": "sdk-score", "name": "auto", "value": 1}, nil), "an SDK's score is not editable through review")
+
+	for name, body := range map[string]map[string]any{
+		"no name":      {"value": 1},
+		"no value":     {"name": "x"},
+		"foreign span": {"name": "x", "value": 1, "span_id": "not-in-this-trace"},
+	} {
+		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", base+"/scores", body, nil), name)
+	}
+	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "POST", "/api/traces/trace/p1/absent/scores", map[string]any{"name": "x", "value": 1}, nil))
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", base+"/scores", map[string]any{"name": "tone", "string_value": "formal"}, nil))
+
+	var comment struct {
+		Comment logstore.TraceComment `json:"comment"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", base+"/comments", map[string]any{"text": "  check the tool call  ", "span_id": "root"}, &comment))
+	assert.Equal(t, "check the tool call", comment.Comment.Text)
+	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", base+"/comments", map[string]any{"text": " "}, nil))
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", base+"/comments/"+comment.Comment.ID, nil, nil))
+	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "DELETE", base+"/comments/"+comment.Comment.ID, nil, nil))
+
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", base+"/scores/"+created.Score.ID, nil, nil))
+	trace, err = env.store.FindTrace(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.NotContains(t, trace.ScoresParsed, "correctness")
+}
