@@ -71,6 +71,23 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	assert.Equal(t, true, doc["client_id_metadata_document_supported"])
 }
 
+// TestDiscovery_ClientMetadataDocumentsCanBeDisabled pins that disable_client_metadata_documents drops the
+// flag from discovery, so clients register through DCR, while the rest of the document is unchanged.
+func TestDiscovery_ClientMetadataDocumentsCanBeDisabled(t *testing.T) {
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.DisableClientMetadataDocuments = true
+	h := NewOAuth2DiscoveryHandler(cfg)
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.NotContains(t, doc, "client_id_metadata_document_supported")
+	assert.Equal(t, testIssuer+"/oauth2/register", doc["registration_endpoint"], "clients fall back to DCR")
+	assert.Equal(t, testIssuer+"/oauth2/authorize", doc["authorization_endpoint"])
+}
+
 // TestDiscovery_IssuerWithTrailingSlash pins that an issuer_url ending in "/" is
 // served without it, so no URL built from the issuer carries "//".
 func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {

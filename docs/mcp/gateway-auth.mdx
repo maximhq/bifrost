@@ -89,7 +89,7 @@ The flow follows current OAuth standards so off-the-shelf MCP clients work witho
 
 ## Client ID Metadata Documents
 
-An MCP client can use the HTTPS address of a metadata document it publishes as its client ID, instead of registering with Bifrost. Bifrost reads the document during sign-in and advertises support in its discovery metadata, so clients that support documents use them automatically. There is nothing to configure.
+An MCP client can use the HTTPS address of a metadata document it publishes as its client ID, instead of registering with Bifrost. Bifrost reads the document during sign-in and advertises support in its discovery metadata, so clients that support documents use them automatically. There is nothing to configure unless Bifrost cannot reach the documents (see [Turning them off](#turning-them-off)).
 
 Bifrost accepts a document when:
 
@@ -102,6 +102,20 @@ Bifrost accepts a document when:
 Bifrost caches a document for as long as its HTTP cache headers allow, between 1 minute and 24 hours, and for 1 hour when they say nothing. A document that could not be used is retried after 1 minute.
 
 Clients that registered before this support keep their registration and existing grants.
+
+### Turning them off
+
+Bifrost fetches each client's document from the client's own site, such as `claude.ai` for Claude Code or `chatgpt.com` for Codex. If your network blocks those hosts, sign-in fails with an error saying the client metadata document could not be fetched. Either allow Bifrost to reach them, through your firewall or Bifrost's [outbound proxy](/deployment-guides/config-json/client#global-proxy) with API traffic enabled, or turn on **Disable client metadata documents** so clients register with Bifrost instead.
+
+When it is on:
+
+- Bifrost no longer advertises support, so clients that check for it, such as Codex and Claude Code, register through Dynamic Client Registration from their next sign-in. Nothing is fetched for them.
+- A client that sends a document address anyway is still accepted, but only if Bifrost can reach its document. This setting does not change how such a client signs in.
+- Existing sessions keep working until they next sign in.
+
+It applies to `/mcp` and every server endpoint under it. Bifrost's own sign-in to upstream MCP servers is not affected.
+
+Set it under **Config → MCP** with the other OAuth settings, or with `oauth2_server_config.disable_client_metadata_documents` (see [Configuration](#configuration)).
 
 ---
 
@@ -144,7 +158,8 @@ Check the application before you continue. The page also shows:
 2. Open **Config** and go to the **MCP** settings.
 3. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
 4. When using `both` or `oauth`, set the **Authorization Code** and **Access Token** lifetimes. The issuer is shown read-only, with a link back to Security.
-5. Click **Save**.
+5. If Bifrost cannot reach the hosts clients publish their metadata documents on, turn on **Disable client metadata documents** (see [Turning them off](#turning-them-off)).
+6. Click **Save**.
 
 ![MCP server auth mode and OAuth server settings](/media/ui-mcp-server-auth-mode.png)
 
@@ -190,6 +205,7 @@ curl -X PUT http://localhost:8080/api/config \
 | `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. A bare `"*"` entry allows any `https` callback; partial wildcards are rejected. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
+| `oauth2_server_config.disable_client_metadata_documents` | boolean | No | Stop advertising [client metadata documents](#turning-them-off), so MCP clients that check for it register through Dynamic Client Registration instead. Use it when Bifrost cannot reach the clients' document hosts. A client that still sends a document address works only if Bifrost can reach its document. Default `false`. |
 | `oauth2_server_config.disable_vk_identity` | boolean | No | Require identity-provider login: removes the virtual-key option from consent and cuts off existing vk-mode grants (see [Token Lifetime & Revocation](#token-lifetime--revocation)). Only honored when an identity provider is configured, and only valid when `mcp_server_auth_mode` is `oauth` (400 otherwise). |
 
 </Tab>

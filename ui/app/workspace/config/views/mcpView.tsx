@@ -109,6 +109,8 @@ export default function MCPView() {
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
 			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
+			(localConfig.oauth2_server_config?.disable_client_metadata_documents ?? false) !==
+				(config.oauth2_server_config?.disable_client_metadata_documents ?? false) ||
 			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris)
 		);
 	}, [config, localConfig]);
@@ -235,6 +237,13 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({
 			...prev,
 			oauth2_server_config: { ...prev.oauth2_server_config, disable_vk_identity: checked },
+		}));
+	}, []);
+
+	const handleDisableClientMetadataDocumentsChange = useCallback((checked: boolean) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			oauth2_server_config: { ...prev.oauth2_server_config, disable_client_metadata_documents: checked },
 		}));
 	}, []);
 
@@ -845,6 +854,25 @@ export default function MCPView() {
 												<AlertDescription>{t("mcpSettings.anyCallbackAllowedHelp")}</AlertDescription>
 											</Alert>
 										)}
+									</div>
+
+									<div className="mt-4 space-y-2 border-t pt-4">
+										<div className="flex items-center justify-between space-x-2">
+											<div className="space-y-0.5">
+												<label htmlFor="oauth2-disable-client-metadata-documents" className="text-sm font-medium">
+													{t("mcpSettings.disableClientMetadataDocuments")}
+												</label>
+												<p className="text-muted-foreground text-sm">{t("mcpSettings.disableClientMetadataDocumentsHelp")}</p>
+											</div>
+											<Switch
+												id="oauth2-disable-client-metadata-documents"
+												data-testid="oauth2-disable-client-metadata-documents-switch"
+												size="md"
+												checked={localConfig.oauth2_server_config?.disable_client_metadata_documents ?? false}
+												onCheckedChange={handleDisableClientMetadataDocumentsChange}
+												disabled={!hasSettingsUpdateAccess}
+											/>
+										</div>
 									</div>
 
 									{/* Require identity-provider login. Enterprise-only and only

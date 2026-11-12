@@ -289986,10 +289986,10 @@
     },
     {
       "name": "265. Bifrost's MCP OAuth server accepts Client ID Metadata Documents (mcp-oauth-cimd-server)",
-      "description": "Client ID Metadata Documents (MCP 2025-11-25+), server role: the gateway's OAuth server advertises client_id_metadata_document_supported and resolves an https client_id by fetching the document over the public internet only, validating it, and caching it per Cache-Control. These cases pin the advertised flag and the refusal path (a private-address document is not fetched): 400 invalid_client, no redirect. The success path needs a publicly reachable HTTPS document host, so it is covered by Go tests (TestHandleAuthorize_ClientIDMetadataDocument, TestOAuth2ClientMetadataResolver*). Requires mcp_server_auth_mode both or oauth. No provider calls - openai is only a filter label. Run with FEATURE=mcp-oauth-cimd-server.",
+      "description": "Client ID Metadata Documents (MCP 2025-11-25+), server role: the gateway's OAuth server advertises client_id_metadata_document_supported and resolves an https client_id by fetching the document over the public internet only, validating it, and caching it per Cache-Control. These cases pin the advertised flag (absent when oauth2_server_config.disable_client_metadata_documents is on, read from the profile, so clients use DCR) and the refusal path (a private-address document is not fetched): 400 invalid_client, no redirect. The success path needs a publicly reachable HTTPS document host, so it is covered by Go tests (TestHandleAuthorize_ClientIDMetadataDocument, TestOAuth2ClientMetadataResolver*). Requires mcp_server_auth_mode both or oauth. No provider calls - openai is only a filter label. Run with FEATURE=mcp-oauth-cimd-server.",
       "item": [
         {
-          "name": "[EXPECT-200] openai mcp-oauth-cimd-server authorization server metadata advertises client ID metadata documents",
+          "name": "[EXPECT-200] openai mcp-oauth-cimd-server authorization server metadata advertises client ID metadata documents unless disabled",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
@@ -290004,14 +290004,34 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// oauth2_server_config.disable_client_metadata_documents turns the flag off so clients register through DCR.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: pm.variables.get('setupToken') ? { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') } : {} }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config failed: ' + res.code + ' ' + res.text()); }",
+                  "  var oauth = (res.json().client_config || {}).oauth2_server_config || {};",
+                  "  pm.variables.set('cimdServerDisabled', oauth.disable_client_metadata_documents === true ? 'true' : 'false');",
+                  "});"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"MCP clients learn they may present a metadata document URL as client_id\", function () {",
+                  "pm.test(\"MCP clients learn whether they may present a metadata document URL as client_id\", function () {",
                   "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
                   "  var doc = pm.response.json();",
-                  "  pm.expect(doc.client_id_metadata_document_supported, 'flag missing: ' + pm.response.text()).to.equal(true);",
+                  "  if (pm.variables.get('cimdServerDisabled') === 'true') {",
+                  "    pm.expect(doc, 'disable_client_metadata_documents is on, so the flag must be absent: ' + pm.response.text()).to.not.have.property('client_id_metadata_document_supported');",
+                  "    pm.expect(doc.registration_endpoint, 'clients need DCR instead: ' + pm.response.text()).to.be.a('string');",
+                  "  } else {",
+                  "    pm.expect(doc.client_id_metadata_document_supported, 'flag missing: ' + pm.response.text()).to.equal(true);",
+                  "  }",
                   "});"
                 ]
               }

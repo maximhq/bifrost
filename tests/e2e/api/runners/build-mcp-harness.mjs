@@ -8680,7 +8680,8 @@ const AUTH65 = folder("AUTH-65 A hosted client metadata document", `Setup: ${EXT
 ]);
 
 // OAS-43: Bifrost fetches a client metadata document only from a public address, so the documents here are never fetched.
-const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids.", [
+// With disable_client_metadata_documents on, discovery stops advertising them but URL client_ids are still resolved.
+const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids. Then the same with disable_client_metadata_documents on.", [
   readConfig("OAS-43"), setMode("OAS-43", "oauth"),
   request("OAS-43", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.custom("client_id_metadata_document_supported is true", ["pm.expect(pm.response.json().client_id_metadata_document_supported, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   ...[
@@ -8692,6 +8693,19 @@ const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's au
     noAuth: true, noRedirect: true,
     asserts: [A.status(400), O.error("invalid_client"), O.descEquals(desc), A.custom("there is no Location", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.equal(undefined);"])],
   })),
+  putConfig("OAS-43", "setup: turn disable_client_metadata_documents on", [
+    "cc.mcp_server_auth_mode = 'oauth';",
+    "cc.oauth2_server_config = { issuer_url: pm.variables.get('base_url'), disable_client_metadata_documents: true };",
+  ], [A.status(200)]),
+  request("OAS-43", "authorization server metadata with documents turned off", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), A.custom("no client_id_metadata_document_supported, and DCR is offered", [
+    "var b = pm.response.json();",
+    "pm.expect(b, 'body: ' + pm.response.text()).to.not.have.property('client_id_metadata_document_supported');",
+    "pm.expect(b.registration_endpoint, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+  ])] }),
+  request("OAS-43", "authorize with a document on 127.0.0.1 with documents turned off", "GET", goodAuthorize("oas43_unused", { client_id: encodeURIComponent("https://127.0.0.1/oas43/client.json") }), {
+    noAuth: true, noRedirect: true,
+    asserts: [A.status(400), O.error("invalid_client"), O.descEquals("client metadata document could not be fetched"), A.custom("there is no Location", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.equal(undefined);"])],
+  }),
   restoreHeaders("OAS-43"),
 ]);
 

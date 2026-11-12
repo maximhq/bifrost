@@ -382,6 +382,8 @@
 		"issuerUrlHelp": "在發現文件中公佈的穩定公共 URL，並在每個 JWT 中作為 <code0>iss</code0> 聲明嵌入。在 OAuth 和兩種模式下都需要：Bifrost 永遠不會從請求 <code1>Host</code1> 標頭中派生出頒發者，因為該標頭是由呼叫者控制的。支援環境變數語法（例如 <code2>env.BIFROST_ISSUER_URL</code2>）。",
 		"authCodeTtlHelp": "授權頁面重定向回 MCP 客戶端後，一次性授權碼的有效時長（預設 300 秒，最長 900 秒，即 15 分鐘）。",
 		"accessTokenTtlHelp": "簽發的 JWT Bearer 令牌的有效時長。過期後客戶端會自動重新整理（預設 600 秒，即 10 分鐘）。此值也限制了撤銷授權後舊令牌仍可存取的最長時間。",
+		"disableClientMetadataDocuments": "停用用戶端中繼資料文件",
+		"disableClientMetadataDocumentsHelp": "不再告知 MCP 用戶端 Bifrost 接受用戶端中繼資料文件，讓 Codex、Claude Code 等用戶端改用動態用戶端註冊。當 Bifrost 無法連線到這些文件所在的主機時請開啟此項。仍傳送中繼資料文件位址的用戶端會被接受，現有工作階段不受影響。",
 		"requireIdpLoginHelp": "啟用後，OAuth 授權流程僅提供身份供應商登入。虛擬金鑰將無法再用於獲取 MCP 令牌，現有的虛擬金鑰 OAuth 會話也會立即失去存取許可權。匿名會話存取不受影響（由“對推理請求強制認證”設定控制）。",
 		"vFSStructure": "VFS 結構：",
 		"allToolsPerServerInASinglePyFile": "每臺伺服器的所有工具放在一個 .py 檔案中",

@@ -488,6 +488,7 @@ bifrost:
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
+    #   disableClientMetadataDocuments: false  # Stop advertising client metadata documents so clients that read discovery register through DCR (when Bifrost cannot reach their document hosts)
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
 
   # Server configuration

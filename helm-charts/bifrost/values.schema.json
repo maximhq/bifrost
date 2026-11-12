@@ -1181,6 +1181,10 @@
                   "type": "boolean",
                   "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity. Honored only when an identity provider is configured. Only valid when mcpServerAuthMode is 'oauth'."
                 },
+                "disableClientMetadataDocuments": {
+                  "type": "boolean",
+                  "description": "When true, OAuth discovery stops advertising Client ID Metadata Document support, so MCP clients that follow it register through Dynamic Client Registration instead. Use it when Bifrost cannot reach the clients' document hosts. A client that still sends a metadata-document client_id is accepted only if Bifrost can fetch its document. Maps to client.oauth2_server_config.disable_client_metadata_documents."
+                },
                 "allowedRedirectUris": {
                   "type": "array",
                   "items": {

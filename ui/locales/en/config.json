@@ -382,6 +382,8 @@
 		"issuerUrlHelp": "Stable public URL advertised in discovery documents and embedded as the <code0>iss</code0> claim in every JWT. Required in OAuth and Both modes: Bifrost never derives the issuer from the request <code1>Host</code1> header, because that header is caller-controlled. Supports env var syntax (e.g. <code2>env.BIFROST_ISSUER_URL</code2>).",
 		"authCodeTtlHelp": "How long the one-time code is valid after the consent page redirects back to the MCP client (default: 300, max 900 = 15 min).",
 		"accessTokenTtlHelp": "Lifetime of issued JWT Bearer tokens. Clients silently refresh when expired (default: 600 = 10 min). Also bounds how long a revoked grant keeps working before it is cut off.",
+		"disableClientMetadataDocuments": "Disable client metadata documents",
+		"disableClientMetadataDocumentsHelp": "Stop telling MCP clients that Bifrost accepts client metadata documents, so clients such as Codex and Claude Code register through Dynamic Client Registration instead. Turn this on when Bifrost cannot reach the hosts those documents are published on. Clients that still send a metadata document address are accepted, and existing sessions are not affected.",
 		"requireIdpLoginHelp": "When enabled, the OAuth consent flow only offers identity-provider login. Virtual keys can no longer be used to obtain an MCP token, and existing virtual-key OAuth sessions lose access immediately. Anonymous session access is unaffected (controlled by Enforce Authentication on Inference).",
 		"vFSStructure": "VFS Structure:",
 		"allToolsPerServerInASinglePyFile": "All tools per server in a single .py file",
