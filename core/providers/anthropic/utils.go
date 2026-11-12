@@ -780,8 +780,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// tool_addition / tool_removal blocks — mid-conversation tool changes (beta
 	// mid-conversation-tool-changes). Claude Code sends them in role:"system" messages, and a
-	// surface without the beta rejects the unknown content block (Vertex: "Input tag
-	// 'tool_addition' found using 'type' does not match any of the expected tags"). They are
+	// surface without the beta rejects the unknown content block. They are
 	// removed, as is a replayed compaction block's tool_changes; the text next to them stays,
 	// and a message left with no content is dropped whole rather than sent empty.
 	//
@@ -1947,27 +1946,26 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
-// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
-// is required.
-//
-// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
-// gate, prefers the datasheet's supports_mid_conversation_system_messages
-// boolean; falls back to substring detection. The provider gate stays hardcoded
-// because a bare-model override lookup can't distinguish provider.
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5) and
+// Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
+// supports_mid_conversation_system_messages wins when set.
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
-	if provider != schemas.Anthropic {
-		return false
-	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
-		return true
+	switch provider {
+	case schemas.Anthropic:
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
+			return true
+		}
+		return strings.Contains(m, "opus") &&
+			(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	case schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure:
+		return IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) ||
+			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	return false
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
