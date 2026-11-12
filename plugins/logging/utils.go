@@ -123,8 +123,8 @@ type LogManager interface {
 	// GetAvailableProjects returns all unique project ID-Name pairs from logs
 	GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
-	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
-	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
+	// GetAvailableMetadataKeys returns metadata facets, optionally scoped by log filters.
+	GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error)
 
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension
 	GetDimensionCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error)
@@ -445,11 +445,12 @@ func (p *PluginLogManager) GetDimensionLatencyHistogram(ctx context.Context, fil
 	return p.plugin.GetDimensionLatencyHistogram(ctx, *filters, bucketSizeSeconds, dimension)
 }
 
-func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+// GetAvailableMetadataKeys returns metadata facets; nil scope uses the default recent window.
+func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
 	if p.plugin == nil || p.plugin.store == nil {
 		return map[string][]string{}, nil
 	}
-	return p.plugin.store.GetDistinctMetadataKeys(ctx, limit, query)
+	return p.plugin.store.GetDistinctMetadataKeys(ctx, limit, query, scope)
 }
 
 // DeleteLog deletes a log from the log store

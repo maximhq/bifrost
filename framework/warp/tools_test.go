@@ -384,7 +384,7 @@ func (f *fakeLogReader) GetAvailableRoutingEngines(context.Context, int, string)
 func (f *fakeLogReader) GetAvailableToolCallNames(context.Context, int, string) ([]string, error) {
 	return []string{"get_weather"}, nil
 }
-func (f *fakeLogReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
+func (f *fakeLogReader) GetAvailableMetadataKeys(context.Context, int, string, *logstore.SearchFilters) (map[string][]string, error) {
 	return map[string][]string{"env": {"prod", "staging"}}, nil
 }
 
@@ -1699,7 +1699,7 @@ func (f *fakeFilterSpaceReader) GetAvailableRoutingEngines(context.Context, int,
 func (f *fakeFilterSpaceReader) GetAvailableToolCallNames(context.Context, int, string) ([]string, error) {
 	return nil, nil
 }
-func (f *fakeFilterSpaceReader) GetAvailableMetadataKeys(context.Context, int, string) (map[string][]string, error) {
+func (f *fakeFilterSpaceReader) GetAvailableMetadataKeys(context.Context, int, string, *logstore.SearchFilters) (map[string][]string, error) {
 	return nil, nil
 }
 func (f *fakeFilterSpaceReader) GetAvailableApps(_ context.Context, _ int, query string) ([]string, error) {

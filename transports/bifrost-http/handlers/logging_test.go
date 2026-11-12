@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1420,7 +1421,7 @@ func (m *dashboardLogManager) GetAvailableProjects(ctx context.Context, limit in
 }
 
 // GetAvailableMetadataKeys implements the test double used by logging handler tests.
-func (m *dashboardLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
+func (m *dashboardLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
 	return nil, nil
 }
 
@@ -2186,6 +2187,95 @@ func TestParseBucketSizeOverride(t *testing.T) {
 			if err != nil || got != tc.want {
 				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
 			}
+		})
+	}
+}
+
+type metadataFacetLogManager struct {
+	loggingplugin.LogManager
+	seen []logstore.SearchFilters
+}
+
+// GetAvailableMetadataKeys records the forwarded scope and exposes it in the response.
+func (m *metadataFacetLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
+	if scope == nil {
+		return map[string][]string{"stand": {"unscoped"}}, nil
+	}
+	m.seen = append(m.seen, *scope)
+	return map[string][]string{"stand": scope.VirtualKeyIDs}, nil
+}
+
+// TestMetadataFilterDataUsesRequestScope verifies scope forwarding and cache isolation.
+func TestMetadataFilterDataUsesRequestScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &metadataFacetLogManager{}
+	h := &LoggingHandler{logManager: mgr}
+	for _, vk := range []string{"prod", "spark"} {
+		var ctx fasthttp.RequestCtx
+		var req fasthttp.Request
+		req.SetRequestURI("/api/logs/filterdata?dimensions=metadata_keys&virtual_key_ids=" + vk + "&period=24h&metadata_tenant=bank&status=success")
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.getAvailableFilterData(&ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var body struct {
+			Metadata map[string][]string `json:"metadata_keys"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+		require.Equal(t, []string{vk}, body.Metadata["stand"])
+	}
+	require.Len(t, mgr.seen, 2, "scoped dropdowns must not reuse another filter's cached response")
+	for _, scope := range mgr.seen {
+		require.Equal(t, []string{"success"}, scope.Status)
+		require.Equal(t, []string{"bank"}, scope.MetadataFilters["tenant"])
+		require.NotNil(t, scope.StartTime)
+		require.NotNil(t, scope.EndTime)
+	}
+}
+
+// seededMetadataLogManager exercises real storage through the HTTP filterdata route.
+type seededMetadataLogManager struct {
+	loggingplugin.LogManager
+	store logstore.LogStore
+}
+
+// GetAvailableMetadataKeys forwards the parsed HTTP scope to the seeded database.
+func (m *seededMetadataLogManager) GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error) {
+	return m.store.GetDistinctMetadataKeys(ctx, limit, query, scope)
+}
+
+// TestMetadataFilterDataSeededScope cannot pass merely because the log store is empty.
+func TestMetadataFilterDataSeededScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store, err := logstore.NewLogStore(context.Background(), &logstore.Config{Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "metadata.db")}}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	vk := "seeded-vk"
+	require.NoError(t, store.Create(context.Background(), &logstore.Log{ID: "seeded-request", Timestamp: time.Now().UTC(), VirtualKeyID: &vk, MetadataParsed: map[string]interface{}{"tenant": "seeded-tenant"}}))
+	h := &LoggingHandler{logManager: &seededMetadataLogManager{store: store}}
+	r := router.New()
+	r.GET("/api/logs/filterdata", h.getAvailableFilterData)
+	for _, tc := range []struct {
+		name, query string
+		want        map[string][]string
+	}{
+		{"unscoped control", "", map[string][]string{"tenant": {"seeded-tenant"}}},
+		{"matching request", "&request_id=seeded-request", map[string][]string{"tenant": {"seeded-tenant"}}},
+		{"missing request", "&request_id=missing-request", map[string][]string{}},
+		{"matching virtual key", "&virtual_key_ids=seeded-vk", map[string][]string{"tenant": {"seeded-tenant"}}},
+		{"missing virtual key", "&virtual_key_ids=missing-vk", map[string][]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			var req fasthttp.Request
+			req.SetRequestURI("/api/logs/filterdata?dimensions=metadata_keys" + tc.query)
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, nil)
+			r.Handler(&ctx)
+			require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var body struct {
+				Metadata map[string][]string `json:"metadata_keys"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+			require.Equal(t, tc.want, body.Metadata)
 		})
 	}
 }

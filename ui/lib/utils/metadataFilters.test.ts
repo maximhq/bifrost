@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	mergeMetadataOptions,
 	metadataFilterQueryValue,
 	metadataFilterValueCount,
 	normalizeMetadataFilters,
@@ -80,5 +81,22 @@ describe("metadataFilterValueCount", () => {
 	it("counts every selected value across keys", () => {
 		expect(metadataFilterValueCount({ env: ["prod", "staging"], app: ["web"] })).toBe(3);
 		expect(metadataFilterValueCount(undefined)).toBe(0);
+	});
+});
+
+describe("mergeMetadataOptions", () => {
+	it("keeps selected prototype-named keys when the response is empty", () => {
+		expect(mergeMetadataOptions({}, { constructor: ["x"], toString: ["y"] })).toEqual({ constructor: ["x"], toString: ["y"] });
+	});
+	it("keeps selected missing keys and values removable after another filter changes", () => {
+		expect(mergeMetadataOptions({ user: ["bob"] }, { user: ["alice"], tenant: ["bank"] })).toEqual({
+			user: ["bob", "alice"],
+			tenant: ["bank"],
+		});
+	});
+	it("does not duplicate values or mutate the server response", () => {
+		const available = { user: ["alice"] };
+		expect(mergeMetadataOptions(available, { user: ["alice", "bob"] })).toEqual({ user: ["alice", "bob"] });
+		expect(available).toEqual({ user: ["alice"] });
 	});
 });

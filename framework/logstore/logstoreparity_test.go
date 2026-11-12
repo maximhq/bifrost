@@ -779,7 +779,7 @@ func TestLogStoreParity(t *testing.T) {
 				return pairs, nil
 			},
 			"metadata_keys": func(ctx context.Context, s LogStore) (any, error) {
-				m, err := s.GetDistinctMetadataKeys(ctx, 50, "")
+				m, err := s.GetDistinctMetadataKeys(ctx, 50, "", nil)
 				if err != nil {
 					return nil, err
 				}

@@ -1262,7 +1262,7 @@ func describeFilterSpaceTool() Tool {
 					return
 				},
 				func() (err error) {
-					metadata, err = deps.logManager.GetAvailableMetadataKeys(ctx, limit, query)
+					metadata, err = deps.logManager.GetAvailableMetadataKeys(ctx, limit, query, nil)
 					return
 				},
 			} {

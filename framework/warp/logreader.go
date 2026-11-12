@@ -69,7 +69,7 @@ type RoutingDiscoveryReader interface {
 	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
-	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
+	GetAvailableMetadataKeys(ctx context.Context, limit int, query string, scope *logstore.SearchFilters) (map[string][]string, error)
 }
 
 // ScopeDiscoveryReader is the enterprise hierarchy half of the read surface.

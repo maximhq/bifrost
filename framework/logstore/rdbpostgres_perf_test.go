@@ -373,7 +373,7 @@ func TestGetDistinctMetadataKeys_TimeCutoff(t *testing.T) {
 		Timestamp: old, Metadata: `{"old_key": "old_value"}`,
 	})
 
-	keys, err := store.GetDistinctMetadataKeys(ctx, 1000, "")
+	keys, err := store.GetDistinctMetadataKeys(ctx, 1000, "", nil)
 	require.NoError(t, err)
 	assert.Contains(t, keys, "env")
 	assert.NotContains(t, keys, "old_key")

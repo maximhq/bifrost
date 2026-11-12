@@ -197,7 +197,7 @@ type LogStore interface {
 	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
 	// GetDistinctApps returns distinct backend-detected app labels from logs.
 	GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error)
-	GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
+	GetDistinctMetadataKeys(ctx context.Context, limit int, query string, scope *SearchFilters) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)

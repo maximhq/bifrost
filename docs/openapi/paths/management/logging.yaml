@@ -440,7 +440,16 @@ logs-filterdata:
     summary: Get available filter data
     description: >-
       Returns the distinct values each filter dimension offers, drawn from the
-      logs of roughly the last month.
+      logs of roughly the last month. For `metadata_keys`, the log-list filter
+      parameters (including `period`, `start_time`, `end_time`, `virtual_key_ids`
+      and `metadata_<key>`) also scope the offered values. The first 16 active
+      metadata keys in alphabetical order ignore their own selections, allowing
+      additional values to be selected. Remaining keys use the fully filtered
+      sample; clients should retain selected values so they can still be removed.
+      An explicit time range replaces the default recency window. Filtered
+      metadata responses bypass the shared dropdown cache. Options are sampled
+      from up to 1000 matching recent rows per facet, with at most 100 values per
+      key; they are suggestions, not an exhaustive inventory.
     tags:
       - Logging
     parameters:

@@ -1,3 +1,5 @@
+[test]: verify metadata HTTP scopes against seeded SQLite logs [@davidtema](https://github.com/davidtema)
+[feat]: scope log metadata options to active dashboard filters [@davidtema](https://github.com/davidtema)
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

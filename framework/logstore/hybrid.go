@@ -1685,8 +1685,8 @@ func (h *HybridLogStore) ListUserAgentMappings(ctx context.Context, activeOnly b
 
 // GetDistinctMetadataKeys delegates to the inner store and returns distinct
 // metadata keys (and their distinct values) matching query, capped at limit.
-func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
-	return h.inner.GetDistinctMetadataKeys(ctx, limit, query)
+func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string, scope *SearchFilters) (map[string][]string, error) {
+	return h.inner.GetDistinctMetadataKeys(ctx, limit, query, scope)
 }
 
 // MCP Tool Log analytics methods are delegated directly. Detail/write paths

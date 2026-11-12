@@ -435,12 +435,17 @@ export const logsApi = baseApi.injectEndpoints({
 				topics?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
-			{ dimensions?: string[]; q?: string } | void
+			{ dimensions?: string[]; q?: string; filters?: LogFilters } | void
 		>({
 			query: (arg) => {
 				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
 				const q = arg && "q" in arg ? arg.q : undefined;
 				const params = new URLSearchParams();
+				if (arg?.filters) {
+					for (const [key, value] of Object.entries(buildFilterParams(arg.filters))) {
+						params.set(key, String(value));
+					}
+				}
 				if (dims && dims.length > 0) {
 					params.set("dimensions", [...dims].sort().join(","));
 				}
