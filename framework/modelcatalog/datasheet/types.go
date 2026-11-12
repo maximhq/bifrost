@@ -71,6 +71,15 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			Medium *float64 `json:"search_context_size_medium"`
 			High   *float64 `json:"search_context_size_high"`
 		} `json:"search_context_cost_per_query,omitempty"`
+		// Capability flags and modality lists the datasheet ships in place of an
+		// architecture block; used to derive Architecture modalities below.
+		SupportsVision            *bool    `json:"supports_vision,omitempty"`
+		SupportsAudioInput        *bool    `json:"supports_audio_input,omitempty"`
+		SupportsVideoInput        *bool    `json:"supports_video_input,omitempty"`
+		SupportsPdfInput          *bool    `json:"supports_pdf_input,omitempty"`
+		SupportedModalities       []string `json:"supported_modalities,omitempty"`
+		SupportedInputModalities  []string `json:"supported_input_modalities,omitempty"`
+		SupportedOutputModalities []string `json:"supported_output_modalities,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -95,7 +104,69 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	if p.WebSearchCostPerRequest == nil {
 		p.WebSearchCostPerRequest = p.SearchContextCostPerQuery
 	}
+
+	// Datasheet rows describe modalities through supports_* flags and
+	// supported_*modalities lists rather than an architecture block, so derive
+	// Architecture modalities from them. An explicit architecture block wins.
+	inputModalities := datasheetInputModalities(raw.SupportsVision, raw.SupportsAudioInput, raw.SupportsVideoInput, raw.SupportsPdfInput,
+		raw.SupportedInputModalities, raw.SupportedModalities)
+	outputModalities := normalizeModalities(nil, raw.SupportedOutputModalities)
+	if len(inputModalities) > 0 || len(outputModalities) > 0 {
+		if p.Architecture == nil {
+			p.Architecture = &schemas.Architecture{}
+		}
+		if len(p.Architecture.InputModalities) == 0 {
+			p.Architecture.InputModalities = inputModalities
+		}
+		if len(p.Architecture.OutputModalities) == 0 {
+			p.Architecture.OutputModalities = outputModalities
+		}
+	}
 	return nil
+}
+
+// normalizeModalities appends the lowercased, trimmed modalities of list to dst,
+// skipping blanks and duplicates. "pdf" maps to "file", the name the
+// architecture modalities use for document input.
+func normalizeModalities(dst []string, list []string) []string {
+	for _, m := range list {
+		v := strings.ToLower(strings.TrimSpace(m))
+		if v == "pdf" {
+			v = "file"
+		}
+		if v != "" && !slices.Contains(dst, v) {
+			dst = append(dst, v)
+		}
+	}
+	return dst
+}
+
+// datasheetInputModalities returns the input modalities a datasheet row
+// advertises, as the union of its explicit modality lists and its supports_*
+// input flags. A row that advertises nothing beyond text returns nil, so
+// text-only rows carry no architecture and consumers keep their defaults.
+func datasheetInputModalities(supportsVision, supportsAudio, supportsVideo, supportsPdf *bool, lists ...[]string) []string {
+	modalities := []string{"text"}
+	for _, list := range lists {
+		modalities = normalizeModalities(modalities, list)
+	}
+	for _, flag := range []struct {
+		set      *bool
+		modality string
+	}{
+		{supportsVision, "image"},
+		{supportsAudio, "audio"},
+		{supportsVideo, "video"},
+		{supportsPdf, "file"},
+	} {
+		if flag.set != nil && *flag.set && !slices.Contains(modalities, flag.modality) {
+			modalities = append(modalities, flag.modality)
+		}
+	}
+	if len(modalities) == 1 {
+		return nil
+	}
+	return modalities
 }
 
 // Options holds every individual cost field. Embedded into Entry and reused
