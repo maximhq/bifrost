@@ -9509,3 +9509,52 @@ func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
 	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
 	expect("update to an unknown family", "cl100k_base")
 }
+
+// TestPatternKeyAliasRoutesAndNamesModel pins that a regex: key alias sends the expanded
+// template upstream and reports the requested name as the canonical model.
+func TestPatternKeyAliasRoutesAndNamesModel(t *testing.T) {
+	server, models := agentLoopServer(t, 0)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 100,
+		Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "claude-fable-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"global.anthropic.claude-fable-5"}) {
+		t.Fatalf("upstream models = %v, want [global.anthropic.claude-fable-5]", got)
+	}
+	alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+	if alias == nil || alias.ModelID != "global.anthropic.claude-fable-5" || alias.ModelName != nil {
+		t.Fatalf("ResolvedKeyAlias = %+v, want model_id global.anthropic.claude-fable-5 and no model_name", alias)
+	}
+
+	_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		t.Error("a model outside the key's allow list was served; a pattern alias must not widen the allow list")
+	}
+}

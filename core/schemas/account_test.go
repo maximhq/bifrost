@@ -976,3 +976,136 @@ func TestBasetenAliasValidateRejectsUserinfoQueryFragment(t *testing.T) {
 		t.Fatalf("valid deployment_url rejected: %v", err)
 	}
 }
+
+func TestKeyAliasesResolvePatternAlias(t *testing.T) {
+	name := "canon-$1"
+	aliases := KeyAliases{
+		"claude-opus-4-8":         AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)":       AliasConfig{ModelID: "global.anthropic.$1"},
+		"regex:(claude-haiku-.*)": AliasConfig{ModelID: "us.anthropic.$1", ModelName: &name},
+		"regex:(?P<m>gpt-.*)":     AliasConfig{ModelID: "openai.${m}"},
+	}
+	cases := []struct {
+		model, wantID, wantName string
+	}{
+		{"claude-opus-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"CLAUDE-OPUS-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"claude-fable-5", "global.anthropic.claude-fable-5", ""},
+		{"Claude-Fable-5", "global.anthropic.Claude-Fable-5", ""},
+		{"claude-haiku-4-5", "us.anthropic.claude-haiku-4-5", "canon-claude-haiku-4-5"},
+		{"gpt-5.4", "openai.gpt-5.4", ""},
+	}
+	for _, c := range cases {
+		ac := aliases.ResolveConfig(c.model)
+		if ac == nil {
+			t.Fatalf("ResolveConfig(%q) = nil", c.model)
+		}
+		if ac.ModelID != c.wantID {
+			t.Errorf("ResolveConfig(%q).ModelID = %q, want %q", c.model, ac.ModelID, c.wantID)
+		}
+		gotName := ""
+		if ac.ModelName != nil {
+			gotName = *ac.ModelName
+		}
+		if gotName != c.wantName {
+			t.Errorf("ResolveConfig(%q).ModelName = %q, want %q", c.model, gotName, c.wantName)
+		}
+	}
+	for _, model := range []string{"mistral-large", "regex:(claude-.*)", "xclaude-1"} {
+		if ac := aliases.ResolveConfig(model); ac != nil {
+			t.Errorf("ResolveConfig(%q) = %+v, want nil", model, *ac)
+		}
+	}
+	if aliases["regex:(claude-.*)"].ModelID != "global.anthropic.$1" || *aliases["regex:(claude-haiku-.*)"].ModelName != "canon-$1" {
+		t.Error("resolving a pattern alias mutated the stored template")
+	}
+}
+
+func TestKeyAliasesValidatePatternAlias(t *testing.T) {
+	name := "$2"
+	cases := map[string]KeyAliases{
+		"no compile":     {"regex:(claude-": AliasConfig{ModelID: "x"}},
+		"bare wildcard":  {"regex:*": AliasConfig{ModelID: "x"}},
+		"empty pattern":  {"regex:": AliasConfig{ModelID: "x"}},
+		"missing group":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.$2"}},
+		"missing named":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.${m}"}},
+		"ambiguous name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1x"}},
+		"bad model_name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1", ModelName: &name}},
+	}
+	for label, aliases := range cases {
+		if err := aliases.Validate(Bedrock); err == nil {
+			t.Errorf("%s: Validate accepted %v", label, aliases)
+		}
+	}
+	ok := KeyAliases{
+		"regex:(claude-.*)":   AliasConfig{ModelID: "global.anthropic.${1}"},
+		"regex:(?P<m>gpt-.*)": AliasConfig{ModelID: "openai.$m"},
+		"regex:mistral-.*":    AliasConfig{ModelID: "mistral.fixed-$$"},
+		"claude-sonnet-5-pin": AliasConfig{ModelID: "2d8tchjis5cl"},
+	}
+	if err := ok.Validate(Bedrock); err != nil {
+		t.Errorf("Validate rejected valid pattern aliases: %v", err)
+	}
+}
+
+// TestKeyAliasesPatternEmptyExpansionIsNoMatch pins that a template expanding to an empty model id does not resolve.
+func TestKeyAliasesPatternEmptyExpansionIsNoMatch(t *testing.T) {
+	only := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}}
+	if ac := only.ResolveConfig("bar"); ac != nil {
+		t.Errorf("ResolveConfig(bar) = %+v, want nil for an empty expansion", *ac)
+	}
+	if got := only.Resolve("foobar"); got != "foo" {
+		t.Errorf("Resolve(foobar) = %q, want foo", got)
+	}
+	// The next matching pattern serves the name the first one expanded to nothing.
+	next := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}, "regex:(b.*)": AliasConfig{ModelID: "next.$1"}}
+	if got := next.Resolve("bar"); got != "next.bar" {
+		t.Errorf("Resolve(bar) = %q, want next.bar", got)
+	}
+}
+
+func TestKeyAliasesPatternOrder(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-.*":      AliasConfig{ModelID: "short"},
+		"regex:claude-opus-.*": AliasConfig{ModelID: "long"},
+		"regex:claude-sonn.*":  AliasConfig{ModelID: "b"},
+		"regex:claude-sona.*":  AliasConfig{ModelID: "a"},
+		"exact":                AliasConfig{ModelID: "e"},
+	}
+	if got := strings.Join(aliases.PatternKeys(), ","); got != "regex:claude-opus-.*,regex:claude-sona.*,regex:claude-sonn.*,regex:claude-.*" {
+		t.Errorf("PatternKeys() = %s", got)
+	}
+	if got := aliases.Resolve("claude-opus-5"); got != "long" {
+		t.Errorf("Resolve(claude-opus-5) = %q, want long", got)
+	}
+}
+
+func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
+	exact := KeyAliases{
+		"claude-opus-4-8": {ModelID: "us.anthropic.claude-opus-4-8"},
+		"claude-sonnet-5": {ModelID: "global.anthropic.claude-sonnet-5"},
+		"gpt-5.4":         {ModelID: "openai.gpt-5.4"},
+	}
+	withPattern := KeyAliases{
+		"claude-opus-4-8":   {ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		"regex:(gpt-.*)":    {ModelID: "openai.$1"},
+	}
+	for _, c := range []struct {
+		name    string
+		aliases KeyAliases
+		model   string
+	}{
+		{"exact-hit", exact, "claude-sonnet-5"},
+		{"exact-miss", exact, "mistral-large"},
+		{"pattern-hit", withPattern, "claude-fable-5"},
+		{"pattern-miss", withPattern, "mistral-large"},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = c.aliases.ResolveConfig(c.model)
+			}
+		})
+	}
+}

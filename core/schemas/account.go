@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -453,6 +454,16 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		if ac.ModelFamily != nil && !ac.ModelFamily.IsValid() {
 			return fmt.Errorf("alias %q: invalid model_family %q", from, *ac.ModelFamily)
 		}
+		if IsRegexEntry(from) {
+			if err := ValidateRegexTemplate(from, ac.ModelID); err != nil {
+				return fmt.Errorf("alias %q: model_id: %w", from, err)
+			}
+			if ac.ModelName != nil {
+				if err := ValidateRegexTemplate(from, *ac.ModelName); err != nil {
+					return fmt.Errorf("alias %q: model_name: %w", from, err)
+				}
+			}
+		}
 		if ac.AzureAliasCfg != nil && providerKey != Azure {
 			return fmt.Errorf("alias %q: azure sub-config is only valid on Azure keys (got provider %q)", from, providerKey)
 		}
@@ -784,15 +795,82 @@ func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
 	if ka == nil {
 		return nil
 	}
-	if ac, ok := ka[model]; ok {
+	if IsRegexEntry(model) {
+		return nil
+	}
+	if v, ok := ka[model]; ok {
+		ac := v
 		return &ac
 	}
-	for k, v := range ka {
-		if strings.EqualFold(k, model) {
-			return &v
+	// One pass: a case-insensitive exact name wins outright, otherwise the first-ordered matching pattern.
+	best := ""
+	for k := range ka {
+		if !IsRegexEntry(k) {
+			if strings.EqualFold(k, model) {
+				ac := ka[k]
+				return &ac
+			}
+			continue
+		}
+		if patternOrderedBefore(k, best) && MatchEntry(k, model) {
+			best = k
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	if ac, ok := ExpandPatternAlias(best, ka[best], model); ok {
+		return &ac
+	}
+	// Rare: the first-ordered pattern expanded to nothing, so the rest are tried in order.
+	for _, k := range ka.PatternKeys() {
+		if k == best {
+			continue
+		}
+		if ac, ok := ExpandPatternAlias(k, ka[k], model); ok {
+			return &ac
 		}
 	}
 	return nil
+}
+
+// PatternKeys returns the regex: alias names in match order: longest pattern first, then lexical.
+func (ka KeyAliases) PatternKeys() []string {
+	var keys []string
+	for k := range ka {
+		if IsRegexEntry(k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return patternOrderedBefore(keys[i], keys[j]) })
+	return keys
+}
+
+// patternOrderedBefore orders pattern aliases longest first, then lexically; an empty b sorts last.
+func patternOrderedBefore(a, b string) bool {
+	if b == "" {
+		return true
+	}
+	if len(a) != len(b) {
+		return len(a) > len(b)
+	}
+	return a < b
+}
+
+// ExpandPatternAlias resolves a regex: alias for model, expanding ModelID and ModelName from its capture groups.
+// An unset ModelName stays unset, so pricing tries the expanded ModelID first, as an exact alias does.
+// A template that expands to an empty ModelID, such as $1 over an unmatched optional group, is no match.
+func ExpandPatternAlias(pattern string, ac AliasConfig, model string) (AliasConfig, bool) {
+	modelID, ok := ExpandRegexEntry(pattern, model, ac.ModelID)
+	if !ok || modelID == "" {
+		return AliasConfig{}, false
+	}
+	ac.ModelID = modelID
+	if ac.ModelName != nil && *ac.ModelName != "" {
+		name, _ := ExpandRegexEntry(pattern, model, *ac.ModelName)
+		ac.ModelName = &name
+	}
+	return ac, true
 }
 
 // UnmarshalJSON accepts both the legacy {"k":"v"} and new {"k":{...}} wire
