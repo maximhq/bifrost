@@ -50,7 +50,8 @@
 			"budgetLimits": "Límites presupuestarios",
 			"updateAction": "Actualizar el cliente",
 			"createAction": "Crear cliente",
-			"calendarAlignHelp": "La alineación del calendario habilitante restablecerá el uso del presupuesto a<bold0>$0.00</bold0>y los contadores de límite de tarifas de ficha/requisición a<bold1>0</bold1>para este cliente, a continuación, ajustar cada fecha de reajuste al comienzo de su período actual (por ejemplo,. inicio del día, semana, mes o año). El reajuste de uso no puede ser deshecho, pero la alineación del calendario puede ser apagado más tarde. Esto entrará en vigor cuando guardes."
+			"calendarAlignHelp": "La alineación del calendario habilitante restablecerá el uso del presupuesto a<bold0>$0.00</bold0>y los contadores de límite de tarifas de ficha/requisición a<bold1>0</bold1>para este cliente, a continuación, ajustar cada fecha de reajuste al comienzo de su período actual (por ejemplo,. inicio del día, semana, mes o año). El reajuste de uso no puede ser deshecho, pero la alineación del calendario puede ser apagado más tarde. Esto entrará en vigor cuando guardes.",
+			"limitsCheckFailed": "No se pudo comprobar qué rige el gasto de este cliente, así que aún no se pueden mostrar su presupuesto ni su límite de tasa."
 		},
 		"detail": {
 			"title": "Detalles del cliente",

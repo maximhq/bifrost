@@ -462,6 +462,7 @@ func migrationClickHouseAgentLogsTable(ctx context.Context, db *gorm.DB, cluster
 			"INDEX idx_agent_logs_context_id context_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_request_message_id request_message_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_response_message_id response_message_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_caller_correlation_id caller_correlation_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_operation operation TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_status status TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_record_kind record_kind TYPE bloom_filter GRANULARITY 1",

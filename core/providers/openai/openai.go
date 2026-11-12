@@ -3352,9 +3352,11 @@ func HandleOpenAITranscriptionRequest(
 		}, nil
 	}
 
-	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
+	// An empty body is only a failure when there is JSON to decode. For the
+	// plain-text formats (text, srt, vtt) it is the transcript of audio with no
+	// speech (silence, noise, music), which OpenAI answers with 200 and "" or "\n".
+	isPlainText := request.Params != nil && schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat)
+	if !isPlainText && len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -3368,7 +3370,7 @@ func HandleOpenAITranscriptionRequest(
 	// Parse OpenAI's transcription response directly into BifrostTranscribe
 	response := &schemas.BifrostTranscriptionResponse{}
 	var rawResponse interface{}
-	if request.Params != nil && schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) {
+	if isPlainText {
 		response.Text = string(copiedResponseBody)
 		if sendBackRawResponse {
 			rawResponse = string(copiedResponseBody)
