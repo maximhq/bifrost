@@ -51,9 +51,10 @@ type TableOauthConfig struct {
 	CreatedAt           time.Time          `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time          `gorm:"index;not null" json:"updated_at"`
 
-	Issuer                string `gorm:"type:text" json:"-"`     // Authorization server the client credentials belong to; "" when unknown
-	IssParameterSupported bool   `gorm:"default:false" json:"-"` // The authorization server sends iss in authorization responses (RFC 9207)
-	DynamicallyRegistered bool   `gorm:"default:false" json:"-"` // ClientID came from dynamic client registration
+	Issuer                 string `gorm:"type:text" json:"-"`     // Authorization server the client credentials belong to; "" when unknown
+	IssParameterSupported  bool   `gorm:"default:false" json:"-"` // The authorization server sends iss in authorization responses (RFC 9207)
+	DynamicallyRegistered  bool   `gorm:"default:false" json:"-"` // ClientID came from dynamic client registration
+	ClientMetadataDocument bool   `gorm:"default:false" json:"-"` // ClientID is Bifrost's own Client ID Metadata Document URL
 }
 
 // TableName sets the table name
