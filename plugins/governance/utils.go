@@ -315,6 +315,37 @@ func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
 	return access != nil && unusablePermit(access) == nil
 }
 
+// ResolvedVirtualKeyID returns the id of the virtual key the request resolved to, or "" when it
+// presented none, presented one that matched no row, or matched a row whose access may not be used
+// (inactive or expired). Like PresentedCredentialResolved it reads what the per-request pipeline
+// recorded on the grant, so callers run PreRequestHook first, and it settles no limits.
+//
+// A transport that keys per-caller state on the virtual key uses this rather than the header or
+// PresentedCredentialResolved: a direct key admits a request on its own, so the virtual key sent
+// beside it is not checked by that answer, and a dead key's row names no caller entitled to a share.
+func ResolvedVirtualKeyID(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return ""
+	}
+	identity := g.Identity()
+	if identity == nil {
+		return ""
+	}
+	vk := identity.VirtualKey()
+	if vk == nil || vk.ID == "" {
+		return ""
+	}
+	access := g.Access()
+	if access == nil || unusablePermit(access) != nil {
+		return ""
+	}
+	return vk.ID
+}
+
 // AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,
 // so the providers it grants by the flag alone are materialised here, from what the deployment has
 // configured, and the permit then carries its whole grant in one readable list.

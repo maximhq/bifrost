@@ -1039,23 +1039,33 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 // writeWSError sends a JSON error event to a WebSocket write target.
 // Accepts either a raw *ws.Conn (pre-session) or a *bfws.Session (mutex-protected).
 func writeWSError(w wsWriter, status int, code, message string) {
-	event := schemas.WebSocketErrorEvent{
-		Type:   schemas.WSEventError,
-		Status: status,
-		Error: &schemas.WebSocketErrorBody{
-			Code:    code,
-			Message: message,
-		},
-	}
-	data, err := sonic.Marshal(event)
+	data, err := wsErrorEvent(status, code, message)
 	if err != nil {
 		return
 	}
 	w.WriteMessage(ws.TextMessage, data)
 }
 
+// wsErrorEvent encodes the JSON error event writeWSError sends.
+func wsErrorEvent(status int, code, message string) ([]byte, error) {
+	return sonic.Marshal(schemas.WebSocketErrorEvent{
+		Type:   schemas.WSEventError,
+		Status: status,
+		Error: &schemas.WebSocketErrorBody{
+			Code:    code,
+			Message: message,
+		},
+	})
+}
+
 // writeWSBifrostError converts a BifrostError to a WS error event.
 func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
+	status, code, msg := wsBifrostErrorFields(bifrostErr)
+	writeWSError(w, status, code, msg)
+}
+
+// wsBifrostErrorFields is the status, code and message a BifrostError is sent as on a WS error event.
+func wsBifrostErrorFields(bifrostErr *schemas.BifrostError) (int, string, string) {
 	status := 500
 	if bifrostErr.StatusCode != nil && *bifrostErr.StatusCode > 0 {
 		status = *bifrostErr.StatusCode
@@ -1072,7 +1082,7 @@ func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
 			msg = bifrostErr.Error.Message
 		}
 	}
-	writeWSError(w, status, code, msg)
+	return status, code, msg
 }
 
 // wsResponsesKnownFields lists the fields explicitly handled by WebSocketResponsesEvent.
