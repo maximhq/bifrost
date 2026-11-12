@@ -853,6 +853,25 @@ func ValidateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 	return validateRateLimit(rateLimit)
 }
 
+// applyRateLimitUpdate applies an update's rate limit onto the stored one. The request states the
+// limits the owner keeps: a maximum left out is cleared along with its window, which is how an
+// editor drops one limit and keeps the other. A maximum sent without a window keeps the window
+// already stored rather than leaving the limit with none, which validation would refuse.
+func applyRateLimitUpdate(rateLimit *configstoreTables.TableRateLimit, req *UpdateRateLimitRequest) {
+	rateLimit.TokenMaxLimit = req.TokenMaxLimit
+	if req.TokenMaxLimit == nil {
+		rateLimit.TokenResetDuration = nil
+	} else if req.TokenResetDuration != nil {
+		rateLimit.TokenResetDuration = req.TokenResetDuration
+	}
+	rateLimit.RequestMaxLimit = req.RequestMaxLimit
+	if req.RequestMaxLimit == nil {
+		rateLimit.RequestResetDuration = nil
+	} else if req.RequestResetDuration != nil {
+		rateLimit.RequestResetDuration = req.RequestResetDuration
+	}
+}
+
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
@@ -1021,8 +1040,12 @@ func ReconcileOwnedBudgets(ctx context.Context, store configstore.ConfigStore, t
 			if setOwner != nil {
 				setOwner(&budget)
 			}
+			// When the owner inherits, a new window starts with the spend already counted in the closest
+			// shorter window it contains, since that money was spent inside it too - unless the operator
+			// chose to reset usage on this edit, which starts every budget it touches, new ones included,
+			// at zero.
 			if newBudgetUsage == NewBudgetInheritsShorterWindow {
-				inheritUsageFromClosestShorterBudget(&budget, existing, false)
+				inheritUsageFromClosestShorterBudget(&budget, existing, usageReset != nil && usageReset.requested)
 			}
 			if err := validateBudget(&budget); err != nil {
 				return nil, err
@@ -3609,74 +3632,18 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		// reset_duration for clients that do not send them. Preserve usage on
 		// update, create new budgets, and delete unmatched existing budgets.
 		if req.Budgets != nil {
-			// Validate incoming budgets
-			seenDurations := make(map[string]bool)
-			for _, b := range req.Budgets {
-				if b.MaxLimit < 0 {
-					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-				}
-				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-				}
-				if seenDurations[b.ResetDuration] {
-					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-				}
-				seenDurations[b.ResetDuration] = true
+			// The shared reconciler a customer's budgets go through: matching by id then window, usage
+			// kept on a matched row (or zeroed when the operator asked for a reset), and removed rows
+			// deleted. A new window starts at zero, as a team's always has, rather than inheriting the
+			// shorter window's spend the way a customer's does.
+			teamID := team.ID
+			reconciled, err := ReconcileOwnedBudgets(ctx, h.configStore, tx, team.Budgets, req.Budgets, team.CalendarAligned, func(b *configstoreTables.TableBudget) {
+				b.TeamID = &teamID
+			}, usageReset, NewBudgetStartsAtZero)
+			if err != nil {
+				return err
 			}
-
-			existingByID, existingByDuration := buildBudgetLookup(team.Budgets, req.Budgets)
-
-			var reconciledBudgets []configstoreTables.TableBudget
-			matchedIDs := make(map[string]bool)
-			for _, b := range req.Budgets {
-				existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
-				if err != nil {
-					return err
-				}
-				if found {
-					existing.MaxLimit = b.MaxLimit
-					existing.ResetDuration = b.ResetDuration
-					applyResetConfigToExistingBudget(&existing, b)
-					// LastReset is preserved on update: the reset boundary only ever
-					// moves forward, and never as a side effect of a config write.
-					// CurrentUsage is preserved too unless the operator explicitly
-					// asked for a reset, which UpdateBudget cannot carry and so goes
-					// through the store method that owns the column.
-					if err := validateBudget(&existing); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-						return err
-					}
-					if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
-						return err
-					}
-					if usageReset.requested {
-						existing.CurrentUsage = 0
-					}
-					reconciledBudgets = append(reconciledBudgets, existing)
-					matchedIDs[existing.ID] = true
-				} else {
-					budget := newBudgetFromRequest(b, team.CalendarAligned)
-					budget.TeamID = &team.ID
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					reconciledBudgets = append(reconciledBudgets, budget)
-				}
-			}
-			// Delete budgets that are no longer present
-			for _, existing := range team.Budgets {
-				if !matchedIDs[existing.ID] {
-					if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete removed team budget: %w", err)
-					}
-				}
-			}
-			team.Budgets = reconciledBudgets
+			team.Budgets = reconciled
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {
@@ -3695,10 +3662,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
@@ -4091,10 +4055,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
