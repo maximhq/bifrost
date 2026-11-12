@@ -2163,7 +2163,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Budgetnutzung zurücksetzen?",
-		"description": "Du hast den Budgetbetrag oder die Rücksetzfrequenz für {{owner}} geändert. Setze die aktuelle Nutzung auf 0 zurück oder behalte die vorhandenen Zähler bei. Das Rücksetzfenster behält in beiden Fällen seinen aktuellen Anfang und sein aktuelles Ende."
+		"description": "Du hast die Budgets dieses {{owner}} geändert. Zurücksetzen setzt die aktuelle Nutzung jedes Budgets auf 0. Beibehalten behält die bestehenden Zähler bei. Das Rücksetzfenster behält in beiden Fällen seinen aktuellen Beginn und sein Ende."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Entscheidungsmodelle suchen…",
