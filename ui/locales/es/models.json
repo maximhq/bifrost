@@ -2163,7 +2163,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "¿Restablecer el uso del presupuesto?",
-		"description": "Has cambiado el importe del presupuesto o la frecuencia de restablecimiento de este {{owner}}. Restablece el uso actual a 0 o conserva los contadores existentes. En ambos casos, la ventana de restablecimiento mantiene su inicio y fin actuales."
+		"description": "Cambiaste los presupuestos de este {{owner}}. Restablecer pone a 0 el uso actual de cada presupuesto. Conservar mantiene los contadores existentes. La ventana de reinicio conserva su inicio y fin actuales en ambos casos."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Buscar modelos de decisión…",
