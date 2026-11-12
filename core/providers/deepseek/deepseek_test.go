@@ -964,3 +964,63 @@ func TestSearch_DecodesACompressedResponse(t *testing.T) {
 		t.Fatalf("results = %+v, want the decoded page", resp.Results)
 	}
 }
+
+// DeepSeek documents a null ori_question as "not provided", so an explicit JSON null must reach
+// the upstream as an omitted option rather than being refused at the gateway.
+func TestSearch_TreatsNullOptionsAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	captured := &toolsRequestCapture{}
+	server := newToolsServer(t, http.StatusOK, `{"results":[{"title":"Bifrost","url":"https://example.com/a"}]}`, captured)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
+		Provider:    schemas.DeepSeek,
+		Query:       "q",
+		ExtraParams: map[string]interface{}{"ori_question": nil, "localization": nil},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Search: %v, want a null option treated as absent", bifrostErr.Error.Message)
+	}
+
+	var sent map[string]any
+	if err := json.Unmarshal(captured.body, &sent); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	for _, field := range []string{"ori_question", "localization"} {
+		if value, present := sent[field]; present {
+			t.Fatalf("%s = %v, want it omitted as the vendor's default", field, value)
+		}
+	}
+}
+
+// DeepSeek bills a Fetch only when it returns page content, so an empty 200 response must not
+// carry the flat per-request fee: without Usage the cost engine has nothing to price.
+func TestFetch_EmptyContentIsNotBilled(t *testing.T) {
+	t.Parallel()
+
+	server := newToolsServer(t, http.StatusOK, `{"title":"","content":""}`, nil)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Fetch(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostFetchRequest{
+		Provider: schemas.DeepSeek,
+		URL:      "https://example.com/empty",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Fetch: %v", bifrostErr.Error.Message)
+	}
+	if resp.Content != "" {
+		t.Fatalf("content = %q, want empty", resp.Content)
+	}
+	if resp.Usage != nil {
+		t.Fatalf("Usage = %+v, want nil for a fetch that returned no page content", resp.Usage)
+	}
+}

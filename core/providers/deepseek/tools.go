@@ -130,6 +130,11 @@ func deepseekSearchOptions(request *schemas.BifrostSearchRequest) (deepseekSearc
 	for name, value := range request.ExtraParams {
 		switch name {
 		case "ori_question", "localization":
+			// DeepSeek treats a null option as not provided, so a caller that sends it explicitly
+			// must reach the upstream exactly as one that omits the field.
+			if value == nil {
+				continue
+			}
 			text, ok := value.(string)
 			if !ok {
 				return opts, providerUtils.NewBifrostBadRequestError(name + " must be a string")
@@ -287,12 +292,16 @@ func (provider *DeepSeekProvider) Fetch(ctx *schemas.BifrostContext, key schemas
 	response := &schemas.BifrostFetchResponse{
 		Title:   wire.Title,
 		Content: wire.Content,
-		Usage:   toolsUsage(deepseekFetchCostPerRequest),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:             schemas.FetchRequest,
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerResponseHeaders,
 		},
+	}
+	// DeepSeek bills a Fetch only when it returns page content, so a 200 with no content is
+	// not charged: Usage stays nil and the cost engine has nothing to price.
+	if wire.Content != "" {
+		response.Usage = toolsUsage(deepseekFetchCostPerRequest)
 	}
 	attachToolsRawFields(&response.ExtraFields, rawRequest, rawResponse)
 	return response, nil
