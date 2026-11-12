@@ -480,3 +480,21 @@ func TestBudgetQuarterStartMonthDefaultsToJanuary(t *testing.T) {
 	assert.Equal(t, time.January, (&TableBudget{ResetConfig: &BudgetResetConfig{}}).QuarterStartMonth())
 	assert.Equal(t, time.July, (&TableBudget{ResetConfig: &BudgetResetConfig{QuarterStartMonth: 7}}).QuarterStartMonth())
 }
+
+// TestTableBudgetBeforeSaveCountsTheBusinessUnitOwner pins that the business unit owner column joins
+// the one-owner rule: a budget a business unit holds cannot also be a team's, and one held by a
+// business unit alone saves.
+func TestTableBudgetBeforeSaveCountsTheBusinessUnitOwner(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&TableBudget{}))
+	buID, teamID := "bu-1", "team-1"
+
+	only := TableBudget{ID: "bu-only", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}
+	require.NoError(t, db.Create(&only).Error)
+
+	both := TableBudget{ID: "bu-and-team", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID, TeamID: &teamID}
+	err = db.Create(&both).Error
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "more than one owner")
+}
