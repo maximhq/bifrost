@@ -88,6 +88,13 @@ export const tracesApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }],
 		}),
+		deleteTrace: builder.mutation<void, { projectId: string; traceId: string }>({
+			query: ({ projectId, traceId }) => ({
+				url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["Traces"],
+		}),
 		getTraceConnectInfo: builder.query<TraceConnectInfo, void>({
 			query: () => ({ url: "/traces/connect" }),
 		}),
@@ -136,6 +143,7 @@ export const {
 	useGetTraceHistogramQuery,
 	useGetTraceQuery,
 	useGetTraceConnectInfoQuery,
+	useDeleteTraceMutation,
 	useSaveTraceScoreMutation,
 	useDeleteTraceScoreMutation,
 	useAddTraceCommentMutation,

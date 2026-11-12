@@ -130,6 +130,7 @@ func (h *TraceIngestHandler) langfuseIngestion(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
+	h.forward(ctx, logstore.TraceSourceLangfuse, "/api/public/ingestion", project)
 	for _, id := range accepted {
 		successes = append(successes, result{ID: id, Status: fasthttp.StatusCreated})
 	}
@@ -164,6 +165,7 @@ func (h *TraceIngestHandler) langfuseCreateScore(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
+	h.forward(ctx, logstore.TraceSourceLangfuse, "/api/public/scores", project)
 	SendJSON(ctx, map[string]any{"id": stored.ID})
 }
 

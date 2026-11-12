@@ -42,6 +42,7 @@ type TraceIngestHandler struct {
 	config        *lib.Config
 	logger        schemas.Logger
 	authenticator TraceIngestAuthenticator
+	forwarder     *traceingest.Forwarder
 }
 
 // NewTraceIngestHandler builds the handler over the shared ingest service.
@@ -52,6 +53,35 @@ func NewTraceIngestHandler(service *traceingest.Service, config *lib.Config, log
 // SetAuthenticator replaces how ingest credentials are resolved.
 func (h *TraceIngestHandler) SetAuthenticator(authenticator TraceIngestAuthenticator) {
 	h.authenticator = authenticator
+}
+
+// SetForwarder sets the worker that replays received requests to a project's upstream vendor.
+func (h *TraceIngestHandler) SetForwarder(forwarder *traceingest.Forwarder) {
+	h.forwarder = forwarder
+}
+
+// forward queues the request for replay to each given project's upstream, when it has one. It is
+// called after the request was stored, and cannot change the answer the SDK gets. path is the path
+// below the adapter's base.
+func (h *TraceIngestHandler) forward(ctx *fasthttp.RequestCtx, source, path string, projects ...*tables.TableTraceProject) {
+	if h.forwarder == nil {
+		return
+	}
+	var body []byte
+	for _, project := range projects {
+		if project == nil || project.Forward == nil || !project.Forward.Enabled {
+			continue
+		}
+		if body == nil {
+			// One copy for every target: fasthttp reuses the request buffer after the handler returns.
+			body = append([]byte{}, ctx.PostBody()...)
+		}
+		request := traceingest.ForwardRequest{Source: source, Path: path, ContentType: string(ctx.Request.Header.ContentType()), Body: body}
+		if parent := string(ctx.Request.Header.Peek("x-bt-parent")); parent != "" {
+			request.Headers = map[string]string{"x-bt-parent": parent}
+		}
+		h.forwarder.Enqueue(project, request)
+	}
 }
 
 // RegisterRoutes mounts every tracing ingest route.

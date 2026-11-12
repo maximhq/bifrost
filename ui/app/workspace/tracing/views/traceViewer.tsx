@@ -5,13 +5,14 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { useGetTraceQuery } from "@/lib/store";
+import { getErrorMessage, useDeleteTraceMutation, useGetTraceQuery } from "@/lib/store";
 import type { TraceDetail, TraceSpan } from "@/lib/types/traces";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { AlertCircle, ChevronDown, ChevronRight, Copy, EyeOff, Link2, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Copy, EyeOff, Link2, Loader2, Maximize2, Minimize2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { buildThread, buildTraceTree, spanUsage, type TraceTreeNode } from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, SOURCE_LABELS, spanKindMeta } from "./format";
 
@@ -36,6 +37,7 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 		// A trace that is still arriving is polled until its root span lands.
 		{ skip: !open, pollingInterval: open ? 5000 : 0, skipPollingIfUnfocused: true },
 	);
+	const [deleteTrace] = useDeleteTraceMutation();
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 	const [showHTTP, setShowHTTP] = useState(false);
@@ -93,6 +95,24 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 							</Badge>
 						)}
 						<div className="ml-auto flex items-center gap-1">
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-label={t("tracing.settings.deleteTrace")}
+								data-testid="trace-viewer-delete-button"
+								disabled={!trace}
+								onClick={async () => {
+									if (!trace || !window.confirm(t("tracing.settings.deleteTraceConfirm"))) return;
+									try {
+										await deleteTrace({ projectId: trace.project_id, traceId: trace.trace_id }).unwrap();
+										onClose();
+									} catch (deleteError) {
+										toast.error(getErrorMessage(deleteError));
+									}
+								}}
+							>
+								<Trash2 className="h-4 w-4" />
+							</Button>
 							<Button
 								variant="ghost"
 								size="icon"
