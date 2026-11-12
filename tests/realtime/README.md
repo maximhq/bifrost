@@ -1,6 +1,6 @@
 # Realtime API E2E Tests
 
-End-to-end tests for the Realtime API (`/v1/realtime` and the OpenAI drop-in routes) through a running Bifrost gateway, against the real providers: OpenAI's realtime models, the same models on Azure OpenAI, Amazon Nova 2 Sonic on Bedrock, and ElevenLabs' Scribe and agents. Each test drives a session the way an app does, over HTTP and WebSocket, and checks what the gateway relays, refuses and logs.
+End-to-end tests for the Realtime API (`/v1/realtime` and the OpenAI drop-in routes) and incremental speech sessions (`/v1/audio/speech/stream`) through a running Bifrost gateway, against the real providers: OpenAI's realtime models, the same models on Azure OpenAI, Amazon Nova 2 Sonic on Bedrock, and ElevenLabs' Scribe and agents. Each test drives a session the way an app does, over HTTP and WebSocket, and checks what the gateway relays, refuses and logs.
 
 The suite is a Go module of its own, run with `GOWORK=off`. It spends real tokens, a few cents a run: text turns on `gpt-realtime-mini`, a few seconds of audio, and short Nova Sonic sessions.
 
@@ -57,6 +57,7 @@ Provider failures that cannot be produced on demand against a real provider, suc
 | `nova_test.go` | Nova 2 Sonic: text and voice turns, and its fixed session configuration |
 | `elevenlabs_test.go` | ElevenLabs: Scribe transcription sessions translated to OpenAI events and logged, the `bifrost.*` extension events sent only to a session that opts in, an agent session still relayed as it is, a Scribe model refused without the transcription intent |
 | `soniox_test.go` | Soniox: real-time transcription sessions translated to OpenAI events and logged, a client commit ending a segment, the words extension event sent only to a session that opts in, settings fixed once the connection starts, an async model refused |
+| `speechsession_test.go` | incremental speech sessions on ElevenLabs and Soniox: flushed segments spoken in order and billed by characters sent, a cancel acknowledged while the session keeps speaking, refusals before anything opens, a request limit stopping the next session |
 | `azure_test.go` | Azure OpenAI: text and voice turns, transcription sessions, deployment aliases, client secrets, an unknown deployment |
 | `failure_test.go` | the client leaving mid-turn, a provider error event, a model the provider refuses |
 | `protocol_test.go` | client events refused or rewritten: a second concurrent response, malformed JSON, binary frames, model prefixes in `session.update`, transcription sessions |
@@ -80,6 +81,7 @@ New scenarios go in the file for their area; a helper goes next to the code it d
 | `REALTIME_TRANSCRIBE_MODEL` | `gpt-4o-mini-transcribe` | the transcription model for audio input |
 | `REALTIME_NOVA_MODEL` | `amazon.nova-2-sonic-v1:0` | the Bedrock speech model |
 | `REALTIME_AZURE_MODEL` | `gpt-realtime` | the Azure realtime deployment; the `rt-azure-alias` alias in `config.json` points at `gpt-realtime` |
+| `SPEECH_ELEVENLABS_VOICE` | `21m00Tcm4TlvDq8ikWAM` | the ElevenLabs voice speech sessions speak with |
 | `REALTIME_AZURE_TRANSCRIBE_MODEL` | `gpt-4o-transcribe` | the Azure transcription deployment |
 | `BIFROST_SETUP_TOKEN` | `bifrost-realtime-setup-token` | the `setup_token` in `config.json`, sent on `/api` calls while dashboard auth is off |
 | `BIFROST_ADMIN_AUTH` | | the `Authorization` header for `/api` calls on a gateway with dashboard auth |

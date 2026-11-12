@@ -16,6 +16,19 @@ type tokens struct{ input, output int }
 
 // Client events.
 
+func speechConfig(model, voice string, extra map[string]any) event {
+	config := event{"type": "speech.config", "model": model, "voice": voice, "response_format": "pcm"}
+	for name, value := range extra {
+		config[name] = value
+	}
+	return config
+}
+
+func speechText(text string) event { return event{"type": "speech.text", "text": text} }
+func speechFlush() event           { return event{"type": "speech.flush"} }
+func speechEnd() event             { return event{"type": "speech.end"} }
+func speechCancel() event          { return event{"type": "speech.cancel"} }
+
 func sessionUpdate(session map[string]any) event {
 	return event{"type": "session.update", "session": session}
 }

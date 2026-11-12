@@ -87,16 +87,23 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 			elevenlabsReq.LanguageCode = bifrostReq.Params.LanguageCode
 		}
 
-		if len(bifrostReq.Params.PronunciationDictionaryLocators) > 0 {
-			elevenlabsReq.PronunciationDictionaryLocators = make([]ElevenlabsPronunciationDictionaryLocator, len(bifrostReq.Params.PronunciationDictionaryLocators))
-			for i, locator := range bifrostReq.Params.PronunciationDictionaryLocators {
-				elevenlabsReq.PronunciationDictionaryLocators[i] = ElevenlabsPronunciationDictionaryLocator{
-					PronunciationDictionaryID: locator.PronunciationDictionaryID,
-					VersionID:                 locator.VersionID,
-				}
-			}
-		}
+		elevenlabsReq.PronunciationDictionaryLocators = toElevenlabsPronunciationDictionaryLocators(bifrostReq.Params.PronunciationDictionaryLocators)
 	}
 
 	return elevenlabsReq
+}
+
+// toElevenlabsPronunciationDictionaryLocators converts the request's locators, and returns nil for none.
+func toElevenlabsPronunciationDictionaryLocators(locators []schemas.SpeechPronunciationDictionaryLocator) []ElevenlabsPronunciationDictionaryLocator {
+	if len(locators) == 0 {
+		return nil
+	}
+	converted := make([]ElevenlabsPronunciationDictionaryLocator, len(locators))
+	for i, locator := range locators {
+		converted[i] = ElevenlabsPronunciationDictionaryLocator{
+			PronunciationDictionaryID: locator.PronunciationDictionaryID,
+			VersionID:                 locator.VersionID,
+		}
+	}
+	return converted
 }

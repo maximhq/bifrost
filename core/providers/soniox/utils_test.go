@@ -59,6 +59,16 @@ func TestDeriveRealtimeURL(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestTTSWebSocketURL(t *testing.T) {
+	for baseURL, want := range map[string]string{
+		"https://tts-rt.soniox.com":        "wss://tts-rt.soniox.com/tts-websocket",
+		"http://127.0.0.1:8080":            "ws://127.0.0.1:8080/tts-websocket",
+		"https://proxy.example.com/soniox": "wss://proxy.example.com/soniox/tts-websocket",
+	} {
+		assert.Equal(t, want, ttsWebSocketURL(baseURL), baseURL)
+	}
+}
+
 func TestConvertBifrostSpeechFormatToSoniox(t *testing.T) {
 	for format, want := range map[string]string{
 		"":          "mp3",

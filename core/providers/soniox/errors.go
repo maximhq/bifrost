@@ -66,3 +66,24 @@ func parseSonioxJobError(job *SonioxTranscription) *schemas.BifrostError {
 	}
 	return bifrostErr
 }
+
+// parseSonioxFrameError converts an error frame of the TTS WebSocket into a BifrostError. Its error_code is
+// the HTTP status Soniox would have answered with.
+func parseSonioxFrameError(frame *SonioxTTSFrame) *schemas.BifrostError {
+	statusCode := frame.ErrorCode
+	if statusCode < fasthttp.StatusBadRequest || statusCode > 599 {
+		statusCode = fasthttp.StatusBadGateway
+	}
+	message := frame.ErrorMessage
+	if message == "" {
+		message = "soniox text-to-speech stream failed"
+	}
+	var errorType, requestID *string
+	if frame.ErrorType != "" {
+		errorType = &frame.ErrorType
+	}
+	if frame.RequestID != "" {
+		requestID = &frame.RequestID
+	}
+	return providerUtils.NewProviderAPIError(message, nil, statusCode, errorType, requestID)
+}
