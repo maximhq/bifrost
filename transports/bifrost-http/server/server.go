@@ -390,6 +390,7 @@ type BifrostHTTPServer struct {
 	// TraceIngest receives traces pushed by observability SDKs. Nil without a logs store and a config store.
 	TraceIngest        *traceingest.Service
 	TraceIngestHandler *handlers.TraceIngestHandler
+	TraceForwarder     *traceingest.Forwarder
 
 	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
 	// the management handler a clustered server replays relay changes through.
@@ -3098,6 +3099,9 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	}
 	s.TraceIngest = traceingest.NewService(s.Config.LogsStore, s.Config.ConfigStore, ingestConfig, logger)
 	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
+	// Replays received requests to a project's upstream vendor, after Bifrost has stored them.
+	s.TraceForwarder = traceingest.NewForwarder(nil, logger)
+	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
 	return true
 }
 
@@ -4387,6 +4391,9 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.TraceIngest != nil {
 				// Queued trace batches are written before the stores close.
 				s.TraceIngest.Close()
+			}
+			if s.TraceForwarder != nil {
+				s.TraceForwarder.Close()
 			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()

@@ -13,6 +13,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -79,11 +80,22 @@ func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string
 	if resourceNamesProject {
 		projectHeader = string(ctx.Request.Header.Peek("x-project-name"))
 	}
-	if err := h.ingestOTLP(principal, source, resources, projectHeader, resourceNamesProject); err != nil {
+	projects, err := h.ingestOTLP(principal, source, resources, projectHeader, resourceNamesProject)
+	if err != nil {
 		h.fail(ctx, err)
 		return
 	}
+	h.forward(ctx, source, otlpForwardPath(source), projects...)
 	writeOTLPSuccess(ctx, isJSON)
+}
+
+// otlpForwardPath is the path an OTLP export of this source is replayed to, below the upstream's
+// base URL: the path the vendor's own SDK posts to.
+func otlpForwardPath(source string) string {
+	if source == logstore.TraceSourceLangfuse {
+		return "/api/public/otel/v1/traces"
+	}
+	return "/v1/traces"
 }
 
 // otlpProjectAttributes are the resource attributes that name a project, strongest first.
@@ -95,7 +107,7 @@ var otlpProjectAttributes = []string{"openinference.project.name", "arize.projec
 //
 // experimentID, when given, is the experiment the spans were logged to (Braintrust's x-bt-parent).
 // It is set on every span that names none of its own.
-func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool, experimentID ...string) error {
+func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool, experimentID ...string) ([]*tables.TableTraceProject, error) {
 	experiment := ""
 	if len(experimentID) > 0 {
 		experiment = experimentID[0]
@@ -131,12 +143,12 @@ func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source
 			if !errors.Is(err, traceingest.ErrForbidden) {
 				// An operational failure, not a project this key cannot use: the exporter retries
 				// instead of the spans landing in the next candidate project.
-				return err
+				return nil, err
 			}
 			lastErr = err
 		}
 		if projectID == "" {
-			return lastErr
+			return nil, lastErr
 		}
 		for _, span := range resource.Spans {
 			span.Resource = resource.Attributes
@@ -153,18 +165,20 @@ func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source
 		total += len(parts)
 	}
 	if err := h.service.Admit(principal, total); err != nil {
-		return err
+		return nil, err
 	}
+	projects := make([]*tables.TableTraceProject, 0, len(byProject))
 	for projectID, parts := range byProject {
 		project, err := h.service.ResolveProject(storeCtx, principal, projectID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := h.service.IngestAdmitted(storeCtx, principal, project, source, parts); err != nil {
-			return err
+			return nil, err
 		}
+		projects = append(projects, project)
 	}
-	return nil
+	return projects, nil
 }
 
 // decodeOTLP decodes an ExportTraceServiceRequest. OTLP/JSON is not plain protobuf JSON: ids are
