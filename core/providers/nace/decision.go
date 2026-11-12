@@ -174,7 +174,9 @@ func (provider *NaceProvider) nativeDecision(ctx *schemas.BifrostContext, key sc
 		req.SetBody(body)
 	}
 	latency, err, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
+	// Wait now, not on return: enrich reads resp on the error path, and on a
+	// cancelled ctx client.Do can still be writing to it.
+	wait()
 	enrich := func(err *schemas.BifrostError) *schemas.BifrostError {
 		var errorBody []byte
 		if rawResponse {
