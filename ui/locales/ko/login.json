@@ -51,6 +51,7 @@
 		"publishedBy": "게시자: <code0>{{host}}</code0>",
 		"localhostWarning": "이 애플리케이션은 사용자의 컴퓨터로만 돌아오므로 이름을 확인할 수 없어요. 로컬에서 실행 중인 어떤 앱이든 이 이름을 사용할 수 있어요.",
 		"deviceSignInConfirm": "이 로그인을 직접 시작했고 입력한 코드가 터미널에 표시된 코드와 일치하는 경우에만 계속하세요.",
+		"denyButton": "제가 아닙니다 — 거부",
 		"signInRedirectBody": "이 승인을 진행하려면 Bifrost 계정으로 로그인해야 해요. 로그인 화면으로 이동하며, 로그인하면 바로 이 화면으로 돌아와요.",
 		"signInToBifrost": "Bifrost에 로그인"
 	},
@@ -78,6 +79,8 @@
 		"continue": "계속",
 		"signedInTitle": "로그인되었어요",
 		"signedInBody": "터미널로 돌아가 완료하세요. 이 창은 닫아도 돼요.",
+		"deniedTitle": "로그인이 거부되었습니다",
+		"deniedBody": "로그인이 취소되어 터미널은 로그인되지 않습니다. 이 창을 닫아도 됩니다.",
 		"verifyFailed": "이 코드를 확인할 수 없어요. 터미널에서 로그인을 다시 시작하세요.",
 		"invalidLink": "로그인 링크가 올바른 웹 주소가 아니에요. 게이트웨이의 발급자 URL 설정을 확인하세요.",
 		"unreachable": "Bifrost에 연결할 수 없어요. 연결을 확인하고 다시 시도하세요."

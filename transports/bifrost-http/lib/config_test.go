@@ -717,6 +717,9 @@ func (m *MockConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx con
 func (m *MockConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
 	return nil
 }
+func (m *MockConfigStore) DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error {
+	return nil
+}
 func (m *MockConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
 	return nil
 }

@@ -51,6 +51,7 @@
 		"publishedBy": "Veröffentlicht von <code0>{{host}}</code0>",
 		"localhostWarning": "Diese Anwendung kehrt nur zu deinem eigenen Computer zurück, daher kann ihr Name nicht überprüft werden. Jede lokal laufende App könnte ihn verwenden.",
 		"deviceSignInConfirm": "Fahre nur fort, wenn du diese Anmeldung selbst gestartet hast und der eingegebene Code mit dem in deinem Terminal übereinstimmt.",
+		"denyButton": "Das war ich nicht – ablehnen",
 		"signInRedirectBody": "Diese Autorisierung erfordert ein angemeldetes Bifrost-Konto. Du wirst zur Anmeldung weitergeleitet, danach kehrst du direkt hierher zurück.",
 		"signInToBifrost": "Bei Bifrost anmelden"
 	},
@@ -78,6 +79,8 @@
 		"continue": "Weiter",
 		"signedInTitle": "Du bist angemeldet",
 		"signedInBody": "Kehre zu deinem Terminal zurück, um den Vorgang abzuschließen. Du kannst dieses Fenster schließen.",
+		"deniedTitle": "Anmeldung abgelehnt",
+		"deniedBody": "Die Anmeldung wurde abgebrochen und dein Terminal wird nicht angemeldet. Du kannst dieses Fenster schließen.",
 		"verifyFailed": "Dieser Code konnte nicht überprüft werden. Starte die Anmeldung in deinem Terminal erneut.",
 		"invalidLink": "Der Anmeldelink ist keine gültige Webadresse. Prüfe die Issuer-URL-Einstellung des Gateways.",
 		"unreachable": "Bifrost ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut."

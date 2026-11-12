@@ -15,6 +15,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly deviceContinueBtn: Locator
   readonly deviceError: Locator
   readonly deviceApproved: Locator
+  readonly deviceDenied: Locator
   readonly telemetrySwitch: Locator
   readonly telemetryAddBtn: Locator
   readonly telemetryEndpointInput: Locator
@@ -35,6 +36,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.deviceContinueBtn = page.getByTestId('claude-code-device-continue-btn')
     this.deviceError = page.getByTestId('claude-code-device-error')
     this.deviceApproved = page.getByTestId('claude-code-device-approved')
+    this.deviceDenied = page.getByTestId('claude-code-device-denied')
     this.telemetrySwitch = page.getByTestId('claude-code-telemetry-switch')
     this.telemetryAddBtn = page.getByTestId('claude-code-telemetry-add-btn')
     this.telemetryEndpointInput = page.getByTestId('claude-code-telemetry-endpoint-input')

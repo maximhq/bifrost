@@ -576,6 +576,39 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeGateway_DeniedSignIn pins the consent page's Deny on a device sign-in: the
+// browser is sent to the denied page, the device's next poll is answered access_denied (RFC
+// 8628 §3.5) instead of polling until the code expires, and the refused sign-in cannot then be
+// approved.
+func TestClaudeCodeGateway_DeniedSignIn(t *testing.T) {
+	h, consent, store, _ := newClaudeCodeGateway(t, false)
+	vk := seedGatewayVK(t, store, "vk-deny", "sk-bf-deny")
+	deviceCode, userCode := startDeviceSignIn(t, h)
+
+	verify := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+	h.handleDeviceVerify(verify)
+	require.Equal(t, fasthttp.StatusOK, verify.Response.StatusCode(), string(verify.Response.Body()))
+	consentURL, _ := jsonBody(t, verify)["consent_url"].(string)
+	parsed, err := url.Parse(consentURL)
+	require.NoError(t, err)
+	flowID := parsed.Query().Get("flow")
+
+	deny := jsonPostCtx(`{"deny":true}`)
+	deny.SetUserValue("id", flowID)
+	consent.flowSubmit(deny)
+	require.Equal(t, fasthttp.StatusOK, deny.Response.StatusCode(), string(deny.Response.Body()))
+	var resp consentFlowSubmitResponse
+	require.NoError(t, json.Unmarshal(deny.Response.Body(), &resp))
+	assert.Equal(t, testIssuer+"/oauth/device?denied=1", resp.RedirectURL)
+
+	assert.Equal(t, "access_denied", oauthErrorCode(t, pollDeviceToken(h, deviceCode)))
+
+	approve := jsonPostCtx(`{"mode":"vk","value":"` + vk.Value.GetValue() + `"}`)
+	approve.SetUserValue("id", flowID)
+	consent.flowSubmit(approve)
+	assert.NotEqual(t, fasthttp.StatusOK, approve.Response.StatusCode(), "a refused sign-in must not be approvable afterwards")
+}
+
 // TestClientGateway_BearerRunsInsideOuterMiddlewares pins where the bearer check sits
 // in the inference chain: after the outer middlewares (tracing, recovery), so its own
 // rejections are traced and a panic in it is recovered, and before the auth

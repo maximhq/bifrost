@@ -51,6 +51,7 @@
 		"publishedBy": "Pubblicata da <code0>{{host}}</code0>",
 		"localhostWarning": "Questa applicazione ritorna solo al tuo computer, quindi il suo nome non può essere verificato. Qualsiasi app in esecuzione in locale potrebbe usarlo.",
 		"deviceSignInConfirm": "Continua solo se hai avviato tu questo accesso e il codice inserito corrisponde a quello nel tuo terminale.",
+		"denyButton": "Non sono stato io: rifiuta",
 		"signInRedirectBody": "Questa autorizzazione richiede un account Bifrost con accesso effettuato. Ti portiamo ad accedere, poi tornerai subito qui.",
 		"signInToBifrost": "Accedi a Bifrost"
 	},
@@ -78,6 +79,8 @@
 		"continue": "Continua",
 		"signedInTitle": "Accesso effettuato",
 		"signedInBody": "Torna al terminale per completare. Puoi chiudere questa finestra.",
+		"deniedTitle": "Accesso rifiutato",
+		"deniedBody": "L’accesso è stato annullato e il terminale non verrà collegato. Puoi chiudere questa finestra.",
 		"verifyFailed": "Impossibile verificare questo codice. Avvia di nuovo l’accesso dal terminale.",
 		"invalidLink": "Il link di accesso non è un indirizzo web valido. Controlla l’URL dell’emittente impostato nel gateway.",
 		"unreachable": "Impossibile raggiungere Bifrost. Controlla la connessione e riprova."

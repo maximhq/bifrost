@@ -51,6 +51,7 @@
 		"publishedBy": "Published by <code0>{{host}}</code0>",
 		"localhostWarning": "This application only returns to your own computer, so its name cannot be verified. Any app running locally could use it.",
 		"deviceSignInConfirm": "Continue only if you started this sign-in yourself and the code you entered matches the one in your terminal.",
+		"denyButton": "This wasn't me — deny",
 		"signInRedirectBody": "This authorization needs a signed-in Bifrost account. Taking you to sign in, you'll come straight back here.",
 		"signInToBifrost": "Sign in to Bifrost"
 	},
@@ -78,6 +79,8 @@
 		"continue": "Continue",
 		"signedInTitle": "You're signed in",
 		"signedInBody": "Return to your terminal to finish. You can close this window.",
+		"deniedTitle": "Sign-in denied",
+		"deniedBody": "The sign-in was cancelled and your terminal will not be signed in. You can close this window.",
 		"verifyFailed": "This code could not be verified. Start the sign-in again from your terminal.",
 		"invalidLink": "The sign-in link is not a valid web address. Check the gateway's issuer URL setting.",
 		"unreachable": "Could not reach Bifrost. Check your connection and try again."
