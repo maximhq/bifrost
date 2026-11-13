@@ -1,6 +1,6 @@
 import type { TraceSpan } from "@/lib/types/traces";
 import { describe, expect, it } from "vitest";
-import { buildThread, buildTraceTree, spanUsage } from "./traceTree";
+import { buildThread, buildTraceTree, spanAttachments, spanUsage } from "./traceTree";
 
 function span(
 	id: string,
@@ -122,5 +122,72 @@ describe("spanUsage", () => {
 		const usage = spanUsage(span("llm", undefined, 0, 10, { total_tokens: 50, cost: 0.01, cost_estimated: true }));
 		expect(usage.estimated).toBe(true);
 		expect(usage.linked).toBe(false);
+	});
+});
+describe("spanAttachments", () => {
+	const png = "iVBORw0KGgo=";
+	it("finds every attachment form an SDK sends, once each", () => {
+		const found = spanAttachments(
+			span("a", undefined, 0, 1, {
+				// Braintrust: an uploaded attachment and an external one.
+				input: JSON.stringify({
+					file: { type: "braintrust_attachment", key: "k1/report.pdf", filename: "report.pdf", content_type: "application/pdf" },
+					link: { type: "external_attachment", url: "https://example.com/cat.png", filename: "cat.png", content_type: "image/png" },
+					// OpenAI-style image part, Anthropic base64 image, OTel GenAI blob and uri parts.
+					messages: [
+						{ role: "user", content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${png}` } }] },
+						{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: png } }] },
+						{ role: "user", parts: [{ type: "blob", modality: "audio", mime_type: "audio/wav", content: png }] },
+						{ role: "user", parts: [{ type: "uri", modality: "image", mime_type: "image/webp", uri: "https://example.com/dog.webp" }] },
+					],
+				}),
+				// Langfuse: media tokens inside text, and the same token twice.
+				output:
+					"see @@@langfuseMedia:type=image/png|id=lfabc-123|source=bytes@@@ and @@@langfuseMedia:type=image/png|id=lfabc-123|source=bytes@@@",
+				// OpenInference flattened image message, rebuilt into an object by the ingest mapper.
+				metadata: { image: { url: "https://example.com/chart.jpg" } },
+			}),
+		);
+		const summary = found.map((a) => [a.kind, a.field, a.contentType, a.uploadId ?? a.src?.slice(0, 22)]);
+		expect(summary).toEqual([
+			["upload", "input", "application/pdf", "bt-k1-report-pdf"],
+			["url", "input", "image/png", "https://example.com/ca"],
+			["inline", "input", "image/png", "data:image/png;base64,"],
+			["inline", "input", "image/jpeg", "data:image/jpeg;base64"],
+			["inline", "input", "audio/wav", "data:audio/wav;base64,"],
+			["url", "input", "image/webp", "https://example.com/do"],
+			["upload", "output", "image/png", "lf-p1-lfabc-123"],
+			["url", "metadata", "image/jpeg", "https://example.com/ch"],
+		]);
+		expect(found[0].name).toBe("report.pdf");
+	});
+
+	it("finds nothing in a plain span", () => {
+		expect(spanAttachments(span("b", undefined, 0, 1, { input: '{"q": "hi"}', output: "hello https://example.com" }))).toEqual([]);
+	});
+});
+describe("buildThread attachments", () => {
+	it("keeps binary parts out of the text and attaches them to the message", () => {
+		const call = span("c", undefined, 0, 1, {
+			kind: "llm",
+			input: JSON.stringify([
+				{
+					role: "user",
+					parts: [
+						{ type: "text", content: "Weather where this photo was taken?" },
+						{ type: "blob", modality: "image", mime_type: "image/png", content: "iVBORw0KGgo=" },
+						{ type: "uri", modality: "image", mime_type: "image/png", uri: "https://example.com/a.png" },
+					],
+				},
+				{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } }] },
+			]),
+			output: "Oslo",
+		});
+		const thread = buildThread([call]);
+		expect(thread.map((m) => [m.role, m.text, m.attachments.map((a) => a.kind)])).toEqual([
+			["user", "Weather where this photo was taken?", ["inline", "url"]],
+			["user", "", ["inline"]],
+			["assistant", "Oslo", []],
+		]);
 	});
 });
