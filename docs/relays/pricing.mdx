@@ -136,6 +136,8 @@ Three settings say what one "unit" is:
 
 **Units Path** (`units_path`) is where the value sits in a JSON body, written with dots: `usage.credits`, `DocumentMetadata.Pages`. Paths are case-sensitive. If the path points at a list, the values are added up: `results.#.credits` sums `credits` over every item of `results`.
 
+If the API reports usage only when the request asks for it, such as Tavily's `include_usage`, set that field with [body overrides](./routes#force-fields-in-the-request-body) so a caller cannot leave it out and go unbilled.
+
 A response body is read as JSON when its content type contains `json`, or when it has no content type and is valid JSON. For request-side units, Bifrost reads valid JSON regardless of the caller's `Content-Type`. A missing or negative number counts as no units.
 
 On a charged route that reads units from the request, a body that has the key only in different letter case (`text` when **Units Path** is `Text`) is refused with `400` before the call is sent, since the API would likely accept it but nothing could be billed.
