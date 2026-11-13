@@ -22,6 +22,7 @@ export * from "./warpApi";
 export * from "./oauth2SessionsApi";
 export * from "./pluginsApi";
 export * from "./relaysApi";
+export * from "./tracesApi";
 export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./evalDatasetsApi";

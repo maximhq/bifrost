@@ -10,6 +10,7 @@
 		"mcpLogs": "MCP 로그",
 		"connectors": "커넥터",
 		"relayLogs": "릴레이 로그",
+		"tracing": "트레이싱",
 		"relays": "릴레이",
 		"logsSettings": "로그 설정",
 		"models": "모델",
@@ -91,6 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "릴레이 호출과 비용",
+		"tracing": "Braintrust, Langfuse, Arize, OpenTelemetry SDK가 보낸 트레이스",
 		"relays": "라우트별 가격으로 비 LLM API 릴레이",
 		"home": "내 사용량, 키, 예산, 접근 권한",
 		"observability": "요청 로그 및 모니터링",

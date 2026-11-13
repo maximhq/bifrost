@@ -1922,5 +1922,135 @@
 			"other": "其他"
 		},
 		"overCounted": "實測的 span（{{measured}}）超過計算出的開銷（{{overhead}}）；上游累加器可能重複計算。"
+	},
+	"tracing": {
+		"title": "Tracing",
+		"subtitle": "Traces pushed by your observability SDKs. A model call served by this gateway is counted once, with the gateway's numbers.",
+		"searchPlaceholder": "Search name, input or output",
+		"allProjects": "All projects",
+		"allSources": "All sources",
+		"inProgress": "In progress",
+		"estimated": "estimated",
+		"estimatedShare": "{{cost}} estimated",
+		"unpriced": "Unpriced",
+		"unpricedHint": "No price is known for this model. Add one under Custom Pricing.",
+		"unpricedCalls": "{{count}} unpriced calls",
+		"clear": "Clear",
+		"status": {
+			"any": "Any status",
+			"error": "With errors",
+			"ok": "No errors"
+		},
+		"range": {
+			"1h": "Last hour",
+			"24h": "Last 24h",
+			"7d": "Last 7 days",
+			"30d": "Last 30 days"
+		},
+		"tabs": {
+			"overview": "Overview",
+			"traces": "Traces",
+			"spans": "Spans",
+			"sessions": "Trace sessions"
+		},
+		"columns": {
+			"timestamp": "Time",
+			"name": "Name",
+			"input": "Input",
+			"output": "Output",
+			"tags": "Tags",
+			"scores": "Scores",
+			"tokens": "Tokens",
+			"cost": "Cost",
+			"duration": "Duration",
+			"source": "Source",
+			"model": "Model"
+		},
+		"table": {
+			"range": "{{from}} to {{to}} of {{total}}",
+			"previous": "Previous",
+			"next": "Next"
+		},
+		"overview": {
+			"traces": "Traces",
+			"volume": "Trace volume over time",
+			"bucket": "{{count}} traces, {{errors}} with errors",
+			"linkRate": "Linked to gateway",
+			"linkRateHint": "{{linked}} of {{total}} model calls were served by this gateway",
+			"avgDuration": "Avg duration",
+			"errors": "Traces with errors",
+			"inProgress": "{{count}} in progress",
+			"byProject": "By project",
+			"bySource": "By source"
+		},
+		"sessions": {
+			"session": "Session",
+			"user": "User",
+			"lastSeen": "Last trace",
+			"hint": "Traces that share a session id, as one conversation. These are sessions named by your SDK, not gateway sessions.",
+			"filtered": "Showing session {{session}}"
+		},
+		"empty": {
+			"title": "No traces yet",
+			"description": "Point a Braintrust, Langfuse, Arize or OpenTelemetry SDK at Bifrost. It takes a tracing key and one URL."
+		},
+		"viewer": {
+			"untitled": "Untitled trace",
+			"fullscreen": "Full screen",
+			"exitFullscreen": "Exit full screen",
+			"spans": "{{count}} spans",
+			"tokens": "{{tokens}} tokens",
+			"linked": "{{linked}} of {{total}} calls via gateway",
+			"errors": "{{count}} errors",
+			"loading": "Loading trace",
+			"loadFailed": "This trace could not be loaded.",
+			"spansTab": "Spans",
+			"timelineTab": "Timeline",
+			"threadTab": "Thread",
+			"showHTTP": "Show {{count}} HTTP spans",
+			"noThread": "This trace holds no model conversation.",
+			"noSpans": "No spans have arrived yet.",
+			"error": "Error",
+			"partial": "Still arriving",
+			"firstToken": "Time to first token",
+			"servedByGateway": "Served by this gateway (matched by {{method}})",
+			"linkExpired": "The gateway log has expired. These are the numbers it held.",
+			"openLLMLog": "Open LLM log",
+			"openMCPLog": "Open MCP log",
+			"contentHidden": "Input and output were not stored for this span.",
+			"detailsTab": "Details",
+			"rawTab": "Raw",
+			"expected": "Expected",
+			"metadata": "Metadata",
+			"identifiers": "Identifiers",
+			"gatewayNumbers": "Gateway numbers (counted)",
+			"sdkNumbers": "SDK numbers",
+			"attributes": "Attributes"
+		},
+		"connect": {
+			"button": "Connect",
+			"title": "Connect an SDK",
+			"description": "Create a tracing key, then point your SDK at the URL below. Nothing else in your code changes.",
+			"keys": "Tracing keys",
+			"keysHint": "A tracing key can write traces to its projects and do nothing else. It is shown once.",
+			"noContent": "No content",
+			"lastUsed": "Last used {{when}}",
+			"neverUsed": "Never used",
+			"enabled": "Enabled",
+			"deleteKey": "Delete key",
+			"copyNow": "Copy this key now. It will not be shown again.",
+			"copy": "Copy",
+			"keyName": "Key name",
+			"newProject": "Project",
+			"allProjects": "All existing projects",
+			"canCreateProjects": "May create projects",
+			"logContent": "Store input and output",
+			"createKey": "Create tracing key",
+			"pointSDK": "Point your SDK at Bifrost",
+			"linkHint": "To attach gateway calls to the trace, so each is counted once, add this to the calls you send through Bifrost:",
+			"noUploads": "Attachments are off: this log store needs an object store to keep uploaded files.",
+			"received": "{{count}} traces received",
+			"waiting": "Waiting for the first trace"
+		}
 	}
 }

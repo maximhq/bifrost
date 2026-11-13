@@ -20,6 +20,7 @@ export enum RbacResource {
 	AgentLogs = "AgentLogs",
 	Relays = "Relays",
 	RelayLogs = "RelayLogs",
+	Tracing = "Tracing",
 	MCPToolGroups = "MCPToolGroups",
 	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
