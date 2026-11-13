@@ -476,8 +476,9 @@ func (h *DevPprofHandler) getGoroutines(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	rawProfile := buf.String()
-	allGroups := parseGoroutineProfile(rawProfile)
+	// Parsed in place: the dump of a busy gateway is tens of megabytes, and a string copy of it for
+	// every poll doubled that. It is copied only when the caller asks for the raw text.
+	allGroups := parseGoroutineProfile(buf.Bytes())
 
 	// Filter out profiler goroutines and calculate summary
 	groups := make([]GoroutineGroup, 0, len(allGroups))
@@ -541,7 +542,7 @@ func (h *DevPprofHandler) getGoroutines(ctx *fasthttp.RequestCtx) {
 	}
 
 	if includeRaw {
-		response.RawProfile = rawProfile
+		response.RawProfile = buf.String()
 	}
 
 	SendJSON(ctx, response)
@@ -638,101 +639,118 @@ func parseWaitMinutes(waitReason string) int {
 	return 0
 }
 
-// parseGoroutineProfile parses the text output of pprof goroutine profile
-// and groups goroutines by their stack trace
-func parseGoroutineProfile(profile string) []GoroutineGroup {
-	// Regex to match goroutine header: "goroutine N [state, wait reason]:"
-	// Examples:
-	//   goroutine 1 [running]:
-	//   goroutine 42 [select, 5 minutes]:
-	//   goroutine 100 [chan receive]:
-	headerRegex := regexp.MustCompile(`goroutine \d+ \[([^\]]+)\]:`)
-
-	// Split by "goroutine " to get individual goroutine blocks
-	blocks := strings.Split(profile, "goroutine ")
-
-	// Map to group goroutines by stack signature
-	groupMap := make(map[string]*GoroutineGroup)
-
-	for _, block := range blocks {
-		block = strings.TrimSpace(block)
-		if block == "" {
-			continue
+// parseGoroutineProfile groups the goroutines of a debug=2 dump by state and stack.
+//
+// It scans the dump in place and allocates only for a stack it has not seen. A gateway with many
+// providers parks tens of thousands of identical workers, and the profiler panel polls this: the
+// first version split the whole dump and built a signature string per goroutine, which made the
+// profiler the largest allocator in the process it was observing.
+//
+// A block is "goroutine N [state, wait]:" followed by its stack lines. Like the first version, a
+// stack ends at its "created by F in goroutine N" line, kept as "created by F in": the creator's id
+// differs per goroutine and would split one stack into many groups.
+func parseGoroutineProfile(profile []byte) []GoroutineGroup {
+	const maxSignatureFrames = 10
+	var (
+		groupsByHash = make(map[uint64]*GoroutineGroup)
+		order        []uint64
+		lines        [][]byte // the current block's stack lines, reused across blocks
+		state        []byte
+		inBlock      bool
+	)
+	flush := func() {
+		if !inBlock || len(lines) == 0 {
+			inBlock = false
+			return
 		}
-
-		// Re-add "goroutine " prefix for regex matching
-		fullBlock := "goroutine " + block
-
-		// Extract state from header
-		matches := headerRegex.FindStringSubmatch(fullBlock)
-		if len(matches) < 2 {
-			continue
+		inBlock = false
+		stateName := state
+		var waitReason []byte
+		if idx := bytes.IndexByte(state, ','); idx != -1 {
+			stateName, waitReason = bytes.TrimSpace(state[:idx]), bytes.TrimSpace(state[idx+1:])
 		}
-
-		stateInfo := matches[1]
-		state := stateInfo
-		waitReason := ""
-
-		// Parse state and wait reason (e.g., "select, 5 minutes" -> state="select", waitReason="5 minutes")
-		if idx := strings.Index(stateInfo, ","); idx != -1 {
-			state = strings.TrimSpace(stateInfo[:idx])
-			waitReason = strings.TrimSpace(stateInfo[idx+1:])
-		}
-
-		// Get stack trace (everything after the header line)
-		lines := strings.Split(block, "\n")
-		if len(lines) < 2 {
-			continue
-		}
-
-		// Extract stack frames (skip the header line which is lines[0])
-		var stackLines []string
-		var topFunc string
-		for i := 1; i < len(lines); i++ {
-			line := strings.TrimSpace(lines[i])
-			if line == "" {
-				continue
+		// FNV-1a over the state and the first frames: the same grouping key as before, not built
+		// as a string.
+		hash := uint64(14695981039346656037)
+		mix := func(data []byte) {
+			for _, c := range data {
+				hash = (hash ^ uint64(c)) * 1099511628211
 			}
-			stackLines = append(stackLines, line)
-
-			// First function line (not a file:line) is the top function
-			if topFunc == "" && !strings.HasPrefix(line, "/") && !strings.Contains(line, ".go:") {
-				topFunc = line
-			}
+			hash = (hash ^ '|') * 1099511628211
 		}
-
-		if len(stackLines) == 0 {
-			continue
+		mix(stateName)
+		for i := 0; i < len(lines) && i < maxSignatureFrames; i++ {
+			mix(lines[i])
 		}
-
-		// Create a signature from the stack (top 10 frames for grouping)
-		maxFrames := 10
-		if len(stackLines) < maxFrames {
-			maxFrames = len(stackLines)
-		}
-		signature := state + "|" + strings.Join(stackLines[:maxFrames], "|")
-
-		// Group by signature
-		if existing, ok := groupMap[signature]; ok {
+		if existing, ok := groupsByHash[hash]; ok {
 			existing.Count++
-		} else {
-			groupMap[signature] = &GoroutineGroup{
-				Count:      1,
-				State:      state,
-				WaitReason: waitReason,
-				TopFunc:    topFunc,
-				Stack:      stackLines,
+			return
+		}
+		group := &GoroutineGroup{Count: 1, State: string(stateName), WaitReason: string(waitReason), Stack: make([]string, len(lines))}
+		for i, line := range lines {
+			group.Stack[i] = string(line)
+			// The first function line (not a file:line) is the top function.
+			if group.TopFunc == "" && !bytes.HasPrefix(line, []byte("/")) && !bytes.Contains(line, []byte(".go:")) {
+				group.TopFunc = group.Stack[i]
 			}
 		}
+		groupsByHash[hash] = group
+		order = append(order, hash)
 	}
 
-	// Convert map to slice
-	groups := make([]GoroutineGroup, 0, len(groupMap))
-	for _, group := range groupMap {
-		groups = append(groups, *group)
+	closed := false // the current block's stack ended at its "created by" line
+	for len(profile) > 0 {
+		line := profile
+		if idx := bytes.IndexByte(profile, '\n'); idx != -1 {
+			line, profile = profile[:idx], profile[idx+1:]
+		} else {
+			profile = nil
+		}
+		if header, ok := goroutineHeaderState(line); ok {
+			flush()
+			inBlock, closed, state, lines = true, false, header, lines[:0]
+			continue
+		}
+		if !inBlock || closed {
+			continue
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if idx := bytes.Index(line, []byte(" in goroutine ")); idx != -1 {
+			line, closed = line[:idx+len(" in")], true
+		}
+		lines = append(lines, line)
 	}
+	flush()
 
+	groups := make([]GoroutineGroup, 0, len(order))
+	for _, hash := range order {
+		groups = append(groups, *groupsByHash[hash])
+	}
 	return groups
+}
+
+// goroutineHeaderState returns the bracketed state of a "goroutine N [state, wait]:" line.
+func goroutineHeaderState(line []byte) ([]byte, bool) {
+	rest, ok := bytes.CutPrefix(line, []byte("goroutine "))
+	if !ok {
+		return nil, false
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || !bytes.HasPrefix(rest[digits:], []byte(" [")) {
+		return nil, false
+	}
+	rest = rest[digits+2:]
+	end := bytes.IndexByte(rest, ']')
+	if end == -1 || !bytes.HasPrefix(rest[end:], []byte("]:")) {
+		return nil, false
+	}
+	return rest[:end], true
 }
 
 // profilerPatterns contains patterns to identify profiler-related code
