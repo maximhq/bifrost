@@ -1509,3 +1509,13 @@ func testDatasheet(t testing.TB, baseModelIndex map[string]string) *datasheet.St
 	t.Cleanup(ds.Close)
 	return ds
 }
+
+// TestPrometheusPluginRecordsGatewayTracesOnly pins that request metrics count gateway requests
+// only: a trace received from an observability SDK is not a request this gateway served.
+func TestPrometheusPluginRecordsGatewayTracesOnly(t *testing.T) {
+	var plugin schemas.ObservabilityPlugin = &PrometheusPlugin{}
+	consumer, ok := plugin.(schemas.GatewayTraceConsumer)
+	if !ok || !consumer.ConsumesGatewayTracesOnly() {
+		t.Fatal("the telemetry plugin must record gateway traces only")
+	}
+}
