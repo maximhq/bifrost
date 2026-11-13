@@ -294,6 +294,10 @@ export const AZURE_DECISION_MODEL = "Microsoft-Decision-1";
 // the ai_decide AI Function. The picker also lists the System One models.
 export const DATABRICKS_DECISION_MODEL = "ai_decide";
 
+// GEMINI_DECISION_MODEL is the model a newly selected Gemini provider starts on.
+// The picker lists the Gemini Decision models.
+export const GEMINI_DECISION_MODEL = "gemini-decision-1";
+
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
 // The picker lists the Clef models Cloudflare Workers AI serves.
 export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";

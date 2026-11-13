@@ -45,8 +45,9 @@ const (
 	// aiGatewayBasePath is the OpenAI-compatible base path for Unity AI Gateway model APIs.
 	aiGatewayBasePath = "/ai-gateway/mlflow/v1"
 
-	// oauthTokenPath and oauthScope are fixed per workspace; DatabricksKeyConfig.OAuthConfig
-	// folds them into the common OAuth key config the shared token cache mints from.
+	// oauthTokenPath is fixed per workspace and oauthScope is the default when a key names no
+	// scopes; DatabricksKeyConfig.OAuthConfig folds them into the common OAuth key config the
+	// shared token cache mints from.
 	oauthTokenPath = schemas.DatabricksOAuthTokenPath
 	oauthScope     = schemas.DatabricksOAuthScope
 

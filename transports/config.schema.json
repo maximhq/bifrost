@@ -7902,11 +7902,11 @@
                   "model_id": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.)."
+                    "description": "Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.). Under a regex: alias name it is a template: $1 or ${name} insert that capture group from the requested model."
                   },
                   "model_name": {
                     "type": "string",
-                    "description": "Canonical model name used for pricing, logging, and family inference."
+                    "description": "Canonical model name used for pricing, logging, and family inference. Under a regex: alias name it is a template like model_id. When unset, pricing tries the expanded model_id first, then the requested model."
                   },
                   "model_family": {
                     "type": "string",
@@ -8015,7 +8015,7 @@
           "propertyNames": {
             "minLength": 1
           },
-          "description": "Model alias mappings: each entry maps a user-facing model name to either a bare provider identifier (legacy string shape) or an AliasConfig object carrying the wire identifier plus optional canonical name, family, and provider-specific overrides."
+          "description": "Model alias mappings: each entry maps a user-facing model name to either a bare provider identifier (legacy string shape) or an AliasConfig object carrying the wire identifier plus optional canonical name, family, and provider-specific overrides. A name that starts with regex: is an RE2 pattern (case-insensitive full match) over the requested model, tried after exact names, longest pattern first; e.g. \"regex:(claude-.*)\": {\"model_id\": \"global.anthropic.$1\"}. The key's models list must still allow the requested name."
         }
       },
       "required": [
@@ -8595,6 +8595,15 @@
                 "forward_gateway_tags": {
                   "type": "boolean",
                   "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution (default: false)"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S+$"
+                  },
+                  "description": "OAuth M2M scopes requested when minting a token (default: [\"all-apis\"]). Set this when the service principal's OAuth secret was created with scopes. Databricks rejects a token request that names any scope the secret does not have. Model Serving needs model-serving, Unity AI Gateway needs ai-gateway, and /v1/decisions needs ai-functions."
                 }
               },
               "required": [

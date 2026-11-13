@@ -110,6 +110,10 @@
           "        hasContent = j.status === 'completed'",
           "            ? (Array.isArray(j.steps) && j.steps.some(function (s) { return s && s.type === 'model_output' && Array.isArray(s.content) && s.content.length > 0; }))",
           "            : (typeof j.id === 'string' && j.id.length > 0 && (j.status === 'in_progress' || j.status === 'cancelled'));",
+          "    } else if (typeof j.audio_base64 === 'string') {",
+          "        // ElevenLabs speech with with_timestamps answers JSON (audio_base64 plus alignment) instead of audio bytes.",
+          "        shape = 'speech-with-timestamps';",
+          "        hasContent = j.audio_base64.length > 0;",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -216094,7 +216098,7 @@
     },
     {
       "name": "176. Key selection and retries on run-scoped providers (key-pool-selection)",
-      "description": "Wire-level pins for key selection within one provider, with no session involved. Each row stands up its own run-scoped custom provider on the OpenAI base. Live keys carry the real credential; dead keys carry a value OpenAI refuses for free. Key weights make every pick deterministic: a weight-0 key is never chosen by ordinary selection beside a weighted one, so a request served on it got there through the behaviour under test.\n\nRows: (1) a dead key hands the request to its live sibling, attempt trail [dead 401, live]; (2) one dead key at max_retries 1 collapses into 502 upstream_credentials_exhausted; (3) two dead keys at max_retries 1 return OpenAI's raw 401, because walking past the first key went beyond the retry budget; (4) key model filters ([] denies every model, a blacklist wins over '*', a regex entry allows) leave only the key that may serve; (5) a model no key allows is refused with no_key_supports_model; (6) x-bf-api-key selects a key by name, and x-bf-api-key-id wins over it, alone pins thirty requests in a row, is trimmed of spaces, and pins nothing when empty; (7) a pin naming no key, or a key that was deleted, is refused by id and by name when the request has no fallbacks, with no upstream call; (8) a pin on a disabled key, or on a key whose models exclude the model, is refused with no upstream call; (9) a caller's pin is dropped when the request falls back to another provider; (10) a key whose alias names a missing model hands the request to a key whose alias resolves, after the provider's 404; (11) batch calls need a key enabled for batches; (12) a keyless custom provider calls upstream with no key. Each row deletes what it made. Run with FEATURE=\"key-pool-selection\".",
+      "description": "Wire-level pins for key selection within one provider, with no session involved. Each row stands up its own run-scoped custom provider on the OpenAI base. Live keys carry the real credential; dead keys carry a value OpenAI refuses for free. Key weights make every pick deterministic: a weight-0 key is never chosen by ordinary selection beside a weighted one, so a request served on it got there through the behaviour under test.\n\nRows: (1) a dead key hands the request to its live sibling, attempt trail [dead 401, live]; (2) one dead key at max_retries 1 collapses into 502 upstream_credentials_exhausted; (3) two dead keys at max_retries 1 return OpenAI's raw 401, because walking past the first key went beyond the retry budget; (4) key model filters ([] denies every model, a blacklist wins over '*', a regex entry allows) leave only the key that may serve; (5) a model no key allows is refused with no_key_supports_model; (6) x-bf-api-key selects a key by name, and x-bf-api-key-id wins over it, alone pins thirty requests in a row, is trimmed of spaces, and pins nothing when empty; (7) a pin naming no key, or a key that was deleted, is refused by id and by name when the request has no fallbacks, with no upstream call; (8) a pin on a disabled key, or on a key whose models exclude the model, is refused with no upstream call; (9) a caller's pin is dropped when the request falls back to another provider; (10) a key whose alias names a missing model hands the request to a key whose alias resolves, after the provider's 404; (11) batch calls need a key enabled for batches; (12) a keyless custom provider calls upstream with no key; (13) a regex: alias sends its expanded model_id template upstream, leaves model_name unset in routing_info and the log row when the alias sets none, and a template naming a capture group the pattern lacks is refused with 400; on the same key an exact alias wins over a matching pattern, the longer of two matching patterns wins, and a blocked name is refused although a pattern matches it. Each row deletes what it made. Run with FEATURE=\"key-pool-selection\".",
       "item": [
         {
           "name": "openai a dead key in a pool hands the request to its live sibling, with no session - key-pool-selection",
@@ -218496,6 +218500,240 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"{{ksr12Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "openai a regex alias sends its expanded template upstream and names the requested model - key-pool-selection",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-keysel-';",
+                  "var BAD = 'sk-harness-keysel-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A chat completion outside the row's own request, with the caller's own request id so its log row",
+                  "// can be read back.",
+                  "function chat(model, headers, extra, cb) {",
+                  "  var reqId = 'key-pool-selection-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "  var h = { 'Content-Type': 'application/json', 'x-request-id': reqId }; for (var k in headers) { h[k] = headers[k]; }",
+                  "  var b = { model: model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }; for (var x in extra) { b[x] = extra[x]; }",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+                  "    if (err) { pm.test('follow-up request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, {}, reqId); }",
+                  "    var json = {}; try { json = res.json() || {}; } catch (e) { json = {}; }",
+                  "    cb(res, (json.extra_fields || {}).routing_info || {}, reqId);",
+                  "  });",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var names = (state.providers || []).slice();",
+                  "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, providers: [], keys: {}, reqId: 'key-pool-selection-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "function provider(suffix, extra, cb) {",
+                  "  var name = PREFIX + suffix + '-' + run;",
+                  "  var body = { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: !!extra.keyless } };",
+                  "  if (extra.network_config) { body.network_config = extra.network_config; }",
+                  "  call('POST', '/api/providers', body, function (res) {",
+                  "    if (!expectOk('setup: created provider ' + suffix, res)) { return cb(false); }",
+                  "    state.providers.push(name); state['p_' + suffix] = name; cb();",
+                  "  });",
+                  "}",
+                  "// A live key carries the real credential, a dead one a value the provider refuses for free.",
+                  "function key(suffix, label, spec, cb) {",
+                  "  var p = state['p_' + suffix];",
+                  "  var body = { name: p + '-' + label, value: spec.dead ? BAD : 'env.OPENAI_API_KEY', models: spec.models || ['*'], weight: spec.weight };",
+                  "  ['blacklisted_models', 'aliases', 'enabled', 'use_for_batch_api'].forEach(function (f) { if (spec[f] !== undefined) { body[f] = spec[f]; } });",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(p) + '/keys', body, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + label, res)) { return cb(false); }",
+                  "    state.keys[label] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers to sweep stale run-scoped ones', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      var staleName = stale.shift().name;",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(staleName), null, function (rd) {",
+                  "        // 404: a parallel run deleted it first.",
+                  "        var swept = !!rd && (rd.code === 200 || rd.code === 404);",
+                  "        pm.test('setup: swept stale provider ' + staleName, function () { pm.expect(swept, rd ? rd.text() : 'no response').to.eql(true); });",
+                  "        if (swept) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    seq([",
+                  "  function (next) { provider('a', {}, next); },",
+                  "  function (next) { key('a', 'pattern', { weight: 1, models: ['regex:harness-rx-.*', 'blocked'], blacklisted_models: ['harness-rx-blocked'], aliases: { 'regex:harness-rx-(.*)': { model_id: '$1' }, 'regex:harness-rx-mini-(.*)': { model_id: 'gpt-4o-mini' }, 'harness-rx-pinned': { model_id: 'gpt-4o-mini' } } }, next); },",
+                  "  function (next) {",
+                  "    var bad = { name: state.p_a + '-badtemplate', value: BAD, models: ['*'], weight: 0, aliases: { 'regex:harness-rx-(.*)': { model_id: '$2' } } };",
+                  "    call('POST', '/api/providers/' + encodeURIComponent(state.p_a) + '/keys', bad, function (res) {",
+                  "      pm.test('a template naming a capture group the pattern lacks is refused', function () { pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(400); });",
+                  "      next();",
+                  "    });",
+                  "  }",
+                  "], function () {",
+                  "      pm.collectionVariables.set('ksr13' + 'State', JSON.stringify(state));",
+                  "      pm.collectionVariables.set('ksr13' + 'ReqId', state.reqId);",
+                  "      pm.collectionVariables.set('ksr13Model', (state.p_a || 'missing') + '/harness-rx-gpt-4o-mini');",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-keysel-';",
+                  "var BAD = 'sk-harness-keysel-invalid';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// A chat completion outside the row's own request, with the caller's own request id so its log row",
+                  "// can be read back.",
+                  "function chat(model, headers, extra, cb) {",
+                  "  var reqId = 'key-pool-selection-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "  var h = { 'Content-Type': 'application/json', 'x-request-id': reqId }; for (var k in headers) { h[k] = headers[k]; }",
+                  "  var b = { model: model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }; for (var x in extra) { b[x] = extra[x]; }",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+                  "    if (err) { pm.test('follow-up request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, {}, reqId); }",
+                  "    var json = {}; try { json = res.json() || {}; } catch (e) { json = {}; }",
+                  "    cb(res, (json.extra_fields || {}).routing_info || {}, reqId);",
+                  "  });",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      // 404 means the row is not written yet; any other status fails the case.",
+                  "      if (!err && res.code !== 200 && res.code !== 404) { pm.test('log poll returned an unexpected status', function () { pm.expect.fail(res.code + ': ' + res.text()); }); return cb(null); }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var names = (state.providers || []).slice();",
+                  "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('ksr13' + 'State') || '{}');",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ri = (json.extra_fields || {}).routing_info || {};",
+                  "pm.test('the pattern alias sends its expanded model id upstream and sets no model name', function () {",
+                  "  pm.expect(pm.response.code, text).to.eql(200);",
+                  "  pm.expect(ri.key, text).to.eql(state.keys.pattern.name);",
+                  "  pm.expect(((ri.resolved_key_alias || {}).model_id), text).to.eql('gpt-4o-mini');",
+                  "  pm.expect(((ri.resolved_key_alias || {}).model_name), text).to.not.be.ok;",
+                  "});",
+                  "logRow(state.reqId, function (j) {",
+                  "  pm.test('the log row records no canonical model name', function () {",
+                  "    pm.expect(j, 'log ' + state.reqId + ' never settled').to.be.an('object');",
+                  "    pm.expect(j.canonical_model_name, JSON.stringify(j)).to.not.be.ok;",
+                  "  });",
+                  "  // Each name below reaches a model OpenAI does not have unless the intended alias wins.",
+                  "  chat(state.p_a + '/harness-rx-pinned', {}, {}, function (r1, ri1) {",
+                  "    pm.test('an exact alias wins over a pattern that also matches', function () {",
+                  "      pm.expect(r1 && r1.code, r1 ? r1.text() : 'no response').to.eql(200);",
+                  "      pm.expect((ri1.resolved_key_alias || {}).model_id, JSON.stringify(ri1)).to.eql('gpt-4o-mini');",
+                  "    });",
+                  "    chat(state.p_a + '/harness-rx-mini-x', {}, {}, function (r2, ri2) {",
+                  "      pm.test('the longer of two matching patterns wins', function () {",
+                  "        pm.expect(r2 && r2.code, r2 ? r2.text() : 'no response').to.eql(200);",
+                  "        pm.expect((ri2.resolved_key_alias || {}).model_id, JSON.stringify(ri2)).to.eql('gpt-4o-mini');",
+                  "      });",
+                  "      // The allow list admits the expanded name 'blocked', so only a block check on the requested name gives 400.",
+                  "      chat(state.p_a + '/harness-rx-blocked', {}, {}, function (r3) {",
+                  "        pm.test('a blocked name is refused although a pattern matches it', function () {",
+                  "          pm.expect(r3 && r3.code, r3 ? r3.text() : 'no response').to.eql(400);",
+                  "          pm.expect(r3 ? r3.text() : '', 'refusal text').to.include('no keys found');",
+                  "        });",
+                  "        cleanup(state);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{ksr13ReqId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{ksr13Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
             }
           }
         }
@@ -255773,7 +256011,7 @@
     },
     {
       "name": "208. Databricks OAuth M2M token-mint failures and fallback gating (databricks oauth failure)",
-      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nRun with FEATURE=\"databricks oauth failure\".",
+      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nCase 3 pins databricks_key_config.scopes: the fixture's dbx-scoped-workspace.invalid host behaves like a service principal secret created with only model-serving, refusing a token request for any other scope with Databricks' 403 access_denied. Before the change Bifrost always asked for all-apis, so the row failed with that 403; after it the key's scopes are sent and the fixture serves the chat reply. Its setup also pins that the management API refuses a whitespace-joined scope with a 400, since that entry would go out as two scopes.\n\nRun with FEATURE=\"databricks oauth failure\" or FEATURE=\"databricks oauth scopes\".",
       "item": [
         {
           "name": "databricks/databricks-claude-sonnet-4-5 service principal against an unreachable workspace fails at the token mint and the fallback serves - #8254",
@@ -256018,6 +256256,157 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] databricks/databricks-claude-sonnet-4-5 service principal with a scoped secret mints with the key's scopes (databricks oauth scopes)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "// The token endpoint is the local fixture (node tests/e2e/api/runners/databricks-token-fixture.mjs), reached as the",
+                  "// provider's HTTP proxy: it terminates TLS for the workspace host and answers /oidc/v1/token with 401 invalid_client,",
+                  "// so the rejection is deterministic and no request leaves the machine.",
+                  "var FIXTURE = pm.variables.get('databricksTokenFixtureUrl') || 'http://127.0.0.1:8795';",
+                  "var fixtureCa = '';",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
+                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
+                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
+                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
+                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
+                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
+                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "var PROVIDER = 'databricks';",
+                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthCreated', '');",
+                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
+                  "function createProvider(cb) {",
+                  "  mgmt('POST', '/api/providers', {provider: PROVIDER, proxy_config: {type: 'http', url: FIXTURE, ca_cert_pem: fixtureCa}}, function (err, res) {",
+                  "    pm.test('setup: configured the databricks provider for the run', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    pm.variables.set('dbxOauthCreated', '1');",
+                  "    // A scope with whitespace would go out as two scopes, so the management API refuses it at save.",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME + '-bad', models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-scoped-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret', scopes: ['model-serving ai-functions']}}, function (badErr, badRes) {",
+                  "      pm.test('setup: a whitespace-joined scope is refused at save', function () {",
+                  "        pm.expect(badErr).to.equal(null);",
+                  "        pm.expect(badRes.code, badRes.text()).to.equal(400);",
+                  "        pm.expect(badRes.text()).to.include('databricks_key_config.scopes[0]');",
+                  "      });",
+                  "    // The fixture's scoped host mints only for model-serving and refuses all-apis with Databricks' 403.",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-scoped-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret', scopes: ['model-serving']}}, function (err2, res2) {",
+                  "      pm.test('setup: added the scoped harness service principal key', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "        var saved = res2.json();",
+                  "        var cfg = (saved && (saved.databricks_key_config || (saved.key && saved.key.databricks_key_config))) || null;",
+                  "        if (cfg) { pm.expect(cfg.scopes, 'scopes must round-trip: ' + res2.text()).to.eql(['model-serving']); }",
+                  "      });",
+                  "      cb();",
+                  "    });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({url: FIXTURE + '/__ca', method: 'GET'}, function (caErr, caRes) {",
+                  "  pm.test('setup: the databricks token fixture is running at ' + FIXTURE, function () {",
+                  "    pm.expect(caErr, 'start node tests/e2e/api/runners/databricks-token-fixture.mjs').to.equal(null);",
+                  "    pm.expect(caRes.code, caRes.text()).to.equal(200);",
+                  "    pm.expect(caRes.text()).to.include('BEGIN CERTIFICATE');",
+                  "  });",
+                  "  if (caErr || caRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  fixtureCa = caRes.text();",
+                  "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
+                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
+                  "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
+                  "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
+                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
+                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
+                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
+                  "    });",
+                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
+                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "  });",
+                  "});",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('dbxOauthProvider');",
+                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a scoped service principal mints with the key\\'s scopes, not all-apis, and the request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed (a 403 naming all-apis means the key scopes were ignored): ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'no fallback is configured: ' + pm.response.text()).to.not.equal('true');",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.choices[0].message.content).to.equal('OK from the scoped fixture');",
+                  "  pm.expect(pm.response.text(), 'the service principal secret must never be echoed').to.not.include('harness-service-principal-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -318429,7 +318818,979 @@
       ]
     },
     {
-      "name": "341. Kimchi provider (kimchi provider)",
+      "name": "341. Transcription of audio with no speech returns an empty transcript (no-speech transcription) (provider error fixture)",
+      "description": "Local fixture regression, no live provider calls. Audio with no speech (silence, white noise, music) makes OpenAI answer response_format text, srt or vtt with 200 and an empty or newline-only body. HandleOpenAITranscriptionRequest (core/providers/openai/openai.go), shared by OpenAI, Azure, Groq, OpenRouter, Baseten and vLLM, rejected any empty body before checking the format, so the gateway returned 500 \"empty response received from provider\" for a valid empty transcript. The empty-body check now applies only to the JSON formats. A live model may still emit a word for noise, so the empty answer comes from tests/e2e/api/runners/provider-error-fixture.mjs: upstream-transcribe-empty answers \"\" and upstream-transcribe-newline answers \"\\n\". Start the fixture, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. 341.1 to 341.5 are red before the fix (500) and green after (200, empty body). 341.6 pins that a JSON format with an empty body is still an error.",
+      "item": [
+        {
+          "name": "[NO-CONTENT] 341.1 openai/upstream-transcribe-empty /v1/audio/transcriptions text with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('text, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('text, empty body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.2 openai/upstream-transcribe-newline /v1/audio/transcriptions text with a newline body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-newline",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('text, newline body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('text, newline body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.3 openai/upstream-transcribe-empty /v1/audio/transcriptions srt with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "srt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('srt, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('srt, empty body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.4 openai/upstream-transcribe-newline /v1/audio/transcriptions vtt with a newline body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-newline",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "vtt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vtt, newline body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The native route answers with Bifrost's transcription JSON for every response_format.",
+                  "pm.test('vtt, newline body: text is the empty transcript, not an error', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j.text.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 341.5 openai/upstream-transcribe-empty OpenAI drop-in /openai/v1/audio/transcriptions text with an empty body returns an empty transcript (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('drop-in text, empty body: empty transcript returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "});",
+                  "// The OpenAI drop-in writes a plain-text format back as the bare transcript.",
+                  "pm.test('drop-in text, empty body: body is the empty transcript, not an error', function () {",
+                  "  pm.expect(body.trim(), 'expected an empty transcript, got: ' + body.slice(0, 300)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] 341.6 openai/upstream-transcribe-empty /v1/audio/transcriptions json with an empty body is still an empty-response error (no-speech transcription)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/upstream-transcribe-empty",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A JSON format has nothing to decode in an empty body, so it stays an error.",
+                  "var body = pm.response.text();",
+                  "pm.test('json, empty body: reported as an empty provider response', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + body.slice(0, 300)).to.equal(500);",
+                  "  pm.expect(body, 'error body: ' + body.slice(0, 300)).to.include('empty response received from provider');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "342. ElevenLabs speech with_timestamps returns character times (elevenlabs with timestamps) (#9788 / PR #9789)",
+      "description": "POST /v1/audio/speech with an elevenlabs/ model and with_timestamps: true used to return alignment.characters with char_start_times_ms and char_end_times_ms null, in both alignment and normalized_alignment. ElevenLabs' /v1/text-to-speech/{voice_id}/with-timestamps reports the times as character_start_times_seconds and character_end_times_seconds; ElevenlabsAlignment (core/providers/elevenlabs/types.go) decoded names ElevenLabs never sends. Fix: decode ElevenLabs' fields and pass them through; SpeechAlignment (core/schemas/speech.go) now carries character_start_times_seconds and character_end_times_seconds. 342.1 pins the native /v1/audio/speech route: both alignments carry one start and one end time per character, in seconds, non-decreasing. /v1/async/audio/speech reaches the same ElevenlabsProvider.Speech and is not pinned separately. The /openai drop-in has no with_timestamps parameter in the OpenAI API. SpeechStream never calls the stream-with-timestamps endpoint, so streaming is out of scope here.",
+      "item": [
+        {
+          "name": "elevenlabs eleven_turbo_v2_5 /v1/audio/speech with_timestamps character times non-streaming - #9788",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hi there.\",\n  \"voice\": \"nPczCjzI2devNBz1zQrb\",\n  \"response_format\": \"mp3\",\n  \"with_timestamps\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('342.1 status 200 JSON (with_timestamps returns JSON, not audio bytes)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.include('application/json');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('342.1 audio_base64 present', function () {",
+                  "  pm.expect(body.audio_base64, 'audio_base64: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "['alignment', 'normalized_alignment'].forEach(function (field) {",
+                  "  pm.test('342.1 ' + field + ' carries character times in seconds (were null)', function () {",
+                  "    var a = body[field];",
+                  "    pm.expect(a, field + ' missing: ' + JSON.stringify(body[field])).to.be.an('object');",
+                  "    pm.expect(a.characters, field + '.characters').to.be.an('array').and.not.empty;",
+                  "    pm.expect(a.character_start_times_seconds, field + '.character_start_times_seconds: ' + JSON.stringify(a)).to.be.an('array').with.lengthOf(a.characters.length);",
+                  "    pm.expect(a.character_end_times_seconds, field + '.character_end_times_seconds: ' + JSON.stringify(a)).to.be.an('array').with.lengthOf(a.characters.length);",
+                  "    for (var i = 0; i < a.characters.length; i++) {",
+                  "      pm.expect(a.character_start_times_seconds[i], field + ' start[' + i + ']').to.be.a('number');",
+                  "      pm.expect(a.character_end_times_seconds[i], field + ' end[' + i + ']').to.be.at.least(a.character_start_times_seconds[i]);",
+                  "      if (i > 0) { pm.expect(a.character_start_times_seconds[i], field + ' start[' + i + '] goes backwards').to.be.at.least(a.character_start_times_seconds[i - 1]); }",
+                  "    }",
+                  "    // Seconds, not milliseconds: a two-word line ends after 0.1 s and well before 30 s.",
+                  "    pm.expect(a.character_end_times_seconds[a.characters.length - 1], field + ' last end (s)').to.be.within(0.1, 30);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "343. Gemini Decisions API (gemini decisions)",
+      "description": "Gemini Decision 1 (gemini-decision-1) is served natively on the Gemini API's POST /v1beta/decisions, a sibling of the Interactions API that shares its content blocks. Bifrost reaches it from /v1/decisions only. The provider converts the neutral request: predicate, choice and score questions become noul, choice and score questions keyed by name when Gemini takes it as a key (1 to 64 of A-Z, a-z, 0-9, _ and -) and by question_<position> otherwise, each answered under its question's own name, and the input becomes Interactions content blocks. Text and images map directly; the input_file part maps by its mime_type (application/pdf a document, audio/* audio, video/* video) from base64 data, a multipart file part, or a url, and detail original becomes the highest resolution the block takes (ultra_high for images, high for video). Gemini's input has no messages, so messages from more than one role carry a role label each. Only gemini-decision-* models are served natively; chat models such as gemini/gemini-3.6-flash stay on Responses emulation under convert_decision_to_responses, pinned in folder 108. A box question, and input_file on /openai/v1/decisions, are rejected by Bifrost before any call. The audio and video urls are Google's own Decisions API samples.",
+      "item": [
+        {
+          "name": "/v1/decisions - typed answers for every question type - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every question comes back typed, in order, from the native decisions endpoint', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[0].name).to.eql('is_frustrated');",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'a customer threatening to cancel is frustrated: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].type).to.eql('choice');",
+                  "  pm.expect(a[1].choice, 'a double charge is a billing ticket: ' + pm.response.text()).to.eql('billing');",
+                  "  pm.expect(a[1].probabilities, 'every option gets a probability').to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[2].type).to.eql('score');",
+                  "  pm.expect(a[2].score, 'score is a level index between 0 and 2: ' + pm.response.text()).to.be.within(0, 2);",
+                  "  pm.expect(a[2].probabilities, 'every level gets a probability').to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(body.usage && body.usage.prompt_tokens, 'input tokens are reported: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\",\n      \"criteria\": {\n        \"true\": \"The customer is upset or impatient.\",\n        \"false\": \"The customer is calm.\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category.\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"Charges and refunds.\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"Product defects.\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"Anything else.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"Can wait a week.\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"Should be answered soon.\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"Needs a reply today.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_image reaches the decision model - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_image part is sent as an image block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file pdf sent as base64 data - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file pdf in data is sent as a document block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the PDF reads as the Bifrost harness sample document: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoQmlmcm9zdCBoYXJuZXNzIHNhbXBsZSBkb2N1bWVudC4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\n          \"mime_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_sample\",\n      \"instructions\": \"Does the document call itself a Bifrost harness sample document?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file pdf sent as a multipart file part - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file naming a multipart file part takes its bytes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the PDF reads as the Bifrost harness sample document: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "request",
+                  "value": "{\"model\":\"gemini/gemini-decision-1\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"name\":\"doc\",\"mime_type\":\"application/pdf\"}]}],\"questions\":[{\"type\":\"predicate\",\"name\":\"is_sample\",\"instructions\":\"Does the document call itself a Bifrost harness sample document?\"}]}",
+                  "type": "text"
+                },
+                {
+                  "key": "doc",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file audio by url - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file audio url is sent as an audio block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the Apollo 11 clip is about the launch: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/Apollo-11_Day-01-Highlights-10s.mp3\",\n          \"mime_type\": \"audio/mp3\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"mentions_launch\",\n      \"instructions\": \"Is the speaker talking about spaceflight or a rocket launch?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file video by url at low detail - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file video url is sent as a video block at low resolution', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the clip shows a fire: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/videos/ForBiggerBlazes.mp4\",\n          \"mime_type\": \"video/mp4\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"shows_fire\",\n      \"instructions\": \"Does the video show fire or flames?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - question names Gemini keys do not allow keep their names - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('questions named outside Gemini key characters are answered under their own names', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a[0].name, 'first name: ' + pm.response.text()).to.eql('Is the sky blue?');",
+                  "  pm.expect(a[1].name, 'second name: ' + pm.response.text()).to.eql('weather.is_raining');",
+                  "  pm.expect(a[0].probability, 'the sky is blue: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].probability, 'it is not raining: ' + pm.response.text()).to.be.below(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"The sky above the city is clear and blue this afternoon, with no clouds and no rain.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"Is the sky blue?\",\n      \"instructions\": \"Is the sky blue?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"weather.is_raining\",\n      \"instructions\": \"Is it raining?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file video at original detail is sent at high resolution - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file video at original detail is sent at the highest video resolution', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the clip shows a fire: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/videos/ForBiggerBlazes.mp4\",\n          \"mime_type\": \"video/mp4\",\n          \"detail\": \"original\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"shows_fire\",\n      \"instructions\": \"Does the video show fire or flames?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - two speakers keep their roles - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('each message keeps its speaker, so the user\\'s apology is not credited to the assistant', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'only the user apologized: ' + pm.response.text()).to.be.below(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Sorry for the late reply. The export button still crashes the app.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Thanks for the details. I will look into the export crash today.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"assistant_apologized\",\n      \"instructions\": \"Did the assistant apologize?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - box question rejected before the call - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a box question is refused by Bifrost, which Gemini does not serve', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('box question');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"A photo of a dented parcel.\",\n  \"questions\": [\n    {\n      \"type\": \"box\",\n      \"name\": \"dent\",\n      \"instructions\": \"Where is the dent?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - input_file is not part of the OpenAI route - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI route stays OpenAI-shaped and rejects input_file', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('input_file parts are not part of OpenAI');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://example.com/report.pdf\",\n          \"mime_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is this an invoice?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "344. Kimchi provider (kimchi provider)",
       "description": "Kimchi is reached through its OpenAI-compatible API for chat completions and embeddings. Responses requests are served through chat completions, and Kimchi does not serve text completions, so there is no case for them. Reasoning models return thinking in reasoning_content, which Bifrost maps to reasoning. During long waits Kimchi sends SSE keep-alive comments, which Bifrost skips. These cases pin that a plain chat call, a chat stream and an embedding call come back in OpenAI shape from the kimchi provider.",
       "item": [
         {

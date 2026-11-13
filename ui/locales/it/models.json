@@ -255,7 +255,11 @@
 			"vertexEndpoint": "ID o URL dell'endpoint Vertex",
 			"vertexEndpointHint": "Il Model ID sopra è il nome del modello erogato inviato nel body. Usa le credenziali Google di questa chiave. Supporta la chat e la conversione da Responses a chat.",
 			"vertexEndpointPlaceholder": "2222222222 o https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Inserisci un ID endpoint Vertex o incolla un URL endpoint supportato."
+			"vertexEndpointInvalid": "Inserisci un ID endpoint Vertex o incolla un URL endpoint supportato.",
+			"patternBadge": "Pattern",
+			"patternHint": "Inizia un nome con regex: per coprire molti modelli. Nell'ID del modello, $1 inserisce il primo gruppo di cattura: regex:(claude-.*) con global.anthropic.$1 invia claude-opus-5 come global.anthropic.claude-opus-5. Anche i modelli consentiti della chiave devono includere questi nomi.",
+			"canonicalPatternPlaceholder": "es. $1",
+			"canonicalModelNamePatternHint": "Il nome canonico usato per routing e prezzi. Può usare gruppi di cattura come $1. Se vuoto, viene usato l'ID del modello espanso."
 		},
 		"saveChanges": "Salva modifiche",
 		"saving": "Salvataggio...",
@@ -727,6 +731,7 @@
 			"projectIdOptional": "ID progetto (Facoltativo)",
 			"mantleProjectHelp": "Limita l'inferenza e l'elenco dei modelli a uno specifico progetto Bedrock (inviato come intestazione OpenAI-Project / anthropic-workspace-id). Lascia vuoto per usare il progetto predefinito dell'account.",
 			"oauthM2mHelp": "Databricks consiglia OAuth machine-to-machine per la produzione. I token vengono generati dall'endpoint OIDC del workspace e rinnovati automaticamente.",
+			"databricksScopesHelp": "Lascia vuoto per richiedere all-apis. Se il secret OAuth del service principal è stato creato con degli scope, elencali qui. Databricks rifiuta una richiesta di token che indica uno scope non presente nel secret. Model Serving richiede model-serving, Unity AI Gateway richiede ai-gateway e le decisioni richiedono ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1344,6 +1349,8 @@
 		"deletedAfterExpiry": "· eliminata automaticamente dopo la scadenza",
 		"viewSpend": "Visualizza la spesa",
 		"noAgentsGranted": "Nessun agente autorizzato",
+		"virtualMcps": "MCP virtuali",
+		"noVirtualMcpsAssigned": "Nessun MCP virtuale assegnato",
 		"fiscalYearStarts": "Anno fiscale da {{month}}",
 		"listItem": {
 			"copied": "Chiave virtuale copiata",

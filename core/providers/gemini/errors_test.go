@@ -174,3 +174,42 @@ func TestToGeminiStreamBifrostError_UnparsedPayloadGetsGatewayStatus(t *testing.
 		t.Fatalf("StatusCode = %d, want %d", *err.StatusCode, fasthttp.StatusBadGateway)
 	}
 }
+
+// TestParseGeminiDecisionError pins the decisions endpoint's errors: a safety
+// block, whose code is a reason string, keeps that reason as the error's code
+// and its message and status, and any other error, in Google's usual shape
+// with a numeric code, reads exactly as parseGeminiError reads it.
+func TestParseGeminiDecisionError(t *testing.T) {
+	var blocked fasthttp.Response
+	blocked.SetStatusCode(fasthttp.StatusBadRequest)
+	blocked.SetBodyString(`{"error":{"code":"safety","message":"Request blocked due to safety violations (harmful content). Please modify your input and retry."}}`)
+	bifrostErr := parseGeminiDecisionError(&blocked)
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "safety" {
+		t.Fatalf("code = %+v, want safety", bifrostErr)
+	}
+	if !strings.HasPrefix(bifrostErr.Error.Message, "Request blocked due to safety violations") {
+		t.Fatalf("message = %q", bifrostErr.Error.Message)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+
+	var notFound fasthttp.Response
+	notFound.SetStatusCode(fasthttp.StatusNotFound)
+	notFound.SetBodyString(`{"error":{"code":"not_found","message":"Model gemini-3-flash is not supported by the Decisions API."}}`)
+	bifrostErr = parseGeminiDecisionError(&notFound)
+	if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "not_found" {
+		t.Fatalf("code = %+v, want not_found", bifrostErr.Error)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusNotFound {
+		t.Fatalf("status = %v, want 404", bifrostErr.StatusCode)
+	}
+
+	var quota fasthttp.Response
+	quota.SetStatusCode(fasthttp.StatusTooManyRequests)
+	quota.SetBodyString(`{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}`)
+	bifrostErr = parseGeminiDecisionError(&quota)
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "429" || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "RESOURCE_EXHAUSTED" {
+		t.Fatalf("a usual Google error must read as parseGeminiError reads it, got %+v", bifrostErr.Error)
+	}
+}
