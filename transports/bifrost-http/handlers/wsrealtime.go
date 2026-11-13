@@ -77,6 +77,8 @@ func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	for _, path := range append(integrations.GenAIRealtimePaths("/genai"), integrations.GenAIVertexRealtimePaths("/genai")...) {
 		r.GET(path, liveHandler)
 	}
+	// An ElevenLabs client's Scribe socket, on the /elevenlabs base URL its SDK is given.
+	r.GET(elevenlabsScribePath, lib.ChainMiddlewares(h.handleElevenlabsScribeUpgrade, middlewares...))
 }
 
 // Close closes active realtime connections.
@@ -517,7 +519,8 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		return
 	}
 	nativeProvider, speaksNatively := rtProvider.(schemas.RealtimeNativeProvider)
-	if clientConn.native != nil && !speaksNatively {
+	// A route the client's URL addresses is opened by its own protocol, which refuses a provider it cannot serve.
+	if clientConn.native != nil && clientConn.native.open == nil && !speaksNatively {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error",
 			fmt.Sprintf("provider %s cannot serve %s clients; use %s for it", providerKey, clientConn.native.name, lib.WithBasePath("/v1/realtime"))))
 		return
@@ -548,7 +551,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
 		model = aliasConfig.ModelID
 	}
-	if clientConn.native != nil {
+	if clientConn.native != nil && clientConn.native.open == nil {
 		// The first frame carried the model the client asked for; Live gets the one Bifrost resolved, on the key's own project.
 		setup, setupErr := nativeProvider.NativeRealtimeSetup(bifrostCtx, key, buffered[0].data, model)
 		if setupErr != nil {
@@ -575,7 +578,16 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 			return
 		}
 	}
-	upstream, releaseUpstream, upstreamErr := h.openRealtimeUpstream(bifrostCtx, rtProvider, providerKey, key, model, intent, buffered)
+	// A route addressed by the client's own URL names its upstream and its hooks from the client's query.
+	var native *nativeUpstream
+	if clientConn.native != nil && clientConn.native.open != nil {
+		var nativeErr *schemas.BifrostError
+		if native, nativeErr = clientConn.native.open(bifrostCtx, providerKey, rtProvider, key, clientConn.nativeQuery, model); nativeErr != nil {
+			clientConn.writeRealtimeError(nativeErr)
+			return
+		}
+	}
+	upstream, releaseUpstream, upstreamErr := h.openRealtimeUpstream(bifrostCtx, rtProvider, providerKey, key, model, intent, buffered, native)
 	if upstreamErr != nil {
 		clientConn.writeRealtimeError(upstreamErr)
 		return
@@ -587,6 +599,9 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	protocol := realtimeClientProtocol(rtProvider, model, intent)
 	if clientConn.native != nil {
 		protocol = rtProvider
+		if native != nil {
+			protocol = native.protocol
+		}
 	}
 	if translator != nil {
 		session.SetRealtimeTranslator(translator)
@@ -623,6 +638,7 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 	model string,
 	intent string,
 	buffered []realtimeWebSocketFrame,
+	native *nativeUpstream,
 ) (schemas.RealtimeUpstream, func(), *schemas.BifrostError) {
 	if connector, ok := rtProvider.(schemas.RealtimeConnector); ok {
 		upstream, bifrostErr := connector.ConnectRealtime(bifrostCtx, key, model, intent)
@@ -634,7 +650,9 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 
 	var wsURL string
 	var urlErr *schemas.BifrostError
-	if dialer, ok := rtProvider.(schemas.RealtimeBootstrapDialer); ok && len(buffered) > 0 {
+	if native != nil {
+		wsURL = native.url
+	} else if dialer, ok := rtProvider.(schemas.RealtimeBootstrapDialer); ok && len(buffered) > 0 {
 		frames := make([][]byte, 0, len(buffered))
 		for _, frame := range buffered {
 			if frame.messageType == ws.TextMessage {
@@ -648,9 +666,14 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 	if urlErr != nil {
 		return nil, nil, urlErr
 	}
-	realtimeHeaders, headerErr := rtProvider.RealtimeHeaders(bifrostCtx, key)
-	if headerErr != nil {
-		return nil, nil, headerErr
+	var realtimeHeaders map[string]string
+	if native != nil {
+		realtimeHeaders = native.headers
+	} else {
+		var headerErr *schemas.BifrostError
+		if realtimeHeaders, headerErr = rtProvider.RealtimeHeaders(bifrostCtx, key); headerErr != nil {
+			return nil, nil, headerErr
+		}
 	}
 	var proxyConfig *schemas.ProxyConfig
 	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
@@ -1217,6 +1240,8 @@ func realtimeDefaultProviderForPath(path string) schemas.ModelProvider {
 		return schemas.Vertex
 	case strings.HasPrefix(path, "/genai/"):
 		return schemas.Gemini
+	case strings.HasPrefix(path, "/elevenlabs/"):
+		return schemas.Elevenlabs
 	}
 	return ""
 }
@@ -1290,6 +1315,20 @@ var (
 type nativeProtocol struct {
 	name        string // names the protocol in an error, such as "Gemini Live"
 	integration string // the integration the route belongs to, which governance and logs record
+
+	open       nativeOpener                                                  // names the upstream and the hooks from the client's URL; nil when the first frame addresses the model
+	writeError func(c *realtimeClientConn, bifrostErr *schemas.BifrostError) // how the protocol's clients read a failure; Live's close with a code
+}
+
+// nativeOpener is how a route addressed by the client's own URL reaches the provider, which it asks for the upstream
+// that URL names, on the key it selected, and for the hooks the connection's frames pass through.
+type nativeOpener func(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, provider schemas.RealtimeProvider, key schemas.Key, rawQuery, model string) (*nativeUpstream, *schemas.BifrostError)
+
+// nativeUpstream is where a native client's URL sends the connection, and the hooks its frames pass through.
+type nativeUpstream struct {
+	url      string
+	headers  map[string]string
+	protocol schemas.RealtimeProvider
 }
 
 type realtimeClientConn struct {
@@ -1298,6 +1337,8 @@ type realtimeClientConn struct {
 	closeOnce sync.Once
 	done      chan struct{}
 	native    *nativeProtocol // set when the client speaks the provider's own protocol, which reports every failure by closing
+	// nativeQuery is the raw query of the URL a native client called, which a route addressed by it forwards.
+	nativeQuery string
 
 	// pingInterval is the heartbeat period. It is a field rather than a constant
 	// so tests can drive the heartbeat without waiting out realtimeWSPingInterval.
@@ -1431,6 +1472,10 @@ func (c *realtimeClientConn) closing() bool {
 // writeRealtimeError sends the canonical wire error without changing its status.
 func (c *realtimeClientConn) writeRealtimeError(bifrostErr *schemas.BifrostError) {
 	if c.native != nil {
+		if c.native.writeError != nil {
+			c.native.writeError(c, bifrostErr)
+			return
+		}
 		c.writeNativeClose(bifrostErr)
 		return
 	}

@@ -1708,7 +1708,7 @@ func TestOpenRealtimeUpstreamDialsFromTheBootstrapFrames(t *testing.T) {
 	}
 
 	provider := &bootstrapRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, url: "ws://" + ln.Addr().String() + "/speech/realtime?commit_strategy=vad"}
-	upstream, release, bifrostErr := handler.openRealtimeUpstream(ctx, provider, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered)
+	upstream, release, bifrostErr := handler.openRealtimeUpstream(ctx, provider, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered, nil)
 	require.Nil(t, bifrostErr)
 	defer release()
 	require.NotNil(t, upstream)
@@ -1716,7 +1716,7 @@ func TestOpenRealtimeUpstreamDialsFromTheBootstrapFrames(t *testing.T) {
 	require.Equal(t, "/speech/realtime?commit_strategy=vad", <-requests)
 
 	plain := &urlRealtimeProvider{OpenAIProvider: &openaiProvider.OpenAIProvider{}, url: "ws://" + ln.Addr().String() + "/speech/realtime?plain=1"}
-	_, releasePlain, bifrostErr := handler.openRealtimeUpstream(ctx, plain, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered)
+	_, releasePlain, bifrostErr := handler.openRealtimeUpstream(ctx, plain, schemas.OpenAI, schemas.Key{ID: "key-1"}, "model", "transcription", buffered, nil)
 	require.Nil(t, bifrostErr)
 	defer releasePlain()
 	require.Equal(t, "/speech/realtime?plain=1", <-requests)

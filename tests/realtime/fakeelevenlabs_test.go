@@ -110,6 +110,8 @@ func (s *elevenScribe) Query() url.Values { return s.query }
 // Header is a header of the upgrade request the gateway made.
 func (s *elevenScribe) Header(name string) string { return s.header.Get(name) }
 
+// Headers is every header of the upgrade request the gateway made.
+func (s *elevenScribe) Headers() http.Header { return s.header }
 
 // AudioBytes is the audio the gateway has forwarded.
 func (s *elevenScribe) AudioBytes() int {

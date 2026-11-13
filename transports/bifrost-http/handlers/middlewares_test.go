@@ -772,6 +772,7 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/realtime",
 		"/openai/openai/realtime",
 		"/v1/audio/speech/stream",
+		"/elevenlabs/v1/text-to-dialogue/stream-input",
 	}
 
 	for _, path := range paths {
@@ -801,6 +802,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
 		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+		"/elevenlabs/v1/speech-to-text/realtime",
 	}
 
 	for _, path := range paths {

@@ -45,7 +45,7 @@ func TestOpenRealtimeUpstreamPrefersProviderConnector(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
 
-	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "", nil)
+	upstream, release, bifrostErr := (&WSRealtimeHandler{}).openRealtimeUpstream(ctx, provider, schemas.Bedrock, schemas.Key{}, "amazon.nova-2-sonic-v1:0", "", nil, nil)
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %+v", bifrostErr)
 	}
@@ -211,6 +211,25 @@ func TestWSRealtimeRegistersAzurePaths(t *testing.T) {
 		if handler, _ := r.Lookup(fasthttp.MethodGet, path, &fasthttp.RequestCtx{}); handler == nil {
 			t.Errorf("%s is not registered", path)
 		}
+	}
+}
+
+// An ElevenLabs client's sockets are served under the /elevenlabs base URL its SDK is given, and their sessions are
+// ElevenLabs' unless the model names another provider.
+func TestElevenlabsSocketsAreServedUnderTheBaseURL(t *testing.T) {
+	r := router.New()
+	(&WSRealtimeHandler{}).RegisterRoutes(r)
+	(&WSSpeechSessionHandler{}).RegisterRoutes(r)
+	for _, path := range []string{"/elevenlabs/v1/speech-to-text/realtime", "/elevenlabs/v1/text-to-dialogue/stream-input"} {
+		if handler, _ := r.Lookup(fasthttp.MethodGet, path, &fasthttp.RequestCtx{}); handler == nil {
+			t.Errorf("%s is not served", path)
+		}
+		if got := realtimeDefaultProviderForPath(path); got != schemas.Elevenlabs {
+			t.Errorf("%s defaults to %q, want elevenlabs", path, got)
+		}
+	}
+	if !isRealtimeTransportEndpoint("/elevenlabs/v1/speech-to-text/realtime") {
+		t.Error("the Scribe socket is not a realtime transport endpoint, so the auth middleware would answer it as plain HTTP")
 	}
 }
 
