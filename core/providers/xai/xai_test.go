@@ -249,6 +249,7 @@ func TestXAITranscriptionLargePayloadDecodesXAIResponse(t *testing.T) {
 		"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake\r\n--b--\r\n"
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	stageLargePayload(ctx, staged, "multipart/form-data; boundary=b")
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
 	resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, "/v1/stt", gotPath)
@@ -259,6 +260,10 @@ func TestXAITranscriptionLargePayloadDecodesXAIResponse(t *testing.T) {
 	assert.Equal(t, "duration", resp.Usage.Type)
 	require.NotNil(t, resp.Usage.Seconds)
 	assert.Equal(t, 2.846, *resp.Usage.Seconds)
+	// Raw-response capture applies on the staged path as on the normal one.
+	raw, ok := resp.ExtraFields.RawResponse.(map[string]interface{})
+	require.True(t, ok, "raw response should be the decoded xAI body, got %T", resp.ExtraFields.RawResponse)
+	assert.Equal(t, "en", raw["language"])
 }
 
 func TestXAISpeechError(t *testing.T) {
@@ -343,12 +348,13 @@ func TestXAITranscription(t *testing.T) {
 	assert.Equal(t, 2.846, *resp.Usage.Seconds)
 }
 
-// /v1/stt only answers JSON, so a plain-text format would put the raw JSON body in
-// the transcript. Those formats are refused before anything is sent.
+// /v1/stt only answers xAI's JSON, so a plain-text format would put that body in the
+// transcript and diarized_json would decode it as OpenAI's diarized shape, dropping
+// words, language and duration usage. Those formats are refused before anything is sent.
 func TestXAITranscriptionRejectsPlainTextFormats(t *testing.T) {
 	t.Parallel()
 
-	for _, format := range []string{"text", "srt", "vtt"} {
+	for _, format := range []string{"text", "srt", "vtt", "diarized_json"} {
 		t.Run(format, func(t *testing.T) {
 			t.Parallel()
 			var hits int
