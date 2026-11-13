@@ -328232,6 +328232,1228 @@
           }
         }
       ]
+    },
+    {
+      "name": "351. prompt_cache_options reaches only models that accept it (prompt cache options leak)",
+      "description": "A caller sends OpenAI's prompt_cache_options (documented for gpt-5.6+ on both Chat Completions and Responses) together with x-bf-passthrough-extra-params: true, and the request falls back across providers.\n\nBefore the fix, two gaps sent the field where it is rejected:\n1. /v1/chat/completions and /v1/responses did not list prompt_cache_options as a known field, so it was decoded into the typed parameter AND copied into ExtraParams. With extra-params forwarding on, every provider body got it: Vertex 400s with `Unknown name \"prompt_cache_options\"`, Anthropic 400s on the extra input.\n2. The typed field was gated by host, not by model: OpenAI/Azure forwarded it to pre-gpt-5.6 models (gpt-5-mini 400s), custom providers skipped every filter, Responses forwarded it to any OpenAI-wire host, and chat dropped it for gpt-5.6 on Bedrock, Bedrock Mantle and OpenRouter.\n\nThe rule now is the model's: keep the field on any host serving gpt-5.6 or later, drop it for every other model. Each case sends {\"mode\":\"implicit\"} with extra-params forwarding on, expects 200, and checks raw_request: absent for Anthropic, Vertex, pre-5.6 OpenAI models, gpt-oss, Grok and a custom OpenAI provider on gpt-5-mini; present for gpt-5.6+ on OpenAI, Azure, the Bedrock OpenAI surface, Bedrock Mantle and OpenRouter. Two host details: plain bedrock/ keys stay on Converse, which has no such field, so it is absent there; OpenRouter's Responses schema accepts only mode \"explicit\" (live 400 on \"implicit\"), so implicit, the default, is omitted there while explicit still passes.",
+      "item": [
+        {
+          "name": "351.1 anthropic claude-haiku-4-5 /v1/chat/completions: prompt_cache_options stays off the Anthropic body - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.1 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.1 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.2 vertex gemini-2.5-flash /v1/chat/completions: prompt_cache_options stays off the Vertex body - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.2 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.2 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.3 openai gpt-5-mini /v1/chat/completions: prompt_cache_options dropped below gpt-5.6 - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.3 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.3 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.4 openai gpt-5.6-luna /v1/chat/completions: prompt_cache_options still forwarded - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.4 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.4 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-luna\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.5 vertex gemini-2.5-flash /v1/chat/completions streaming: prompt_cache_options does not fail the stream - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.5 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var txt = pm.response.text();",
+                  "pm.test('351.5 SSE content-type', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream');",
+                  "});",
+                  "var chunks = 0, errored = null;",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  l = l.trim(); if (l.indexOf('data:') !== 0) { return; }",
+                  "  var s = l.slice(5).trim(); if (!s || s === '[DONE]') { return; }",
+                  "  var o; try { o = JSON.parse(s); } catch (e) { return; }",
+                  "  if (o.error) { errored = o.error; }",
+                  "  if (o.choices) { chunks++; }",
+                  "});",
+                  "pm.test('351.5 stream carries no error event', function () {",
+                  "  pm.expect(errored, 'stream error: ' + JSON.stringify(errored)).to.equal(null);",
+                  "});",
+                  "pm.test('351.5 stream has choice chunks', function () {",
+                  "  pm.expect(chunks, 'body: ' + txt.slice(0, 500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.6 anthropic claude-haiku-4-5 /v1/responses: prompt_cache_options stays off the Anthropic body - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.6 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.6 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.7 vertex gemini-2.5-flash /v1/responses: prompt_cache_options stays off the Vertex body - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.7 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.7 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.7 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.8 openai gpt-5-mini /v1/responses: prompt_cache_options dropped below gpt-5.6 - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.8 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.8 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.8 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.9 bedrock_mantle openai.gpt-5.6-luna /v1/chat/completions: prompt_cache_options reaches Bedrock Mantle - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.9 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.9 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.9 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-luna\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.10 bedrock_openai_ep us.openai.gpt-5.6-luna /v1/chat/completions: prompt_cache_options reaches the Bedrock OpenAI surface - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.10 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.10 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.10 request went out on the OpenAI wire, not Converse', function () {\n  pm.expect(rr.inferenceConfig, 'raw_request: ' + rawStr.slice(0, 800)).to.equal(undefined);\n});",
+                  "pm.test('351.10 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_openai_ep/us.openai.gpt-5.6-luna\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.11 openrouter openai/gpt-5.6 /v1/chat/completions: prompt_cache_options reaches OpenRouter - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.11 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.11 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.11 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.6\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.12 azure gpt-5.6-sol /v1/chat/completions: prompt_cache_options reaches Azure - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.12 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.12 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.12 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.13 bedrock_mantle openai.gpt-5.6-luna /v1/responses: prompt_cache_options reaches Bedrock Mantle - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.13 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.13 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.13 prompt_cache_options still reaches a gpt-5.6+ model', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'implicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-luna\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.14 openrouter openai/gpt-5.6 /v1/responses: implicit prompt_cache_options mode is omitted for OpenRouter - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.14 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.14 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.14 OpenRouter Responses gets no implicit mode (its schema accepts only explicit)', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.6\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.15 azure gpt-4o-mini /v1/chat/completions: prompt_cache_options dropped below gpt-5.6 - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.15 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.15 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.15 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.16 openai_pc_auto custom provider gpt-5-mini /v1/chat/completions: prompt_cache_options dropped below gpt-5.6 - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.16 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.16 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.16 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5-mini\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.17 bedrock_mantle openai.gpt-oss-120b /v1/responses: prompt_cache_options dropped for gpt-oss - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.17 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.17 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.17 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.18 bedrock openai.gpt-oss-120b /v1/responses: prompt_cache_options dropped for gpt-oss - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.18 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.18 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.18 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.19 xai grok-4-0709 /v1/responses: prompt_cache_options dropped for a Grok model - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.19 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.19 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.19 outbound body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.20 bedrock us.openai.gpt-5.6-luna /v1/chat/completions: Converse carries no prompt_cache_options - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.20 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.20 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.20 request went out on Converse', function () {\n  pm.expect(rr.inferenceConfig, 'raw_request: ' + rawStr.slice(0, 800)).to.be.an('object');\n});",
+                  "pm.test('351.20 Converse body carries no prompt_cache_options', function () {\n  pm.expect(rawStr.indexOf('prompt_cache_options'), 'raw_request: ' + rawStr.slice(0, 800)).to.equal(-1);\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.openai.gpt-5.6-luna\",\n  \"max_completion_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "351.21 openrouter openai/gpt-5.6 /v1/responses: explicit prompt_cache_options mode reaches OpenRouter - prompt cache options leak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('351.21 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('351.21 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var rawStr = JSON.stringify(rr);",
+                  "pm.test('351.21 explicit mode still reaches OpenRouter', function () {\n  pm.expect(rr.prompt_cache_options, 'raw_request: ' + rawStr.slice(0, 800)).to.deep.equal({ mode: 'explicit' });\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.6\",\n  \"max_output_tokens\": 256,\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\"\n  },\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

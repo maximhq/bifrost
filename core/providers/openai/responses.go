@@ -1057,12 +1057,28 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+		if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+			caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+			req.PromptCacheOptions = nil
+		}
 		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
 		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
 			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {
 			optsCopy := *opts
 			optsCopy.TTL = nil
 			req.PromptCacheOptions = &optsCopy
+		}
+		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
+		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
+			cachePromptProvider == schemas.OpenRouter {
+			if opts.TTL == nil {
+				req.PromptCacheOptions = nil
+			} else {
+				optsCopy := *opts
+				optsCopy.Mode = nil
+				req.PromptCacheOptions = &optsCopy
+			}
 		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {

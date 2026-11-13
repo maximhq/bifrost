@@ -139,6 +139,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	}
 
+	// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+	if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+		caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+		openaiReq.ChatParameters.PromptCacheOptions = nil
+	}
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
@@ -311,9 +317,6 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	}
 	if caps.FieldUnsupported(schemas.FieldPromptCacheRetention, true) {
 		req.ChatParameters.PromptCacheRetention = nil
-	}
-	if caps.FieldUnsupported(schemas.FieldPromptCacheOptions, true) {
-		req.ChatParameters.PromptCacheOptions = nil
 	}
 	if caps.FieldUnsupported(schemas.FieldVerbosity, true) {
 		req.ChatParameters.Verbosity = nil
