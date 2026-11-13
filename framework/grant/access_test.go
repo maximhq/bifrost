@@ -598,6 +598,31 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	})
 }
 
+// A client wildcard is allowed only when some tool of the client survives composition.
+func TestAccess_MCPWildcardFollowsTheEffectiveTools(t *testing.T) {
+	caller := permitWithTools(PermitAccessProfile, "ap1", "Member", "github", "read_file")
+	project := permitWithTools(PermitProject, "p1", "Project", "github", "list_issues")
+
+	t.Run("intersect with no tool in common", func(t *testing.T) {
+		access := NewAccess(held(caller), project, Intersect, nil)
+		assert.Empty(t, access.MCPToolIncludeList())
+		assert.False(t, access.IsMCPToolAllowed("github-*"))
+		assertPermitsAre(t, access.DeniedPermitsForMCPTool("github-*"), project)
+	})
+
+	t.Run("intersect with a tool in common", func(t *testing.T) {
+		wider := permitWithTools(PermitProject, "p2", "Project", "github", "read_file", "list_issues")
+		access := NewAccess(held(caller), wider, Intersect, nil)
+		assert.True(t, access.IsMCPToolAllowed("github-*"))
+		assert.Empty(t, access.DeniedPermitsForMCPTool("github-*"))
+	})
+
+	t.Run("union keeps both sides' tools", func(t *testing.T) {
+		access := NewAccess(held(caller), project, Union, nil)
+		assert.True(t, access.IsMCPToolAllowed("github-*"))
+	})
+}
+
 func TestAccess_KeysForReturnsACopy(t *testing.T) {
 	base := newPermit(permitSpec{
 		Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
@@ -1155,7 +1180,9 @@ func TestAccess_DeniedBy(t *testing.T) {
 		require.Len(t, denied, 1)
 		assert.Equal(t, "Caller Key", denied[0].Name())
 
-		assert.Nil(t, access.DeniedPermitsForMCPTool("github-*"), "both sides grant the client some tool")
+		denied = access.DeniedPermitsForMCPTool("github-*")
+		require.Len(t, denied, 1, "each side grants some tool but none in common")
+		assert.Equal(t, "Other Name", denied[0].Name())
 	})
 }
 
