@@ -1369,7 +1369,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
-			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
+			choice := bifrostResponse.Choices[0]
+			hasToolCalls := choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ChatAssistantMessage.ToolCalls) > 0
+			if !hasToolCalls && *choice.FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
 				bifrostResponse.Choices[0].FinishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 			}
 		}
@@ -1605,7 +1608,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse bool
 		var structuredOutputBuilder strings.Builder
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
@@ -1766,7 +1769,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					// Override finish reason for structured output
 					// When structured output is used, tool_use stop reason should appear as "stop" to the client
-					if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+					if structuredOutputToolName != "" && !sawCallerToolUse && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 						finishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 					}
 				}
@@ -1781,6 +1784,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 							isAccumulatingStructuredOutput = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
+						sawCallerToolUse = true
 					}
 
 					// Check for tool use delta event
@@ -2230,6 +2236,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							streamState.UsedStructuredOutputTool = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
 					}
 
 					// Check for tool use delta event
