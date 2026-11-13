@@ -160,9 +160,15 @@ func TestChatGPTPassthroughRouterKeepsUnmatchedGetsFromTheDashboard(t *testing.T
 		ctx.SetBodyString("<html>dashboard</html>")
 	})
 	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	// The model list stops at the middleware; the responses path, a WebSocket route that this
+	// plain GET does not upgrade, runs the handler.
 	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			ctx.SetStatusCode(fasthttp.StatusNoContent)
+			if strings.HasSuffix(string(ctx.Path()), "/codex/models") {
+				ctx.SetStatusCode(fasthttp.StatusNoContent)
+				return
+			}
+			next(ctx)
 		}
 	})
 
@@ -193,6 +199,93 @@ func TestChatGPTPassthroughRouterKeepsUnmatchedGetsFromTheDashboard(t *testing.T
 	dashboard.Request.SetRequestURI("/workspace/logs")
 	r.Handler(&dashboard)
 	require.Equal(t, fasthttp.StatusOK, dashboard.Response.StatusCode())
+}
+
+// A Codex client opens Responses WebSocket mode with a GET upgrade on the responses path. The
+// route hands it to the WebSocket handler with the upstream it resolved: the ChatGPT backend, the
+// caller's ChatGPT token as the credential, and none of the client's own handshake headers.
+func TestChatGPTPassthroughRouterHandsUpgradesToTheWebSocketHandler(t *testing.T) {
+	const chatGPTBearer = "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+	upgrade := func(auth string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses?client_version=0.166.0")
+		ctx.Request.Header.Set("Connection", "Upgrade")
+		ctx.Request.Header.Set("Upgrade", "websocket")
+		ctx.Request.Header.Set("Sec-WebSocket-Version", "13")
+		ctx.Request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		ctx.Request.Header.Set("Sec-WebSocket-Extensions", "permessage-deflate")
+		ctx.Request.Header.Set("Origin", "https://client.example")
+		ctx.Request.Header.Set("Authorization", auth)
+		ctx.Request.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+		ctx.Request.Header.Set("chatgpt-account-id", "acct_1")
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-test")
+		return ctx
+	}
+	newRouter := func(handler PassthroughWebSocketHandler) *router.Router {
+		r := router.New()
+		passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+		if handler != nil {
+			passthroughRouter.SetPassthroughWebSocketHandler(handler)
+		}
+		passthroughRouter.RegisterRoutes(r)
+		return r
+	}
+
+	t.Run("ChatGPT token", func(t *testing.T) {
+		var got *PassthroughWebSocketTarget
+		r := newRouter(func(ctx *fasthttp.RequestCtx, target *PassthroughWebSocketTarget) {
+			got = target
+			ctx.SetStatusCode(fasthttp.StatusSwitchingProtocols)
+		})
+		ctx := upgrade(chatGPTBearer)
+		r.Handler(ctx)
+		require.Equal(t, fasthttp.StatusSwitchingProtocols, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		require.NotNil(t, got)
+		require.Equal(t, schemas.OpenAI, got.Provider)
+		require.Equal(t, schemas.OpenAI, got.BaseProvider)
+		require.Equal(t, "/backend-api/codex/responses", got.Path)
+		require.Equal(t, "client_version=0.166.0", got.RawQuery)
+		require.Equal(t, "https://chatgpt.com", got.UpstreamURL)
+		require.True(t, got.ForwardCallerAuth)
+		require.Equal(t, map[string]string{
+			"authorization":      chatGPTBearer,
+			"openai-beta":        "responses_websockets=2026-02-06",
+			"chatgpt-account-id": "acct_1",
+		}, got.Headers, "the client's handshake and gateway headers stay on its own hop")
+	})
+
+	t.Run("any other bearer keeps the stored key", func(t *testing.T) {
+		var got *PassthroughWebSocketTarget
+		r := newRouter(func(ctx *fasthttp.RequestCtx, target *PassthroughWebSocketTarget) { got = target })
+		r.Handler(upgrade("Bearer sk-bf-test"))
+		require.NotNil(t, got)
+		require.False(t, got.ForwardCallerAuth)
+		require.NotContains(t, got.Headers, "authorization")
+	})
+
+	t.Run("no WebSocket handler", func(t *testing.T) {
+		ctx := upgrade(chatGPTBearer)
+		newRouter(nil).Handler(ctx)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "the path lists no plain GET, so without a handler nothing serves it")
+	})
+
+	t.Run("turn request", func(t *testing.T) {
+		var got *PassthroughWebSocketTarget
+		r := newRouter(func(ctx *fasthttp.RequestCtx, target *PassthroughWebSocketTarget) { got = target })
+		r.Handler(upgrade(chatGPTBearer))
+		require.NotNil(t, got)
+		message := []byte(`{"type":"response.create","model":"gpt-5.5","input":[]}`)
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := got.TurnRequest(bifrostCtx, message)
+		require.Equal(t, fasthttp.MethodPost, req.Method, "a turn is the POST its message replaces")
+		require.Equal(t, "/backend-api/codex/responses", req.Path)
+		require.Equal(t, "https://chatgpt.com", req.UpstreamURL)
+		require.Equal(t, "gpt-5.5", req.Model)
+		require.Equal(t, message, req.Body)
+		skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+		require.True(t, skip, "the caller's token is the credential, so no stored key is selected")
+	})
 }
 
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {

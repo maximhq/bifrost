@@ -5501,6 +5501,7 @@ type WSStreamHooks struct {
 	PostHookRunner       schemas.PostHookRunner
 	Cleanup              func()
 	ShortCircuitResponse *schemas.BifrostResponse
+	Request              *schemas.BifrostRequest // the request as pre-hooks left it
 }
 
 // RealtimeTurnHooks mirrors RunStreamPreHooks but is explicitly scoped to a
@@ -5667,7 +5668,37 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	return &WSStreamHooks{
 		PostHookRunner: postHookRunner,
 		Cleanup:        cleanup,
+		Request:        preReq,
 	}, nil
+}
+
+// PreparePassthroughRelay applies what the provider worker applies to a passthrough request before
+// it reaches a key, for transports that relay the request themselves (a passthrough WebSocket
+// turn): the custom provider's allowed requests, the provider's passthrough route policy, and the
+// raw capture signals plugins read. A refused request never reaches a key or the upstream.
+func (bifrost *Bifrost) PreparePassthroughRelay(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if req == nil {
+		return newBifrostErrorFromMsg("passthrough request is nil")
+	}
+	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil || config == nil {
+		bifrostErr := newBifrostErrorFromMsg(fmt.Sprintf("provider %s is not configured", providerKey))
+		bifrostErr.StatusCode = schemas.Ptr(fasthttp.StatusBadRequest)
+		return bifrostErr
+	}
+	baseProvider := bifrost.baseProviderType(providerKey)
+	if bifrostErr := providerUtils.CheckOperationAllowed(baseProvider, config.CustomProviderConfig, schemas.PassthroughStreamRequest); bifrostErr != nil {
+		return bifrostErr
+	}
+	if !passthroughRouteAllowed(config.Passthrough, req) {
+		notAllowed := newPassthroughRouteNotAllowedError(providerKey, schemas.PassthroughStreamRequest, req)
+		return &notAllowed
+	}
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
+		applyRawCaptureSignals(ctx, config)
+	}
+	return nil
 }
 
 // RunRealtimeTurnPreHooks acquires a plugin pipeline and runs LLM pre-hooks for

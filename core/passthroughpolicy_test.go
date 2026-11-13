@@ -159,3 +159,51 @@ func BenchmarkPassthroughRouteAllowed(b *testing.B) {
 		})
 	}
 }
+
+// A transport that relays a passthrough request itself, such as a WebSocket turn, never reaches
+// the provider worker that applies the route policy, so PreparePassthroughRelay applies it: a
+// WebSocket turn is the POST its message replaces and is refused wherever that POST is.
+func TestPreparePassthroughRelayAppliesTheProviderPolicy(t *testing.T) {
+	const restricted schemas.ModelProvider = "relay-restricted"
+	const open schemas.ModelProvider = "relay-open"
+	account := NewMockAccount()
+	for _, provider := range []schemas.ModelProvider{restricted, open} {
+		account.AddProviderWithBaseURL(provider, 2, 16, "http://127.0.0.1:1")
+		account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+		account.SetKeysForProvider(provider, []schemas.Key{scenarioKey(string(provider), 1)})
+	}
+	account.mu.Lock()
+	account.configs[restricted].Passthrough = &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{http.MethodPost}, Path: "/v1/chat/completions"},
+	}}
+	account.configs[open].StoreRawRequestResponse = true
+	account.mu.Unlock()
+	client := scenarioClient(t, account, nil, nil)
+	turn := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/responses", Body: []byte(`{"type":"response.create"}`)}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := client.PreparePassthroughRelay(ctx, restricted, turn())
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("a route outside the provider's policy must be refused with 403, got %+v", bifrostErr)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "passthrough_route_not_allowed" {
+		t.Fatalf("refusal code = %+v, want passthrough_route_not_allowed", bifrostErr.Error)
+	}
+
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if bifrostErr := client.PreparePassthroughRelay(ctx, open, turn()); bifrostErr != nil {
+		t.Fatalf("an unrestricted provider refused the turn: %s", bifrostErr.GetErrorString())
+	}
+	if base, _ := ctx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider); base != schemas.OpenAI {
+		t.Fatalf("base provider on ctx = %q, want openai", base)
+	}
+	if store, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool); !store {
+		t.Fatal("the provider's raw storage setting must reach the plugins that log the turn")
+	}
+
+	if bifrostErr := client.PreparePassthroughRelay(ctx, "relay-unknown", turn()); bifrostErr == nil {
+		t.Fatal("a provider that is not configured must be refused")
+	}
+}

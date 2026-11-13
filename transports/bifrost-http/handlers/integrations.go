@@ -15,6 +15,7 @@ type IntegrationHandler struct {
 	extensions            []integrations.ExtensionRouter
 	wsResponses           *WSResponsesHandler
 	wsRealtime            *WSRealtimeHandler
+	wsPassthrough         *WSPassthroughHandler
 	webrtcRealtime        *WebRTCRealtimeHandler
 	realtimeClientSecrets *RealtimeClientSecretsHandler
 }
@@ -93,8 +94,26 @@ func (h *IntegrationHandler) Close() {
 	if h.wsRealtime != nil {
 		h.wsRealtime.Close()
 	}
+	h.wsPassthrough.Close()
 	if h.webrtcRealtime != nil {
 		h.webrtcRealtime.Close()
+	}
+}
+
+// SetPassthroughWebSocket gives the passthrough routers the handler that serves WebSocket upgrades
+// on their WebSocket-capable paths. Call it before RegisterRoutes; without it those paths answer
+// as plain HTTP passthrough.
+func (h *IntegrationHandler) SetPassthroughWebSocket(wsPassthrough *WSPassthroughHandler) {
+	h.wsPassthrough = wsPassthrough
+	if wsPassthrough == nil {
+		return
+	}
+	for _, extension := range h.extensions {
+		if setter, ok := extension.(interface {
+			SetPassthroughWebSocketHandler(integrations.PassthroughWebSocketHandler)
+		}); ok {
+			setter.SetPassthroughWebSocketHandler(wsPassthrough.HandleUpgrade)
+		}
 	}
 }
 

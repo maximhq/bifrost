@@ -274,3 +274,22 @@ func Dial(url string, headers http.Header, proxyConfig *schemas.ProxyConfig) (*w
 	}
 	return dialer.Dial(url, headers)
 }
+
+// DialRelay dials the upstream of a 1:1 relay, a connection that serves exactly one client and is
+// never pooled. It returns the upstream's handshake response headers so the relay can pass them to
+// its client, and a HandshakeError when the upstream answered the handshake with an HTTP status.
+func DialRelay(url string, headers http.Header, subprotocols []string, proxyConfig *schemas.ProxyConfig) (*ws.Conn, http.Header, error) {
+	dialer := &ws.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		Subprotocols:     subprotocols,
+	}
+	dialer, err := providerUtils.ConfigureWebSocketProxy(dialer, proxyConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid proxy configuration: %w", err)
+	}
+	conn, resp, err := dialer.Dial(url, headers)
+	if err != nil {
+		return nil, nil, wrapHandshakeError(resp, err)
+	}
+	return conn, resp.Header, nil
+}
