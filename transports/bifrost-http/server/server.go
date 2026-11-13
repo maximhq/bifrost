@@ -2642,6 +2642,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
 	s.applyRoutingLogRetention(plugin)
+	s.applyRoutingCaptureDeleteRecorder(plugin)
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -3878,6 +3879,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 		s.applyRoutingLogRetention(routingPlugin)
+		s.applyRoutingCaptureDeleteRecorder(routingPlugin)
 	} else {
 		go s.dropCapturesOfDisabledRouting(s.Ctx) // off the boot path
 	}

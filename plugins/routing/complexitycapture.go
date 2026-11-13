@@ -88,6 +88,17 @@ func (p *RoutingPlugin) SetLogRetention(days func() int) {
 	p.capture.logRetention.Store(&days)
 }
 
+// SetComplexityCaptureDeleteRecorder supplies where captured-vector deletes
+// that fail with their log's delete are kept, so the upkeep retries them
+// until they go. Without one a failed delete is only warned about, and the
+// age sweep is what eventually removes the vector.
+func (p *RoutingPlugin) SetComplexityCaptureDeleteRecorder(recorder complexity.CaptureDeleteRecorder) {
+	if p.capture == nil {
+		return
+	}
+	p.capture.capture.SetDeleteRecorder(recorder)
+}
+
 // ForgetComplexityCapturedRequests drops the captured vectors of deleted
 // logs. It never fails the log delete; what it cannot remove is recorded for
 // the upkeep to retry.
