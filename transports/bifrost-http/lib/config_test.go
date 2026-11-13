@@ -27174,7 +27174,8 @@ func TestLoadRelaysConfig(t *testing.T) {
 	configData := parseConfigData(t, `{
 		"relays": [
 			{"name": "tavily", "base_url": "https://search.example.com", "auth": {"type": "bearer"}, "credential": {"value": "env.TAVILY_KEY"},
-			 "usage": {"cost_per_request": 0.001}, "routes": [{"method": "POST", "path": "/search", "usage": {"units_path": "usage.credits", "cost_per_unit": 0.008}}]},
+			 "usage": {"cost_per_request": 0.001}, "body_overrides": {"include_usage": true},
+			 "routes": [{"method": "POST", "path": "/search", "usage": {"units_path": "usage.credits", "cost_per_unit": 0.008}, "body_overrides": {"search_depth": "advanced"}}]},
 			{"name": "broken", "enabled": true, "base_url": "not a url"}
 		]
 	}`)
@@ -27186,6 +27187,8 @@ func TestLoadRelaysConfig(t *testing.T) {
 	assert.Equal(t, "tvly-from-env", tavily.Credential.Value.GetValue(), "an env reference resolves")
 	assert.True(t, tavily.Credential.Value.IsFromEnv(), "and stays a reference")
 	require.Len(t, tavily.Routes, 1)
+	assert.JSONEq(t, `true`, string(tavily.BodyOverrides["include_usage"]), "relay body_overrides are stored")
+	assert.JSONEq(t, `"advanced"`, string(tavily.Routes[0].BodyOverrides["search_depth"]), "route body_overrides are stored")
 
 	hashes, err := store.GetRelayConfigHashes(context.Background())
 	require.NoError(t, err)

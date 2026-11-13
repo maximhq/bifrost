@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -816,6 +817,75 @@ func TestServeRequestSideBillingRefusesAmbiguousBody(t *testing.T) {
 	require.NotNil(t, bErr)
 	assert.Equal(t, http.StatusBadRequest, *bErr.StatusCode)
 	assert.Empty(t, pipeline.pre)
+}
+
+func TestServeForcesBodyOverrides(t *testing.T) {
+	var gotBody, gotContentType string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody, gotContentType = string(body), r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"usage":{"credits":2}}`)
+	}))
+	defer upstream.Close()
+
+	cfg := bearerConfig("tavily", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.Usage = &schemas.RelayUsageConfig{ModelPath: "model", UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.008)}
+	cfg.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "model": json.RawMessage(`"tavily-basic"`)}
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/search", BodyOverrides: map[string]json.RawMessage{"model": json.RawMessage(`"tavily-advanced"`), "search_depth": json.RawMessage(`"advanced"`)}},
+		{Method: "POST", Path: "/translate", Usage: &schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.001)}},
+		{Method: "GET", Path: "/usage"},
+	}
+	m, pipeline := newTestManager(t, cfg)
+	serve := func(method, path string, headers map[string]string, body string) (*Result, *schemas.BifrostError) {
+		return m.Serve(testCtx(t), Request{Endpoint: "tavily", Method: method, Path: path, Headers: headers, Body: []byte(body)})
+	}
+	jsonHeaders := map[string]string{"content-type": "application/json"}
+
+	res, bErr := serve("POST", "/search", jsonHeaders, `{"query":"x","include_usage":false,"model":"mine"}`)
+	require.Nil(t, bErr)
+	assert.JSONEq(t, `{"query":"x","include_usage":true,"model":"tavily-advanced","search_depth":"advanced"}`, gotBody, "the route's fields apply over the relay's, and the caller's values are replaced")
+	assert.InDelta(t, 2*0.008, res.Response.Usage.Cost, 1e-12)
+	require.Len(t, pipeline.pre, 1)
+	assert.JSONEq(t, gotBody, string(pipeline.pre[0].Body), "the hooks (and the log row) see the body that is sent")
+	assert.Equal(t, "tavily-advanced", pipeline.pre[0].Model, "the model is read from the body that is sent")
+
+	_, bErr = serve("POST", "/crawl", map[string]string{}, ``)
+	require.Nil(t, bErr, "a call matching no route takes the relay's fields")
+	assert.JSONEq(t, `{"include_usage":true,"model":"tavily-basic"}`, gotBody)
+	assert.Equal(t, "application/json", gotContentType, "a created body is labelled JSON")
+
+	_, bErr = serve("POST", "/translate", jsonHeaders, `{"q":"hello"}`)
+	require.Nil(t, bErr)
+	sent := gotBody
+	require.Len(t, pipeline.post, 3)
+	require.NotNil(t, pipeline.post[2].Usage)
+	assert.InDelta(t, float64(len(sent))*0.001, pipeline.post[2].Usage.Cost, 1e-12, "a request-side quantity is measured on the body that is sent")
+
+	_, bErr = serve("GET", "/usage", map[string]string{}, ``)
+	require.Nil(t, bErr)
+	assert.Empty(t, gotBody, "an empty GET gets no body")
+
+	for name, tc := range map[string]struct {
+		headers map[string]string
+		body    string
+		want    string
+	}{
+		"duplicate key": {jsonHeaders, `{"include_usage":false,"include_usage":false}`, "more than once"},
+		"case variant":  {jsonHeaders, `{"Include_Usage":false}`, "different letter case"},
+		"not JSON":      {map[string]string{"content-type": "text/plain"}, `query=x`, "must be a JSON object"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := len(pipeline.pre)
+			_, bErr := serve("POST", "/search", tc.headers, tc.body)
+			require.NotNil(t, bErr)
+			assert.Equal(t, http.StatusBadRequest, *bErr.StatusCode)
+			assert.Contains(t, bErr.Error.Message, tc.want)
+			assert.Len(t, pipeline.pre, before, "a refused body reaches no hook and no upstream")
+		})
+	}
 }
 
 func BenchmarkMatchRoute(b *testing.B) {

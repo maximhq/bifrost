@@ -1950,6 +1950,14 @@
         {
           "method": "POST",
           "path": "/v1/echo"
+        },
+        {
+          "method": "POST",
+          "path": "/v1/forced",
+          "body_overrides": {
+            "include_usage": true,
+            "options.depth": "advanced"
+          }
         }
       ]
     },

@@ -2725,6 +2725,16 @@ func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
 		hash.Write([]byte("ignoreUpstreamCost"))
 	}
 
+	// Hash BodyOverrides; a map, so sort keys
+	if len(cfg.BodyOverrides) > 0 {
+		data, err := providerUtils.MarshalSorted(cfg.BodyOverrides)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("bodyOverrides:"))
+		hash.Write(data)
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

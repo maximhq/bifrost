@@ -402,12 +402,21 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		}
 		return nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", in.Method, in.Path, in.Endpoint))
 	}
-	model, err := ReadRequestModel(p.usage.modelSource, in.Body, contentType, in.RawQuery, p.usage.effectiveModelPath())
+	// Forced fields go in first, so pricing, logs and the upstream all see the sent body.
+	body, created, err := applyBodyOverrides(p.body, in.Method, in.Body)
+	if err != nil {
+		return nil, statusError(http.StatusBadRequest, err.Error())
+	}
+	if created {
+		in.Headers = withJSONContentType(in.Headers)
+		contentType = "application/json"
+	}
+	model, err := ReadRequestModel(p.usage.modelSource, body, contentType, in.RawQuery, p.usage.effectiveModelPath())
 	if err != nil {
 		return nil, statusError(http.StatusBadRequest, err.Error())
 	}
 	if p.billing {
-		if err := p.usage.requestBodyError(in.Body); err != nil {
+		if err := p.usage.requestBodyError(body); err != nil {
 			return nil, statusError(http.StatusBadRequest, err.Error())
 		}
 	}
@@ -417,7 +426,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		Path:       in.Path,
 		RawQuery:   in.RawQuery,
 		Headers:    in.Headers,
-		Body:       in.Body,
+		Body:       body,
 		Model:      model,
 		RouteIndex: p.index,
 		Billable:   p.billing,
