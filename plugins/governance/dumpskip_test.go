@@ -116,24 +116,24 @@ func TestDumpRetriesFailedWrites(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDumpSkipFixture(t)
-			require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
-			require.NoError(t, f.store.DumpBudgets(ctx, nil))
+			require.NoError(t, f.store.GetRateLimitDumper(ctx, nil, nil)(ctx))
+			require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 			f.take()
 
 			f.bumpRateLimitTokens(t, "r1", 7)
 			require.NoError(t, f.store.BumpBudgetUsage(ctx, "b1", 1.5))
 
 			f.configStore.failNext(tc.err)
-			err := f.store.DumpRateLimits(ctx, nil, nil)
+			err := f.store.GetRateLimitDumper(ctx, nil, nil)(ctx)
 			require.Equal(t, tc.wantErr, err != nil, "rate limit dump error: %v", err)
 			f.configStore.failNext(tc.err)
-			err = f.store.DumpBudgets(ctx, nil)
+			err = f.store.GetBudgetDumper(ctx, nil)(ctx)
 			require.Equal(t, tc.wantErr, err != nil, "budget dump error: %v", err)
 			require.Equal(t, int64(0), f.take(), "the failed cycle wrote nothing")
 
 			// No new usage: the retry must still carry the failed rows.
-			require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
-			require.NoError(t, f.store.DumpBudgets(ctx, nil))
+			require.NoError(t, f.store.GetRateLimitDumper(ctx, nil, nil)(ctx))
+			require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 			require.Equal(t, int64(3+6), f.take(), "the retry writes every rate limit and budget, including the ones that failed")
 			rl, err := f.configStore.GetRateLimit(ctx, "r1")
 			require.NoError(t, err)
@@ -152,8 +152,8 @@ func TestDumpAppliesBaselines(t *testing.T) {
 	ctx := context.Background()
 	f := newDumpSkipFixture(t)
 
-	require.NoError(t, f.store.DumpBudgets(ctx, map[string]float64{"b1": 100}))
-	require.NoError(t, f.store.DumpRateLimits(ctx, map[string]int64{"r1": 50}, map[string]int64{"r1": 3}))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, map[string]float64{"b1": 100})(ctx))
+	require.NoError(t, f.store.GetRateLimitDumper(ctx, map[string]int64{"r1": 50}, map[string]int64{"r1": 3})(ctx))
 	f.take()
 	b, err := f.configStore.GetBudget(ctx, "b1")
 	require.NoError(t, err)
@@ -163,8 +163,8 @@ func TestDumpAppliesBaselines(t *testing.T) {
 	require.Equal(t, int64(55), rl.TokenCurrentUsage)
 	require.Equal(t, int64(4), rl.RequestCurrentUsage)
 
-	require.NoError(t, f.store.DumpBudgets(ctx, map[string]float64{"b1": 120}))
-	require.NoError(t, f.store.DumpRateLimits(ctx, map[string]int64{"r1": 60}, map[string]int64{"r1": 3}))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, map[string]float64{"b1": 120})(ctx))
+	require.NoError(t, f.store.GetRateLimitDumper(ctx, map[string]int64{"r1": 60}, map[string]int64{"r1": 3})(ctx))
 	b, err = f.configStore.GetBudget(ctx, "b1")
 	require.NoError(t, err)
 	require.Equal(t, 130.0, b.CurrentUsage)
@@ -175,12 +175,12 @@ func TestDumpAppliesBaselines(t *testing.T) {
 func TestDumpPersistsResets(t *testing.T) {
 	ctx := context.Background()
 	f := newDumpSkipFixture(t)
-	require.NoError(t, f.store.DumpBudgets(ctx, nil))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 	f.take()
 
 	_, ok := f.store.ResetBudgetUsageInMemory(ctx, "b2")
 	require.True(t, ok)
-	require.NoError(t, f.store.DumpBudgets(ctx, nil))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 	require.Equal(t, int64(6), f.take(), "every budget is written, including the reset one")
 	b, err := f.configStore.GetBudget(ctx, "b2")
 	require.NoError(t, err)
@@ -194,14 +194,14 @@ func TestDumpPersistsResets(t *testing.T) {
 func TestDumpRewritesEveryRowEachCycle(t *testing.T) {
 	ctx := context.Background()
 	f := newDumpSkipFixture(t)
-	require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
-	require.NoError(t, f.store.DumpBudgets(ctx, nil))
+	require.NoError(t, f.store.GetRateLimitDumper(ctx, nil, nil)(ctx))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 	f.take()
 
 	require.NoError(t, f.configStore.DB().Exec("UPDATE governance_rate_limits SET token_current_usage = 999 WHERE id = ?", "r3").Error)
 	require.NoError(t, f.configStore.DB().Exec("UPDATE governance_budgets SET current_usage = 999 WHERE id = ?", "b3").Error)
-	require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
-	require.NoError(t, f.store.DumpBudgets(ctx, nil))
+	require.NoError(t, f.store.GetRateLimitDumper(ctx, nil, nil)(ctx))
+	require.NoError(t, f.store.GetBudgetDumper(ctx, nil)(ctx))
 
 	require.Equal(t, int64(3+6), f.take(), "every dump writes every rate limit (1 statement each) and budget (2 each)")
 	rl, err := f.configStore.GetRateLimit(ctx, "r3")
@@ -210,4 +210,33 @@ func TestDumpRewritesEveryRowEachCycle(t *testing.T) {
 	b, err := f.configStore.GetBudget(ctx, "b3")
 	require.NoError(t, err)
 	require.Equal(t, 10.0, b.CurrentUsage, "the next dump restores this node's budget usage")
+}
+
+// TestDumpDefersWritesAndRetainsCapturedUsage ensures transfers after capture
+// cannot change a dump and database work starts only when its writer is invoked.
+func TestDumpDefersWritesAndRetainsCapturedUsage(t *testing.T) {
+	ctx := context.Background()
+	f := newDumpSkipFixture(t)
+	f.take()
+	budgetBaselines := map[string]float64{"b1": 100}
+	tokenBaselines := map[string]int64{"r1": 50}
+	requestBaselines := map[string]int64{"r1": 3}
+	budgetDumper := f.store.GetBudgetDumper(ctx, budgetBaselines)
+	rateLimitDumper := f.store.GetRateLimitDumper(ctx, tokenBaselines, requestBaselines)
+	require.Zero(t, f.take(), "capture must not write to the database")
+
+	budgetBaselines["b1"] = 200
+	tokenBaselines["r1"] = 100
+	requestBaselines["r1"] = 6
+	require.NoError(t, f.store.BumpBudgetUsage(ctx, "b1", 7))
+	f.bumpRateLimitTokens(t, "r1", 9)
+	require.NoError(t, budgetDumper(ctx))
+	require.NoError(t, rateLimitDumper(ctx))
+	budget, err := f.configStore.GetBudget(ctx, "b1")
+	require.NoError(t, err)
+	require.Equal(t, 110.0, budget.CurrentUsage)
+	rateLimit, err := f.configStore.GetRateLimit(ctx, "r1")
+	require.NoError(t, err)
+	require.Equal(t, int64(55), rateLimit.TokenCurrentUsage)
+	require.Equal(t, int64(4), rateLimit.RequestCurrentUsage)
 }
