@@ -299,8 +299,16 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		_, _ = h.tempTokens.DeleteByResourceID(ctx, temptoken.OAuth2ConsentScopeName, flowID)
 	}
 
+	consent := map[string]any{"client_id": req.ClientID, "scope": req.Scope, "mode": body.Mode, "bf_mode": req.BfMode}
+	// A session-mode subject is the server-minted session token, so it is never recorded.
+	if bfMode != schemas.MCPAuthModeSession {
+		consent["bf_sub"] = req.BfSub
+	}
+
 	issuer := oauth2IssuerURL(ctx, h.store)
 	if isDeviceFlow {
+		consent["grant"] = "device_code"
+		lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(issuer)})
 		return
 	}
@@ -314,11 +322,6 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	consent := map[string]any{"client_id": req.ClientID, "scope": req.Scope, "mode": body.Mode, "bf_mode": req.BfMode}
-	// A session-mode subject is the server-minted session token, so it is never recorded.
-	if bfMode != schemas.MCPAuthModeSession {
-		consent["bf_sub"] = req.BfSub
-	}
 	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
@@ -441,6 +444,8 @@ func (h *OAuth2ConsentHandler) denyFlow(ctx *fasthttp.RequestCtx, req *configtab
 	if h.tempTokens != nil {
 		_, _ = h.tempTokens.DeleteByResourceID(ctx, temptoken.OAuth2ConsentScopeName, req.ID)
 	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.denied", "oauth2_consent", req.ID, req.ClientID, nil,
+		map[string]any{"client_id": req.ClientID, "grant": "device_code"})
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceDeniedURL(oauth2IssuerURL(ctx, h.store))})
 }
 

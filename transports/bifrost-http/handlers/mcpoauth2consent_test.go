@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -435,6 +436,42 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 		h.flowSubmit(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	})
+}
+
+// TestConsentFlowSubmit_DeviceFlowAudit pins the audit events of a client gateway sign-in:
+// approving records oauth2_consent.granted like an /mcp consent, denying records
+// oauth2_consent.denied.
+func TestConsentFlowSubmit_DeviceFlowAudit(t *testing.T) {
+	seed := func(store *mockOAuth2Store) {
+		deviceHash := "device-hash"
+		store.authReqs["flow-device"] = &configtables.TableOAuth2AuthorizeRequest{
+			ID: "flow-device", ClientID: claudeCodeClientID, Status: configtables.OAuth2AuthorizeRequestStatusPending,
+			DeviceCodeHash: &deviceHash, ExpiresAt: time.Now().Add(time.Minute),
+		}
+	}
+	events := func(ctx *fasthttp.RequestCtx) []string {
+		changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+		names := make([]string, 0, len(changes))
+		for _, c := range changes {
+			names = append(names, c.EventName)
+		}
+		return names
+	}
+
+	store := newConsentStore()
+	store.vksByValue["sk-bf-active"] = &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active"), IsActive: new(true)}
+	seed(store)
+	approve := consentCtx("flow-device", `{"mode":"vk","value":"sk-bf-active"}`)
+	newConsentHandler(store, nil, false).flowSubmit(approve)
+	require.Equal(t, fasthttp.StatusOK, approve.Response.StatusCode(), string(approve.Response.Body()))
+	assert.Equal(t, []string{"oauth2_consent.granted"}, events(approve))
+
+	store = newConsentStore()
+	seed(store)
+	deny := consentCtx("flow-device", `{"deny":true}`)
+	newConsentHandler(store, nil, false).flowSubmit(deny)
+	require.Equal(t, fasthttp.StatusOK, deny.Response.StatusCode(), string(deny.Response.Body()))
+	assert.Equal(t, []string{"oauth2_consent.denied"}, events(deny))
 }
 
 // TestConsentFlowSubmit_DenyIsDeviceOnly pins that Deny is offered for device sign-ins only:
