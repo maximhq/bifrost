@@ -2992,6 +2992,43 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	require.Contains(t, err.Error(), "auth_code_ttl")
 }
 
+// TestValidateClientConfig_MCPOpenAPIMaxSpecMB: PUT /api/config bounds
+// mcp_openapi_max_spec_mb to 0..256, but config.json and older DB rows reach the
+// runtime through validateClientConfig, so the same bound holds there.
+func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
+	for _, tc := range []struct {
+		mb      int
+		wantErr bool
+	}{
+		{0, false}, {32, false}, {configstore.MaxMCPOpenAPISpecMB, false},
+		{configstore.MaxMCPOpenAPISpecMB + 1, true}, {1024, true}, {-1, true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{MCPOpenAPIMaxSpecMB: tc.mb})
+		if tc.wantErr {
+			require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", tc.mb)
+		} else {
+			require.NoError(t, err, "mb=%d", tc.mb)
+		}
+	}
+}
+
+// TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
+// mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
+// 1 GiB spec through (or a negative value fall back silently).
+func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, mb := range []int{1024, -1} {
+		tempDir := createTempDir(t)
+		createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{MCPOpenAPIMaxSpecMB: mb}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", mb)
+	}
+}
+
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
 func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
 	var configData ConfigData
@@ -26981,7 +27018,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	str := func(s string) *string { return &s }
 
 	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir, 0))
 	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
 	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
 	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
@@ -26989,7 +27026,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
 
 	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir, 0))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
 
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
@@ -27002,7 +27039,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir, 0))
 		})
 	}
 }

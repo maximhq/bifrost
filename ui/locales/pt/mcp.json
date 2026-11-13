@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "O ficheiro excede o limite de {{size}} para documentos OpenAPI.",
+			"fileTooLargeBodyCap": "O ficheiro é demasiado grande para ser enviado: os pedidos estão limitados a {{size}} por client.max_request_body_size_mb. Aumente o valor e reinicie o Bifrost para carregar um documento maior.",
 			"fileReadFailed": "Não foi possível ler o ficheiro: {{message}}",
 			"fileEmpty": "O ficheiro está vazio.",
 			"fetch": "Obter",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "O Bifrost obtém o documento uma vez e guarda-o com o servidor; o URL é mantido como a sua origem.",
 			"chooseFile": "Escolher ficheiro",
 			"uploadHelp": "JSON ou YAML, até {{size}}. O ficheiro é lido no seu navegador e guardado com o servidor.",
+			"uploadHelpBodyCap": "JSON ou YAML, até cerca de {{size}}: os pedidos estão limitados por client.max_request_body_size_mb, que é inferior ao limite de documentos OpenAPI. O ficheiro é lido no seu navegador e guardado com o servidor.",
+			"uploadHelpNoLimit": "JSON ou YAML. O ficheiro é lido no seu navegador e guardado com o servidor.",
 			"parsing": "A analisar o documento…",
 			"staleNotice": "O URL ou o nome do servidor mudou desde que o documento foi obtido. Obtenha-o novamente para atualizar as operações abaixo."
 		},

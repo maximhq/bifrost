@@ -1635,6 +1635,12 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 			}
 		}
 	}
+	// PUT /api/config bounds the OpenAPI spec limit; config.json and older DB
+	// rows reach here, and a larger value would let one spec's parse hold
+	// several GiB.
+	if mb := cc.MCPOpenAPIMaxSpecMB; mb < 0 || mb > configstore.MaxMCPOpenAPISpecMB {
+		return fmt.Errorf("mcp_openapi_max_spec_mb %d must be between 0 (the default, 32) and %d", mb, configstore.MaxMCPOpenAPISpecMB)
+	}
 	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather
 	// than leave an entry that silently matches nothing.
 	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
@@ -2356,7 +2362,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 // row carries the document and never depends on the file staying in place, and
 // the server-computed metadata is filled from a parse so the stored row matches
 // an API-created one. A spec_url is left to be fetched at connect time.
-func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) error {
+func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string, maxSpecBytes int) error {
 	if c.OpenAPIConfig == nil {
 		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
 	}
@@ -2367,7 +2373,7 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 	}
 	oc := c.OpenAPIConfig
 	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
-		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir)
+		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir, maxSpecBytes)
 		if err != nil {
 			return fmt.Errorf("openapi_config.spec_file: %w", err)
 		}
@@ -2378,7 +2384,7 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 		if oc.SpecURL != nil {
 			specURL = *oc.SpecURL
 		}
-		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
+		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
 		if err != nil {
 			return fmt.Errorf("openapi_config.spec: %w", err)
 		}
@@ -2487,7 +2493,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			// keeps its own record instead (see pinMCPClientImmutableFields).
 			c.PendingVerification = mcpClientStartsPendingVerification(c)
 			if c.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
-				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir()); err != nil {
+				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir(), mcpOpenAPIMaxSpecBytes(config.ClientConfig)); err != nil {
 					logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
 					if configData.rejectedMCPClients == nil {
 						configData.rejectedMCPClients = map[string]bool{}
@@ -8360,6 +8366,24 @@ func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 // ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.
 func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
+}
+
+// MCPOpenAPIMaxSpecBytes reports client.mcp_openapi_max_spec_mb in bytes, or 0 when it is unset
+// (openapimcp then applies its built-in limit). It reads under Mu, like the other live readers.
+func (c *Config) MCPOpenAPIMaxSpecBytes() int {
+	if c == nil {
+		return 0
+	}
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return mcpOpenAPIMaxSpecBytes(c.ClientConfig)
+}
+
+func mcpOpenAPIMaxSpecBytes(cc *configstore.ClientConfig) int {
+	if cc == nil || cc.MCPOpenAPIMaxSpecMB <= 0 {
+		return 0
+	}
+	return cc.MCPOpenAPIMaxSpecMB << 20
 }
 
 // ShouldEnforceVKObjectOwnership reports client.enforce_vk_object_ownership. It reads under Mu, the
