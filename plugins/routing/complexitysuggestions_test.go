@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"github.com/maximhq/bifrost/plugins/routing/complexity/suggestrun"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +48,12 @@ func suggestionTestSettings() *configstore.ComplexitySuggestionsConfig {
 // suggestion.
 func suggestionPlugin(t *testing.T) (*RoutingPlugin, logstore.LogStore, *[]string) {
 	t.Helper()
-	p := newCapturePlugin(t, suggestionTestSettings())
+	return suggestionPluginWith(t, suggestionTestSettings())
+}
+
+func suggestionPluginWith(t *testing.T, settings *configstore.ComplexitySuggestionsConfig) (*RoutingPlugin, logstore.LogStore, *[]string) {
+	t.Helper()
+	p := newCapturePlugin(t, settings)
 	p.startComplexitySuggestions(context.Background(), 0)
 	store := suggestionTestStore(t)
 	p.SetComplexitySuggestionStore(store, func(_ context.Context, ids []string, _ int) (map[string]string, error) {
@@ -128,6 +134,38 @@ func runsOf(t *testing.T, store logstore.LogStore) []logstore.ComplexitySuggesti
 	runs, err := store.ListComplexitySuggestionRuns(context.Background(), logstore.ComplexitySuggestionRunFilter{}, 50)
 	require.NoError(t, err)
 	return runs
+}
+
+// claimThenCancel claims a slot in a real schedule store and then ends the
+// scheduler's context, as a shutdown landing just after the claim does.
+type claimThenCancel struct {
+	ComplexitySuggestionScheduleStore
+	cancel context.CancelFunc
+}
+
+func (s *claimThenCancel) ClaimComplexitySuggestionRun(ctx context.Context, routerID string, version int64, dueAt, nextRunAt time.Time, runID string) (bool, error) {
+	claimed, err := s.ComplexitySuggestionScheduleStore.ClaimComplexitySuggestionRun(ctx, routerID, version, dueAt, nextRunAt, runID)
+	if claimed {
+		s.cancel()
+	}
+	return claimed, err
+}
+
+// A claimed slot always gets a record of its run: what follows the claim is
+// written on a context of its own, so a scheduler context ending just after
+// the claim cannot leave the slot taken by a run nothing recorded.
+func TestComplexitySuggestionsScheduleRecordsTheRunAfterItsContextEnds(t *testing.T) {
+	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, store := scheduledSuggestionPlugin(t, start, &claimThenCancel{ComplexitySuggestionScheduleStore: suggestionScheduleStore(t), cancel: cancel})
+
+	require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(90*time.Minute)))
+	assert.Empty(t, runsOf(t, store), "a new schedule waits for its next run")
+	require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(2*time.Hour+20*time.Second)))
+	run := waitForRun(t, store)
+	assert.Equal(t, logstore.ComplexitySuggestionTriggerSchedule, run.TriggeredBy)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
 }
 
 // A new schedule waits for its next run rather than running at once; the
@@ -312,9 +350,19 @@ func TestNextComplexitySuggestionRun(t *testing.T) {
 }
 
 type recordingQueue struct {
-	mu    sync.Mutex
-	ids   []string
-	metas []string
+	mu        sync.Mutex
+	ids       []string
+	metas     []string
+	cancelled []string
+}
+
+// Cancel records the cancel and reports it took, as the job runner does for
+// a job still queued or running.
+func (q *recordingQueue) Cancel(_ context.Context, id string) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.cancelled = append(q.cancelled, id)
+	return true, nil
 }
 
 func (q *recordingQueue) EnqueuePartitioned(_ context.Context, id, kind, partition, metadata, _ string) error {
@@ -328,7 +376,10 @@ func (q *recordingQueue) EnqueuePartitioned(_ context.Context, id, kind, partiti
 	return nil
 }
 
-type inFlightJobs struct{ job, latest *tables.TableSidekiqJob }
+type inFlightJobs struct {
+	job, latest *tables.TableSidekiqJob
+	byID        map[string]*tables.TableSidekiqJob
+}
 
 func (j *inFlightJobs) GetInFlightSidekiqJobByKind(context.Context, string) (*tables.TableSidekiqJob, error) {
 	return j.job, nil
@@ -432,6 +483,10 @@ func TestComplexitySuggestionsSimultaneousManualStartsQueueOneRun(t *testing.T) 
 	assert.Equal(t, []string{runID, next}, queue.ids)
 }
 
+func (j *inFlightJobs) GetSidekiqJob(_ context.Context, id string) (*tables.TableSidekiqJob, error) {
+	return j.byID[id], nil // nil, nil for no such job, as the config store answers
+}
+
 // A slot's run ID is the run row's primary key, a varchar(36), the same on
 // every node for the same router and slot, and different for another router.
 func TestComplexitySuggestionSlotRunIDIsAStableUUID(t *testing.T) {
@@ -513,6 +568,10 @@ func (failingQueue) EnqueuePartitioned(context.Context, string, string, string, 
 	return errors.New("job store unavailable")
 }
 
+func (failingQueue) Cancel(context.Context, string) (bool, error) {
+	return false, errors.New("job store unavailable")
+}
+
 // A run the job runner refuses is closed as skipped with the reason, not left
 // queued for a job that does not exist, and the refusal is still returned.
 func TestComplexitySuggestionsEnqueueFailureSkipsTheRun(t *testing.T) {
@@ -530,12 +589,12 @@ func TestComplexitySuggestionsEnqueueFailureSkipsTheRun(t *testing.T) {
 	assert.Contains(t, runs[0].Error, "could not be queued")
 }
 
-// scriptedJobs answers the in-flight check before an enqueue with nothing,
-// and the one after a failed enqueue with job and err.
+// scriptedJobs answers the in-flight check with inFlight, and the lookup of
+// one job by ID with job and err.
 type scriptedJobs struct {
-	calls int
-	job   *tables.TableSidekiqJob
-	err   error
+	inFlight *tables.TableSidekiqJob
+	job      *tables.TableSidekiqJob
+	err      error
 }
 
 func (j *scriptedJobs) GetLatestSidekiqJobByKind(context.Context, string) (*tables.TableSidekiqJob, error) {
@@ -543,10 +602,10 @@ func (j *scriptedJobs) GetLatestSidekiqJobByKind(context.Context, string) (*tabl
 }
 
 func (j *scriptedJobs) GetInFlightSidekiqJobByKind(context.Context, string) (*tables.TableSidekiqJob, error) {
-	j.calls++
-	if j.calls == 1 {
-		return nil, nil
-	}
+	return j.inFlight, nil
+}
+
+func (j *scriptedJobs) GetSidekiqJob(context.Context, string) (*tables.TableSidekiqJob, error) {
 	return j.job, j.err
 }
 
@@ -578,14 +637,19 @@ func TestComplexitySuggestionsUncertainEnqueueLeavesTheRunQueued(t *testing.T) {
 		require.Len(t, runs, 1)
 		assert.Equal(t, logstore.ComplexitySuggestionRunQueued, runs[0].Status, "not closed under a job that may run")
 	})
-	t.Run("another run's job is in flight", func(t *testing.T) {
+	t.Run("another router's job is in flight", func(t *testing.T) {
+		// The run's own job is looked up, so another router's job in flight
+		// says nothing about it: no job of its own means it was not queued.
 		p, store, _ := suggestionPlugin(t)
-		p.SetComplexitySuggestionJobs(failingQueue{}, &scriptedJobs{job: &tables.TableSidekiqJob{ID: "someone-else"}})
+		p.SetComplexitySuggestionJobs(failingQueue{}, &scriptedJobs{
+			inFlight: &tables.TableSidekiqJob{ID: "someone-else", Metadata: `{"run_id":"someone-else","router_id":"office"}`}})
 		runID := uuid.NewString()
 		_, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
 			RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
-		require.Error(t, err)
-		assert.Equal(t, logstore.ComplexitySuggestionRunQueued, runsOf(t, store)[0].Status)
+		require.ErrorContains(t, err, "job store unavailable")
+		runs := runsOf(t, store)
+		require.Len(t, runs, 1)
+		assert.Equal(t, logstore.ComplexitySuggestionRunSkipped, runs[0].Status)
 	})
 }
 
@@ -619,37 +683,6 @@ func TestComplexitySuggestionsRunFailureIsRecordedAfterItsContextEnds(t *testing
 			assert.WithinDuration(t, run.FinishedAt.Add(-time.Hour), run.WindowStart, time.Second)
 		}
 	}
-}
-
-// With Chromem as Bifrost's vector store nothing is captured: each node would
-// hold only its own share, and a run reconciling on one share would supersede
-// suggestions on traffic it never saw. The schedule neither claims its runs
-// nor records one every interval, and a run started anyway reads no space.
-func TestComplexitySuggestionsRefusedOnChromem(t *testing.T) {
-	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	settings := suggestionTestSettings()
-	settings.Schedule = hourlyFrom(start)
-	p := newCapturePluginWithStore(t, settings, false)
-	p.startComplexitySuggestions(context.Background(), 0)
-	store := suggestionTestStore(t)
-	p.SetComplexitySuggestionStore(store, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
-	ctx := context.Background()
-	assert.False(t, p.semanticClassifier.Status().CaptureAvailable)
-
-	schedules := suggestionScheduleStore(t)
-	p.SetComplexitySuggestionSchedules(schedules)
-	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(time.Hour + time.Second), start.Add(2*time.Hour + time.Second)} {
-		require.NoError(t, p.scheduleComplexitySuggestions(ctx, at))
-	}
-	p.suggestions.wg.Wait()
-	assert.Empty(t, runsOf(t, store))
-	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
-	require.NoError(t, err)
-	assert.Nil(t, row, "nothing claimed, so a capture store added later starts the schedule fresh")
-
-	_, err = p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{
-		RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
-	require.ErrorIs(t, err, complexity.ErrNoCaptureStore)
 }
 
 // A run this node starts itself that finds suggestions turned off when it
@@ -895,6 +928,100 @@ func TestComplexitySuggestionsScheduledRunDuringAManualOne(t *testing.T) {
 	assert.True(t, row.NextRunAt.Equal(due.Add(time.Hour)), "the schedule moved on")
 }
 
+// Cancelling a run that has not started cancels its job and records it as
+// cancelled here; a running one is left for its handler to record; one that
+// ended, or another router's, cannot be cancelled.
+func TestComplexitySuggestionsCancelRun(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	queue := &recordingQueue{}
+	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{})
+	runID, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
+	require.NoError(t, err)
+
+	run, err := p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, runID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{runID}, queue.cancelled, "the job is cancelled on whichever node holds it")
+	assert.Equal(t, logstore.ComplexitySuggestionRunCancelled, run.Status)
+	stored := runsOf(t, store)
+	require.Len(t, stored, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunCancelled, stored[0].Status, "a queued run never starts, so it is recorded here")
+	require.NotNil(t, stored[0].FinishedAt)
+
+	_, err = p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, runID)
+	require.ErrorIs(t, err, ErrComplexitySuggestionRunEnded)
+	_, err = p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, "missing")
+	require.ErrorIs(t, err, ErrUnknownComplexitySuggestionRun)
+	_, err = p.CancelComplexitySuggestionRun(ctx, "office", runID)
+	require.ErrorIs(t, err, ErrUnknownComplexityRouter)
+
+	// Another router's run is not this router's to cancel: it is not found,
+	// and stays as it was.
+	foreign := &logstore.ComplexitySuggestionRun{ID: uuid.NewString(), RouterID: "office", Status: logstore.ComplexitySuggestionRunRunning, StartedAt: time.Now().UTC()}
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, foreign))
+	_, err = p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, foreign.ID)
+	require.ErrorIs(t, err, ErrUnknownComplexitySuggestionRun)
+	assert.Equal(t, []string{runID}, queue.cancelled, "no job is cancelled for it")
+	stillRunning, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{IDs: []string{foreign.ID}}, 1)
+	require.NoError(t, err)
+	require.Len(t, stillRunning, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunRunning, stillRunning[0].Status)
+
+	// A running run's handler records its own outcome when it stops.
+	running := logstore.ComplexitySuggestionRun{ID: "running", RouterID: complexity.DefaultRouterID, Status: logstore.ComplexitySuggestionRunRunning,
+		Stage: logstore.ComplexitySuggestionRunStageSuggesting, StartedAt: time.Now()}
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &running))
+	run, err = p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, "running")
+	require.NoError(t, err)
+	assert.Equal(t, logstore.ComplexitySuggestionRunRunning, run.Status, "left for the handler, which keeps what it wrote")
+}
+
+// A run that stopped early reads as cancelled only when a user cancelled it:
+// its job row says so on any node, or this node cancelled its inline run.
+func TestComplexitySuggestionRunCancelled(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	assert.False(t, p.suggestionRunCancelled(ctx, "a"), "no job runner and no cancel")
+
+	p.suggestions.inlineMu.Lock()
+	p.suggestions.cancelled["inline"] = true
+	p.suggestions.inlineMu.Unlock()
+	assert.True(t, p.suggestionRunCancelled(ctx, "inline"))
+
+	p.SetComplexitySuggestionJobs(&recordingQueue{}, &inFlightJobs{byID: map[string]*tables.TableSidekiqJob{
+		"cancelled": {ID: "cancelled", Status: tables.SidekiqStatusCancelled},
+		"lost":      {ID: "lost", Status: tables.SidekiqStatusRunning},
+	}})
+	assert.True(t, p.suggestionRunCancelled(ctx, "cancelled"))
+	assert.False(t, p.suggestionRunCancelled(ctx, "lost"), "a run stopped by a shutdown or a lost claim failed")
+	assert.False(t, p.suggestionRunCancelled(ctx, "unknown"))
+}
+
+// A replay routes the router's captured requests against a draft bank:
+// dropping the simple phrase moves every captured simple request.
+func TestComplexitySuggestionsImpact(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	live := []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "simple exemplar"}, {Tier: "MEDIUM", Text: "medium exemplar"}, {Tier: "COMPLEX", Text: "complex exemplar"}}
+	got, window, err := p.ComplexitySuggestionImpact(ctx, complexity.DefaultRouterID, 0, live, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 7*24*time.Hour, window, "no window reads the whole lookback")
+	assert.Equal(t, 6, got.Requests)
+	assert.Equal(t, map[string]int{"SIMPLE": 6}, got.Live)
+	assert.Equal(t, got.Live, got.Draft, "the live bank as a draft changes nothing")
+	assert.Empty(t, got.Changed)
+
+	got, _, err = p.ComplexitySuggestionImpact(ctx, complexity.DefaultRouterID, time.Hour, live[1:], nil)
+	require.NoError(t, err)
+	assert.Zero(t, got.Draft["SIMPLE"])
+	assert.Len(t, got.Changed, 6)
+
+	_, _, err = p.ComplexitySuggestionImpact(ctx, complexity.DefaultRouterID, 30*24*time.Hour, live, nil)
+	require.ErrorIs(t, err, ErrComplexitySuggestionWindow)
+	_, _, err = p.ComplexitySuggestionImpact(ctx, "office", 0, live, nil)
+	require.ErrorIs(t, err, ErrUnknownComplexityRouter)
+}
+
 // Testing a phrase uses the serving bank and the router's own floor.
 func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 	p, _, _ := suggestionPlugin(t)
@@ -918,7 +1045,7 @@ func TestComplexitySuggestionsEstimate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 6, got.Requests)
 	assert.Equal(t, 6, got.Clustered)
-	assert.Equal(t, 6, got.MaxModelCalls, "6 requests make at most 3 clusters of 2, two calls each")
+	assert.Equal(t, 9, got.MaxModelCalls, "6 requests make at most 3 clusters of 2, three calls each")
 
 	_, err = p.EstimateComplexitySuggestionRun(ctx, complexity.DefaultRouterID, 8*24*time.Hour)
 	require.ErrorIs(t, err, ErrComplexitySuggestionWindow)
@@ -926,22 +1053,369 @@ func TestComplexitySuggestionsEstimate(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnknownComplexityRouter)
 }
 
-// Testing a phrase reads only the serving bank, so it works on a router that
-// serves one but keeps no captured traffic (Chromem as Bifrost's store),
-// where a run is refused for want of a capture store.
-func TestComplexitySuggestionsTestPhrasesNeedNoCaptureStore(t *testing.T) {
-	p := newCapturePluginWithStore(t, suggestionTestSettings(), false)
-	require.False(t, p.semanticClassifier.Status().CaptureAvailable)
-	got, err := p.TestComplexitySuggestionPhrases(context.Background(), complexity.DefaultRouterID,
-		[]complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "simple request"}},
-		[]suggestrun.TestExample{{LogID: "log-0", Text: "simple request"}})
-	require.NoError(t, err)
-	require.Len(t, got.Examples, 1)
-	assert.Equal(t, "SIMPLE", got.Examples[0].Current.Tier)
+type recordedChat struct {
+	model, system, user string
+}
 
-	space, err := p.semanticClassifier.ServingSpace(context.Background())
+// recordChats answers phrase calls with one phrase and tier calls (to
+// tierModel) with tier, recording every call.
+func recordChats(p *RoutingPlugin, tierModel, tier string) *[]recordedChat {
+	var mu sync.Mutex
+	calls := &[]recordedChat{}
+	p.SetChatRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		mu.Lock()
+		*calls = append(*calls, recordedChat{model: string(req.Provider) + "/" + req.Model, system: *req.Input[0].Content.ContentStr, user: *req.Input[1].Content.ContentStr})
+		mu.Unlock()
+		if req.Model == tierModel {
+			return chatResponseWithText(fmt.Sprintf(`{"tier":%q,"confidence":"high","reason":"tier step"}`, tier)), nil
+		}
+		return chatResponseWithText(`{"coherent":true,"phrases":["a short question"]}`), nil
+	})
+	return calls
+}
+
+// An llm tier step runs on its own model after the phrase step. Unedited, it
+// sends the prompt rendered from the router, with the router's own phrases as
+// examples of each tier; that is exactly what the editor is shown. The phrase
+// step is no longer asked about tiers.
+func TestComplexitySuggestionsTierStepWithLLM(t *testing.T) {
+	settings := suggestionTestSettings()
+	settings.Tier = &configstore.ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: "openai", Model: "gpt-tier"}
+	p, store, _ := suggestionPluginWith(t, settings)
+	calls := recordChats(p, "gpt-tier", "MEDIUM")
+	_, err := p.StartComplexitySuggestionRunNow(context.Background(), complexity.DefaultRouterID, 0)
 	require.NoError(t, err)
-	defer space.Close()
-	err = space.EachCaptured(context.Background(), time.Now().Add(-time.Hour), time.Now(), func([]complexity.CapturedRequest) error { return nil })
-	assert.ErrorIs(t, err, complexity.ErrNoCaptureStore, "a serving-only space reads no traffic")
+	run := waitForRun(t, store)
+	require.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
+
+	var phrase, tier []recordedChat
+	for _, c := range *calls {
+		if c.model == "openai/gpt-tier" {
+			tier = append(tier, c)
+		} else {
+			phrase = append(phrase, c)
+		}
+	}
+	require.NotEmpty(t, phrase)
+	require.Len(t, tier, 1, "one tier call for the one cluster")
+	assert.Equal(t, "openai/gpt-test", phrase[0].model)
+	assert.NotContains(t, phrase[0].system, "Tier definitions")
+	rendered, _ := SuggestionTierDefaults(captureTestConfig(settings))
+	assert.True(t, strings.HasPrefix(tier[0].system, rendered), "an unedited run sends the rendered prompt the editor shows")
+	for _, want := range []string{suggest.DefaultTierInstructions(), "Tier definitions:", "SIMPLE:\n- simple exemplar", "MEDIUM:\n- medium exemplar", "COMPLEX:\n- complex exemplar"} {
+		assert.Contains(t, tier[0].system, want)
+	}
+	assert.Contains(t, tier[0].user, "simple request")
+
+	rows, err := store.ListComplexitySuggestions(context.Background(), logstore.ComplexitySuggestionFilter{RouterID: complexity.DefaultRouterID})
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	for _, row := range rows {
+		assert.Equal(t, "MEDIUM", row.Tier, "the tier comes from the tier step")
+	}
+}
+
+// A decision tier step asks the decision model one choice question: the tier
+// prompt as its instructions, and the router's definitions with its own
+// phrases (never the shipped defaults) as each tier's examples. The chat model
+// only writes phrases.
+func TestComplexitySuggestionsTierStepWithDecisionModel(t *testing.T) {
+	settings := suggestionTestSettings()
+	settings.Tier = &configstore.ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: "typesafe", Model: "jev-latest",
+		Instructions: "Which tier does this request type need?",
+		Criteria: map[string]configstore.ComplexityDecisionTierCriteria{
+			"COMPLEX": {Definition: "Multi-step design work.", Examples: []string{"design our failover"}},
+		}}
+	p, store, _ := suggestionPluginWith(t, settings)
+	calls := recordChats(p, "never", "")
+	var mu sync.Mutex
+	var asked []*schemas.BifrostDecisionRequest
+	p.SetDecisionRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		mu.Lock()
+		asked = append(asked, req)
+		mu.Unlock()
+		resp := decisionChoiceResponse("COMPLEX")
+		confidence := 0.9
+		resp.Answers[0].Confidence = &confidence
+		return resp, nil
+	})
+	_, err := p.StartComplexitySuggestionRunNow(context.Background(), complexity.DefaultRouterID, 0)
+	require.NoError(t, err)
+	run := waitForRun(t, store)
+	require.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
+
+	for _, c := range *calls {
+		assert.Equal(t, "openai/gpt-test", c.model, "only the phrase step uses the chat model")
+	}
+	require.Len(t, asked, 1)
+	req := asked[0]
+	assert.Equal(t, schemas.ModelProvider("typesafe"), req.Provider)
+	assert.Equal(t, "jev-latest", req.Model)
+	require.Len(t, req.Questions, 1)
+	q := req.Questions[0]
+	assert.Equal(t, schemas.DecisionTypeChoice, q.Type)
+	require.NotNil(t, q.Instructions)
+	assert.Equal(t, "Which tier does this request type need?", *q.Instructions.Text, "edited instructions are sent as written")
+	require.Len(t, q.Choices, 3)
+	for i, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+		assert.Equal(t, tier, *q.Choices[i].Value.Str)
+		described := q.Choices[i].Description.Structured.(map[string]interface{})
+		if tier == "COMPLEX" {
+			assert.Equal(t, "Multi-step design work.", described["definition"], "an edited tier is sent as written")
+			assert.Equal(t, []string{"design our failover"}, described["examples"])
+			assert.Empty(t, described["signals"])
+			continue
+		}
+		assert.Equal(t, []string{strings.ToLower(tier) + " exemplar"}, described["examples"], "unedited tiers carry the router's own phrases")
+	}
+	assert.Contains(t, *req.Input.Messages[0].Content.Text, "simple request")
+
+	rows, err := store.ListComplexitySuggestions(context.Background(), logstore.ComplexitySuggestionFilter{RouterID: complexity.DefaultRouterID})
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	for _, row := range rows {
+		assert.Equal(t, "COMPLEX", row.Tier)
+		assert.Equal(t, "high", row.Confidence)
+	}
+}
+
+// An edited llm prompt is sent as written, in place of everything the router
+// would generate; only the fixed output rules follow it.
+func TestComplexitySuggestionsTierStepSendsAnEditedPrompt(t *testing.T) {
+	settings := suggestionTestSettings()
+	edited := "Support requests are SIMPLE.\nExamples:\n- where is my refund"
+	settings.Tier = &configstore.ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: "openai", Model: "gpt-tier", Prompt: edited}
+	p, store, _ := suggestionPluginWith(t, settings)
+	calls := recordChats(p, "gpt-tier", "SIMPLE")
+	_, err := p.StartComplexitySuggestionRunNow(context.Background(), complexity.DefaultRouterID, 0)
+	require.NoError(t, err)
+	run := waitForRun(t, store)
+	require.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
+	var tier []recordedChat
+	for _, c := range *calls {
+		if c.model == "openai/gpt-tier" {
+			tier = append(tier, c)
+		}
+	}
+	require.Len(t, tier, 1)
+	assert.True(t, strings.HasPrefix(tier[0].system, edited+"\n\n"), tier[0].system)
+	assert.NotContains(t, tier[0].system, "Tier definitions", "nothing generated is added to an edited prompt")
+	assert.NotContains(t, tier[0].system, "simple exemplar")
+}
+
+// The rendered defaults carry the router's own phrases as examples, never the
+// shipped defaults, and the decision criteria keep the router's definitions
+// and signals.
+func TestSuggestionTierDefaults(t *testing.T) {
+	shipped := complexity.DefaultEditableKeywordConfig()
+	cfg := captureTestConfig(nil)
+	cfg.Keywords = complexity.EditableKeywordConfig{
+		SimpleKeywords:  []string{shipped.SimpleKeywords[0], "check my order status"},
+		MediumKeywords:  []string{shipped.MediumKeywords[0]},
+		ComplexKeywords: []string{"plan our data migration"},
+	}
+	cfg.Decision = &complexity.DecisionConfig{Criteria: map[string]configstore.ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "Our own simple definition."}}}
+	prompt, criteria := SuggestionTierDefaults(cfg)
+	assert.Contains(t, prompt, "SIMPLE:\n- check my order status")
+	assert.Contains(t, prompt, "COMPLEX:\n- plan our data migration")
+	assert.NotContains(t, prompt, shipped.SimpleKeywords[0])
+	assert.NotContains(t, prompt, "MEDIUM:\n-", "a tier with only shipped phrases gets no examples")
+	assert.Equal(t, "Our own simple definition.", criteria["SIMPLE"].Definition)
+	assert.Equal(t, []string{"check my order status"}, criteria["SIMPLE"].Examples)
+	assert.Empty(t, criteria["MEDIUM"].Examples)
+	assert.NotEmpty(t, criteria["MEDIUM"].Signals, "signals stay the router's")
+}
+
+func TestDecisionConfidenceLabel(t *testing.T) {
+	for value, want := range map[float64]string{0.95: "high", 0.75: "high", 0.5: "medium", 0.1: "low", 1.5: "", -0.2: ""} {
+		assert.Equal(t, want, decisionConfidenceLabel(value), "%v", value)
+	}
+}
+
+// With Chromem as Bifrost's vector store nothing is captured, so a suggestion
+// run has nothing to read: estimating and starting one are refused with the
+// reason, and the schedule neither claims its runs nor records one, failed or
+// skipped, every interval.
+func TestComplexitySuggestionsRefusedOnChromem(t *testing.T) {
+	start := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	settings := suggestionTestSettings()
+	settings.Schedule = hourlyFrom(start)
+	p := newCapturePluginWithStore(t, settings, false)
+	p.startComplexitySuggestions(context.Background(), 0)
+	store := suggestionTestStore(t)
+	p.SetComplexitySuggestionStore(store, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
+	ctx := context.Background()
+
+	_, err := p.EstimateComplexitySuggestionRun(ctx, complexity.DefaultRouterID, 0)
+	require.ErrorIs(t, err, complexity.ErrNoCaptureStore)
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
+	require.ErrorIs(t, err, complexity.ErrNoCaptureStore)
+
+	schedules := suggestionScheduleStore(t)
+	p.SetComplexitySuggestionSchedules(schedules)
+	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(time.Hour + time.Second), start.Add(2*time.Hour + time.Second)} {
+		require.NoError(t, p.scheduleComplexitySuggestions(ctx, at))
+	}
+	p.suggestions.wg.Wait()
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
+	require.NoError(t, err)
+	assert.Nil(t, row, "nothing claimed, so a capture store added later starts the schedule fresh")
+
+	// A run started anyway reads no space.
+	_, err = p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{
+		RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
+	require.ErrorIs(t, err, complexity.ErrNoCaptureStore)
+}
+
+// A user's cancel that reaches an inline run before it starts leaves the run
+// recorded as cancelled, not stuck as queued or recorded as failed.
+func TestComplexitySuggestionsCancelledBeforeStartIsRecordedCancelled(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	meta := complexitySuggestionJobMeta{RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, meta))
+	p.suggestions.inlineMu.Lock()
+	p.suggestions.cancelled[meta.RunID] = true
+	p.suggestions.inlineMu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := p.runComplexitySuggestions(ctx, meta)
+	require.NoError(t, err, "a cancel is not a failure")
+	runs := runsOf(t, store)
+	require.Len(t, runs, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunCancelled, runs[0].Status)
+	require.NotNil(t, runs[0].FinishedAt)
+}
+
+// hookQueue cancels a job with a callback, to put something between the
+// queue's cancel and the run record's write.
+type hookQueue struct {
+	cancel func(ctx context.Context, id string) (bool, error)
+}
+
+func (hookQueue) EnqueuePartitioned(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+func (q hookQueue) Cancel(ctx context.Context, id string) (bool, error) { return q.cancel(ctx, id) }
+
+// The cancelled record is written even when the caller's context ends between
+// the queue's cancel and the write: a request that went away must not leave
+// the run reading queued.
+func TestComplexitySuggestionsCancelIsRecordedAfterTheCallerLeaves(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	meta := complexitySuggestionJobMeta{RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, meta))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.SetComplexitySuggestionJobs(hookQueue{cancel: func(context.Context, string) (bool, error) {
+		cancel()
+		return true, nil
+	}}, &inFlightJobs{})
+
+	_, err := p.CancelComplexitySuggestionRun(ctx, complexity.DefaultRouterID, meta.RunID)
+	require.NoError(t, err)
+	runs := runsOf(t, store)
+	require.Len(t, runs, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunCancelled, runs[0].Status)
+	require.NotNil(t, runs[0].FinishedAt)
+}
+
+// A run that ended while its cancel was on the way keeps its outcome: the
+// cancel does not overwrite it with the earlier queued snapshot.
+func TestComplexitySuggestionsCancelKeepsAnOutcomeThatLandedFirst(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	meta := complexitySuggestionJobMeta{RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, meta))
+	p.SetComplexitySuggestionJobs(hookQueue{cancel: func(ctx context.Context, id string) (bool, error) {
+		// The job finishes before the cancel reaches it.
+		finished := time.Now().UTC()
+		require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{ID: id, RouterID: meta.RouterID,
+			TriggeredBy: meta.TriggeredBy, Status: logstore.ComplexitySuggestionRunSucceeded, StartedAt: finished, WindowStart: finished,
+			FinishedAt: &finished, Created: 3, Cost: 0.25}))
+		return false, nil
+	}}, &inFlightJobs{})
+
+	run, err := p.CancelComplexitySuggestionRun(context.Background(), complexity.DefaultRouterID, meta.RunID)
+	require.ErrorIs(t, err, ErrComplexitySuggestionRunEnded)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status)
+	runs := runsOf(t, store)
+	require.Len(t, runs, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, runs[0].Status, "the outcome is kept")
+	assert.EqualValues(t, 3, runs[0].Created)
+	assert.InDelta(t, 0.25, runs[0].Cost, 1e-9)
+}
+
+// The tier step's prompt hash key is the same on every run of the same
+// settings: the decision criteria are a map, serialized in key order.
+func TestComplexitySuggestionTierKeyIsStable(t *testing.T) {
+	p := &RoutingPlugin{}
+	router := suggestionRouter{id: "r", config: &complexity.AnalyzerConfig{Suggestions: &configstore.ComplexitySuggestionsConfig{
+		Enabled: true, Tier: &configstore.ComplexitySuggestionsTierConfig{Classifier: configstore.ComplexitySuggestionsTierDecision, Provider: "typesafe", Model: "jev-latest"},
+	}}}
+	_, first, _, err := p.newSuggestionTierDecider(router)
+	require.NoError(t, err)
+	require.NotEmpty(t, first)
+	for range 50 {
+		_, key, _, err := p.newSuggestionTierDecider(router)
+		require.NoError(t, err)
+		require.Equal(t, first, key)
+	}
+}
+
+// Testing phrases reads only the serving bank, so it works on a router whose
+// gateway has no shared store to capture traffic in.
+func TestComplexitySuggestionPhrasesNeedNoCaptureStore(t *testing.T) {
+	p := semanticClassifyTestPlugin(t) // no configured vector store
+	result, err := p.TestComplexitySuggestionPhrases(t.Context(), classifyTestRouterID,
+		[]complexity.SuggestionPhrase{{Tier: complexity.TierSimple, Text: "a casual greeting, again"}},
+		[]suggestrun.TestExample{{LogID: "1", Text: "hey, quick question"}})
+	require.NoError(t, err)
+	require.Len(t, result.Examples, 1)
+}
+
+// runOutcomeRace writes a run's outcome right after the cancel path's first
+// read of it, before the cancel is written, as a run finishing on another node
+// at that moment would.
+type runOutcomeRace struct {
+	logstore.LogStore
+	reads   int
+	outcome *logstore.ComplexitySuggestionRun
+}
+
+func (s *runOutcomeRace) ListComplexitySuggestionRuns(ctx context.Context, filter logstore.ComplexitySuggestionRunFilter, limit int) ([]logstore.ComplexitySuggestionRun, error) {
+	runs, err := s.LogStore.ListComplexitySuggestionRuns(ctx, filter, limit)
+	s.reads++
+	if s.reads == 1 && s.outcome != nil {
+		if writeErr := s.LogStore.UpsertComplexitySuggestionRun(ctx, s.outcome); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	return runs, err
+}
+
+// A run that finishes however close to its cancel keeps its outcome: the
+// cancel only applies to a run that is still queued or running when it is
+// written, in one conditional write, so nothing can land between a check and
+// the write.
+func TestComplexitySuggestionsCancelNeverOverwritesAFinishedRun(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	meta := complexitySuggestionJobMeta{RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, meta))
+	finished := time.Now().UTC()
+	race := &runOutcomeRace{LogStore: store, outcome: &logstore.ComplexitySuggestionRun{ID: meta.RunID, RouterID: meta.RouterID,
+		TriggeredBy: meta.TriggeredBy, Status: logstore.ComplexitySuggestionRunSucceeded, StartedAt: finished, WindowStart: finished,
+		FinishedAt: &finished, Created: 2, Cost: 0.1}}
+	p.SetComplexitySuggestionStore(race, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
+	p.SetComplexitySuggestionJobs(hookQueue{cancel: func(context.Context, string) (bool, error) { return false, nil }}, &inFlightJobs{})
+
+	_, err := p.CancelComplexitySuggestionRun(context.Background(), complexity.DefaultRouterID, meta.RunID)
+	require.ErrorIs(t, err, ErrComplexitySuggestionRunEnded, "the conditional write finds the run already ended")
+	runs := runsOf(t, store)
+	require.Len(t, runs, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, runs[0].Status, "the outcome that landed is kept")
+	assert.EqualValues(t, 2, runs[0].Created)
 }

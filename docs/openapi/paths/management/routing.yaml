@@ -1519,3 +1519,143 @@ model-router-classify:
           application/json:
             schema:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+complexity-suggestion-run-cancel:
+  post:
+    operationId: cancelComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Cancel a phrase suggestion run
+    description: |
+      Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the record returned may still read running until then.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the run belongs to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
+    responses:
+      '200':
+        description: Run cancelled, or asked to stop
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRun'
+      '404':
+        description: The model router, or a run of it with this id, does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The run has already ended, or suggestions are off
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-impact:
+  post:
+    operationId: replayComplexitySuggestionImpact
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Replay a draft phrase bank against recent traffic
+    description: |
+      Routes the router's captured requests from the window, by nearest phrase, against the live phrase bank and against a draft bank, and reports what would change without saving anything: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.
+
+      Only requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router to replay. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
+      - name: window
+        in: query
+        required: false
+        description: Hours or days (24h, 7d); omitted is the whole lookback.
+        schema:
+          type: string
+          example: 7d
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionImpactRequest'
+    responses:
+      '200':
+        description: Draft replayed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionImpact'
+      '400':
+        description: An empty or oversized draft, a phrase without text or a valid tier, or a window that is not a duration or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off for this router
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '502':
+        description: The embedding provider failed the draft's new phrases, or the logs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The router has no warmed phrase bank, or suggestions are not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'

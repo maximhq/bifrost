@@ -55,15 +55,17 @@ import {
 	PhraseTestResult,
 	SemanticStatusInfo,
 	DEFAULT_COMPLEXITY_ROUTER_ID,
+	DecisionTier,
 	SuggestionDetail,
+	SuggestionImpact,
 	SuggestionRun,
 	SuggestionRunEstimate,
 	SuggestionRunWindow,
 	Suggestion,
-	SUGGESTIONS_PAGE_SIZE,
 	SuggestionsList,
 	SuggestionStatus,
 } from "@/lib/types/complexityRouter";
+import { nextSuggestionsOffset, SUGGESTIONS_PAGE_SIZE } from "@/lib/utils/suggestionPages";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -985,21 +987,31 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["ModelRouters"],
 		}),
 
-		// Phrase suggestions. Every call is about one router, named by routerId;
-		// without one it is the complexity config's ("default"). offset pages
-		// the list, SUGGESTIONS_PAGE_SIZE at a time; omitted is the first page.
-		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[]; routerId?: string; offset?: number }>({
-			query: ({ statuses, routerId, offset }) => ({
+		// Phrase suggestions. Every call is about one router, named by routerId.
+		// One page of a router's suggestions with every status's count; limit 1
+		// reads the counts alone.
+		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[]; routerId: string; limit?: number }>({
+			query: ({ statuses, routerId, limit }) => ({
 				url: "/routing/complexity-suggestions",
 				method: "GET",
-				params: {
-					status: statuses.join(","),
-					router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID,
-					limit: SUGGESTIONS_PAGE_SIZE,
-					...(offset ? { offset } : {}),
-				},
+				params: { status: statuses.join(","), router_id: routerId, ...(limit ? { limit } : {}) },
 			}),
 			// A config save changes whether suggestions are on and when they run.
+			providesTags: ["ComplexitySuggestions", "ComplexityAnalyzerConfig"],
+		}),
+		// A router's suggestions page by page, for a list that loads more on
+		// request. A refetch (polling, a status change) reloads every page
+		// loaded so far, so the pages stay one consistent list.
+		getComplexitySuggestionPages: builder.infiniteQuery<SuggestionsList, { statuses: SuggestionStatus[]; routerId: string }, number>({
+			infiniteQueryOptions: {
+				initialPageParam: 0,
+				getNextPageParam: (lastPage, _allPages, lastOffset) => nextSuggestionsOffset(lastPage, lastOffset),
+			},
+			query: ({ queryArg: { statuses, routerId }, pageParam }) => ({
+				url: "/routing/complexity-suggestions",
+				method: "GET",
+				params: { status: statuses.join(","), router_id: routerId, limit: SUGGESTIONS_PAGE_SIZE, offset: pageParam },
+			}),
 			providesTags: ["ComplexitySuggestions", "ComplexityAnalyzerConfig"],
 		}),
 		getComplexitySuggestion: builder.query<SuggestionDetail, { id: string; routerId?: string }>({
@@ -1054,6 +1066,28 @@ export const governanceApi = baseApi.injectEndpoints({
 				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, ...(window ? { window } : {}) },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
+		}),
+		cancelComplexitySuggestionRun: builder.mutation<SuggestionRun, { runId: string; routerId: string }>({
+			query: ({ runId, routerId }) => ({
+				url: `/routing/complexity-suggestions/runs/${encodeURIComponent(runId)}/cancel`,
+				method: "POST",
+				params: { router_id: routerId },
+			}),
+			invalidatesTags: ["ComplexitySuggestions"],
+		}),
+		// A mutation, not a query: the draft bank is the body, and a replay is
+		// asked for, not cached.
+		getComplexitySuggestionImpact: builder.mutation<
+			SuggestionImpact,
+			{ routerId: string; window?: SuggestionRunWindow; phrases: { tier: DecisionTier; text: string }[]; minSimilarity?: number }
+		>({
+			query: ({ routerId, window, phrases, minSimilarity }) => ({
+				url: "/routing/complexity-suggestions/impact",
+				method: "POST",
+				params: { router_id: routerId, ...(window ? { window } : {}) },
+				// The draft's floor, so the draft side is replayed as it would serve.
+				body: { phrases, ...(minSimilarity !== undefined ? { min_similarity: minSimilarity } : {}) },
+			}),
 		}),
 	}),
 });
@@ -1141,12 +1175,15 @@ export const {
 	useGetModelRouterStatusQuery,
 	useRetryModelRouterWarmupMutation,
 	useGetComplexitySuggestionsQuery,
+	useGetComplexitySuggestionPagesInfiniteQuery,
 	useGetComplexitySuggestionQuery,
 	useUpdateComplexitySuggestionStatusMutation,
 	useTestComplexitySuggestionPhrasesMutation,
 	useGetComplexitySuggestionRunsQuery,
 	useGetComplexitySuggestionRunEstimateQuery,
 	useStartComplexitySuggestionRunMutation,
+	useCancelComplexitySuggestionRunMutation,
+	useGetComplexitySuggestionImpactMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

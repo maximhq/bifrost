@@ -3029,6 +3029,11 @@ func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, filte
 	return h.inner.ListComplexitySuggestionRuns(ctx, filter, limit)
 }
 
+// UpdateComplexitySuggestionRunStatus ends a run, only from the given statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionRunStatus(ctx, id, from, to, finishedAt)
+}
+
 // PruneComplexitySuggestionRuns keeps one router's newest keep runs.
 func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
 	return h.inner.PruneComplexitySuggestionRuns(ctx, routerID, keep)
@@ -3054,4 +3059,9 @@ func (h *HybridLogStore) ListComplexityVectorDeletes(ctx context.Context, limit 
 // rows.
 func (h *HybridLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
 	return h.inner.DeleteComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityReplayUsage reads the usage of the given logs.
+func (h *HybridLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error) {
+	return h.inner.ListComplexityReplayUsage(ctx, logIDs)
 }

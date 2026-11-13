@@ -1,13 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { isSuggestionRunInProgress, type EditableKeywordConfig, type Suggestion, type SuggestionRun } from "@/lib/types/complexityRouter";
+import type { EditableKeywordConfig, Suggestion, SuggestionRun } from "@/lib/types/complexityRouter";
 import {
 	addPhrases,
 	availableWindows,
 	categoryCounts,
+	draftBank,
 	filterSuggestions,
 	newPhrases,
+	proposedTier,
 	removePhrases,
 	replacePhrase,
+	routingSplit,
+	runBreakdown,
+	runInProgress,
+	runProgress,
+	runWindowDays,
 	stagedPhraseCount,
 	stillStaged,
 } from "./suggestions.utils";
@@ -33,6 +40,7 @@ function suggestion(id: string, category: Suggestion["category"], phrases: strin
 		coverage: 1,
 		nearest_similarity: 0.4,
 		example_log_ids: [],
+		current_routing: {},
 		embedding_signature: "ns",
 		run_id: "r",
 		last_seen_at: "",
@@ -82,22 +90,112 @@ describe("filtering suggestions", () => {
 	});
 });
 
-describe("isSuggestionRunInProgress", () => {
-	test("a queued run is in progress until it ends, as a running one is", () => {
-		const run = (status: SuggestionRun["status"]) => ({ status }) as SuggestionRun;
-		expect(isSuggestionRunInProgress(run("queued"))).toBe(true);
-		expect(isSuggestionRunInProgress(run("running"))).toBe(true);
-		for (const status of ["succeeded", "failed", "skipped", "cancelled"] as const) {
-			expect(isSuggestionRunInProgress(run(status)), status).toBe(false);
-		}
-		expect(isSuggestionRunInProgress(undefined)).toBe(false);
-	});
-});
-
 describe("run windows", () => {
 	test("offers only windows the lookback still holds", () => {
 		expect(availableWindows(7)).toEqual(["24h", "7d"]);
 		expect(availableWindows(30)).toEqual(["24h", "7d", "14d", "30d"]);
 		expect(availableWindows(1)).toEqual(["24h"]);
+	});
+});
+function run(overrides: Partial<SuggestionRun>): SuggestionRun {
+	return {
+		id: "r",
+		router_id: "default",
+		router_version: "v1",
+		window_start: "2026-11-03T03:00:00Z",
+		triggered_by: "manual",
+		status: "succeeded",
+		requests_read: 0,
+		requests_clustered: 0,
+		requests_assigned: 0,
+		requests_skipped: 0,
+		requests_grouped: 0,
+		clusters: 0,
+		clusters_decided: 0,
+		clusters_over_limit: 0,
+		clusters_asked: 0,
+		clusters_done: 0,
+		clusters_failed: 0,
+		clusters_covered: 0,
+		clusters_incoherent: 0,
+		clusters_unreadable: 0,
+		created: 0,
+		refreshed: 0,
+		superseded: 0,
+		cost: 0,
+		started_at: "2026-11-10T03:00:00Z",
+		...overrides,
+	};
+}
+
+describe("proposals and routing", () => {
+	test("a low-confidence tier is no proposal", () => {
+		expect(proposedTier({ tier: "MEDIUM", confidence: "high" })).toBe("MEDIUM");
+		expect(proposedTier({ tier: "MEDIUM", confidence: undefined })).toBe("MEDIUM");
+		expect(proposedTier({ tier: "MEDIUM", confidence: "Low" })).toBeNull();
+	});
+
+	test("the routing split lists the busiest tier first and no match last", () => {
+		expect(routingSplit({ none: 300, MEDIUM: 20, COMPLEX: 172, SIMPLE: 0 })).toEqual([
+			{ tier: "COMPLEX", count: 172 },
+			{ tier: "MEDIUM", count: 20 },
+			{ tier: "none", count: 300 },
+		]);
+		expect(routingSplit(undefined)).toEqual([]);
+	});
+});
+
+describe("runs", () => {
+	test("progress follows the stage, and the suggesting stage its groups", () => {
+		expect(runInProgress(run({ status: "queued" }))).toBe(true);
+		expect(runInProgress(run({ status: "cancelled" }))).toBe(false);
+		expect(runProgress(run({ status: "queued" }))).toBe(0);
+		expect(runProgress(run({ status: "running", stage: "reading" }))).toBeCloseTo(0.05);
+		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 10, clusters_done: 5 }))).toBeCloseTo(0.6);
+		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 0, clusters_done: 0 }))).toBeCloseTo(0.3);
+		expect(runProgress(run({ status: "running", stage: "saving" }))).toBeCloseTo(0.95);
+	});
+
+	test("the window is whole days, at least one", () => {
+		expect(runWindowDays(run({}))).toBe(7);
+		expect(runWindowDays(run({ window_start: "2026-11-10T02:00:00Z" }))).toBe(1);
+	});
+
+	test("the breakdown narrows requests to groups and leaves out steps that took nothing", () => {
+		const rows = runBreakdown(
+			run({
+				requests_read: 1000,
+				requests_clustered: 600,
+				requests_assigned: 380,
+				requests_skipped: 20,
+				requests_grouped: 900,
+				clusters: 12,
+				clusters_decided: 2,
+				clusters_asked: 10,
+				clusters_covered: 3,
+				clusters_over_limit: 1,
+				created: 4,
+				refreshed: 3,
+			}),
+		);
+		expect(rows.map((row) => [row.step, row.value, row.kind])).toEqual([
+			["window", 1000, "total"],
+			["skipped", 20, "minus"],
+			["ungrouped", 80, "minus"],
+			["grouped", 12, "result"],
+			["decided", 2, "minus"],
+			["overLimit", 1, "minus"],
+			["covered", 3, "minus"],
+			["shown", 7, "result"],
+		]);
+	});
+});
+
+describe("draft bank", () => {
+	test("every non-blank phrase with its tier", () => {
+		expect(draftBank({ simple_keywords: ["a", " "], medium_keywords: [], complex_keywords: ["c"] })).toEqual([
+			{ tier: "SIMPLE", text: "a" },
+			{ tier: "COMPLEX", text: "c" },
+		]);
 	});
 });

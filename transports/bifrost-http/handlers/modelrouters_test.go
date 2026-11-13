@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"gorm.io/gorm"
 )
 
@@ -172,8 +173,54 @@ func TestModelRouterEndpoints(t *testing.T) {
 
 	status, _ = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "missing"})
 	assert.Equal(t, fasthttp.StatusNotFound, status)
-	status, _ = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "support"})
+	// A router whose config cannot be read gets no generated tier text, rather
+	// than text rendered from the built-in defaults as if it were its own.
+	status, body = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "unreadable"})
 	assert.Equal(t, fasthttp.StatusOK, status)
+	assert.NotContains(t, body, "suggestion_default_tier_prompt")
+	assert.NotContains(t, body, "suggestion_default_tier_criteria")
+	status, body = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "support"})
+	assert.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, suggest.DefaultInstructions(), body["suggestion_default_instructions"])
+	assert.Equal(t, suggest.DefaultTierInstructions(), body["suggestion_default_tier_instructions"],
+		"the decision tier step's question editor is seeded from the shipped instructions")
+	// A router back on the shipped phrases has no examples to send.
+	routerDefaults, _ := body["suggestion_default_tier_prompt"].(string)
+	assert.NotContains(t, routerDefaults, "administrator assigned")
+
+	// The suggestions tier block round-trips with its models filled in, and a
+	// misspelled tier setting is refused.
+	tiered := `{"id":"tiered","name":"Tiered","keywords":{"simple_keywords":["s"],"medium_keywords":["m"],"complex_keywords":["c"]},` +
+		`"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},` +
+		`"suggestions":{"enabled":true,"provider":"openai","model":"gpt-4.1-mini","tier":{"classifier":"decision","instructions":"judge the work",` +
+		`"prompt":"Refunds are SIMPLE.","criteria":{"SIMPLE":{"definition":"One short answer.","examples":["where is my refund"]}}}}}`
+	status, body = call(t, h.createModelRouter, tiered, nil)
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	suggestions, _ := body["suggestions"].(map[string]any)
+	assert.Equal(t, map[string]any{"classifier": "decision", "provider": string(configstore.DefaultComplexityDecisionProvider),
+		"model": configstore.DefaultComplexityDecisionModel, "instructions": "judge the work", "prompt": "Refunds are SIMPLE.",
+		"criteria": map[string]any{"SIMPLE": map[string]any{"definition": "One short answer.", "examples": []any{"where is my refund"}}}}, suggestions["tier"])
+	status, body = call(t, h.getModelRouter, "", map[string]string{"router_id": "tiered"})
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	suggestions, _ = body["suggestions"].(map[string]any)
+	tierBack, _ := suggestions["tier"].(map[string]any)
+	assert.Equal(t, "Refunds are SIMPLE.", tierBack["prompt"], "the edited text is persisted, not only echoed")
+	assert.NotNil(t, tierBack["criteria"])
+
+	// The generated tier text is rendered from this router: its own phrases
+	// (s, m, c) are the examples, in the prompt and in each tier's criteria.
+	status, body = call(t, h.getModelRouterStatus, "", map[string]string{"router_id": "tiered"})
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	tierPrompt, _ := body["suggestion_default_tier_prompt"].(string)
+	assert.True(t, strings.HasPrefix(tierPrompt, suggest.DefaultTierInstructions()), tierPrompt)
+	assert.True(t, strings.HasSuffix(tierPrompt, "SIMPLE:\n- s\nMEDIUM:\n- m\nCOMPLEX:\n- c"), tierPrompt)
+	criteria, _ := body["suggestion_default_tier_criteria"].(map[string]any)
+	require.Len(t, criteria, 3)
+	medium, _ := criteria["MEDIUM"].(map[string]any)
+	assert.Equal(t, []any{"m"}, medium["examples"])
+	assert.NotEmpty(t, medium["definition"])
+	status, _ = call(t, h.createModelRouter, strings.Replace(tiered, `"classifier"`, `"mode"`, 1), nil)
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
 
 	// A saved router the plugin does not serve (session routing without a KV
 	// store, say) is reported as not loaded, not as missing.

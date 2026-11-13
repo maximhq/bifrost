@@ -54,8 +54,8 @@ func (c *SemanticClassifier) SuggestionSpace(ctx context.Context) (*SuggestionSp
 
 // ServingSpace snapshots the serving generation's phrase bank and embedding
 // function only, for testing phrases against it: no captured traffic is read,
-// so no capture store is needed, and EachCaptured answers ErrNoCaptureStore.
-// The caller must Close it.
+// so no capture store is needed, and EachCaptured and CountCaptured answer
+// ErrNoCaptureStore. The caller must Close it.
 func (c *SemanticClassifier) ServingSpace(ctx context.Context) (*SuggestionSpace, error) {
 	return c.snapshotSpace(ctx, false)
 }
@@ -201,7 +201,10 @@ func (s *SuggestionSpace) ServedVersion() string { return s.Version }
 // CreateNamespace, so after a restart an estimate made before anything was
 // captured would fail. Creating a namespace that exists changes nothing.
 func (s *SuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time) (int, error) {
-	if s.Store != nil && s.CaptureNamespace != "" {
+	if s.Store == nil {
+		return 0, ErrNoCaptureStore
+	}
+	if s.CaptureNamespace != "" {
 		if err := s.Store.CreateNamespace(ctx, s.CaptureNamespace, s.Dimension, captureProperties); err != nil {
 			return 0, fmt.Errorf("create capture namespace: %w", err)
 		}

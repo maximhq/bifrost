@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -88,6 +90,9 @@ type ComplexitySuggestionTexts func(ctx context.Context, logIDs []string, messag
 // ComplexitySuggestionJobQueue queues suggestion runs. *sidekiq.Runner is one.
 type ComplexitySuggestionJobQueue interface {
 	EnqueuePartitioned(ctx context.Context, id, kind, partitioningKey, metadata, createdBy string) error
+	// Cancel stops a queued or running job, on whichever node runs it, and
+	// reports whether this call did.
+	Cancel(ctx context.Context, id string) (bool, error)
 }
 
 // ComplexitySuggestionJobStore reports queued and running jobs, and the
@@ -95,6 +100,9 @@ type ComplexitySuggestionJobQueue interface {
 type ComplexitySuggestionJobStore interface {
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	// GetSidekiqJob reads one job, so a run that stopped early can tell a
+	// user's cancel from a shutdown.
+	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 }
 
 // ComplexitySuggestionScheduleStore keeps each router's schedule state and
@@ -114,6 +122,10 @@ type complexitySuggestions struct {
 	// router.
 	inlineMu sync.Mutex
 	inline   map[string]bool
+	// inlineCancels stops an inline run by its run ID, and cancelled marks
+	// the ones a user stopped, so the run records itself as cancelled.
+	inlineCancels map[string]context.CancelFunc
+	cancelled     map[string]bool
 
 	// next is this node's view of each router's schedule: the next run of the
 	// settings hash names. With a schedule store it only saves reading the
@@ -232,7 +244,8 @@ func complexitySuggestionPartition(routerID string) string {
 // startComplexitySuggestions starts the schedule check. tick <= 0 starts no
 // ticker, for tests that drive the check themselves.
 func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick time.Duration) {
-	cs := &complexitySuggestions{inline: map[string]bool{}, next: map[string]complexitySuggestionNext{}}
+	cs := &complexitySuggestions{inline: map[string]bool{}, inlineCancels: map[string]context.CancelFunc{}, cancelled: map[string]bool{},
+		next: map[string]complexitySuggestionNext{}}
 	cs.ctx, cs.cancel = context.WithCancel(ctx)
 	p.suggestions = cs
 	if tick <= 0 {
@@ -364,21 +377,27 @@ func (p *RoutingPlugin) scheduleRouterSuggestions(ctx context.Context, router su
 	} else {
 		cs.rememberNext(router.id, hash, next)
 	}
+	// The slot is taken from here on, so its run is queued or recorded on a
+	// context that outlives the scheduler's: a shutdown ending that one is one
+	// of the outcomes to record, and a slot claimed with no record of its run
+	// would read as a run that never happened.
+	recordCtx, cancel := suggestionRecordContext(ctx)
+	defer cancel()
 	trigger := logstore.ComplexitySuggestionTriggerSchedule
 	// A router still warming (after a restart, or a phrase change) has no
 	// space to suggest against: the run is recorded as skipped, so the
 	// schedule never claims to have run when it did not.
 	if router.classifier == nil || router.classifier.Status().State != complexity.SemanticStatusReady {
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "the complexity router was still warming up")
+		return recordSkippedSuggestionRun(recordCtx, deps.store, runID, router.id, trigger, "the complexity router was still warming up")
 	}
-	started, err := p.startComplexitySuggestionRun(ctx, complexitySuggestionJobMeta{RunID: runID, RouterID: router.id, TriggeredBy: trigger})
+	started, err := p.startComplexitySuggestionRun(recordCtx, complexitySuggestionJobMeta{RunID: runID, RouterID: router.id, TriggeredBy: trigger})
 	switch {
 	case errors.Is(err, errSuggestionsClosing):
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "the gateway was shutting down")
+		return recordSkippedSuggestionRun(recordCtx, deps.store, runID, router.id, trigger, "the gateway was shutting down")
 	case err != nil:
 		return err
 	case !started:
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "a suggestion run was still in progress")
+		return recordSkippedSuggestionRun(recordCtx, deps.store, runID, router.id, trigger, "a suggestion run was still in progress")
 	}
 	return nil
 }
@@ -514,6 +533,9 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, rou
 	if router.classifier == nil || !router.classifier.Serving() {
 		return "", complexity.ErrNoServingGeneration
 	}
+	if !router.classifier.Status().CaptureAvailable {
+		return "", complexity.ErrNoCaptureStore
+	}
 	runID, err := p.manualSuggestionRunID(ctx, router.id)
 	if err != nil {
 		return "", err
@@ -623,9 +645,20 @@ func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, rou
 }
 
 // ComplexitySuggestionMessageHistoryCount is how many user turns a router
-// embeds, so request text read back from logs matches what was captured.
+// embeds, so request text read back from logs matches what was captured. It
+// is the serving generation's count: a config change that has not warmed, or
+// failed to, leaves the serving bank classifying with the old one.
 func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount(routerID string) int {
-	if router, ok := p.suggestionRouter(routerID); ok && router.config != nil && router.config.Semantic != nil {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return 1
+	}
+	if router.classifier != nil {
+		if count, serving := router.classifier.ServingMessageHistoryCount(); serving {
+			return count
+		}
+	}
+	if router.config != nil && router.config.Semantic != nil {
 		return router.config.Semantic.MessageHistoryCount
 	}
 	return 1
@@ -682,16 +715,14 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 			defer cancel()
 			// An enqueue error does not prove no job was written (a commit
 			// can land after its acknowledgement is lost), so the job store
-			// is asked before the run recorded as queued is closed. Only "no
-			// job of this kind in flight" proves this one was not created.
-			inFlight, lookupErr := jobs.store.GetInFlightSidekiqJobByKind(recordCtx, ComplexitySuggestionsJobKind)
+			// is asked for this run's own job before the run recorded as
+			// queued is closed. Only "no such job" proves it was not created.
+			job, lookupErr := jobs.store.GetSidekiqJob(recordCtx, meta.RunID)
 			switch {
 			case lookupErr != nil:
 				return false, errors.Join(err, fmt.Errorf("could not confirm whether the run was queued: %w", lookupErr))
-			case inFlight != nil && inFlight.ID == meta.RunID:
+			case job != nil:
 				return true, nil // written after all; the dispatcher runs it
-			case inFlight != nil:
-				return false, err // another run's job; whether this one exists is unknown
 			}
 			if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, "the run could not be queued: "+err.Error()); recordErr != nil {
 				err = errors.Join(err, recordErr)
@@ -711,22 +742,26 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 		// Closing: not "already running", so a manual run is told why.
 		return false, err
 	}
+	runCtx, stop := context.WithCancel(runCtx)
 	cs.inline[meta.RouterID] = true
+	cs.inlineCancels[meta.RunID] = stop
 	cs.inlineMu.Unlock()
-	if err := recordQueuedSuggestionRun(ctx, deps.store, meta); err != nil {
+	forget := func() {
+		stop()
 		cs.inlineMu.Lock()
 		delete(cs.inline, meta.RouterID)
+		delete(cs.inlineCancels, meta.RunID)
+		delete(cs.cancelled, meta.RunID)
 		cs.inlineMu.Unlock()
+	}
+	if err := recordQueuedSuggestionRun(ctx, deps.store, meta); err != nil {
+		forget()
 		done()
 		return false, err
 	}
 	go func() {
 		defer done()
-		defer func() {
-			cs.inlineMu.Lock()
-			delete(cs.inline, meta.RouterID)
-			cs.inlineMu.Unlock()
-		}()
+		defer forget()
 		_, err := p.runComplexitySuggestions(runCtx, meta)
 		if errors.Is(err, errSuggestionsUnavailable) {
 			// Turned off between queueing and starting, as a job can find them:
@@ -740,6 +775,147 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 		}
 	}()
 	return true, nil
+}
+
+// ErrUnknownComplexitySuggestionRun is a cancel for a run the router does not
+// have.
+var ErrUnknownComplexitySuggestionRun = errors.New("no such phrase suggestion run")
+
+// ErrComplexitySuggestionRunEnded is a cancel for a run that already ended.
+var ErrComplexitySuggestionRunEnded = errors.New("the phrase suggestion run has already ended")
+
+// CancelComplexitySuggestionRun stops one router's queued or running run and
+// returns its record as it now stands. A running run stops at its next check
+// and records itself as cancelled, keeping what it had written; a run that
+// had not started, or whose job is already gone, is recorded as cancelled
+// here.
+func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error) {
+	if _, ok := p.suggestionRouter(routerID); !ok {
+		return logstore.ComplexitySuggestionRun{}, ErrUnknownComplexityRouter
+	}
+	cs := p.suggestions
+	if cs == nil || cs.deps.Load() == nil {
+		return logstore.ComplexitySuggestionRun{}, ErrComplexitySuggestionsOff
+	}
+	store := cs.deps.Load().store
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID, IDs: []string{runID}}, 1)
+	if err != nil {
+		return logstore.ComplexitySuggestionRun{}, fmt.Errorf("read the suggestion run: %w", err)
+	}
+	if len(runs) == 0 {
+		return logstore.ComplexitySuggestionRun{}, ErrUnknownComplexitySuggestionRun
+	}
+	run := runs[0]
+	if run.Status != logstore.ComplexitySuggestionRunQueued && run.Status != logstore.ComplexitySuggestionRunRunning {
+		return run, ErrComplexitySuggestionRunEnded
+	}
+	// Whether a handler is still there to record the outcome itself.
+	handlerRecords := false
+	if jobs := cs.jobs.Load(); jobs != nil {
+		stopped, err := jobs.queue.Cancel(ctx, runID)
+		if err != nil {
+			return run, fmt.Errorf("cancel the suggestion run: %w", err)
+		}
+		handlerRecords = stopped && run.Status == logstore.ComplexitySuggestionRunRunning
+	} else {
+		cs.inlineMu.Lock()
+		if stop, ok := cs.inlineCancels[runID]; ok {
+			cs.cancelled[runID] = true
+			stop()
+			handlerRecords = true
+		}
+		cs.inlineMu.Unlock()
+	}
+	if handlerRecords {
+		return run, nil
+	}
+	// Written on a context of its own: the job is already cancelled, so a
+	// caller that went away must not leave the run reading queued. The write
+	// is conditional on the run still being queued or running, so an outcome
+	// it wrote first (it ended while the job was being cancelled) is kept, not
+	// overwritten with the snapshot read above.
+	recordCtx, cancel := suggestionRecordContext(ctx)
+	defer cancel()
+	finished := time.Now().UTC()
+	moved, err := store.UpdateComplexitySuggestionRunStatus(recordCtx, runID,
+		[]string{logstore.ComplexitySuggestionRunQueued, logstore.ComplexitySuggestionRunRunning}, logstore.ComplexitySuggestionRunCancelled, &finished)
+	if err != nil {
+		return run, fmt.Errorf("record the cancelled suggestion run: %w", err)
+	}
+	// The record as it now stands: cancelled, or the outcome that won. A
+	// cancel that landed is not reported as failed for want of this read.
+	current, readErr := store.ListComplexitySuggestionRuns(recordCtx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID, IDs: []string{runID}}, 1)
+	if readErr == nil && len(current) == 1 {
+		run = current[0]
+	} else if moved {
+		run.Status, run.Stage, run.FinishedAt = logstore.ComplexitySuggestionRunCancelled, "", &finished
+	}
+	if !moved {
+		if readErr != nil {
+			return run, fmt.Errorf("read the suggestion run: %w", readErr)
+		}
+		return run, ErrComplexitySuggestionRunEnded
+	}
+	return run, nil
+}
+
+// suggestionRunCancelled reports whether a user cancelled a run: through
+// CancelComplexitySuggestionRun on this node for an inline run, or on any
+// node for a queued job, whose row then reads cancelled.
+func (p *RoutingPlugin) suggestionRunCancelled(ctx context.Context, runID string) bool {
+	cs := p.suggestions
+	if cs == nil {
+		return false
+	}
+	cs.inlineMu.Lock()
+	cancelled := cs.cancelled[runID]
+	cs.inlineMu.Unlock()
+	if cancelled {
+		return true
+	}
+	jobs := cs.jobs.Load()
+	if jobs == nil {
+		return false
+	}
+	job, err := jobs.store.GetSidekiqJob(ctx, runID)
+	return err == nil && job != nil && job.Status == tables.SidekiqStatusCancelled
+}
+
+// ComplexitySuggestionImpact replays one router's captured requests from the
+// last window against a draft phrase bank and the live one, without saving
+// anything: what would change tier, and which new phrases take requests the
+// live bank placed confidently elsewhere. It returns the window it read: a
+// zero window reads the whole lookback. draftMinSimilarity is the floor the
+// draft would save, when it changes it; nil replays the draft at the serving
+// floor.
+func (p *RoutingPlugin) ComplexitySuggestionImpact(ctx context.Context, routerID string, window time.Duration, draft []complexity.SuggestionPhrase, draftMinSimilarity *float64) (suggestrun.Impact, time.Duration, error) {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return suggestrun.Impact{}, 0, ErrUnknownComplexityRouter
+	}
+	if !router.config.SuggestionsEnabled() {
+		return suggestrun.Impact{}, 0, ErrComplexitySuggestionsOff
+	}
+	if err := checkSuggestionWindow(router, window); err != nil {
+		return suggestrun.Impact{}, 0, err
+	}
+	if router.classifier == nil {
+		return suggestrun.Impact{}, 0, complexity.ErrNoServingGeneration
+	}
+	space, err := router.classifier.SuggestionSpace(ctx)
+	if err != nil {
+		return suggestrun.Impact{}, 0, err
+	}
+	defer space.Close()
+	settings := runSettings(router, "", "", window)
+	if window <= 0 || window > settings.Lookback {
+		window = settings.Lookback
+	}
+	now := time.Now()
+	impact, err := suggestrun.ReplayImpact(ctx, space, suggestrun.ImpactSettings{
+		From: now.Add(-window), To: now, MinSimilarity: space.MinSimilarity, DraftMinSimilarity: draftMinSimilarity, Draft: draft, Seed: now.UnixNano(),
+	})
+	return impact, window, err
 }
 
 // routerSuggestionBusy reports whether a router has a run queued or running.
@@ -889,13 +1065,87 @@ func runSettings(router suggestionRouter, runID, triggeredBy string, window time
 		Window:             window,
 		MaxClustered:       settings.MaxClusteredRequests,
 		MinClusterRequests: settings.MinClusterRequests,
+		MaxPhrases:         configstore.MaxComplexitySemanticPhrases,
 		Instructions:       settings.Instructions,
 		Seed:               time.Now().UnixNano(),
 	}
-	if router.config.LLM != nil {
-		s.Guidance = router.config.LLM.Prompt
-	}
 	return s
+}
+
+// suggestionTier returns a router's tier settings, normalized; a block saved
+// before tiers were configurable decides them with the phrase model.
+func suggestionTier(settings *complexity.SuggestionsConfig) configstore.ComplexitySuggestionsTierConfig {
+	tier := configstore.ComplexitySuggestionsTierConfig{Classifier: configstore.ComplexitySuggestionsTierLLM}
+	if settings.Tier != nil {
+		tier = *settings.Tier
+	}
+	if tier.Classifier == "" {
+		tier.Classifier = configstore.ComplexitySuggestionsTierLLM
+	}
+	if tier.Model == "" && tier.Classifier == configstore.ComplexitySuggestionsTierLLM {
+		tier.Provider, tier.Model = settings.Provider, settings.Model
+	}
+	return tier
+}
+
+// SuggestionTierDefaults is what a router's tier step sends when nothing is
+// edited, rendered from the router as configured: the llm prompt body, and
+// the decision model's per-tier criteria. Both carry, as examples, the phrases
+// the router's administrator configured. Configuration surfaces show these in
+// the editors, and an unedited run sends exactly them.
+func SuggestionTierDefaults(cfg *complexity.AnalyzerConfig) (string, map[string]configstore.ComplexityDecisionTierDefaults) {
+	if cfg == nil {
+		cfg = &complexity.AnalyzerConfig{}
+	}
+	examples := suggest.BankTierExamples(cfg.Keywords)
+	guidance := ""
+	if cfg.LLM != nil {
+		guidance = cfg.LLM.Prompt
+	}
+	criteria := cfg.Decision.ResolvedCriteria()
+	for tier, c := range criteria {
+		c.Examples = append([]string{}, examples[tier]...)
+		criteria[tier] = c
+	}
+	return suggest.TierPrompt(guidance, examples), criteria
+}
+
+// suggestionTierCriteria is what a decision tier step sends: each tier's
+// edited criteria as written, the rest generated.
+func suggestionTierCriteria(cfg *complexity.AnalyzerConfig, edited map[string]configstore.ComplexityDecisionTierCriteria) map[string]configstore.ComplexityDecisionTierDefaults {
+	_, criteria := SuggestionTierDefaults(cfg)
+	for tier, c := range edited {
+		criteria[tier] = configstore.ComplexityDecisionTierDefaults{Definition: c.Definition, Signals: c.Signals, Examples: c.Examples}
+	}
+	return criteria
+}
+
+// newSuggestionTierDecider builds the tier step a router's settings name, and
+// what identifies the text it sends, for the run's prompt hash.
+// The criteria are a map, serialized in key order so the key, and the run's
+// prompt hash, are the same for the same settings.
+func (p *RoutingPlugin) newSuggestionTierDecider(router suggestionRouter) (suggest.TierDecider, string, func() float64, error) {
+	tier := suggestionTier(router.config.Suggestions)
+	if tier.Model == "" {
+		return nil, "", nil, nil
+	}
+	if tier.Classifier == configstore.ComplexitySuggestionsTierDecision {
+		criteria := suggestionTierCriteria(router.config, tier.Criteria)
+		encoded, err := providerUtils.MarshalSorted(criteria)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("encode the tier criteria: %w", err)
+		}
+		key := strings.Join([]string{tier.Classifier, string(tier.Provider), tier.Model, suggest.TierInstructions(tier.Instructions), string(encoded)}, "\x00")
+		decider := &decisionTierDecider{p: p, provider: tier.Provider, model: tier.Model, instructions: tier.Instructions, criteria: criteria}
+		return decider, key, decider.totalCost, nil
+	}
+	prompt := tier.Prompt
+	if prompt == "" {
+		prompt, _ = SuggestionTierDefaults(router.config)
+	}
+	key := strings.Join([]string{tier.Classifier, string(tier.Provider), tier.Model, prompt}, "\x00")
+	adapter := &suggestionLLM{p: p, provider: tier.Provider, model: tier.Model}
+	return &suggest.LLMTierDecider{LLM: adapter, Prompt: prompt}, key, adapter.totalCost, nil
 }
 
 // runComplexitySuggestions runs one router's suggestion run against its
@@ -913,51 +1163,82 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 	defer cancel()
 	s := runSettings(router, meta.RunID, meta.TriggeredBy, time.Duration(meta.WindowSeconds)*time.Second)
 	settings := router.config.Suggestions
-	provider, model := settings.Provider, settings.Model
-	if model == "" && router.config.LLM != nil {
-		provider, model = router.config.LLM.Provider, router.config.LLM.Model
-	}
 	var llm suggest.LLM
-	if model != "" {
-		s.Model = string(provider) + "/" + model
-		adapter := &suggestionLLM{p: p, provider: provider, model: model}
-		llm, s.Cost = adapter, adapter.totalCost
+	var phraseCost func() float64
+	if settings.Model != "" {
+		s.Model = string(settings.Provider) + "/" + settings.Model
+		adapter := &suggestionLLM{p: p, provider: settings.Provider, model: settings.Model}
+		llm, phraseCost = adapter, adapter.totalCost
 	}
 
+	// A cancel that arrived before the run started ends it here, recorded as
+	// cancelled, rather than as a failure to read a space or write a record.
+	if ctx.Err() != nil {
+		if recordErr := p.recordUnstartedSuggestionRun(ctx, deps.store, meta, router.id, s, ctx.Err()); recordErr != nil {
+			return suggestrun.Result{}, recordErr
+		}
+		if p.suggestionRunCancelled(context.WithoutCancel(ctx), meta.RunID) {
+			return suggestrun.Result{}, nil
+		}
+		return suggestrun.Result{}, ctx.Err()
+	}
 	space, err := router.classifier.SuggestionSpace(ctx)
 	if err != nil {
-		// Recorded, so a run that could not start reads as failed rather than
-		// never having happened, and the schedule does not retry it every
-		// minute.
-		run := &logstore.ComplexitySuggestionRun{ID: meta.RunID, RouterID: router.id, TriggeredBy: meta.TriggeredBy,
-			Status: logstore.ComplexitySuggestionRunFailed, Model: s.Model, Error: err.Error()}
-		finished := time.Now().UTC()
-		run.StartedAt, run.FinishedAt = finished, &finished
-		// The window it would have read, resolved as suggestrun.Run does: the
-		// one asked for, else the whole lookback; with neither, the failure
-		// time.
-		window := s.Window
-		if window <= 0 || window > s.Lookback {
-			window = s.Lookback
-		}
-		run.WindowStart = finished.Add(-window)
-		recordCtx, cancelRecord := suggestionRecordContext(ctx)
-		defer cancelRecord()
-		if recordErr := deps.store.UpsertComplexitySuggestionRun(recordCtx, run); recordErr != nil {
-			err = errors.Join(err, recordErr)
-		}
-		return suggestrun.Result{Run: *run}, err
+		return suggestrun.Result{}, errors.Join(err, p.recordUnstartedSuggestionRun(ctx, deps.store, meta, router.id, s, err))
 	}
 	defer space.Close()
+	tier, tierPrompt, tierCost, err := p.newSuggestionTierDecider(router)
+	if err != nil {
+		return suggestrun.Result{}, errors.Join(err, p.recordUnstartedSuggestionRun(ctx, deps.store, meta, router.id, s, err))
+	}
+	s.Tier, s.TierPrompt = tier, tierPrompt
+	s.Cost = func() float64 {
+		var total float64
+		for _, cost := range []func() float64{phraseCost, tierCost} {
+			if cost != nil {
+				total += cost()
+			}
+		}
+		return total
+	}
 	texts := func(ctx context.Context, ids []string) (map[string]string, error) {
 		return deps.texts(ctx, ids, space.MessageHistoryCount)
 	}
+	s.Cancelled = func(ctx context.Context) bool { return p.suggestionRunCancelled(ctx, meta.RunID) }
 	result, err := suggestrun.Run(ctx, space, deps.store, texts, llm, s)
 	if err == nil && result.Unmatched > 0 {
 		p.logger.Info("[Routing] phrase suggestion run %s: %d of %d assigned requests matched no cluster; raise max_clustered_requests to cluster more of the window",
 			meta.RunID, result.Unmatched, result.Assigned)
 	}
 	return result, err
+}
+
+// recordUnstartedSuggestionRun records a run that ended before suggestrun.Run
+// took it over, so it reads as ended rather than never having happened, and
+// the schedule does not retry it every minute: cancelled when a user stopped
+// it, failed with cause otherwise. It writes on a context of its own, since
+// the run's may be why it ended.
+func (p *RoutingPlugin) recordUnstartedSuggestionRun(ctx context.Context, store suggestrun.Store, meta complexitySuggestionJobMeta, routerID string, s suggestrun.Settings, cause error) error {
+	recordCtx, cancel := suggestionRecordContext(ctx)
+	defer cancel()
+	run := &logstore.ComplexitySuggestionRun{ID: meta.RunID, RouterID: routerID, TriggeredBy: meta.TriggeredBy,
+		Status: logstore.ComplexitySuggestionRunFailed, Model: s.Model, Error: cause.Error()}
+	if ctx.Err() != nil && p.suggestionRunCancelled(recordCtx, meta.RunID) {
+		run.Status, run.Error = logstore.ComplexitySuggestionRunCancelled, ""
+	}
+	finished := time.Now().UTC()
+	run.StartedAt, run.FinishedAt = finished, &finished
+	// The window it would have read, resolved as suggestrun.Run does: the
+	// one asked for, else the whole lookback; with neither, the end time.
+	window := s.Window
+	if window <= 0 || window > s.Lookback {
+		window = s.Lookback
+	}
+	run.WindowStart = finished.Add(-window)
+	if err := store.UpsertComplexitySuggestionRun(recordCtx, run); err != nil {
+		return fmt.Errorf("record the suggestion run: %w", err)
+	}
+	return nil
 }
 
 // suggestionLLM is the suggestion model, called the way the llm fallback
@@ -1021,4 +1302,85 @@ func (l *suggestionLLM) CompleteJSON(ctx context.Context, messages []suggest.Mes
 		return "", errors.New("suggestion model response contained no text")
 	}
 	return text, nil
+}
+
+// decisionTierDecider picks a suggestion's tier with a decision model: one
+// choice question with the tier step's instructions, whose choices are the
+// tier step's per-tier criteria.
+type decisionTierDecider struct {
+	p            *RoutingPlugin
+	provider     schemas.ModelProvider
+	model        string
+	instructions string
+	criteria     map[string]configstore.ComplexityDecisionTierDefaults
+
+	mu   sync.Mutex
+	cost float64
+}
+
+func (d *decisionTierDecider) totalCost() float64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cost
+}
+
+// DecideTier implements suggest.TierDecider. An answer without a valid tier
+// is no usable tier, not a failed run.
+func (d *decisionTierDecider) DecideTier(ctx context.Context, in suggest.TierInput) (suggest.TierVerdict, error) {
+	executor := d.p.decisionExecutor()
+	if executor == nil {
+		return suggest.TierVerdict{}, errors.New("decision-model executor is not configured")
+	}
+	decisionCtx := schemas.NewBifrostContext(ctx, time.Now().Add(suggestionLLMTimeout))
+	defer decisionCtx.Cancel()
+	bifrost.PrepareContextForInternalRequest(decisionCtx)
+	text := suggest.TierRequestText(in)
+	response, bifrostErr := executor(decisionCtx, &schemas.BifrostDecisionRequest{
+		Provider: d.provider,
+		Model:    d.model,
+		Input:    schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Text: &text}}}},
+		Questions: []schemas.DecisionQuestion{{
+			Type:         schemas.DecisionTypeChoice,
+			Name:         schemas.Ptr(decisionComplexityQuestion),
+			Instructions: schemas.NewDecisionText(suggest.TierInstructions(d.instructions)),
+			Choices:      decisionTierChoices(d.criteria, d.model),
+		}},
+	})
+	if bifrostErr != nil {
+		return suggest.TierVerdict{}, fmt.Errorf("tier decision model call failed: %v", bifrostErr.GetErrorString())
+	}
+	if response == nil {
+		return suggest.TierVerdict{}, errors.New("tier decision model returned no response")
+	}
+	cost := decisionCtx.CalculateCost(&schemas.BifrostResponse{DecisionResponse: response})
+	d.mu.Lock()
+	d.cost += cost
+	d.mu.Unlock()
+	answer, ok := decisionAnswerNamed(response.Answers, decisionComplexityQuestion)
+	if !ok || answer.Type != schemas.DecisionTypeChoice || answer.Choice == nil {
+		return suggest.TierVerdict{}, nil
+	}
+	tier, ok := complexityTierFromDecisionChoice(*answer.Choice)
+	if !ok {
+		return suggest.TierVerdict{}, nil
+	}
+	verdict := suggest.TierVerdict{Tier: tier}
+	if answer.Confidence != nil {
+		verdict.Confidence = decisionConfidenceLabel(*answer.Confidence)
+	}
+	return verdict, nil
+}
+
+// decisionConfidenceLabel maps a decision model's 0-1 confidence onto the
+// high/medium/low labels suggestions carry.
+func decisionConfidenceLabel(confidence float64) string {
+	switch {
+	case math.IsNaN(confidence) || confidence < 0 || confidence > 1:
+		return ""
+	case confidence >= 0.75:
+		return "high"
+	case confidence >= 0.4:
+		return "medium"
+	}
+	return "low"
 }

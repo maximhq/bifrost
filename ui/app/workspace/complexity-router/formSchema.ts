@@ -13,10 +13,17 @@ import {
 	DEFAULT_SUGGESTION_EVERY,
 	DEFAULT_SUGGESTION_LOOKBACK_DAYS,
 	DEFAULT_SUGGESTION_SAMPLE_RATE,
-	DEFAULT_SUGGESTION_START_AT,
 	MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS,
 	MAX_SUGGESTION_LOOKBACK_DAYS,
-	SUGGESTION_EVERY_OPTIONS,
+	DEFAULT_SUGGESTION_START_AT,
+	MAX_SUGGESTION_EVERY,
+	SUGGESTION_EVERY_PATTERN,
+	SUGGESTION_EVERY_UNITS,
+	SuggestionEveryUnit,
+	SUGGESTION_TIER_CLASSIFIERS,
+	MAX_SUGGESTION_TIER_PROMPT_CHARACTERS,
+	SuggestionTierDefaults,
+	SuggestionsTierConfig,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
@@ -200,7 +207,13 @@ const suggestionsSchema = z
 			.int({ error: () => complexityT("mustBeWholeNumber") })
 			.min(1, { error: () => complexityT("mustBeAtLeast", { min: 1 }) })
 			.max(MAX_SUGGESTION_LOOKBACK_DAYS, { error: () => complexityT("mustBeAtMost", { max: MAX_SUGGESTION_LOOKBACK_DAYS }) }),
-		every: z.enum(SUGGESTION_EVERY_OPTIONS),
+		// The interval as a count of a unit; the count's range depends on the
+		// unit and is checked in superRefine.
+		every_count: z
+			.number({ error: () => complexityT("mustBeWholeNumber") })
+			.int({ error: () => complexityT("mustBeWholeNumber") })
+			.min(1, { error: () => complexityT("mustBeAtLeast", { min: 1 }) }),
+		every_unit: z.enum(SUGGESTION_EVERY_UNITS),
 		// The first run in the browser's local time, as a datetime-local input
 		// holds it; sent as UTC. Empty is the gateway's default first run.
 		start_at: z.string().refine((value) => value === "" || fromLocalDateTime(value) !== undefined, {
@@ -211,24 +224,117 @@ const suggestionsSchema = z
 		instructions: z.string().max(MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS, {
 			error: () => complexityT("promptMaxChars", { max: MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS }),
 		}),
+		// The tier step: an LLM or a decision model, its model, and every word
+		// it reads. Empty prompt and instructions mean generated; the criteria
+		// editors always hold what will be sent, seeded with the generated ones.
+		tier_classifier: z.enum(SUGGESTION_TIER_CLASSIFIERS),
+		tier_provider: z.string(),
+		tier_model: z.string(),
+		tier_prompt: z.string().max(MAX_SUGGESTION_TIER_PROMPT_CHARACTERS, {
+			error: () => complexityT("promptMaxChars", { max: MAX_SUGGESTION_TIER_PROMPT_CHARACTERS }),
+		}),
+		tier_instructions: z.string().max(MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS, {
+			error: () => complexityT("promptMaxChars", { max: MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS }),
+		}),
+		tier_criteria: z.object({
+			SIMPLE: decisionTierFormShape,
+			MEDIUM: decisionTierFormShape,
+			COMPLEX: decisionTierFormShape,
+		}),
 	})
 	.superRefine((data, ctx) => {
+		const maxEvery = MAX_SUGGESTION_EVERY[data.every_unit];
+		if (data.every_count > maxEvery) {
+			ctx.addIssue({
+				code: "custom",
+				message: complexityT(`suggestions.everyMax.${data.every_unit}`, { max: maxEvery }),
+				path: ["every_count"],
+			});
+		}
 		if (data.provider.trim() !== "" && data.model.trim() === "") {
 			ctx.addIssue({ code: "custom", message: complexityT("suggestions.modelRequired"), path: ["model"] });
 		}
 		if (data.provider.trim() === "" && data.model.trim() !== "") {
 			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["provider"] });
 		}
+		if (data.tier_provider.trim() !== "" && data.tier_model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.modelRequired"), path: ["tier_model"] });
+		}
+		if (data.tier_provider.trim() === "" && data.tier_model.trim() !== "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["tier_provider"] });
+		}
+		// Running suggestions needs both models named: nothing is borrowed from
+		// elsewhere in the router at run time.
+		if (data.enabled && data.provider.trim() === "" && data.model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.phraseModelRequired"), path: ["model"] });
+		}
+		if (data.enabled && data.tier_provider.trim() === "" && data.tier_model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.tierModelRequired"), path: ["tier_model"] });
+		}
+		// A decision tier step sends the criteria editors as written. Examples
+		// and signals may be empty (a tier with no phrases of the router's own
+		// has none), but a filled tier needs its definition. A tier not filled
+		// yet (its generated criteria have not arrived) is left generated.
+		if (data.tier_classifier === "decision") {
+			for (const tier of COMPLEXITY_TIER_VALUES) {
+				const criteria = data.tier_criteria[tier];
+				if (isDecisionTierEmpty(criteria)) continue;
+				if (!criteria.definition.trim()) {
+					ctx.addIssue({ code: "custom", message: complexityT("enterDefinition"), path: ["tier_criteria", tier, "definition"] });
+				} else if (criteria.definition.length > MAX_DECISION_DEFINITION_CHARACTERS) {
+					ctx.addIssue({
+						code: "custom",
+						message: complexityT("promptMaxChars", { max: MAX_DECISION_DEFINITION_CHARACTERS }),
+						path: ["tier_criteria", tier, "definition"],
+					});
+				}
+				for (const field of ["signals", "examples"] as const) {
+					const list = criteria[field];
+					if (list.length > MAX_DECISION_CRITERIA_ITEMS) {
+						ctx.addIssue({
+							code: "custom",
+							message:
+								field === "signals"
+									? complexityT("criteriaSignalMax", { count: MAX_DECISION_CRITERIA_ITEMS })
+									: complexityT("criteriaExampleMax", { count: MAX_DECISION_CRITERIA_ITEMS }),
+							path: ["tier_criteria", tier, field],
+						});
+					} else if (list.some((item) => item.length > MAX_DECISION_CRITERIA_ITEM_CHARACTERS)) {
+						ctx.addIssue({
+							code: "custom",
+							message:
+								field === "signals"
+									? complexityT("criteriaSignalItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS })
+									: complexityT("criteriaExampleItemMax", { max: MAX_DECISION_CRITERIA_ITEM_CHARACTERS }),
+							path: ["tier_criteria", tier, field],
+						});
+					}
+				}
+			}
+		}
 	});
 
+// suggestionEvery spells an interval as the gateway reads it, such as "6h".
+export function suggestionEvery(count: number, unit: SuggestionEveryUnit): string {
+	return `${count}${unit}`;
+}
+
+// parseSuggestionEvery splits an interval the gateway accepts into its count
+// and unit; undefined for anything else.
+export function parseSuggestionEvery(every: string): { count: number; unit: SuggestionEveryUnit } | undefined {
+	if (!SUGGESTION_EVERY_PATTERN.test(every)) return undefined;
+	return { count: Number(every.slice(0, -1)), unit: every.slice(-1) as SuggestionEveryUnit };
+}
+
 // suggestionIntervalMs is an interval's length: the gateway counts hours,
-// days and weeks as fixed durations, not calendar ones.
+// days and weeks as fixed durations, not calendar ones. Zero when it is not
+// an interval the gateway accepts.
 export function suggestionIntervalMs(every: string): number {
+	if (!SUGGESTION_EVERY_PATTERN.test(every)) return 0;
 	const n = Number(every.slice(0, -1));
 	const unit = every.slice(-1);
 	const hour = 60 * 60 * 1000;
-	if (!Number.isInteger(n) || n < 1) return 0;
-	return n * (unit === "h" ? hour : unit === "d" ? 24 * hour : unit === "w" ? 7 * 24 * hour : 0);
+	return n * (unit === "h" ? hour : unit === "d" ? 24 * hour : 7 * 24 * hour);
 }
 
 // nextSuggestionRun is the first run at or after now on a schedule: the first
@@ -338,6 +444,13 @@ export const analyzerConfigSchema = z
 				message: complexityT("sessionNeedsClassifier"),
 				path: ["session", "enabled"],
 			});
+		}
+		// Phrase suggestions cluster in the semantic classifier's embedding space,
+		// so the gateway refuses enabled suggestions without its embedding model.
+		// A blank one is called out where it is set; half-filled is flagged above.
+		if (data.suggestions.enabled && data.classifier === "semantic" && !hasProvider && !hasModel) {
+			ctx.addIssue({ code: "custom", message: complexityT("selectEmbeddingProvider"), path: ["semantic", "provider"] });
+			ctx.addIssue({ code: "custom", message: complexityT("selectEmbeddingModel"), path: ["semantic", "embedding_model"] });
 		}
 
 		if (usesDecision(data)) {
@@ -461,13 +574,20 @@ export const DEFAULT_SUGGESTIONS_FORM_VALUES: SuggestionsFormValues = {
 	enabled: false,
 	sample_percent: DEFAULT_SUGGESTION_SAMPLE_RATE * 100,
 	lookback_days: DEFAULT_SUGGESTION_LOOKBACK_DAYS,
-	every: DEFAULT_SUGGESTION_EVERY,
+	every_count: 1,
+	every_unit: "d",
 	// Filled from the default schedule when the form is built: see
 	// suggestionsFormValues.
 	start_at: "",
 	provider: "",
 	model: "",
 	instructions: "",
+	tier_classifier: "llm",
+	tier_provider: "",
+	tier_model: "",
+	tier_prompt: "",
+	tier_instructions: "",
+	tier_criteria: emptyTierCriteria(),
 };
 
 // rateToPercent and percentToRate convert the sample rate for the percent
@@ -482,22 +602,145 @@ export function percentToRate(percent: number): number {
 	return Number((percent / 100).toPrecision(12));
 }
 
+type TierCriteriaFormValues = SuggestionsFormValues["tier_criteria"];
+
+function emptyTierCriteria(): TierCriteriaFormValues {
+	return {
+		SIMPLE: { definition: "", signals: [], examples: [] },
+		MEDIUM: { definition: "", signals: [], examples: [] },
+		COMPLEX: { definition: "", signals: [], examples: [] },
+	};
+}
+
+// isTierCriteriaEmpty reports criteria the form never seeded: the generated
+// ones had not arrived, and nothing was saved.
+export function isTierCriteriaEmpty(criteria: TierCriteriaFormValues): boolean {
+	return COMPLEXITY_TIER_VALUES.every((tier) => isDecisionTierEmpty(criteria[tier]));
+}
+
+// tierCriteriaFormValues fills the tier criteria editors: a saved (edited)
+// tier as it was saved, every other tier with what the gateway generates for
+// it. Without generated criteria, unsaved tiers stay empty until they arrive.
+export function tierCriteriaFormValues(
+	saved?: NonNullable<AnalyzerConfig["suggestions"]>["tier"],
+	generated?: SuggestionTierDefaults["criteria"],
+): TierCriteriaFormValues {
+	const out = emptyTierCriteria();
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		const edited = saved?.criteria?.[tier];
+		const source = edited ?? generated?.[tier];
+		if (!source) continue;
+		out[tier] = { definition: source.definition, signals: [...(source.signals ?? [])], examples: [...(source.examples ?? [])] };
+	}
+	return out;
+}
+
 // suggestionsFormValues reads a saved block into the form, defaults filled in.
-export function suggestionsFormValues(saved?: AnalyzerConfig["suggestions"], now: Date = new Date()): SuggestionsFormValues {
-	if (!saved) return { ...DEFAULT_SUGGESTIONS_FORM_VALUES, start_at: suggestionFirstRunValue(DEFAULT_SUGGESTION_EVERY, undefined, now) };
-	const every = (SUGGESTION_EVERY_OPTIONS as readonly string[]).includes(saved.schedule?.every ?? "")
-		? (saved.schedule?.every as SuggestionsFormValues["every"])
-		: DEFAULT_SUGGESTION_EVERY;
+export function suggestionsFormValues(
+	saved?: AnalyzerConfig["suggestions"],
+	tierDefaults?: SuggestionTierDefaults,
+	now: Date = new Date(),
+): SuggestionsFormValues {
+	if (!saved) {
+		return {
+			...DEFAULT_SUGGESTIONS_FORM_VALUES,
+			start_at: suggestionFirstRunValue(DEFAULT_SUGGESTION_EVERY, undefined, now),
+			tier_criteria: tierCriteriaFormValues(undefined, tierDefaults?.criteria),
+		};
+	}
+	// An interval the gateway would refuse reads as the default one.
+	const { count, unit } = parseSuggestionEvery(saved.schedule?.every ?? "") ?? {
+		count: DEFAULT_SUGGESTIONS_FORM_VALUES.every_count,
+		unit: DEFAULT_SUGGESTIONS_FORM_VALUES.every_unit,
+	};
+	const every = suggestionEvery(count, unit);
 	return {
 		enabled: saved.enabled,
 		sample_percent: rateToPercent(saved.sample_rate ?? DEFAULT_SUGGESTION_SAMPLE_RATE),
 		lookback_days: saved.lookback_days ?? DEFAULT_SUGGESTION_LOOKBACK_DAYS,
-		every,
+		every_count: count,
+		every_unit: unit,
 		start_at: suggestionFirstRunValue(every, saved.schedule?.start_at, now),
 		provider: saved.provider ?? "",
 		model: saved.model ?? "",
 		instructions: saved.instructions ?? "",
+		tier_classifier: saved.tier?.classifier === "decision" ? "decision" : "llm",
+		tier_provider: saved.tier?.provider ?? "",
+		tier_model: saved.tier?.model ?? "",
+		tier_prompt: saved.tier?.prompt ?? "",
+		tier_instructions: saved.tier?.instructions ?? "",
+		tier_criteria: tierCriteriaFormValues(saved.tier, tierDefaults?.criteria),
 	};
+}
+
+function sameTierCriteria(a: TierCriteriaFormValues[DecisionTier], b: SuggestionTierDefaults["criteria"][DecisionTier]): boolean {
+	const same = (x: string[], y: string[]) => x.length === y.length && x.every((value, index) => value.trim() === y[index]);
+	return a.definition.trim() === b.definition && same(a.signals, b.signals) && same(a.examples, b.examples);
+}
+
+// withGeneratedTierCriteriaCleared is what the form validates: tiers whose
+// criteria are still the generated ones are not sent (see
+// tierCriteriaPayload), so their limits are the gateway's to keep, not the
+// form's. A router's own phrases, which the generated examples are, may be
+// longer than an edited example may. Those tiers are cleared, which the
+// decision-tier check skips; every other tier is checked as written.
+export function withGeneratedTierCriteriaCleared(
+	values: AnalyzerFormValues,
+	generated?: SuggestionTierDefaults["criteria"],
+): AnalyzerFormValues {
+	if (!generated) return values;
+	const criteria = { ...values.suggestions.tier_criteria };
+	let cleared = false;
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		if (generated[tier] && sameTierCriteria(criteria[tier], generated[tier])) {
+			criteria[tier] = { definition: "", signals: [], examples: [] };
+			cleared = true;
+		}
+	}
+	return cleared ? { ...values, suggestions: { ...values.suggestions, tier_criteria: criteria } } : values;
+}
+
+// KnownTierDefaults is the generated tier text last known for one router.
+export interface KnownTierDefaults {
+	routerId: string;
+	defaults: SuggestionTierDefaults;
+}
+
+// lastKnownTierDefaults is the generated tier text Save compares edits with:
+// the gateway's latest, or, when a status refresh leaves it out (it could not
+// read the router to render it), the last text known for the same router.
+// Without that, Save would fall back to the saved criteria and drop edits
+// made against the text shown. Another router's text never carries over.
+export function lastKnownTierDefaults(
+	previous: KnownTierDefaults | undefined,
+	routerId: string | undefined,
+	live: SuggestionTierDefaults | undefined,
+): KnownTierDefaults | undefined {
+	if (!routerId) return undefined;
+	if (live) return { routerId, defaults: live };
+	return previous?.routerId === routerId ? previous : undefined;
+}
+
+// tierCriteriaPayload sends the tiers whose criteria differ from what the
+// gateway would generate; the rest stay generated, and so keep following the
+// router. Until the generated criteria are known, what was saved is kept.
+function tierCriteriaPayload(
+	values: SuggestionsFormValues,
+	saved?: NonNullable<AnalyzerConfig["suggestions"]>["tier"],
+	generated?: SuggestionTierDefaults["criteria"],
+): SuggestionsTierConfig["criteria"] {
+	if (!generated) return saved?.criteria && Object.keys(saved.criteria).length ? saved.criteria : undefined;
+	const out: NonNullable<SuggestionsTierConfig["criteria"]> = {};
+	for (const tier of COMPLEXITY_TIER_VALUES) {
+		const criteria = values.tier_criteria[tier];
+		if (isDecisionTierEmpty(criteria) || sameTierCriteria(criteria, generated[tier])) continue;
+		out[tier] = {
+			definition: criteria.definition.trim(),
+			signals: criteria.signals.map((item) => item.trim()).filter(Boolean),
+			examples: criteria.examples.map((item) => item.trim()).filter(Boolean),
+		};
+	}
+	return Object.keys(out).length ? out : undefined;
 }
 
 // toSuggestionsPayload sends the schedule as the interval and the first run in
@@ -507,22 +750,43 @@ export function suggestionsFormValues(saved?: AnalyzerConfig["suggestions"], now
 export function toSuggestionsPayload(
 	values: SuggestionsFormValues,
 	saved?: AnalyzerConfig["suggestions"],
+	tierDefaults?: SuggestionTierDefaults,
 ): NonNullable<AnalyzerConfig["suggestions"]> {
 	const startAt = fromLocalDateTime(values.start_at);
 	const provider = values.provider.trim();
 	const model = values.model.trim();
+	const tierProvider = values.tier_provider.trim();
+	const tierModel = values.tier_model.trim();
+	// The prompt editor shows the generated prompt while it is empty; text
+	// identical to it is the generated prompt, and stays generated.
+	const tierPrompt = values.tier_prompt.trim() && values.tier_prompt.trim() !== tierDefaults?.prompt.trim() ? values.tier_prompt : "";
+	// Criteria are the decision step's. With the llm step they are hidden, so
+	// edits left in them from a switch are not sent; what was saved is kept.
+	const tierCriteria =
+		values.tier_classifier === "decision"
+			? tierCriteriaPayload(values, saved?.tier, tierDefaults?.criteria)
+			: saved?.tier?.criteria && Object.keys(saved.tier.criteria).length
+				? saved.tier.criteria
+				: undefined;
 	return {
 		enabled: values.enabled,
 		sample_rate: percentToRate(values.sample_percent),
 		lookback_days: values.lookback_days,
 		schedule: {
-			every: values.every,
+			every: suggestionEvery(values.every_count, values.every_unit),
 			...(startAt ? { start_at: startAt.toISOString().replace(".000Z", "Z") } : {}),
 		},
 		...(saved?.max_clustered_requests !== undefined ? { max_clustered_requests: saved.max_clustered_requests } : {}),
 		...(saved?.min_cluster_requests !== undefined ? { min_cluster_requests: saved.min_cluster_requests } : {}),
 		...(provider && model ? { provider, model } : {}),
 		...(values.instructions.trim() ? { instructions: values.instructions } : {}),
+		tier: {
+			classifier: values.tier_classifier,
+			...(tierProvider && tierModel ? { provider: tierProvider, model: tierModel } : {}),
+			...(tierPrompt ? { prompt: tierPrompt } : {}),
+			...(values.tier_instructions.trim() ? { instructions: values.tier_instructions } : {}),
+			...(tierCriteria ? { criteria: tierCriteria } : {}),
+		},
 	};
 }
 
@@ -543,7 +807,7 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 export type DecisionGuidanceFormValues = Pick<AnalyzerFormValues["decision"], "criteria">;
 
 // isDecisionTierEmpty reports a tier with no definition and no list entries.
-function isDecisionTierEmpty({ definition, signals, examples }: DecisionGuidanceFormValues["criteria"][DecisionTier]): boolean {
+export function isDecisionTierEmpty({ definition, signals, examples }: DecisionGuidanceFormValues["criteria"][DecisionTier]): boolean {
 	return definition.trim() === "" && signals.length === 0 && examples.length === 0;
 }
 
@@ -606,7 +870,11 @@ export function isDecisionGuidanceDefault(criteria: DecisionGuidanceFormValues["
 }
 
 // Fills in the fields the API omitted so the semantic controls stay controlled.
-export function toFormValues(config: AnalyzerConfig, decisionDefaults?: DecisionGuidanceDefaults): AnalyzerFormValues {
+export function toFormValues(
+	config: AnalyzerConfig,
+	decisionDefaults?: DecisionGuidanceDefaults,
+	tierDefaults?: SuggestionTierDefaults,
+): AnalyzerFormValues {
 	const saved = config.semantic;
 	const savedLLM = config.llm;
 	const classifier = config.classifier?.trim().toLowerCase();
@@ -624,7 +892,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
-		suggestions: suggestionsFormValues(config.suggestions),
+		suggestions: suggestionsFormValues(config.suggestions, tierDefaults),
 		llm: savedLLM
 			? {
 					...DEFAULT_LLM_FORM_VALUES,
@@ -652,7 +920,11 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 // Session is additive to the complexity API, and nil already means disabled;
 // omitting it keeps ordinary semantic edits compatible with gateways that
 // predate session-aware routing. Once enabled, the block is sent explicitly.
-export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerConfig): AnalyzerConfig {
+export function toAnalyzerPayload(
+	values: AnalyzerFormValues,
+	saved?: AnalyzerConfig,
+	tierDefaults?: SuggestionTierDefaults,
+): AnalyzerConfig {
 	const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (saved?.semantic ?? undefined);
 	const llm = values.llm.provider && values.llm.model ? values.llm : (saved?.llm ?? undefined);
 
@@ -666,8 +938,17 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		// Sent once suggestions have ever been turned on, so turning them off
 		// keeps their settings; never sent for a router that has not used them,
 		// so an ordinary save stays readable by gateways that predate them.
+		// Suggestions cluster in the semantic classifier's embedding space and
+		// the gateway refuses them on any other, so another classifier saves
+		// them turned off, settings kept.
 		...(values.suggestions.enabled || saved?.suggestions
-			? { suggestions: toSuggestionsPayload(values.suggestions, saved?.suggestions) }
+			? {
+					suggestions: toSuggestionsPayload(
+						values.classifier === "semantic" ? values.suggestions : { ...values.suggestions, enabled: false },
+						saved?.suggestions,
+						tierDefaults,
+					),
+				}
 			: {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),

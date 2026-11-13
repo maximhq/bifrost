@@ -7,6 +7,8 @@ import {
 	DEFAULT_SUGGESTIONS_FORM_VALUES,
 	getDecisionProviderState,
 	isRouterConfigured,
+	isTierCriteriaEmpty,
+	lastKnownTierDefaults,
 	decisionGuidanceFormValues,
 	decisionTimeoutFieldValue,
 	fromLocalDateTime,
@@ -16,8 +18,15 @@ import {
 	toAnalyzerPayload,
 	toFormValues,
 	toSuggestionsPayload,
+	withGeneratedTierCriteriaCleared,
 } from "./formSchema";
-import { DEFAULT_DECISION_CONFIG, type AnalyzerConfig, type DecisionGuidanceDefaults } from "@/lib/types/complexityRouter";
+import {
+	DEFAULT_DECISION_CONFIG,
+	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
+	type AnalyzerConfig,
+	type DecisionGuidanceDefaults,
+	type SuggestionTierDefaults,
+} from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
 import type { DBKey } from "@/lib/types/governance";
 
@@ -164,20 +173,28 @@ describe("Decision complexity configuration", () => {
 	test("round-trips the saved suggestions block through the form", () => {
 		const saved: AnalyzerConfig = {
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			semantic: { provider: "openai", embedding_model: "text-embedding-3-small" },
 			suggestions: {
 				enabled: true,
 				sample_rate: 0.1,
 				lookback_days: 14,
-				schedule: { every: "1w", start_at: "2026-11-13T04:30:00Z" },
+				schedule: { every: "5h", start_at: "2026-11-12T03:30:00Z" },
 				max_clustered_requests: 5000,
 				min_cluster_requests: 8,
 				provider: "openai",
 				model: "gpt-5",
 				instructions: "be brief",
+				tier: { classifier: "decision", provider: "typesafe", model: "jev-latest", instructions: "judge the work" },
 			},
 		};
 		const values = toFormValues(saved);
 		expect(values.suggestions.sample_percent).toBe(10);
+		// Any interval the gateway accepts reads back as its count and unit,
+		// and the first run is shown in local time and sent back in UTC.
+		expect(values.suggestions.every_count).toBe(5);
+		expect(values.suggestions.every_unit).toBe("h");
+		expect(toSuggestionsPayload(values.suggestions, saved.suggestions).schedule).toEqual({ every: "5h", start_at: "2026-11-12T03:30:00Z" });
+		expect(values.suggestions.tier_classifier).toBe("decision");
 		const parsed = analyzerConfigSchema.safeParse(values);
 		expect(parsed.success).toBe(true);
 		if (!parsed.success) return;
@@ -187,7 +204,18 @@ describe("Decision complexity configuration", () => {
 	test("keeps a small sample rate through the form instead of rounding it to zero", () => {
 		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
 		for (const rate of [0.000001, 0.00012345, 0.1, 0.333, 1]) {
-			const saved: AnalyzerConfig = { keywords, suggestions: { enabled: true, sample_rate: rate, lookback_days: 7 } };
+			const saved: AnalyzerConfig = {
+				keywords,
+				semantic: { provider: "openai", embedding_model: "text-embedding-3-small" },
+				suggestions: {
+					enabled: true,
+					sample_rate: rate,
+					lookback_days: 7,
+					provider: "openai",
+					model: "gpt-5",
+					tier: { classifier: "decision", provider: "typesafe", model: "jev-latest" },
+				},
+			};
 			const values = toFormValues(saved);
 			expect(values.suggestions.sample_percent).toBeGreaterThan(0);
 			const parsed = analyzerConfigSchema.safeParse(values);
@@ -197,10 +225,48 @@ describe("Decision complexity configuration", () => {
 		}
 	});
 
+	test("turns suggestions off, keeping their settings, when the classifier is not semantic", () => {
+		// The gateway refuses suggestions on any other classifier: they cluster
+		// in the semantic classifier's embedding space.
+		const saved: AnalyzerConfig = {
+			classifier: "semantic",
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			semantic: { provider: "openai", embedding_model: "text-embedding-3-small" },
+			suggestions: {
+				enabled: true,
+				sample_rate: 0.1,
+				lookback_days: 7,
+				schedule: { every: "1d", start_at: "2026-11-12T03:00:00Z" },
+				provider: "openai",
+				model: "gpt-4.1-mini",
+			},
+		};
+		const values = toFormValues(saved);
+		for (const classifier of ["llm", "decision"] as const) {
+			const switched = {
+				...values,
+				classifier,
+				llm: { ...values.llm, ...DEFAULT_MODEL },
+				decision: { ...values.decision, ...DEFAULT_MODEL },
+			};
+			const payload = toAnalyzerPayload(switched, saved);
+			expect(payload.suggestions?.enabled, classifier).toBe(false);
+			expect(payload.suggestions?.model, classifier).toBe("gpt-4.1-mini");
+		}
+		expect(toAnalyzerPayload(values, saved).suggestions?.enabled).toBe(true);
+	});
+
 	test("leaves the cluster sizes to the gateway: not edited, kept as saved, never filled in", () => {
 		const saved: AnalyzerConfig = {
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
-			suggestions: { enabled: true, lookback_days: 7 },
+			semantic: { provider: "openai", embedding_model: "text-embedding-3-small" },
+			suggestions: {
+				enabled: true,
+				lookback_days: 7,
+				provider: "openai",
+				model: "gpt-5",
+				tier: { classifier: "llm", provider: "openai", model: "gpt-5" },
+			},
 		};
 		const values = toFormValues(saved);
 		expect(values.suggestions).not.toHaveProperty("max_clustered_requests");
@@ -211,6 +277,195 @@ describe("Decision complexity configuration", () => {
 		const payload = toAnalyzerPayload(parsed.data, saved).suggestions;
 		expect(payload).not.toHaveProperty("max_clustered_requests");
 		expect(payload).not.toHaveProperty("min_cluster_requests");
+	});
+
+	test("needs both models named while suggestions are on, and each provider paired with a model", () => {
+		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+		const semantic = { ...DEFAULT_FORM_VALUES.semantic, provider: "openai", embedding_model: "text-embedding-3-small" };
+		const issues = (suggestions: Partial<typeof DEFAULT_FORM_VALUES.suggestions>) => {
+			const parsed = analyzerConfigSchema.safeParse({
+				...DEFAULT_FORM_VALUES,
+				keywords,
+				semantic,
+				suggestions: { ...DEFAULT_FORM_VALUES.suggestions, ...suggestions },
+			});
+			return parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+		};
+		// Off, nothing needs a model: the settings are only kept.
+		expect(issues({ enabled: false })).toEqual([]);
+		// On, neither model may be left to a fallback.
+		expect(issues({ enabled: true })).toEqual(["suggestions.model", "suggestions.tier_model"]);
+		const named = { enabled: true, provider: "openai", model: "gpt-5", tier_provider: "typesafe", tier_model: "jev-latest" };
+		expect(issues({ ...named, tier_classifier: "decision" })).toEqual([]);
+		expect(issues({ ...named, tier_model: "" })).toEqual(["suggestions.tier_model"]);
+		expect(issues({ ...named, tier_provider: "" })).toEqual(["suggestions.tier_provider"]);
+	});
+
+	test("needs the semantic classifier's embedding model while suggestions are on", () => {
+		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+		const named = {
+			enabled: true,
+			provider: "openai",
+			model: "gpt-5",
+			tier_provider: "typesafe",
+			tier_model: "jev-latest",
+			tier_classifier: "decision" as const,
+		};
+		const issues = (
+			semantic: Partial<typeof DEFAULT_FORM_VALUES.semantic>,
+			suggestions: Partial<typeof DEFAULT_FORM_VALUES.suggestions>,
+		) => {
+			const parsed = analyzerConfigSchema.safeParse({
+				...DEFAULT_FORM_VALUES,
+				keywords,
+				semantic: { ...DEFAULT_FORM_VALUES.semantic, ...semantic },
+				suggestions: { ...DEFAULT_FORM_VALUES.suggestions, ...suggestions },
+			});
+			return parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+		};
+		// The gateway refuses enabled suggestions without it, so the form says so where it is set.
+		expect(issues({}, named)).toEqual(["semantic.provider", "semantic.embedding_model"]);
+		expect(issues({ provider: "openai", embedding_model: "text-embedding-3-small" }, named)).toEqual([]);
+		// With suggestions off, an unconfigured classifier is still a legal draft.
+		expect(issues({}, { enabled: false })).toEqual([]);
+	});
+
+	test("always sends the tier step, and only the model and prompt it has", () => {
+		const parsed = analyzerConfigSchema.safeParse({
+			...DEFAULT_FORM_VALUES,
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+			semantic: { ...DEFAULT_FORM_VALUES.semantic, provider: "openai", embedding_model: "text-embedding-3-small" },
+			suggestions: {
+				...DEFAULT_FORM_VALUES.suggestions,
+				enabled: true,
+				provider: "openai",
+				model: "gpt-5",
+				tier_provider: "openai",
+				tier_model: "gpt-5",
+			},
+		});
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+		expect(toAnalyzerPayload(parsed.data).suggestions?.tier).toEqual({ classifier: "llm", provider: "openai", model: "gpt-5" });
+		const prompted = { ...parsed.data, suggestions: { ...parsed.data.suggestions, tier_instructions: "judge the work" } };
+		expect(toAnalyzerPayload(prompted).suggestions?.tier?.instructions).toBe("judge the work");
+	});
+
+	describe("tier step text", () => {
+		const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+		// Enabled suggestions need the semantic classifier's embedding model.
+		const semantic = { provider: "openai", embedding_model: "text-embedding-3-small" };
+		const generated: SuggestionTierDefaults = {
+			prompt: "Pick a tier.\n\nTier definitions:\n...\n\nMEDIUM:\n- medium",
+			criteria: {
+				SIMPLE: { definition: "One short answer.", signals: ["a lookup"], examples: [] },
+				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium"] },
+				COMPLEX: { definition: "Design work.", signals: ["trade-offs"], examples: [] },
+			},
+		};
+		const decision = {
+			enabled: true,
+			provider: "openai",
+			model: "gpt-5",
+			tier: { classifier: "decision" as const, provider: "typesafe", model: "jev-latest" },
+		};
+
+		test("seeds each tier from its saved edit, the rest from what the gateway generates", () => {
+			const saved: AnalyzerConfig = {
+				keywords,
+				semantic,
+				suggestions: {
+					...decision,
+					tier: { ...decision.tier, criteria: { COMPLEX: { definition: "Our own.", examples: ["design failover"] } } },
+				},
+			};
+			const criteria = toFormValues(saved, undefined, generated).suggestions.tier_criteria;
+			expect(criteria.SIMPLE).toEqual(generated.criteria.SIMPLE);
+			expect(criteria.COMPLEX).toEqual({ definition: "Our own.", signals: [], examples: ["design failover"] });
+			// Before the generated criteria arrive, only saved tiers are filled.
+			const early = toFormValues(saved).suggestions.tier_criteria;
+			expect(early.SIMPLE.definition).toBe("");
+			expect(isTierCriteriaEmpty(early)).toBe(false);
+		});
+
+		test("sends only what differs from the generated text, so the rest keeps following the router", () => {
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, generated);
+			const parsed = analyzerConfigSchema.safeParse(values);
+			expect(parsed.success).toBe(true);
+			if (!parsed.success) return;
+			// Untouched: nothing frozen.
+			expect(toAnalyzerPayload(parsed.data, saved, generated).suggestions?.tier).toEqual(decision.tier);
+			// One tier edited: only that tier is sent, as written.
+			const edited = structuredClone(parsed.data);
+			edited.suggestions.tier_criteria.MEDIUM.examples = ["medium", "draft a refund reply"];
+			expect(toAnalyzerPayload(edited, saved, generated).suggestions?.tier?.criteria).toEqual({
+				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
+			});
+			// An llm prompt identical to the generated one is the generated one.
+			const llm = { ...edited, suggestions: { ...edited.suggestions, tier_classifier: "llm" as const, tier_prompt: generated.prompt } };
+			expect(toAnalyzerPayload(llm, saved, generated).suggestions?.tier?.prompt).toBeUndefined();
+			const rewritten = { ...llm, suggestions: { ...llm.suggestions, tier_prompt: "Refunds are SIMPLE." } };
+			expect(toAnalyzerPayload(rewritten, saved, generated).suggestions?.tier?.prompt).toBe("Refunds are SIMPLE.");
+		});
+
+		test("keeps saved edits when the generated text is not known yet", () => {
+			const criteria = { COMPLEX: { definition: "Our own.", examples: ["design failover"] } };
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: { ...decision, tier: { ...decision.tier, criteria } } };
+			const parsed = analyzerConfigSchema.safeParse(toFormValues(saved));
+			expect(parsed.success).toBe(true);
+			if (!parsed.success) return;
+			expect(toAnalyzerPayload(parsed.data, saved).suggestions?.tier?.criteria).toEqual(criteria);
+		});
+
+		test("compares edits with the router's last known generated text when a refresh leaves it out", () => {
+			const known = lastKnownTierDefaults(undefined, "support", generated);
+			expect(known?.defaults).toBe(generated);
+			expect(lastKnownTierDefaults(known, "support", undefined)?.defaults).toBe(generated);
+			expect(lastKnownTierDefaults(known, "billing", undefined), "another router's text never carries over").toBeUndefined();
+			const fresher = { ...generated, prompt: "Pick one." };
+			expect(lastKnownTierDefaults(known, "support", fresher)?.defaults).toBe(fresher);
+			// An edit made against the known text is sent, not replaced by the saved criteria.
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, generated);
+			values.suggestions.tier_criteria.MEDIUM.examples = ["medium", "draft a refund reply"];
+			const kept = lastKnownTierDefaults(known, "support", undefined)?.defaults;
+			expect(toAnalyzerPayload(values, saved, kept).suggestions?.tier?.criteria).toEqual({
+				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
+			});
+		});
+
+		test("needs a definition for every tier a decision step sends, but lets lists be empty", () => {
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, generated);
+			expect(analyzerConfigSchema.safeParse(values).success).toBe(true);
+			values.suggestions.tier_criteria.SIMPLE.definition = " ";
+			const parsed = analyzerConfigSchema.safeParse(values);
+			expect(parsed.success).toBe(false);
+			if (parsed.success) return;
+			expect(parsed.error.issues.map((issue) => issue.path.join("."))).toEqual(["suggestions.tier_criteria.SIMPLE.definition"]);
+		});
+
+		test("does not hold generated examples to the edited-example limit, since they are not sent", () => {
+			// A router phrase may be longer than an edited example may.
+			const long = "x".repeat(MAX_DECISION_CRITERIA_ITEM_CHARACTERS + 1);
+			const withLong: SuggestionTierDefaults = {
+				...generated,
+				criteria: { ...generated.criteria, MEDIUM: { ...generated.criteria.MEDIUM, examples: [long] } },
+			};
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, withLong);
+			expect(analyzerConfigSchema.safeParse(values).success).toBe(false);
+			const checked = withGeneratedTierCriteriaCleared(values, withLong.criteria);
+			expect(analyzerConfigSchema.safeParse(checked).success).toBe(true);
+			// The values themselves are left as written.
+			expect(values.suggestions.tier_criteria.MEDIUM.examples).toEqual([long]);
+			// Once edited, the tier is sent, and checked as written.
+			values.suggestions.tier_criteria.MEDIUM.definition = "Routine work, edited.";
+			expect(analyzerConfigSchema.safeParse(withGeneratedTierCriteriaCleared(values, withLong.criteria)).success).toBe(false);
+			// Before the generated criteria arrive, nothing is cleared.
+			expect(withGeneratedTierCriteriaCleared(values, undefined)).toBe(values);
+		});
 	});
 
 	test("sends suggestions only once they have been used, and keeps them when turned off", () => {
@@ -231,28 +486,28 @@ describe("Decision complexity configuration", () => {
 
 	test("an unset first run shows the next run of the gateway's default schedule", () => {
 		const now = new Date("2026-11-10T10:00:00Z");
-		const daily = suggestionsFormValues({ enabled: true }, now);
+		const daily = suggestionsFormValues({ enabled: true }, undefined, now);
 		expect(fromLocalDateTime(daily.start_at)?.toISOString()).toBe("2026-11-11T03:00:00.000Z");
-		const sixHourly = suggestionsFormValues({ enabled: true, schedule: { every: "6h" } }, now);
+		const sixHourly = suggestionsFormValues({ enabled: true, schedule: { every: "6h" } }, undefined, now);
 		expect(fromLocalDateTime(sixHourly.start_at)?.toISOString()).toBe("2026-11-10T15:00:00.000Z");
-		const fresh = suggestionsFormValues(undefined, now);
-		expect(fromLocalDateTime(fresh.start_at)?.toISOString()).toBe("2026-11-11T03:00:00.000Z");
+		// An interval the gateway would refuse reads as the default.
+		const bad = suggestionsFormValues({ enabled: true, schedule: { every: "90m" } }, undefined, now);
+		expect([bad.every_count, bad.every_unit]).toEqual([1, "d"]);
 	});
 
 	test("schedules send the interval and the first run in UTC", () => {
 		const base = { ...DEFAULT_SUGGESTIONS_FORM_VALUES, enabled: true };
 		const firstRun = "2026-11-12T03:30";
-		expect(toSuggestionsPayload({ ...base, every: "6h", start_at: firstRun }).schedule).toEqual({
+		expect(toSuggestionsPayload({ ...base, every_count: 6, every_unit: "h", start_at: firstRun }).schedule).toEqual({
 			every: "6h",
 			start_at: new Date(firstRun).toISOString().replace(".000Z", "Z"),
 		});
-		// Empty is the gateway's default first run, so it is left out.
-		expect(toSuggestionsPayload({ ...base, every: "2w", start_at: "" }).schedule).toEqual({ every: "2w" });
+		expect(toSuggestionsPayload({ ...base, every_count: 2, every_unit: "w", start_at: "" }).schedule).toEqual({ every: "2w" });
 		expect(toSuggestionsPayload({ ...base, sample_percent: 2.5 }).sample_rate).toBe(0.025);
 		expect(toSuggestionsPayload({ ...base, provider: "openai", model: "" })).not.toHaveProperty("provider");
 	});
 
-	test("rejects a first run that is not a time, and a half-chosen suggestion model", () => {
+	test("holds the interval to what the gateway accepts for its unit, and a half-chosen suggestion model", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
 			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
@@ -261,11 +516,18 @@ describe("Decision complexity configuration", () => {
 			analyzerConfigSchema.safeParse({ ...values, suggestions: { ...DEFAULT_SUGGESTIONS_FORM_VALUES, ...suggestions } });
 		const issueAt = (result: ReturnType<typeof parse>, path: string) => result.error?.issues.find((i) => i.path.join(".") === path);
 
-		expect(parse({ start_at: "" }).success).toBe(true);
-		expect(parse({ start_at: "2026-11-12T03:30" }).success).toBe(true);
-		expect(issueAt(parse({ start_at: "tomorrow" }), "suggestions.start_at")?.message).toBe(
-			i18n.t("routing.complexityUi.suggestions.firstRunRequired", { ns: "models" }),
+		expect(parse({ every_count: 23, every_unit: "h" }).success).toBe(true);
+		expect(parse({ every_count: 30, every_unit: "d" }).success).toBe(true);
+		expect(parse({ every_count: 4, every_unit: "w" }).success).toBe(true);
+		const hours = parse({ every_count: 24, every_unit: "h" });
+		expect(issueAt(hours, "suggestions.every_count")?.message).toBe(
+			i18n.t("routing.complexityUi.suggestions.everyMax.h", { ns: "models", max: 23 }),
 		);
+		expect(issueAt(parse({ every_count: 5, every_unit: "w" }), "suggestions.every_count")).toBeDefined();
+		expect(issueAt(parse({ every_count: 0, every_unit: "d" }), "suggestions.every_count")).toBeDefined();
+
+		expect(parse({ start_at: "" }).success).toBe(true);
+		expect(issueAt(parse({ start_at: "tomorrow" }), "suggestions.start_at")).toBeDefined();
 		expect(issueAt(parse({ provider: "openai" }), "suggestions.model")).toBeDefined();
 	});
 
@@ -274,9 +536,8 @@ describe("Decision complexity configuration", () => {
 		expect(nextSuggestionRun("1d", start, new Date("2026-11-09T00:00:00Z"))).toEqual(start);
 		expect(nextSuggestionRun("6h", start, new Date("2026-11-10T10:00:00Z"))?.toISOString()).toBe("2026-11-10T15:00:00.000Z");
 		expect(nextSuggestionRun("2w", start, new Date("2026-11-10T03:00:01Z"))?.toISOString()).toBe("2026-11-24T03:00:00.000Z");
-		expect(nextSuggestionRun("1d", new Date("not a time"), start)).toBeUndefined();
+		expect(nextSuggestionRun("24h", start, new Date())).toBeUndefined();
 	});
-
 	test("rejects invalid Decision fields when Decision is the semantic fallback", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
@@ -725,6 +986,30 @@ describe("llm classifier", () => {
 		expect(payload.classifier).toBe("llm");
 		expect(payload.llm).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
 		expect(payload.semantic).toBeUndefined();
+	});
+});
+describe("tier criteria with the llm tier step", () => {
+	const generated = {
+		SIMPLE: { definition: "gen simple", signals: [], examples: [] },
+		MEDIUM: { definition: "gen medium", signals: [], examples: [] },
+		COMPLEX: { definition: "gen complex", signals: [], examples: [] },
+	};
+	const tierDefaults = { prompt: "generated prompt", criteria: generated };
+	// Edits left in the criteria editors from a switch to the decision step.
+	const edited = { ...generated, SIMPLE: { definition: "hidden edit", signals: [], examples: [] } };
+
+	test("hidden criteria edits are not sent; what was saved is kept", () => {
+		const saved = { enabled: true, tier: { classifier: "llm" as const, criteria: { MEDIUM: { definition: "saved medium" } } } };
+		const values = { ...DEFAULT_SUGGESTIONS_FORM_VALUES, enabled: true, tier_classifier: "llm" as const, tier_criteria: edited };
+		expect(toSuggestionsPayload(values, saved, tierDefaults).tier?.criteria).toEqual({ MEDIUM: { definition: "saved medium" } });
+		expect(toSuggestionsPayload(values, { enabled: true }, tierDefaults).tier?.criteria).toBeUndefined();
+	});
+
+	test("the decision step still sends the tiers edited", () => {
+		const values = { ...DEFAULT_SUGGESTIONS_FORM_VALUES, enabled: true, tier_classifier: "decision" as const, tier_criteria: edited };
+		expect(toSuggestionsPayload(values, { enabled: true }, tierDefaults).tier?.criteria).toEqual({
+			SIMPLE: { definition: "hidden edit", signals: [], examples: [] },
+		});
 	});
 });
 

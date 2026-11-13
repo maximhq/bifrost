@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // testModelRouter returns a valid router with a semantic block.
@@ -116,6 +117,9 @@ func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 		assert.Nil(t, row.DecisionCriteriaJSON)
 		assert.Nil(t, row.LLMProvider)
 		assert.Nil(t, row.SessionEnabled)
+		assert.Nil(t, row.SuggestionsEnabled)
+		assert.Nil(t, row.SuggestionsScheduleEvery)
+		assert.Nil(t, row.SuggestionsTierClassifier)
 
 		back, err := modelRouterFromTable(row)
 		require.NoError(t, err)
@@ -359,4 +363,57 @@ func TestModelRouterUnreadableRows(t *testing.T) {
 	require.NoError(t, store.UpdateModelRouter(ctx, testModelRouter("support", "Support")))
 	_, err = store.GetModelRouter(ctx, "support")
 	require.NoError(t, err)
+}
+
+// setupModelRouterMigrationDB is the exemplar migration's test database pinned
+// to one connection: :memory: SQLite gives every pooled connection its own
+// database, and these tests open transactions after the migration.
+func setupModelRouterMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := setupComplexityExemplarMigrationDB(t)
+	pinSingleConnection(t, db)
+	return db
+}
+
+// pinSingleConnection keeps a :memory: SQLite database on one connection.
+func pinSingleConnection(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+}
+
+// TestMigrationAddModelRouterSuggestionTierColumns pins that a model_routers
+// table created before the suggestions tier block gets its columns, that a
+// router saved then reads back without a tier block, and that rerunning is a
+// no-op.
+func TestMigrationAddModelRouterSuggestionTierColumns(t *testing.T) {
+	ctx := context.Background()
+	db := setupModelRouterMigrationDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableModelRouter{}))
+	// A router saved before tiers were configurable: a suggestions block with
+	// no tier block.
+	saved := testModelRouter("support", "Support")
+	saved.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14, Provider: "openai", Model: "gpt-5"}
+	row, err := modelRouterToTable(saved)
+	require.NoError(t, err)
+	require.NoError(t, db.Create(row).Error)
+	for _, column := range modelRouterSuggestionTierColumns {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableModelRouter{}, column))
+	}
+
+	require.NoError(t, migrationAddModelRouterSuggestionTierColumns(ctx, db, testMigrationLogger))
+	for _, column := range modelRouterSuggestionTierColumns {
+		assert.True(t, db.Migrator().HasColumn(&tables.TableModelRouter{}, column), column)
+	}
+	require.NoError(t, migrationAddModelRouterSuggestionTierColumns(ctx, db, testMigrationLogger))
+
+	var stored tables.TableModelRouter
+	require.NoError(t, db.First(&stored, "id = ?", "support").Error)
+	back, err := modelRouterFromTable(&stored)
+	require.NoError(t, err, "a router saved before the migration still reads")
+	require.NotNil(t, back.Suggestions)
+	assert.True(t, back.Suggestions.Enabled)
+	assert.Equal(t, 14, back.Suggestions.LookbackDays)
+	assert.Nil(t, back.Suggestions.Tier, "no tier block was saved, so none reads back")
 }

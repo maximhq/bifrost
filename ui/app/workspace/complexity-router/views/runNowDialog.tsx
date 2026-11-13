@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getLocale } from "@/lib/i18n";
 import { getErrorMessage } from "@/lib/store";
 import { useGetComplexitySuggestionRunEstimateQuery, useStartComplexitySuggestionRunMutation } from "@/lib/store/apis/governanceApi";
 import { SuggestionRunWindow } from "@/lib/types/complexityRouter";
@@ -19,12 +18,14 @@ interface Props {
 	// Days of captured traffic kept; windows longer than this would read
 	// vectors that are gone, so they are not offered.
 	lookbackDays: number;
+	// Called with the run's ID once the gateway accepts it.
+	onStarted?: (runId: string) => void;
 }
 
 // RunNowDialog starts a suggestion run outside the schedule over a window the
 // operator picks, after showing what that run would read and cost in model
 // calls.
-export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDays }: Props) {
+export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDays, onStarted }: Props) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
 	const { t: tCommon } = useTranslation("common");
 	const windows = useMemo(() => availableWindows(lookbackDays), [lookbackDays]);
@@ -45,12 +46,12 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 	} = useGetComplexitySuggestionRunEstimateQuery({ window: runWindow ?? "24h", routerId }, { skip: !open || !runWindow });
 	const estimated = isSuccess && !isFetching && estimate !== undefined;
 	const [startRun, { isLoading: isStarting }] = useStartComplexitySuggestionRunMutation();
-	const number = (value: number) => new Intl.NumberFormat(getLocale()).format(value);
 
 	const start = () => {
 		startRun({ window: runWindow, routerId })
 			.unwrap()
-			.then(() => {
+			.then(({ run_id }) => {
+				onStarted?.(run_id);
 				toast.success(t("runStarted"), { position: "top-right" });
 				onOpenChange(false);
 			})
@@ -62,7 +63,7 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 			<DialogContent className="max-w-md" data-testid="complexity-suggestions-run-dialog">
 				<DialogHeader>
 					<DialogTitle>{t("runDialogTitle")}</DialogTitle>
-					<DialogDescription>{t("runDialogDescription")}</DialogDescription>
+					<DialogDescription>{t("runInBackground")}</DialogDescription>
 				</DialogHeader>
 				<div className="space-y-4">
 					<div className="space-y-1.5">
@@ -80,36 +81,17 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 							</SelectContent>
 						</Select>
 					</div>
-					<div
-						className="bg-muted/50 space-y-1 rounded-sm p-3 text-xs"
-						data-testid="complexity-suggestions-run-estimate"
-						aria-live="polite"
-					>
-						{error && !isFetching ? (
-							<p className="text-destructive">{t("estimateFailed", { error: getErrorMessage(error) })}</p>
-						) : !estimated ? (
-							<p className="text-muted-foreground flex items-center gap-2">
-								<LoaderCircle className="size-3.5 animate-spin" />
-								{t("estimating")}
-							</p>
-						) : (
-							<>
-								<p className="text-sm font-medium">
-									{t("estimateRequests", { count: estimate.requests, formatted: number(estimate.requests) })}
-								</p>
-								{estimate.requests > 0 && (
-									<p className="text-muted-foreground">
-										{t("estimateClustered", { count: estimate.clustered, formatted: number(estimate.clustered) })}
-										{estimate.skipped > 0 && ` ${t("estimateSkipped", { count: estimate.skipped, formatted: number(estimate.skipped) })}`}
-									</p>
-								)}
-								<p className="text-muted-foreground">
-									{t("estimateModelCalls", { count: estimate.max_model_calls, formatted: number(estimate.max_model_calls) })}
-								</p>
-							</>
-						)}
-						<p className="text-muted-foreground pt-1">{t("runInBackground")}</p>
-					</div>
+					{/* The estimate only decides whether a run can start; it is shown
+					    only when it says why one cannot. */}
+					{error && !isFetching ? (
+						<p className="text-destructive text-xs" data-testid="complexity-suggestions-run-estimate" aria-live="polite">
+							{t("estimateFailed", { error: getErrorMessage(error) })}
+						</p>
+					) : estimated && estimate.requests === 0 ? (
+						<p className="text-muted-foreground text-xs" data-testid="complexity-suggestions-run-estimate" aria-live="polite">
+							{t("estimateEmpty")}
+						</p>
+					) : null}
 				</div>
 				<DialogFooter className="gap-2">
 					<Button
@@ -129,7 +111,7 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 						disabled={isStarting || !runWindow || !estimated || estimate.requests === 0}
 						data-testid="complexity-suggestions-run-start-button"
 					>
-						{isStarting ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+						{isStarting || (isFetching && !error) ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
 						{t("runStart")}
 					</Button>
 				</DialogFooter>

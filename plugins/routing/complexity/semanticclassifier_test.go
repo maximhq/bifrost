@@ -477,6 +477,69 @@ func TestSemanticClassifierServing(t *testing.T) {
 	require.NoError(t, classifier.Close())
 }
 
+// The serving generation's message history count is the one classification
+// embeds with. A config change leaves the old count in force while its
+// generation warms and if that warmup fails; it takes over once a generation
+// warms. Nothing serving reports none.
+func TestSemanticClassifierServingMessageHistoryCount(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(func() { require.NoError(t, classifier.Close()) })
+	_, serving := classifier.ServingMessageHistoryCount()
+	assert.False(t, serving, "nothing has warmed")
+
+	// model-v2 holds its warmup until released, then fails it.
+	releaseV2 := make(chan struct{})
+	classifier.SetEmbeddingFunc(func(ctx context.Context, semantic *SemanticConfig, text string) ([]float32, error) {
+		if semantic.EmbeddingModel == "model-v2" {
+			select {
+			case <-releaseV2:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return nil, errors.New("embedding provider down")
+		}
+		return testSemanticEmbedding(ctx, semantic, text)
+	})
+	servedCount := func() int {
+		t.Helper()
+		count, serving := classifier.ServingMessageHistoryCount()
+		require.True(t, serving)
+		return count
+	}
+	v1 := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	v1.Semantic.EmbeddingModel = "model-v1"
+	v1.Semantic.MessageHistoryCount = 1
+	classifier.Configure(&v1)
+	require.Eventually(t, func() bool { return classifier.Status().State == SemanticStatusReady }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, 1, servedCount())
+
+	v2 := v1
+	v2.Semantic = cloneSemanticConfig(v1.Semantic)
+	v2.Semantic.EmbeddingModel = "model-v2"
+	v2.Semantic.MessageHistoryCount = 3
+	classifier.Configure(&v2)
+	require.Eventually(t, func() bool {
+		status := classifier.Status()
+		return status.State == SemanticStatusWarming && status.ServingPrevious
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, 1, servedCount(), "the warming generation's count is not in force yet")
+
+	close(releaseV2)
+	require.Eventually(t, func() bool {
+		status := classifier.Status()
+		return status.State == SemanticStatusFailed && status.ServingPrevious
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, 1, servedCount(), "the failed generation's count is not in force")
+
+	v3 := v1
+	v3.Semantic = cloneSemanticConfig(v1.Semantic)
+	v3.Semantic.EmbeddingModel = "model-v3"
+	v3.Semantic.MessageHistoryCount = 2
+	classifier.Configure(&v3)
+	require.Eventually(t, func() bool { return classifier.Status().State == SemanticStatusReady }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, 2, servedCount(), "a generation that warms brings its own count")
+}
+
 func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *testing.T) {
 	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 	t.Cleanup(func() {
@@ -1319,8 +1382,41 @@ func TestSemanticClassifierCapturesNothingWithoutAVectorStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, names)
 	assert.False(t, classifier.Status().CaptureAvailable)
+	assert.Equal(t, CaptureUnavailableNoStore, classifier.Status().CaptureUnavailableReason)
 	_, store, _ := classifier.captureTarget()
 	assert.Nil(t, store)
+	_, err = classifier.SuggestionSpace(context.Background())
+	assert.ErrorIs(t, err, ErrNoCaptureStore)
+}
+
+// TestSemanticClassifierCapturesNothingIntoChromem: Chromem keeps vectors in
+// one gateway's memory, so a cluster's captures would be split across nodes
+// and a week of them would sit in RAM. Configured as Bifrost's vector store,
+// it gets no captures, its deletes and sweeps are not attempted, suggestions
+// refuse to run on it, and the status says why.
+func TestSemanticClassifierCapturesNothingIntoChromem(t *testing.T) {
+	chromem := newTestChromemStore(t, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	classifier := readySemanticClassifierWithStore(t, chromem)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+	_, err := classifier.Classify(requestCtx("req-1"), ComplexityInput{LastUserText: "simple request"})
+	require.NoError(t, err)
+	assert.Zero(t, capture.Stats().Queued)
+	names, err := chromem.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+
+	status := classifier.Status()
+	assert.False(t, status.CaptureAvailable)
+	assert.Equal(t, CaptureUnavailableEmbeddedStore, status.CaptureUnavailableReason)
+	_, store, _ := classifier.captureTarget()
+	assert.Nil(t, store)
+	n, err := classifier.SweepCapturedRequests(context.Background(), time.Now())
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	_, err = classifier.SuggestionSpace(context.Background())
+	assert.ErrorIs(t, err, ErrNoCaptureStore)
 }
 
 // TestSemanticClassifierWithoutCaptureWritesNothing pins the default: no
