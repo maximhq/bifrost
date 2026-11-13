@@ -1,4 +1,19 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import type { Page } from '@playwright/test'
+
+// setPhraseSuggestionsFlag answers the dashboard's flag list with the phrase
+// suggestions flag set as asked, whatever the gateway's own value is. The
+// suggestions dashboard ships behind it, off by default.
+async function setPhraseSuggestionsFlag(page: Page, enabled: boolean) {
+  await page.route('**/api/feature-flags', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const response = await route.fetch()
+    const body = (await response.json()) as { flags: { id: string; enabled: boolean }[] }
+    const others = body.flags.filter((flag) => flag.id !== 'phrase-suggestions')
+    body.flags = [...others, { id: 'phrase-suggestions', enabled }]
+    await route.fulfill({ response, json: body })
+  })
+}
 
 test.describe('Complexity Router', () => {
   test.describe('Decision Model Picker', () => {
@@ -313,6 +328,7 @@ test.describe('Complexity Router', () => {
       runStarts = 0
       runWindows = []
       listRouters = []
+      await setPhraseSuggestionsFlag(page, true)
       await page.route(
         (url) => url.pathname === '/api/routing/model-routers/default',
         async (route) => {
@@ -446,6 +462,20 @@ test.describe('Complexity Router', () => {
 
     test.afterEach(async ({ page }) => {
       await page.unrouteAll({ behavior: 'ignoreErrors' })
+    })
+
+    test('should hide the Suggestions tab while its feature flag is off', async ({ page }) => {
+      // Registered after beforeEach, so it answers first.
+      await setPhraseSuggestionsFlag(page, false)
+      // The tab is also hidden while the flags are still loading, so the
+      // absence below only means something once the off flag has arrived.
+      const flags = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/feature-flags')
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await flags
+      // The router has loaded, so the tabs it would show are rendered.
+      await expect(page.getByTestId('model-router-tab-models')).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('model-router-tab-overview')).toHaveAttribute('data-state', 'active')
+      await expect(page.getByTestId('complexity-router-tab-suggestions')).toHaveCount(0)
     })
 
     test('should list pending suggestions with their reasons and examples', async ({ page }) => {
