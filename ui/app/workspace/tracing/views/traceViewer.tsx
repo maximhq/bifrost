@@ -38,7 +38,16 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { buildThread, buildTraceTree, messagesOf, spanAttachments, spanUsage, type ThreadMessage, type TraceTreeNode } from "../traceTree";
+import {
+	buildThread,
+	buildTraceTree,
+	messagesOf,
+	shouldPollTrace,
+	spanAttachments,
+	spanUsage,
+	type ThreadMessage,
+	type TraceTreeNode,
+} from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
 import CollapsibleBox from "@/app/workspace/logs/views/collapsibleBox";
 import { AttachmentList } from "./attachments";
@@ -141,11 +150,17 @@ export function TraceViewer({
 }: TraceViewerProps) {
 	const { t } = useTranslation("observability");
 	const open = Boolean(projectId && traceId);
-	const { data, isLoading, error } = useGetTraceQuery(
+	// A trace is polled while it is arriving and until it settles, then left alone: see shouldPollTrace.
+	const [polling, setPolling] = useState(true);
+	const { data, isLoading, error, fulfilledTimeStamp } = useGetTraceQuery(
 		{ projectId: projectId ?? "", traceId: traceId ?? "" },
-		// A trace that is still arriving is polled until its root span lands.
-		{ skip: !open, pollingInterval: open ? 5000 : 0, skipPollingIfUnfocused: true },
+		{ skip: !open, pollingInterval: open && polling ? 5000 : 0, skipPollingIfUnfocused: true },
 	);
+	// fulfilledTimeStamp changes on every fetch, also when the trace came back unchanged and data
+	// kept its identity: without it a trace opened just before it settled would be polled forever.
+	useEffect(() => {
+		setPolling(shouldPollTrace(data?.trace, Date.now()));
+	}, [data, traceId, fulfilledTimeStamp]);
 	const [deleteTrace] = useDeleteTraceMutation();
 	const { copy: copyLink } = useCopyToClipboard({ successMessage: t("agentLogs.trace.linkCopied") });
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({

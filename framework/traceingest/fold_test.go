@@ -112,3 +112,85 @@ func TestFoldAppliesALateMergeOverTheStoredSpan(t *testing.T) {
 	assert.Equal(t, 99, span.LinkSnapshotParsed.TotalTokens)
 	assert.Equal(t, start, span.CreatedAt)
 }
+
+// BenchmarkFold measures the fold for the two shapes ingest sees: an OTLP span that arrives whole
+// (one part), and a Braintrust span sent as a base row and two merge rows.
+func BenchmarkFold(b *testing.B) {
+	base := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	whole := &SpanPart{
+		TraceID: "t1", SpanID: "s1", Name: "chat", Kind: logstore.TraceSpanKindLLM, StartTime: &base, EndTime: new(base.Add(time.Second)),
+		Input:    []any{map[string]any{"role": "user", "content": "hi"}},
+		Output:   "hello",
+		Metadata: map[string]any{"tenant": "acme"}, Tags: []string{"a", "b"},
+		Attributes: map[string]any{"llm.provider": "openai", "otel.scope.name": "bench", "resource": map[string]any{"service.name": "bench"}},
+		Model:      "gpt-4o", PromptTokens: 18, CompletionTokens: 4, ReceivedAt: base, ID: "1",
+	}
+	merged := []*SpanPart{
+		{TraceID: "t1", SpanID: "s1", Name: "task", StartTime: &base, Input: map[string]any{"q": "hi"}, Metadata: map[string]any{"phase": "start"}, Tags: []string{"first"}, ReceivedAt: base, ID: "1"},
+		{TraceID: "t1", SpanID: "s1", IsMerge: true, Output: map[string]any{"a": "hello"}, Metadata: map[string]any{"phase": "end"}, Tags: []string{"second"}, ReceivedAt: base.Add(time.Millisecond), ID: "2"},
+		{TraceID: "t1", SpanID: "s1", IsMerge: true, EndTime: new(base.Add(time.Second)), Scores: map[string]float64{"ok": 1}, ReceivedAt: base.Add(2 * time.Millisecond), ID: "3"},
+	}
+	b.Run("one_part", func(b *testing.B) {
+		parts := []*SpanPart{whole}
+		b.ReportAllocs()
+		for b.Loop() {
+			Fold(nil, parts).Span("p1", logstore.TraceSourceOTel, nil)
+		}
+	})
+	b.Run("base_and_two_merges", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			Fold(nil, merged).Span("p1", logstore.TraceSourceBraintrust, nil)
+		}
+	})
+}
+
+// TestFoldOfOnePartCopiesNothingItNeedNot pins the common case, an OTLP span that arrives whole: the
+// fold returns a new part with sorted, deduplicated tags and leaves the received part as it was.
+func TestFoldOfOnePartCopiesNothingItNeedNot(t *testing.T) {
+	start := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	received := &SpanPart{TraceID: "t", SpanID: "s", Name: "chat", StartTime: &start, Tags: []string{"b", "a", "b"},
+		Metadata: map[string]any{"k": "v"}, Input: map[string]any{"q": "hi"}, ReceivedAt: start}
+	folded := Fold(nil, []*SpanPart{received})
+	require.NotSame(t, received, folded)
+	assert.False(t, folded.IsMerge)
+	assert.Equal(t, []string{"a", "b"}, folded.Tags)
+	assert.Equal(t, []string{"b", "a", "b"}, received.Tags, "the received part is not reordered")
+	assert.Equal(t, received.Metadata, folded.Metadata)
+	assert.Equal(t, received.Input, folded.Input)
+}
+
+// TestRowIDIsStable pins the id of a score or comment row. Scores already stored were written under
+// it, and a score sent again must replace its first copy.
+func TestRowIDIsStable(t *testing.T) {
+	assert.Equal(t, "e63e5a069685a121151b76fc941a42883b05f864", rowID("score", "p1", "t1", "s1", "accuracy"))
+}
+
+// TestHotPathAllocationBudgets fails when a change makes the per-span ingest path allocate more.
+// Paths with no JSON codec in them are pinned to what they need today. Paths that decode or encode
+// JSON get about a quarter of headroom, because sonic allocates differently on amd64 and arm64.
+// Raise a ceiling only with a reason.
+func TestHotPathAllocationBudgets(t *testing.T) {
+	spans := benchOTelSpans()
+	base := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	whole := []*SpanPart{{TraceID: "t1", SpanID: "s1", Name: "chat", Kind: logstore.TraceSpanKindLLM, StartTime: &base, EndTime: new(base.Add(time.Second)),
+		Input: []any{map[string]any{"role": "user", "content": "hi"}}, Output: "hello", Metadata: map[string]any{"tenant": "acme"}, Tags: []string{"a", "b"},
+		Attributes: map[string]any{"llm.provider": "openai"}, Model: "gpt-4o", PromptTokens: 18, CompletionTokens: 4, ReceivedAt: base, ID: "1"}}
+	budgets := []struct {
+		name  string
+		limit float64
+		run   func()
+	}{
+		{"map a plain OTLP span", 12, func() { MapOTelSpan(spans["plain"]) }},
+		{"map an OpenInference LLM span", 55, func() { MapOTelSpan(spans["openinference"]) }},
+		{"map a GenAI LLM span", 54, func() { MapOTelSpan(spans["genai"]) }},
+		{"map a Langfuse generation", 68, func() { MapOTelSpan(spans["langfuse"]) }},
+		{"fold one whole span", 2, func() { Fold(nil, whole) }},
+		{"fold and build the stored span", 12, func() { Fold(nil, whole).Span("p1", logstore.TraceSourceOTel, nil) }},
+		{"derive a score row id", 2, func() { rowID("score", "p1", "t1", "s1", "accuracy") }},
+	}
+	for _, budget := range budgets {
+		got := testing.AllocsPerRun(200, budget.run)
+		assert.LessOrEqual(t, got, budget.limit, "%s allocates %.0f times, budget %.0f", budget.name, got, budget.limit)
+	}
+}

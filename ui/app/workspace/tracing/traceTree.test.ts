@@ -1,6 +1,6 @@
 import type { TraceSpan } from "@/lib/types/traces";
 import { describe, expect, it } from "vitest";
-import { buildThread, buildTraceTree, spanAttachments, spanUsage } from "./traceTree";
+import { buildThread, buildTraceTree, shouldPollTrace, spanAttachments, spanUsage } from "./traceTree";
 
 function span(
 	id: string,
@@ -189,5 +189,19 @@ describe("buildThread attachments", () => {
 			["user", "", ["inline"]],
 			["assistant", "Oslo", []],
 		]);
+	});
+});
+describe("shouldPollTrace", () => {
+	const now = Date.UTC(2026, 10, 12, 10, 10, 0);
+	const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
+	it("polls a trace that is loading, still arriving, or changed in the last two minutes", () => {
+		expect(shouldPollTrace(undefined, now)).toBe(true);
+		expect(shouldPollTrace({ in_progress: true, updated_at: iso(3_600_000) }, now)).toBe(true);
+		expect(shouldPollTrace({ in_progress: false, updated_at: iso(30_000) }, now)).toBe(true);
+	});
+	it("stops polling a finished trace that has settled", () => {
+		// An open sheet used to refetch the whole trace, images included, every five seconds forever.
+		expect(shouldPollTrace({ in_progress: false, updated_at: iso(121_000) }, now)).toBe(false);
+		expect(shouldPollTrace({ in_progress: false }, now)).toBe(false);
 	});
 });
