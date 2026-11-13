@@ -28,7 +28,8 @@ import (
 // contextTransport owns the socket for the life of the request, so it can:
 //   - apply the client's WriteTimeout / ReadTimeout (default_request_timeout_in_seconds)
 //     to the request write and to the wait for response headers, tightened by the
-//     request context's deadline;
+//     request context's deadline. A per-request BifrostContextKeyRequestTimeout
+//     replaces both client timeouts for that request (GetRequestTimeout);
 //   - clear those deadlines the moment headers are parsed for a streamed body, so
 //     stream_idle_timeout_in_seconds (NewIdleTimeoutReader) is the only bound on the
 //     body, exactly as before;
@@ -105,6 +106,71 @@ var errTooManyInterimResponses = errors.New("too many 1xx interim responses")
 // watcher could close a socket that is about to be pooled.
 var testHookBeforeConnRelease func()
 
+// acquireConnWithin is hc.AcquireConn bounded by a per-request override. fasthttp passes the
+// timeout to the dial only through Client.DialTimeout, and ConfigureDialer installs an addr-only
+// Client.Dial whose DNS, TCP and TLS steps run on the client's own timeouts, so the override alone
+// would not reach them. The acquire runs on its own goroutine: past the override (or the ctx ending
+// first) the request returns, and the abandoned acquire closes any connection it still gets so its
+// pool slot comes back. A ctx deadline shorter than the override caps the timeout handed to the
+// acquire too, so an abandoned acquire stops queuing for a slot once the caller has given up.
+// C is fasthttp's unexported *clientConn, inferred from hc.AcquireConn.
+func acquireConnWithin[C any](ctx context.Context, acquire func(time.Duration, bool) (C, error), closeConn func(C), timeout time.Duration, connectionClose bool) (C, error) {
+	type acquired struct {
+		cc  C
+		err error
+	}
+	// capped is set when the ctx deadline, not the override, bounds the acquire. A failure from
+	// then on is the deadline's, reported as such even if ctx.Done has not fired yet.
+	var deadline time.Time
+	capped := false
+	if d, ok := ctx.Deadline(); ok {
+		remaining := time.Until(d)
+		if remaining <= 0 {
+			var zero C
+			return zero, context.DeadlineExceeded
+		}
+		if remaining < timeout {
+			timeout, deadline, capped = remaining, d, true
+		}
+	}
+	done := make(chan acquired, 1)
+	go func() {
+		cc, err := acquire(timeout, connectionClose)
+		done <- acquired{cc, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var err error
+	select {
+	case r := <-done:
+		if r.err != nil && capped && !time.Now().Before(deadline) {
+			return r.cc, context.DeadlineExceeded
+		}
+		return r.cc, r.err
+	case <-timer.C:
+		err = fasthttp.ErrTimeout
+		if capped {
+			err = context.DeadlineExceeded
+		}
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	go func() {
+		if r := <-done; r.err == nil {
+			closeConn(r.cc)
+		}
+	}()
+	var zero C
+	return zero, err
+}
+
+// connOf returns the zero value of the connection type acquire yields, so RoundTrip can declare a
+// variable of fasthttp's unexported *clientConn. acquire does not escape and is never called.
+func connOf[C any](acquire func(time.Duration, bool) (C, error)) C {
+	var zero C
+	return zero
+}
+
 // RoundTrip implements fasthttp.RoundTripper. The retry flag is true only for a
 // failure before the response headers were parsed on a connection reused from
 // the pool: the upstream may have closed it while idle, and RetryIfErr
@@ -126,7 +192,18 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 
 	customSkipBody := resp.SkipBody
 
-	cc, err := hc.AcquireConn(0, req.ConnectionClose())
+	// A per-request override also bounds the wait for a free pooled connection
+	// (fasthttp keeps the shorter of it and MaxConnWaitTimeout) and the dial; 0
+	// leaves both as they were.
+	override := GetRequestTimeout(ctx, 0)
+	// The method values are built only on the override branch: they escape into
+	// acquireConnWithin's goroutine, and a request without an override must not allocate them.
+	cc := connOf(hc.AcquireConn)
+	if override > 0 {
+		cc, err = acquireConnWithin(ctx, hc.AcquireConn, hc.CloseConn, override, req.ConnectionClose())
+	} else {
+		cc, err = hc.AcquireConn(0, req.ConnectionClose())
+	}
 	if err != nil {
 		return false, err
 	}
@@ -142,7 +219,12 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	watcher := startCancelWatcher(ctx, abort, conn)
 	defer watcher.stop()
 
-	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, ctx)); err != nil {
+	writeTimeout, readTimeout := hc.WriteTimeout, hc.ReadTimeout
+	if override > 0 {
+		writeTimeout, readTimeout = override, override
+	}
+
+	if err = conn.SetWriteDeadline(deadlineFor(writeTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)
 	}
@@ -169,7 +251,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 
 	// Setting a deadline fails with "use of closed network connection" when the
 	// watcher closed the socket a moment ago; classify turns that into ctx.Err().
-	if err = conn.SetReadDeadline(deadlineFor(hc.ReadTimeout, ctx)); err != nil {
+	if err = conn.SetReadDeadline(deadlineFor(readTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)
 	}

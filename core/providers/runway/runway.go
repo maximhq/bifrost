@@ -245,8 +245,11 @@ func (provider *RunwayProvider) HandleRunwayImageTask(ctx *schemas.BifrostContex
 const runwayImagePollingInterval = 2 * time.Second
 
 // pollRunwayTask polls a Runway task until it reaches a terminal state or the context times out.
+// The polling window is the request timeout: BifrostContextKeyRequestTimeout when the caller set
+// one, otherwise default_request_timeout_in_seconds.
 func (provider *RunwayProvider) pollRunwayTask(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*RunwayTaskDetailsResponse, interface{}, *schemas.BifrostError) {
-	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
+	pollTimeout := providerUtils.GetRequestTimeout(ctx, time.Duration(provider.networkConfig.DefaultRequestTimeoutInSeconds)*time.Second)
+	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, pollTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(runwayImagePollingInterval)

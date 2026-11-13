@@ -1,8 +1,12 @@
 package runway
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -258,4 +262,32 @@ func TestToBifrostImageGenerationResponse(t *testing.T) {
 		assert.Equal(t, 1, resp.Data[1].Index)
 		assert.NotZero(t, resp.Created)
 	})
+}
+
+// pollRunwayTask's polling window is the request timeout, so a per-request
+// BifrostContextKeyRequestTimeout replaces default_request_timeout_in_seconds (300s here).
+func TestPollRunwayTaskHonorsRequestTimeoutOverride(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"task-1","status":"PENDING"}`))
+	}))
+	defer ts.Close()
+
+	provider, err := NewRunwayProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL, DefaultRequestTimeoutInSeconds: 300, AllowPrivateNetwork: true},
+	}, nil)
+	require.NoError(t, err)
+
+	parent, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 100*time.Millisecond)
+
+	start := time.Now()
+	_, _, bifrostErr := provider.pollRunwayTask(ctx, schemas.Key{Value: *schemas.NewSecretVar("k")}, "task-1", false)
+	elapsed := time.Since(start)
+
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, schemas.ErrProviderRequestTimedOut, bifrostErr.Error.Message)
+	assert.Less(t, elapsed, time.Second, "the 100ms override should end polling, not the 300s provider timeout")
 }
