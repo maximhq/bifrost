@@ -730,6 +730,9 @@ bifrost:
       #   # Per-server cap on the MCP protocol version ("auto", "2026-07-28", "2025-11-25", "2025-06-18").
       #   # Omit to use the global maxProtocolVersion.
       #   maxProtocolVersion: "2025-11-25"
+      #   # Code mode on this server's own /mcp/<slug> only: "inherit" (follow isCodeModeClient),
+      #   # "enabled" or "disabled". /mcp, Virtual MCPs and LLM requests follow isCodeModeClient.
+      #   serverTypeOnSlug: "disabled"
       #   # Require every connection to resolve to a public address (set automatically for
       #   # clients registered without an admin credential check; once true it is never cleared).
       #   requirePublicTarget: false

@@ -1036,6 +1036,9 @@ type MCPClientConfig struct {
 	// Stored values are plaintext; env-var-reference resolution is not
 	// applied to fields inside this block.
 	PendingOAuthConfig *OAuth2Config `json:"oauth_config,omitempty"`
+
+	// ServerTypeOnSlug is code mode on the client's own /mcp/<slug>; empty inherits IsCodeModeClient.
+	ServerTypeOnSlug MCPServerTypeOnSlug `json:"server_type_on_slug"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
@@ -1106,6 +1109,62 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		c.ToolExecutionTimeout = dur
 	}
 	c.AllowByDefault = ResolveAllowByDefault(auxStr.AllowByDefault, auxStr.AllowOnAllVirtualKeys)
+	return nil
+}
+
+// MCPServerTypeOnSlug is whether a client serves its own /mcp/<slug> in code mode. The empty value
+// inherits is_code_mode_client and is written as "inherit" on the wire.
+type MCPServerTypeOnSlug string
+
+const (
+	MCPServerTypeOnSlugInherit  MCPServerTypeOnSlug = ""
+	MCPServerTypeOnSlugEnabled  MCPServerTypeOnSlug = "enabled"
+	MCPServerTypeOnSlugDisabled MCPServerTypeOnSlug = "disabled"
+)
+
+// mcpServerTypeOnSlugInheritWire is the wire value of MCPServerTypeOnSlugInherit.
+const mcpServerTypeOnSlugInheritWire = "inherit"
+
+// ParseMCPServerTypeOnSlug converts a server_type_on_slug wire value, refusing an unknown one.
+func ParseMCPServerTypeOnSlug(value string) (MCPServerTypeOnSlug, error) {
+	switch mode := MCPServerTypeOnSlug(value); mode {
+	case mcpServerTypeOnSlugInheritWire:
+		return MCPServerTypeOnSlugInherit, nil
+	case MCPServerTypeOnSlugEnabled, MCPServerTypeOnSlugDisabled:
+		return mode, nil
+	}
+	return MCPServerTypeOnSlugInherit, fmt.Errorf("invalid server_type_on_slug %q: must be one of %q, %q, %q", value, mcpServerTypeOnSlugInheritWire, MCPServerTypeOnSlugEnabled, MCPServerTypeOnSlugDisabled)
+}
+
+// String returns the wire value.
+func (m MCPServerTypeOnSlug) String() string {
+	if m == MCPServerTypeOnSlugInherit {
+		return mcpServerTypeOnSlugInheritWire
+	}
+	return string(m)
+}
+
+// CodeModeOverride returns the code mode the setting forces on the client's slug, and false when it inherits.
+func (m MCPServerTypeOnSlug) CodeModeOverride() (codeMode, overrides bool) {
+	return m == MCPServerTypeOnSlugEnabled, m != MCPServerTypeOnSlugInherit
+}
+
+// MarshalJSON writes the wire value.
+func (m MCPServerTypeOnSlug) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
+// UnmarshalJSON reads a wire value, refusing an unknown one.
+func (m *MCPServerTypeOnSlug) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("invalid server_type_on_slug: %w", err)
+	}
+	mode, err := ParseMCPServerTypeOnSlug(value)
+	if err != nil {
+		return err
+	}
+	*m = mode
 	return nil
 }
 
