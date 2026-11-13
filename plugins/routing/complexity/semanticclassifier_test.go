@@ -404,6 +404,8 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		return status.State == SemanticStatusWarming && status.ServingPrevious
 	}, time.Second, 10*time.Millisecond)
 
+	assert.True(t, classifier.Serving(), "F1 still serves while F2 warms")
+
 	// F1 remains queryable while the first F2 embedding is deliberately blocked.
 	duringWarmup, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
@@ -442,6 +444,8 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		return status.State == SemanticStatusFailed && status.ServingPrevious
 	}, time.Second, 10*time.Millisecond)
 
+	assert.True(t, classifier.Serving(), "F2 still serves after F3 failed")
+
 	// A failed F3 keeps both the F2 namespace and F2 embedding configuration.
 	afterFailure, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
@@ -459,6 +463,18 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		[]string{semanticMarkerID(v3Fingerprint)},
 	)
 	require.ErrorIs(t, err, vectorstore.ErrNotFound, "a failed private generation must be discarded")
+}
+
+// Serving is false until a generation has warmed, and once the classifier
+// is closed.
+func TestSemanticClassifierServing(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	assert.False(t, classifier.Serving(), "nothing has warmed")
+	ready := readySemanticClassifier(t)
+	assert.True(t, ready.Serving())
+	require.NoError(t, ready.Close())
+	assert.False(t, ready.Serving(), "a closed classifier serves nothing")
+	require.NoError(t, classifier.Close())
 }
 
 func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *testing.T) {
@@ -1168,4 +1184,185 @@ func TestSemanticClassifierStatusReportsCacheCoverage(t *testing.T) {
 
 	assert.Equal(t, len(semanticExemplars(&config)), classifier.Status().CachedPhrases,
 		"a warmed classifier holds one vector per active phrase")
+}
+
+func readySemanticClassifier(tb testing.TB) *SemanticClassifier {
+	tb.Helper()
+	return readySemanticClassifierWithStore(tb, nil)
+}
+
+// readySemanticClassifierWithStore warms an embedded-mode classifier, with
+// configured as Bifrost's top-level vector store (nil for none).
+func readySemanticClassifierWithStore(tb testing.TB, configured vectorstore.VectorStore) *SemanticClassifier {
+	tb.Helper()
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	tb.Cleanup(func() { _ = classifier.Close() })
+	classifier.SetEmbeddingFunc(testSemanticEmbedding)
+	if configured != nil {
+		classifier.SetConfiguredStore(configured)
+	}
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	classifier.Configure(&config)
+	deadline := time.Now().Add(2 * time.Second)
+	for classifier.Status().State != SemanticStatusReady {
+		if time.Now().After(deadline) {
+			tb.Fatalf("semantic classifier did not finish warmup")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return classifier
+}
+
+// TestSemanticClassifierCapturesClassifiedRequests checks the capture hook
+// end to end: a classified request's own vector lands under its request ID's point,
+// in the embedding space's capture namespace. Captures live as long as their
+// logs, so they go to Bifrost's configured vector store even when the phrase
+// bank is in the embedded in-memory one, which a restart empties.
+func TestSemanticClassifierCapturesClassifiedRequests(t *testing.T) {
+	configured := newCaptureTestStore(t)
+	classifier := readySemanticClassifierWithStore(t, configured)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+
+	result, err := classifier.Classify(requestCtx("req-42"), ComplexityInput{LastUserText: "medium request"})
+	require.NoError(t, err)
+	require.Equal(t, TierMedium, result.Tier)
+	waitWritten(t, capture, 1)
+
+	_, store, namespace := classifier.captureTarget()
+	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), namespace)
+	assert.Same(t, configured, store, "captures go to the configured vector store")
+	got, err := store.GetChunk(context.Background(), namespace, capturePointID("req-42"))
+	require.NoError(t, err)
+	assert.Equal(t, captureMetadataKindValue, got.Properties[captureMetadataKind])
+	assert.Equal(t, "req-42", got.Properties[captureMetadataLogID])
+	inMemory, err := classifier.ownedStore.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	assert.Empty(t, inMemory, "nothing is captured into the embedded phrase store")
+	assert.True(t, classifier.Status().CaptureAvailable)
+
+	classifier.ForgetCapturedRequests(context.Background(), []string{"req-42"})
+	_, err = store.GetChunk(context.Background(), namespace, capturePointID("req-42"))
+	assert.Error(t, err)
+}
+
+// TestSemanticClassifierForgetsCapturesWithNothingServing: a log deleted
+// while no generation serves (warming, semantic routing turned off) still has
+// its captured vector removed from the configured store.
+func TestSemanticClassifierForgetsCapturesWithNothingServing(t *testing.T) {
+	store := newCaptureTestStore(t)
+	ns := CaptureNamespace("openai", "m", 2, 1)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	capture.offer(requestCtx("req-7"), store, ns, 2, []float32{1, 0})
+	waitWritten(t, capture, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	classifier := NewSemanticClassifier(ctx, nil)
+	classifier.SetConfiguredStore(store)
+	classifier.SetRequestCapture(capture)
+	_, target, serving := classifier.captureTarget()
+	require.Same(t, store, target, "the configured store is used whatever serves")
+	require.Empty(t, serving)
+
+	classifier.ForgetCapturedRequests(context.Background(), []string{"req-7"})
+	_, err := store.GetChunk(context.Background(), ns, capturePointID("req-7"))
+	assert.Error(t, err)
+}
+
+// TestSemanticClassifierCleansCapturesWhileInactive: captured vectors live
+// as long as their logs whether or not semantic routing is still on, so with
+// no serving generation the deletes of deleted logs and the retention sweep
+// still reach the configured store.
+func TestSemanticClassifierCleansCapturesWhileInactive(t *testing.T) {
+	configured := newCaptureTestStore(t)
+	classifier := readySemanticClassifierWithStore(t, configured)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+	for _, id := range []string{"gone", "kept"} {
+		_, err := classifier.Classify(requestCtx(id), ComplexityInput{LastUserText: "simple request"})
+		require.NoError(t, err)
+	}
+	waitWritten(t, capture, 2)
+	namespace := CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1)
+
+	off := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	off.Semantic = nil
+	classifier.Configure(&off)
+	require.Equal(t, SemanticStatusDisabled, classifier.Status().State)
+
+	ctx := context.Background()
+	classifier.ForgetCapturedRequests(ctx, []string{"gone"})
+	_, err := configured.GetChunk(ctx, namespace, capturePointID("gone"))
+	assert.Error(t, err, "a deleted log's vector goes even with semantic routing off")
+
+	n, err := classifier.SweepCapturedRequests(ctx, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "retention still sweeps what was captured")
+}
+
+// TestSemanticClassifierCapturesNothingWithoutAVectorStore: with no
+// configured vector store there is nowhere durable to keep captures, so none
+// are taken, not even into the embedded store, and the status says so.
+func TestSemanticClassifierCapturesNothingWithoutAVectorStore(t *testing.T) {
+	classifier := readySemanticClassifier(t)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+	_, err := classifier.Classify(requestCtx("req-1"), ComplexityInput{LastUserText: "simple request"})
+	require.NoError(t, err)
+	assert.Zero(t, capture.Stats().Queued)
+	names, err := classifier.ownedStore.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+	assert.False(t, classifier.Status().CaptureAvailable)
+	_, store, _ := classifier.captureTarget()
+	assert.Nil(t, store)
+}
+
+// TestSemanticClassifierWithoutCaptureWritesNothing pins the default: no
+// capture namespace appears unless capture is configured on.
+func TestSemanticClassifierWithoutCaptureWritesNothing(t *testing.T) {
+	classifier := readySemanticClassifierWithStore(t, newCaptureTestStore(t))
+	capture := newCaptureTest(t)
+	classifier.SetRequestCapture(capture) // wired but never configured on
+	_, err := classifier.Classify(requestCtx("req-1"), ComplexityInput{LastUserText: "simple request"})
+	require.NoError(t, err)
+	_, store, _ := classifier.captureTarget()
+	names, err := store.ListNamespaces(context.Background(), CaptureNamespacePrefix)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+	assert.Zero(t, capture.Stats().Queued)
+}
+
+// BenchmarkSemanticClassifierClassify measures the request-path cost of the
+// capture hook: no capture wired, wired but off (the default), and on at
+// every request.
+func BenchmarkSemanticClassifierClassify(b *testing.B) {
+	input := ComplexityInput{LastUserText: "simple request"}
+	ctx := requestCtx("bench")
+	for _, tc := range []struct {
+		name string
+		cfg  *CaptureConfig
+		wire bool
+	}{{"no_capture", nil, false}, {"capture_off", nil, true}, {"capture_on", &CaptureConfig{SampleRate: 1}, true}} {
+		b.Run(tc.name, func(b *testing.B) {
+			classifier := readySemanticClassifierWithStore(b, newCaptureTestStore(b))
+			if tc.wire {
+				capture := newCaptureTest(b)
+				capture.Configure(tc.cfg)
+				classifier.SetRequestCapture(capture)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := classifier.Classify(ctx, input); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

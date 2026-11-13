@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
@@ -32,7 +33,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
@@ -2406,4 +2411,167 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
 	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
+}
+
+// The routing plugin bounds captured request vectors by the logs' retention;
+// if it stopped satisfying the setter, bootstrap and reload would both skip
+// it without a word.
+var _ logRetentionSetter = (*routing.RoutingPlugin)(nil)
+
+type retentionRecorder struct{ days func() int }
+
+func (r *retentionRecorder) SetLogRetention(days func() int) { r.days = days }
+
+// A reload builds a fresh routing plugin, which must get the same log
+// retention as the one bootstrap wired, or its captured vectors outlive their
+// logs. The retention is read at each sweep: 0 while there is no cleaner (logs
+// kept forever), then whatever the cleaner holds now.
+func TestApplyRoutingLogRetentionReadsTheLiveCleaner(t *testing.T) {
+	s := &BifrostHTTPServer{}
+	rec := &retentionRecorder{}
+	s.applyRoutingLogRetention(rec)
+	require.NotNil(t, rec.days)
+	assert.Equal(t, 0, rec.days(), "no cleaner: logs are kept forever")
+
+	s.LogsCleaner = logstore.NewLogsCleaner(nil, logstore.CleanerConfig{RetentionDays: 5}, bifrost.NewNoOpLogger())
+	assert.Equal(t, 5, rec.days(), "a cleaner built after wiring is still read")
+	s.LogsCleaner.UpdateRetentionDays(2)
+	assert.Equal(t, 2, rec.days(), "a retention changed at runtime is read at the next sweep")
+
+	s.applyRoutingLogRetention(struct{}{}) // a plugin without the setter is left alone
+}
+
+// sharedVectorStore stands in for a vector store shared across nodes
+// (Weaviate, Qdrant, ...): request capture is off on a bare Chromem store,
+// which lives in one node's memory.
+type sharedVectorStore struct{ vectorstore.VectorStore }
+
+// unusedGovernance satisfies the routing engine's required governance for
+// tests that never route a request; any call would panic on the nil embed.
+type unusedGovernance struct{ routing.Governance }
+
+// Captured request vectors follow their logs through the real log-delete
+// subscription: deleting a log removes its vector, through whichever routing
+// plugin is registered now, so a replaced plugin does not strand the
+// subscription. Removing the routing plugin drops every capture namespace,
+// because no plugin is left to forget or age out what was captured.
+func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	ctx := context.Background()
+	quiet := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	ls, err := logstore.NewLogStore(ctx, &logstore.Config{
+		Enabled: true, Type: logstore.LogStoreTypeSQLite,
+		Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+	}, noopTestLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ls.Close(ctx) })
+	inner, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
+		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
+	}, quiet)
+	require.NoError(t, err)
+	vs := sharedVectorStore{inner} // capture is off on a bare Chromem store
+	loggerPlugin, err := logging.Init(ctx, &logging.Config{}, noopTestLogger{}, ls, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = loggerPlugin.Cleanup() })
+
+	// A captured request: its log, and its vector under the log's ID (a UUID
+	// request ID is its own point ID) in a capture namespace.
+	ns := complexity.CaptureNamespace("openai", "m", 2, 1)
+	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
+	capture := func(id string) {
+		t.Helper()
+		require.NoError(t, ls.Create(ctx, &logstore.Log{ID: id, Timestamp: time.Now(), Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success"}))
+		require.NoError(t, vs.Add(ctx, ns, id, []float32{1, 0}, map[string]any{"kind": "request", "timestamp": time.Now().Unix(), "log_id": id}))
+	}
+	captured := func(id string) bool {
+		_, err := vs.GetChunk(ctx, ns, id)
+		return err == nil
+	}
+	newRouting := func() *routing.RoutingPlugin {
+		t.Helper()
+		ruleStore, err := rules.NewLocalStore(ctx, quiet, nil)
+		require.NoError(t, err)
+		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore, unusedGovernance{})
+		require.NoError(t, err)
+		p.SetComplexityWarmupDependencies(vs, nil)
+		return p
+	}
+
+	cfg := &lib.Config{LogsStore: ls, VectorStore: vs}
+	first := newRouting()
+	t.Cleanup(func() { _ = first.Cleanup() })
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{first})
+	s := &BifrostHTTPServer{Config: cfg}
+	s.subscribeCaptureDeletes(loggerPlugin)
+	logs := loggerPlugin.GetPluginLogManager()
+
+	a, b, c := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	capture(a)
+	capture(b)
+	require.NoError(t, logs.DeleteLog(ctx, a))
+	assert.False(t, captured(a), "deleting a log removes its captured vector")
+	assert.True(t, captured(b), "other logs keep theirs")
+
+	// A reload replaces the plugin: the subscription reaches the new one.
+	second := newRouting()
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{second})
+	require.NoError(t, logs.DeleteLogs(ctx, []string{b}))
+	assert.False(t, captured(b), "deletes reach the plugin registered now")
+
+	// Removing routing drops what was captured: nothing is left to own it.
+	capture(c)
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg), Logger: quiet, LLMPlugins: []schemas.LLMPlugin{second},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	s.Client = client
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusActive, nil, []schemas.PluginType{schemas.PluginTypeLLM})
+	require.NoError(t, s.RemovePlugin(ctx, routing.PluginName))
+	namespaces, err := vs.ListNamespaces(ctx, complexity.CaptureNamespacePrefix+"_")
+	require.NoError(t, err)
+	assert.Empty(t, namespaces, "the routing plugin's captures go with it")
+	assert.False(t, captured(c))
+
+	// A log deleted with no routing plugin has nothing left to forget.
+	require.NoError(t, logs.DeleteLog(ctx, c))
+}
+
+// At startup without a routing plugin, captures from an earlier run are
+// dropped only when routing is disabled by config; a plugin that failed to
+// start keeps them for its next start.
+func TestDropCapturesOfDisabledRouting(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	ctx := context.Background()
+	vs, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
+		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	ns := complexity.CaptureNamespace("openai", "m", 2, 1)
+	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
+	cfg := &lib.Config{VectorStore: vs}
+	s := &BifrostHTTPServer{Config: cfg}
+	namespaces := func() []string {
+		names, err := vs.ListNamespaces(ctx, complexity.CaptureNamespacePrefix+"_")
+		require.NoError(t, err)
+		return names
+	}
+
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Equal(t, []string{ns}, namespaces(), "no status: nothing says routing is gone")
+
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusError, nil, nil)
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Equal(t, []string{ns}, namespaces(), "a plugin that failed to start keeps its captures")
+
+	cfg.UpdatePluginOverallStatus(routing.PluginName, routing.PluginName, schemas.PluginStatusDisabled, nil, nil)
+	s.dropCapturesOfDisabledRouting(ctx)
+	assert.Empty(t, namespaces(), "a disabled plugin's captures are dropped")
+
+	(&BifrostHTTPServer{Config: &lib.Config{}}).dropCapturesOfDisabledRouting(ctx) // no vector store: nothing to do
 }

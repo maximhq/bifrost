@@ -10,6 +10,13 @@ import {
 	MAX_DECISION_DEFINITION_CHARACTERS,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
+	DEFAULT_SUGGESTION_EVERY,
+	DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+	DEFAULT_SUGGESTION_SAMPLE_RATE,
+	DEFAULT_SUGGESTION_START_AT,
+	MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS,
+	MAX_SUGGESTION_LOOKBACK_DAYS,
+	SUGGESTION_EVERY_OPTIONS,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
@@ -178,6 +185,89 @@ const llmSchema = z.object({
 	count_toward_budgets: z.boolean().optional(),
 });
 
+// suggestionsSchema holds the phrase-suggestion settings. The sample rate is
+// edited as a percentage; toAnalyzerPayload sends it as the fraction the
+// gateway stores.
+const suggestionsSchema = z
+	.object({
+		enabled: z.boolean(),
+		sample_percent: z
+			.number({ error: () => complexityT("suggestions.samplePercentRange") })
+			.gt(0, { error: () => complexityT("suggestions.samplePercentRange") })
+			.max(100, { error: () => complexityT("suggestions.samplePercentRange") }),
+		lookback_days: z
+			.number({ error: () => complexityT("mustBeWholeNumber") })
+			.int({ error: () => complexityT("mustBeWholeNumber") })
+			.min(1, { error: () => complexityT("mustBeAtLeast", { min: 1 }) })
+			.max(MAX_SUGGESTION_LOOKBACK_DAYS, { error: () => complexityT("mustBeAtMost", { max: MAX_SUGGESTION_LOOKBACK_DAYS }) }),
+		every: z.enum(SUGGESTION_EVERY_OPTIONS),
+		// The first run in the browser's local time, as a datetime-local input
+		// holds it; sent as UTC. Empty is the gateway's default first run.
+		start_at: z.string().refine((value) => value === "" || fromLocalDateTime(value) !== undefined, {
+			error: () => complexityT("suggestions.firstRunRequired"),
+		}),
+		provider: z.string(),
+		model: z.string(),
+		instructions: z.string().max(MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS, {
+			error: () => complexityT("promptMaxChars", { max: MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS }),
+		}),
+	})
+	.superRefine((data, ctx) => {
+		if (data.provider.trim() !== "" && data.model.trim() === "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.modelRequired"), path: ["model"] });
+		}
+		if (data.provider.trim() === "" && data.model.trim() !== "") {
+			ctx.addIssue({ code: "custom", message: complexityT("suggestions.providerRequired"), path: ["provider"] });
+		}
+	});
+
+// suggestionIntervalMs is an interval's length: the gateway counts hours,
+// days and weeks as fixed durations, not calendar ones.
+export function suggestionIntervalMs(every: string): number {
+	const n = Number(every.slice(0, -1));
+	const unit = every.slice(-1);
+	const hour = 60 * 60 * 1000;
+	if (!Number.isInteger(n) || n < 1) return 0;
+	return n * (unit === "h" ? hour : unit === "d" ? 24 * hour : unit === "w" ? 7 * 24 * hour : 0);
+}
+
+// nextSuggestionRun is the first run at or after now on a schedule: the first
+// run itself while it is ahead, else the next one an interval apart from it.
+export function nextSuggestionRun(every: string, start: Date, now: Date): Date | undefined {
+	const interval = suggestionIntervalMs(every);
+	if (!interval || Number.isNaN(start.getTime())) return undefined;
+	if (start.getTime() >= now.getTime()) return start;
+	const steps = Math.ceil((now.getTime() - start.getTime()) / interval);
+	return new Date(start.getTime() + steps * interval);
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+// toLocalDateTime renders a time as a datetime-local input holds it: the
+// browser's local time, to the minute.
+export function toLocalDateTime(time: Date): string {
+	return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())}T${pad(time.getHours())}:${pad(time.getMinutes())}`;
+}
+
+// fromLocalDateTime reads a datetime-local value back; undefined when it is
+// empty or not a time.
+export function fromLocalDateTime(value: string): Date | undefined {
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return undefined;
+	const time = new Date(value);
+	return Number.isNaN(time.getTime()) ? undefined : time;
+}
+
+// suggestionFirstRunValue is what the first-run field starts as: the saved
+// first run, or, when none is saved, the next run the gateway's default
+// schedule gives for this interval. Either way the field shows exactly the
+// schedule that is sent.
+export function suggestionFirstRunValue(every: string, savedStartAt: string | undefined, now: Date): string {
+	const saved = savedStartAt ? new Date(savedStartAt) : undefined;
+	if (saved && !Number.isNaN(saved.getTime())) return toLocalDateTime(saved);
+	const next = nextSuggestionRun(every, new Date(DEFAULT_SUGGESTION_START_AT), now) ?? new Date(DEFAULT_SUGGESTION_START_AT);
+	return toLocalDateTime(next);
+}
+
 // usesDecision reports whether the Decision block is live: the primary classifier or the
 // semantic fallback. Its controls are hidden and its values are not saved otherwise.
 function usesDecision(values: { classifier: string; semantic: { fallback: string } }): boolean {
@@ -211,6 +301,7 @@ export const analyzerConfigSchema = z
 		}),
 		llm: llmSchema,
 		session: z.object({ enabled: z.boolean() }),
+		suggestions: suggestionsSchema,
 	})
 	.superRefine((data, ctx) => {
 		// A blank provider and model means the classifier simply is not configured
@@ -354,6 +445,77 @@ export const DEFAULT_SEMANTIC_FORM_VALUES: SemanticFormValues = {
 	fallback: DEFAULT_SEMANTIC_CONFIG.fallback ?? "none",
 };
 
+export type SuggestionsFormValues = AnalyzerFormValues["suggestions"];
+
+export const DEFAULT_SUGGESTIONS_FORM_VALUES: SuggestionsFormValues = {
+	enabled: false,
+	sample_percent: DEFAULT_SUGGESTION_SAMPLE_RATE * 100,
+	lookback_days: DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+	every: DEFAULT_SUGGESTION_EVERY,
+	// Filled from the default schedule when the form is built: see
+	// suggestionsFormValues.
+	start_at: "",
+	provider: "",
+	model: "",
+	instructions: "",
+};
+
+// rateToPercent and percentToRate convert the sample rate for the percent
+// field. Kept to 12 significant digits, which drops float noise (a stored 0.1
+// reads back as 10, not 10.000000000000002) without rounding a small valid
+// rate to 0.
+export function rateToPercent(rate: number): number {
+	return Number((rate * 100).toPrecision(12));
+}
+
+export function percentToRate(percent: number): number {
+	return Number((percent / 100).toPrecision(12));
+}
+
+// suggestionsFormValues reads a saved block into the form, defaults filled in.
+export function suggestionsFormValues(saved?: AnalyzerConfig["suggestions"], now: Date = new Date()): SuggestionsFormValues {
+	if (!saved) return { ...DEFAULT_SUGGESTIONS_FORM_VALUES, start_at: suggestionFirstRunValue(DEFAULT_SUGGESTION_EVERY, undefined, now) };
+	const every = (SUGGESTION_EVERY_OPTIONS as readonly string[]).includes(saved.schedule?.every ?? "")
+		? (saved.schedule?.every as SuggestionsFormValues["every"])
+		: DEFAULT_SUGGESTION_EVERY;
+	return {
+		enabled: saved.enabled,
+		sample_percent: rateToPercent(saved.sample_rate ?? DEFAULT_SUGGESTION_SAMPLE_RATE),
+		lookback_days: saved.lookback_days ?? DEFAULT_SUGGESTION_LOOKBACK_DAYS,
+		every,
+		start_at: suggestionFirstRunValue(every, saved.schedule?.start_at, now),
+		provider: saved.provider ?? "",
+		model: saved.model ?? "",
+		instructions: saved.instructions ?? "",
+	};
+}
+
+// toSuggestionsPayload sends the schedule as the interval and the first run in
+// UTC, which is what the gateway counts runs from. The cluster sizes are not edited here; whatever was saved for them (through
+// config.json or the API) is sent back unchanged, and nothing is filled in, so
+// the gateway's defaults apply.
+export function toSuggestionsPayload(
+	values: SuggestionsFormValues,
+	saved?: AnalyzerConfig["suggestions"],
+): NonNullable<AnalyzerConfig["suggestions"]> {
+	const startAt = fromLocalDateTime(values.start_at);
+	const provider = values.provider.trim();
+	const model = values.model.trim();
+	return {
+		enabled: values.enabled,
+		sample_rate: percentToRate(values.sample_percent),
+		lookback_days: values.lookback_days,
+		schedule: {
+			every: values.every,
+			...(startAt ? { start_at: startAt.toISOString().replace(".000Z", "Z") } : {}),
+		},
+		...(saved?.max_clustered_requests !== undefined ? { max_clustered_requests: saved.max_clustered_requests } : {}),
+		...(saved?.min_cluster_requests !== undefined ? { min_cluster_requests: saved.min_cluster_requests } : {}),
+		...(provider && model ? { provider, model } : {}),
+		...(values.instructions.trim() ? { instructions: values.instructions } : {}),
+	};
+}
+
 export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	keywords: {
 		simple_keywords: [],
@@ -365,6 +527,7 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	decision: { ...DEFAULT_DECISION_CONFIG, ...decisionGuidanceFormValues() },
 	llm: DEFAULT_LLM_FORM_VALUES,
 	session: { enabled: false },
+	suggestions: DEFAULT_SUGGESTIONS_FORM_VALUES,
 };
 
 export type DecisionGuidanceFormValues = Pick<AnalyzerFormValues["decision"], "criteria">;
@@ -451,6 +614,7 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
+		suggestions: suggestionsFormValues(config.suggestions),
 		llm: savedLLM
 			? {
 					...DEFAULT_LLM_FORM_VALUES,
@@ -489,6 +653,12 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		// sending hidden, possibly invalid edits.
 		...(usesDecision(values) ? { decision: toDecisionPayload(values.decision) } : saved?.decision ? { decision: saved.decision } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
+		// Sent once suggestions have ever been turned on, so turning them off
+		// keeps their settings; never sent for a router that has not used them,
+		// so an ordinary save stays readable by gateways that predate them.
+		...(values.suggestions.enabled || saved?.suggestions
+			? { suggestions: toSuggestionsPayload(values.suggestions, saved?.suggestions) }
+			: {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};

@@ -97,6 +97,14 @@ type DecisionConfig = configstore.ComplexityDecisionConfig
 // SessionConfig controls monotonic complexity-tier retention across requests.
 type SessionConfig = configstore.ComplexitySessionConfig
 
+// SuggestionsConfig is the phrase-suggestions block: request capture's sample
+// rate and the lookback captured vectors are kept for.
+type SuggestionsConfig = configstore.ComplexitySuggestionsConfig
+
+// DefaultSuggestionsLookbackDays is how long captured vectors are kept when
+// no lookback is configured.
+const DefaultSuggestionsLookbackDays = configstore.DefaultComplexitySuggestionsLookbackDays
+
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
 

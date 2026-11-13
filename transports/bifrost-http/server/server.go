@@ -34,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -279,6 +280,10 @@ type BifrostHTTPServer struct {
 	// must be assigned before RegisterUIRoutes, which builds the UI handler
 	// from it.
 	ShellRewriter handlers.ShellRewriter
+
+	// unsubscribeCaptureDeletes releases the log-delete subscription that
+	// drops complexity request capture's vectors with their logs.
+	unsubscribeCaptureDeletes func()
 
 	WebSocketHandler     *handlers.WebSocketHandler
 	NotificationService  *handlers.NotificationService
@@ -2636,6 +2641,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
 		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
+	if routingPlugin, ok := plugin.(*routing.RoutingPlugin); ok {
+		s.wireRoutingSuggestions(routingPlugin)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -2653,6 +2661,96 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		s.WarpHandler.Service().SetLogReader(handlers.NewWarpLogReader(loggerPlugin.GetPluginLogManager()))
 	}
 	return nil
+}
+
+// logRetentionSetter is a plugin that bounds what it keeps by the logs'
+// retention; the routing plugin's request capture is one.
+type logRetentionSetter interface {
+	SetLogRetention(days func() int)
+}
+
+// applyRoutingLogRetention tells a plugin that keeps per-log data how long
+// logs live, so captured request vectors never outlive their logs. It runs at
+// bootstrap and on every reload, since a reload builds a fresh plugin. The
+// retention is read at each sweep rather than once: LogsCleaner is built
+// later in Bootstrap, may be absent (0 means logs are kept forever), and its
+// retention can change at runtime.
+func (s *BifrostHTTPServer) applyRoutingLogRetention(plugin any) {
+	setter, ok := plugin.(logRetentionSetter)
+	if !ok {
+		return
+	}
+	setter.SetLogRetention(func() int {
+		if s.LogsCleaner == nil {
+			return 0
+		}
+		return s.LogsCleaner.RetentionDays()
+	})
+}
+
+// captureDropTimeout bounds dropping complexity request capture's vectors
+// once the routing plugin is gone.
+const captureDropTimeout = 30 * time.Second
+
+// subscribeCaptureDeletes makes deleted logs take their complexity captured
+// vectors with them, as Warp's do. The previous subscription is released
+// first, like Warp's, so a second registration cannot leak the first.
+func (s *BifrostHTTPServer) subscribeCaptureDeletes(loggerPlugin *logging.LoggerPlugin) {
+	if s.unsubscribeCaptureDeletes != nil {
+		s.unsubscribeCaptureDeletes()
+		s.unsubscribeCaptureDeletes = nil
+	}
+	if loggerPlugin != nil {
+		s.unsubscribeCaptureDeletes = loggerPlugin.SubscribeLogDeleteCallback(s.forgetCapturedLogs)
+	}
+}
+
+// forgetCapturedLogs is the log-delete subscription for complexity request
+// capture: a deleted log takes its captured vector with it. The routing plugin
+// is looked up per delete rather than held, because a reload replaces the
+// instance and the subscription must follow it. With no routing plugin there
+// is nothing to forget: its captures were dropped when it went (see
+// dropCapturedRequests).
+func (s *BifrostHTTPServer) forgetCapturedLogs(ctx context.Context, ids []string) {
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		routingPlugin.ForgetComplexityCapturedRequests(ctx, ids)
+	}
+}
+
+// dropCapturedRequests deletes every complexity capture namespace in the
+// configured vector store. Captured vectors exist only to feed the routing
+// plugin's phrase suggestions, and only that plugin forgets them with their
+// logs and ages them out, so once it is removed or disabled they would be
+// kept with no owner. Dropping them is the cleanup; a routing plugin added
+// back later starts capturing afresh. A drop that fails is logged and retried
+// at the next start without a routing plugin.
+func (s *BifrostHTTPServer) dropCapturedRequests(ctx context.Context) {
+	if s.Config == nil || s.Config.VectorStore == nil {
+		return
+	}
+	store := s.Config.VectorStore
+	dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureDropTimeout)
+	defer cancel()
+	namespaces, err := store.ListNamespaces(dropCtx, complexity.CaptureNamespacePrefix+"_")
+	if err != nil {
+		logger.Warn("failed to list complexity capture namespaces to drop after the routing plugin went: %v", err)
+		return
+	}
+	for _, ns := range namespaces {
+		if err := store.DeleteNamespace(dropCtx, ns); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+			logger.Warn("failed to drop complexity capture namespace %s after the routing plugin went: %v", ns, err)
+		}
+	}
+}
+
+// dropCapturesOfDisabledRouting runs at startup when no routing plugin
+// loaded. Only a plugin disabled by config (governance off) gives up its
+// captures from an earlier run; one that failed to start keeps them for its
+// next start.
+func (s *BifrostHTTPServer) dropCapturesOfDisabledRouting(ctx context.Context) {
+	if status, ok := s.Config.GetPluginStatusByName(routing.PluginName); ok && status.Status == schemas.PluginStatusDisabled {
+		s.dropCapturedRequests(ctx)
+	}
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -2680,6 +2778,13 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	// 2. Update Bifrost client
 	if err := s.Client.RemovePlugin(name, InferPluginTypes(plugin)); err != nil {
 		logger.Warn("failed to reload bifrost config after plugin removal: %v", err)
+	}
+
+	// 2a. Routing's captured request vectors have no owner without it. After
+	// the client removal, whose Cleanup has drained the capture writer, so no
+	// queued write recreates a namespace once it is dropped.
+	if name == routing.PluginName {
+		s.dropCapturedRequests(ctx)
 	}
 
 	// 3. Reload observability plugins if necessary
@@ -3060,6 +3165,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
 	}
+	s.subscribeCaptureDeletes(loggerPlugin)
 	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
 	// after this, and its retention can change at runtime.
 	s.WarpHandler.Service().SetLogRetention(func() int {
@@ -3781,11 +3887,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
+	} else {
+		go s.dropCapturesOfDisabledRouting(s.Ctx) // off the boot path
 	}
 
 	// Initialize Sidekiq runner for background jobs
 	if s.Config != nil && s.Config.ConfigStore != nil {
 		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
+		s.registerComplexitySuggestionsJob(s.SidekiqRunner)
+	}
+	// After the runner exists, so phrase suggestion runs are queued on it.
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		s.wireRoutingSuggestions(routingPlugin)
 	}
 
 	// Initialize the Agent Gateway once before either management or protocol

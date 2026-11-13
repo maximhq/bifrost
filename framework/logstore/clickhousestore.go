@@ -1783,3 +1783,180 @@ func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) 
 	}
 	return s.chLightweightDelete(ctx, "relay_logs", "id IN ?", entryIDs)
 }
+
+// --- Complexity phrase suggestions ---
+//
+// As with Warp's topics, the reads are inherited and the writes and deletes
+// are overridden: a plain insert is the upsert, because each table is ordered
+// by its identity and ReplacingMergeTree keeps the newest row written for it.
+
+// UpsertComplexitySuggestions writes suggestions whole, replacing any row with
+// the same ID.
+func (s *ClickHouseLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error {
+	if len(suggestions) == 0 {
+		return nil
+	}
+	if err := prepareComplexitySuggestions(suggestions, time.Now().UTC()); err != nil {
+		return err
+	}
+	return chCreateInChunks(ctx, s, suggestions)
+}
+
+// chCreateInChunks inserts rows complexitySuggestionWriteBatch at a time, as
+// the RDB store does, so one call never builds a single statement for all of
+// them. It stops at the first failed chunk; the chunks before it stay
+// written, which a retry of the whole call overwrites as the newest version.
+func chCreateInChunks[T any](ctx context.Context, s *ClickHouseLogStore, rows []T) error {
+	for chunk := range slices.Chunk(rows, complexitySuggestionWriteBatch) {
+		if err := s.db.WithContext(ctx).Create(&chunk).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// complexitySuggestionLockKey is the shared lock for one suggestion's status.
+func complexitySuggestionLockKey(id string) string {
+	return "model_routing_suggestion:" + id
+}
+
+// ReconcileComplexitySuggestions writes a run's outcome. New rows are
+// inserted; an existing row is read, checked and written back whole under the
+// suggestion's lock, as a status change is, only while it is still at the
+// status the run read it at.
+func (s *ClickHouseLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	inserts, updates, err := splitComplexitySuggestionWrites(writes)
+	if err != nil {
+		return nil, err
+	}
+	var skipped []string
+	for _, w := range updates {
+		written, err := s.writeComplexitySuggestionFrom(ctx, w)
+		if err != nil {
+			return skipped, err
+		}
+		if !written {
+			skipped = append(skipped, w.Suggestion.ID)
+		}
+	}
+	if len(inserts) > 0 {
+		if err := chCreateInChunks(ctx, s, inserts); err != nil {
+			return skipped, err
+		}
+	}
+	return skipped, nil
+}
+
+func (s *ClickHouseLogStore) writeComplexitySuggestionFrom(ctx context.Context, w ComplexitySuggestionWrite) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(w.Suggestion.ID))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", w.Suggestion.ID)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{w.Suggestion.ID}, OmitCentroids: true})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != w.From {
+		return false, nil
+	}
+	written := []ComplexitySuggestion{w.Suggestion}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+// ClickHouse has no conditional update, so the row is read, checked and
+// written back whole under the suggestion's lock: the shared one when a
+// locker is set, so decisions on any instance are serialized, and this
+// process's row lock. Of two decisions read from the same status only the
+// first lands. A run's writes to existing rows take the same lock (see
+// ReconcileComplexitySuggestions), so a decision and a run never both land on
+// the status they read.
+func (s *ClickHouseLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(id))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", id)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{id}})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != from {
+		return false, nil
+	}
+	row := rows[0]
+	row.Status, row.ResolvedAt = to, resolvedAt
+	written := []ComplexitySuggestion{row}
+	if err := prepareComplexitySuggestions(written, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteComplexitySuggestions removes suggestions outright.
+func (s *ClickHouseLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "model_routing_suggestions", "id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpsertComplexitySuggestionRun writes a run whole, replacing any row with the
+// same ID.
+func (s *ClickHouseLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	if err := prepareComplexitySuggestionRun(run, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(run).Error
+}
+
+// PruneComplexitySuggestionRuns keeps the newest keep runs, with one
+// lightweight delete.
+func (s *ClickHouseLogStore) PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, fmt.Errorf("keep must be positive")
+	}
+	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, keep)
+	if err != nil || where == "" {
+		return 0, err
+	}
+	return s.chDeleteWhere(ctx, "model_routing_suggestion_runs", where, args...)
+}
+
+// AddComplexityVectorDeletes records deleted logs whose captured vector delete
+// failed. A (log, namespace) recorded twice is one row once the table
+// merges.
+func (s *ClickHouseLogStore) AddComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareComplexityVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return chCreateInChunks(ctx, s, rows)
+}
+
+// DeleteComplexityVectorDeletes removes exactly the given (log, namespace)
+// rows.
+func (s *ClickHouseLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	for chunk := range slices.Chunk(rows, chWarpTopicDeleteChunk) {
+		where, args := complexityVectorDeleteWhere(chunk)
+		if err := s.chLightweightDelete(ctx, "model_routing_vector_deletes", where, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -7104,6 +7104,9 @@
         },
         "session": {
           "$ref": "#/$defs/complexity_session_config"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/complexity_suggestions_config"
         }
       },
       "required": [
@@ -7168,8 +7171,158 @@
               "llm"
             ]
           }
+        },
+        {
+          "description": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "semantic"
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "not": {
+                  "required": [
+                    "provider",
+                    "model"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
         }
       ],
+      "additionalProperties": false
+    },
+    "complexity_suggestions_config": {
+      "type": "object",
+      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes for classified requests is kept, under each request's log ID, so suggestions can cluster real traffic in the router's embedding space. Only the vector and routing metadata are stored; request text stays in the logs. Capture requires a top-level vector_store: vectors are written only there, never to the embedded storage the semantic classifier can use, so without one nothing is captured. Captured vectors are deleted with their logs, and an hourly cleanup removes those older than lookback_days or the log retention, whichever is shorter. A vector can therefore outlast that limit until the next cleanup, up to an hour, and longer while the vector store is unavailable, since failed deletes are only retried at later cleanups. Turning suggestions off stops sampling but keeps cleaning up what was captured on the configured lookback_days. Removing or disabling the routing plugin deletes every captured vector.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Capture a sample of classified requests for phrase suggestions; default false."
+        },
+        "sample_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Share of classified requests captured; default 0.1."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90,
+          "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (capped at the log retention, and enforced by the hourly cleanup); default 7."
+        },
+        "schedule": {
+          "$ref": "#/$defs/complexity_suggestions_schedule"
+        },
+        "max_clustered_requests": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Most captured requests one run clusters; the rest of the lookback window is assigned to the clusters found, so request counts still cover all of it. Default 20000."
+        },
+        "min_cluster_requests": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1000,
+          "description": "Smallest cluster, in requests, a suggestion is written for; default 6."
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]",
+          "description": "Provider of the model that writes suggestions. Set together with model; both omitted use the llm block's model."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]",
+          "description": "Model that writes suggestions. Set together with provider; both omitted use the llm block's model."
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Replaces the shipped suggestion instructions. The tier definitions and the fixed output and safety rules are added either way; empty uses the shipped instructions."
+        }
+      },
+      "dependentRequired": {
+        "provider": [
+          "model"
+        ],
+        "model": [
+          "provider"
+        ]
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "complexity_suggestions_schedule": {
+      "type": "object",
+      "description": "When phrase-suggestion runs start: at start_at and every interval after it, the same on every node. Default: daily at 03:00 UTC.",
+      "properties": {
+        "every": {
+          "type": "string",
+          "pattern": "^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$",
+          "description": "Interval: hours (1h-23h), days (1d-30d) or weeks (1w-4w), as a fixed duration. Default 1d."
+        },
+        "start_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-9]))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$",
+          "description": "The first run, an RFC 3339 time such as 2026-11-12T03:00:00Z. Runs repeat every interval from it, so it also sets the time of day (in UTC: a daily run moves by an hour of local time across a daylight-saving change). Default 1970-01-01T03:00:00Z."
+        }
+      },
       "additionalProperties": false
     },
     "complexity_session_config": {

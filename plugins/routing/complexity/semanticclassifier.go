@@ -101,6 +101,8 @@ type SemanticStatusInfo struct {
 	// up or inspecting them is guesswork without it. Empty while nothing is
 	// serving.
 	Namespace string `json:"namespace,omitempty"`
+	// CaptureAvailable reports a configured vector store to keep captured request vectors in.
+	CaptureAvailable bool `json:"capture_available"`
 }
 
 // SemanticResult is the tier selected by the nearest labelled exemplar.
@@ -150,6 +152,9 @@ type semanticGeneration struct {
 	// Published once with the generation and never mutated, so Classify may read
 	// it after releasing the mutex.
 	exemplars map[string]string
+	// captureNamespace is where request capture writes for this generation's
+	// embedding space; see CaptureNamespace.
+	captureNamespace string
 }
 
 // SemanticClassifier embeds the shared tier phrase lists and classifies a
@@ -199,6 +204,10 @@ type SemanticClassifier struct {
 	// claimer announces the namespace a warm is building, so a peer reclaiming
 	// unused generations does not collect one still under construction.
 	claimer GenerationClaimer
+	// capture samples classified requests for phrase suggestions. Optional.
+	capture *RequestCapture
+	// lastCaptureNamespace is the capture namespace of the latest serving generation; see captureTarget.
+	lastCaptureNamespace string
 	// deletionDone wakes a warm that finished into a namespace still being
 	// deleted. Retrying before the store has finished would rebuild records the
 	// delete is about to remove, and could repeat for as long as the delete
@@ -263,6 +272,77 @@ func (c *SemanticClassifier) SetWarmCoordinator(coordinator WarmCoordinator) {
 	c.mu.Lock()
 	c.coordinator = coordinator
 	c.mu.Unlock()
+}
+
+// SetRequestCapture supplies the optional sampler that keeps classified
+// requests' vectors for phrase suggestions. Nil, or a capture that is not
+// enabled, leaves Classify exactly as it was.
+func (c *SemanticClassifier) SetRequestCapture(capture *RequestCapture) {
+	c.mu.Lock()
+	c.capture = capture
+	c.mu.Unlock()
+}
+
+// captureTarget returns where captured vectors are cleaned up: Bifrost's
+// configured store and the capture namespace of the latest serving
+// generation, or a nil store when no vector store is configured.
+//
+// The target outlives its generation. Captured vectors stay as long as their
+// logs whether or not semantic routing is still on, so with semantic routing
+// off, warming or failed, deletes of deleted logs and their retries still
+// reach the store. Forget, RetryDeletes and Sweep cover every capture
+// namespace in it, so the namespace is only a hint for one not listed yet; it
+// is empty before any generation has served since start.
+//
+// Captures go to Bifrost's configured vector store whatever the phrase bank
+// uses. A captured vector lives as long as its log, and the embedded store is
+// in memory: the phrase bank is re-embedded from its saved phrases after a
+// restart, but captured requests could not be, so they are never kept there.
+func (c *SemanticClassifier) captureTarget() (*RequestCapture, vectorstore.VectorStore, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	store := c.captureStoreLocked()
+	if store == nil {
+		return c.capture, nil, ""
+	}
+	return c.capture, store, c.lastCaptureNamespace
+}
+
+// captureStoreLocked is where captured requests are kept: Bifrost's configured
+// vector store, unless that is Chromem. Chromem lives in each gateway's
+// memory, so a cluster's captures would be split across nodes and a run would
+// see one node's share, and a week of sampled vectors would sit in RAM.
+// Capture is off on it, as it is without a configured store. c.mu is held.
+func (c *SemanticClassifier) captureStoreLocked() vectorstore.VectorStore {
+	if c.configuredStore == nil || isLocalChromemStore(c.configuredStore) {
+		return nil
+	}
+	return c.configuredStore
+}
+
+// ErrNoCaptureStore is a suggestion run or estimate on a gateway that keeps no
+// captured requests.
+var ErrNoCaptureStore = errors.New("phrase suggestions need a shared vector store (Weaviate, Qdrant, Redis or Pinecone) to keep captured requests in; Chromem is not used for them because it keeps them in each gateway's memory")
+
+// ForgetCapturedRequests deletes the captured vectors of deleted logs from
+// every capture namespace of the configured store; deletes it cannot do are
+// recorded for RetryCapturedDeletes.
+func (c *SemanticClassifier) ForgetCapturedRequests(ctx context.Context, ids []string) {
+	capture, store, namespace := c.captureTarget()
+	capture.Forget(ctx, store, namespace, ids)
+}
+
+// RetryCapturedDeletes retries captured-vector deletes that failed earlier.
+func (c *SemanticClassifier) RetryCapturedDeletes(ctx context.Context) (int, error) {
+	capture, store, namespace := c.captureTarget()
+	return capture.RetryDeletes(ctx, store, namespace)
+}
+
+// SweepCapturedRequests deletes captured vectors older than cutoff, in every
+// capture namespace of the configured store.
+func (c *SemanticClassifier) SweepCapturedRequests(ctx context.Context, cutoff time.Time) (int, error) {
+	capture, store, namespace := c.captureTarget()
+	return capture.Sweep(ctx, store, namespace, cutoff)
 }
 
 // SetGenerationClaimer supplies the optional registry that records which
@@ -378,6 +458,7 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	status := c.status
 	cache := c.embeddingCache
 	status.StorageMode = c.resolvedStorage
+	status.CaptureAvailable = c.captureStoreLocked() != nil
 	// Taken from the serving generation rather than the current configuration:
 	// while a new generation warms, the namespace being queried is still the
 	// previous one, and naming the one that is not yet in use would point an
@@ -390,6 +471,15 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	// one while embedding.
 	status.CachedPhrases = cache.size()
 	return status
+}
+
+// Serving reports whether a warmed phrase bank is answering requests, which
+// is what a suggestion run needs. A previous generation still serving while a
+// newer one warms, or after the newer one failed, counts.
+func (c *SemanticClassifier) Serving() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.active != nil && c.active.embed != nil && c.active.captureNamespace != ""
 }
 
 // Timeout returns the per-request embedding budget currently in force,
@@ -460,6 +550,9 @@ func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput
 	namespace := generation.namespace
 	embed := generation.embed
 	exemplars := generation.exemplars
+	capture := c.capture
+	captureStore := c.captureStoreLocked() // never the embedded store or Chromem; see captureTarget
+	captureNamespace := generation.captureNamespace
 	localGeneration := isLocalChromemStore(store)
 	if localGeneration {
 		if c.localInFlight == nil {
@@ -508,11 +601,15 @@ func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput
 		return nil, fmt.Errorf("nearest complexity exemplar has invalid tier metadata")
 	}
 	score := *results[0].Score
+	accepted := semantic.MinSimilarity <= 0 || score >= semantic.MinSimilarity
+	// The embedding is this request's own allocation and is not read again
+	// below, so capture takes it without a copy.
+	capture.offer(ctx, captureStore, captureNamespace, dimension, embedding)
 	return &SemanticResult{
 		Tier:            tier,
 		Score:           score,
 		MinSimilarity:   semantic.MinSimilarity,
-		Accepted:        semantic.MinSimilarity <= 0 || score >= semantic.MinSimilarity,
+		Accepted:        accepted,
 		MatchedExemplar: exemplars[results[0].ID],
 	}, nil
 }
@@ -697,7 +794,10 @@ func (c *SemanticClassifier) runWarmupWorker() {
 				dimension: dimension,
 				embed:     embed,
 				exemplars: semanticExemplarIndex(config, dimension),
+
+				captureNamespace: CaptureNamespace(config.Semantic.Provider, config.Semantic.EmbeddingModel, dimension, config.Semantic.MessageHistoryCount),
 			}
+			c.lastCaptureNamespace = c.active.captureNamespace
 			c.status = SemanticStatusInfo{State: SemanticStatusReady, Loaded: loaded, Total: len(semanticExemplars(config))}
 			if previous != nil {
 				c.cleanupLocalGenerationLocked(previous)

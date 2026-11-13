@@ -594,6 +594,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
 	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
 	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
+	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 }
@@ -17266,6 +17267,33 @@ func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger
 				return fmt.Errorf("failed to drop databricks_scopes column: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddComplexitySuggestionSchedulesTable adds the per-router state of
+// phrase-suggestion schedules: when the next run is due, and the version
+// nodes claim a due run with. A router without a row gets one at its first
+// schedule check, so nothing is moved here.
+func migrationAddComplexitySuggestionSchedulesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routing_suggestion_schedules_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasTable(&tables.TableComplexitySuggestionSchedule{}) {
+				return nil
+			}
+			return tx.Migrator().CreateTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableComplexitySuggestionSchedule{})
 		},
 	}})
 	if err := m.Migrate(); err != nil {
