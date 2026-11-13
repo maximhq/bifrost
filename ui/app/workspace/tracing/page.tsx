@@ -17,12 +17,12 @@ import {
 	useGetTracesQuery,
 } from "@/lib/store";
 import type { TraceFilters, TracePagination } from "@/lib/types/traces";
-import { RefreshCw, Search, Settings } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TracingEmptyState } from "./views/emptyState";
-import { ProjectSettings } from "./views/projectSettings";
+import { ProjectSheet, ProjectsDialog } from "./views/projects";
 import { renderTraceSpanExtras } from "./views/traceExtras";
 import { toVolumeHistogram, TraceMetricStrip } from "./views/traceOverview";
 import { LogsDataTable, type LogsTablePagination } from "./views/logsDataTable";
@@ -75,7 +75,8 @@ export default function TracingPage() {
 		trace: parseAsSafeString.withDefault(""),
 		span: parseAsSafeString.withDefault(""),
 	});
-	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [projectsOpen, setProjectsOpen] = useState(false);
+	const [sheetProjectId, setSheetProjectId] = useState<string | null>(null);
 	const [chartOpen, setChartOpen] = useState(true);
 	const [searchDraft, setSearchDraft] = useState(url.search);
 	const { data: projectsData, isLoading: projectsLoading } = useGetTraceProjectsQuery();
@@ -240,7 +241,12 @@ export default function TracingPage() {
 	return (
 		<div className="dark:bg-card bg-white" data-testid="tracing-page" data-radius="md">
 			<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
-				<TracingFilterSidebar filters={sidebarFilters} onFiltersChange={(next) => setUrl({ ...next, offset: 0 })} projects={projects} />
+				<TracingFilterSidebar
+					filters={sidebarFilters}
+					onFiltersChange={(next) => setUrl({ ...next, offset: 0 })}
+					projects={projects}
+					onManageProjects={() => setProjectsOpen(true)}
+				/>
 				<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 					<div className="flex flex-wrap items-center gap-2 p-4 pb-0">
 						<form
@@ -324,16 +330,6 @@ export default function TracingPage() {
 							onClick={refresh}
 						>
 							<RefreshCw className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="outline"
-							size="icon"
-							className="size-7.5"
-							aria-label={t("tracing.settings.button")}
-							data-testid="tracing-settings-button"
-							onClick={() => setSettingsOpen(true)}
-						>
-							<Settings className="h-4 w-4" />
 						</Button>
 					</div>
 					{(url.experiment || url.session_id) && (
@@ -479,7 +475,23 @@ export default function TracingPage() {
 				}}
 				renderSpanExtras={renderTraceSpanExtras}
 			/>
-			<ProjectSettings open={settingsOpen} onOpenChange={setSettingsOpen} projects={projects} initialProjectId={url.project_ids[0]} />
+			<ProjectsDialog
+				open={projectsOpen}
+				onOpenChange={setProjectsOpen}
+				projects={projects}
+				onOpenProject={(id) => {
+					setProjectsOpen(false);
+					setSheetProjectId(id);
+				}}
+			/>
+			<ProjectSheet
+				project={projects.find((project) => project.id === sheetProjectId)}
+				onClose={() => setSheetProjectId(null)}
+				onViewTraces={(id) => {
+					setSheetProjectId(null);
+					setUrl({ view: "traces", project_ids: [id], offset: 0 });
+				}}
+			/>
 		</div>
 	);
 }
