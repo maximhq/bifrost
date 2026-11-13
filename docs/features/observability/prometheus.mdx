@@ -230,7 +230,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | Metric | Type | Description |
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
-| `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and reading the provider's stream, retries included. Excludes provider queue wait. WebSocket and realtime turns are timed from the pre-hook to the post-hook |
+| `bifrost_provider_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue |
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |

@@ -19991,6 +19991,10 @@ var excludedGoFields = map[string]map[string]bool{
 		"mcp_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
+	// Phrase suggestions are a model router's: the type is shared with
+	// model_routers entries, whose schema has suggestions, and the complexity
+	// analyzer config's schema refuses them.
+	"configstore.ComplexityAnalyzerConfig": {"suggestions": true},
 	// GovernanceConfig - some fields are internal/enterprise
 	"configstore.GovernanceConfig": {
 		"model_configs": true, // Internal
@@ -24746,6 +24750,28 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	require.True(t, enterprise.IsEnabled(FeatureFlagWarp))
 }
 
+// The phrase suggestions dashboard ships behind a flag that is off in both
+// builds, so a few deployments can try the suggestion APIs first; either build
+// can turn it on.
+func TestRegisterFeatureFlags_PhraseSuggestionsOffByDefault(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+
+	def, ok := featureflags.LookupDef(FeatureFlagPhraseSuggestions)
+	require.True(t, ok, "phrase-suggestions flag must be registered")
+	require.False(t, def.DefaultFor(false), "off by default in OSS")
+	require.False(t, def.DefaultFor(true), "off by default in enterprise")
+	require.False(t, def.EnterpriseOnly, "OSS can turn it on")
+
+	for _, isEnterprise := range []bool{false, true} {
+		store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+		require.NoError(t, err)
+		require.False(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v", isEnterprise)
+		_, err = store.Set(context.Background(), FeatureFlagPhraseSuggestions, true)
+		require.NoError(t, err)
+		require.True(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v: an operator can turn it on", isEnterprise)
+	}
+}
+
 // governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
 // fallback goes through RoutingFallback.UnmarshalJSON.
 func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
@@ -27393,4 +27419,25 @@ func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
 
 	// config.json and stored rows reach the runtime through validateClientConfig.
 	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
+}
+
+// TestIgnoreBudgetBusinessUnitIDs pins that business_unit_id on a governance.budgets entry is not
+// read: it is cleared with a warning naming the budget, and every other field and entry is kept.
+func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
+	buID := "bu-1"
+	teamID := "team-1"
+	data := &ConfigData{Governance: &configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+		{ID: "named", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID},
+		{ID: "team", MaxLimit: 20, ResetDuration: "1w", TeamID: &teamID},
+	}}}
+	var warned []string
+	ignoreBudgetBusinessUnitIDs(data, func(format string, args ...any) { warned = append(warned, args[0].(string)) })
+
+	assert.Nil(t, data.Governance.Budgets[0].BusinessUnitID)
+	assert.Equal(t, 10.0, data.Governance.Budgets[0].MaxLimit)
+	assert.Equal(t, &teamID, data.Governance.Budgets[1].TeamID, "other owners are left alone")
+	assert.Equal(t, []string{"named"}, warned)
+
+	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
+	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
 }
