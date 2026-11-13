@@ -10,6 +10,9 @@ export interface TraceTreeNode {
 	width: number;
 	/** True for a span whose parent has not arrived: it is shown at the top level until it does. */
 	orphan: boolean;
+	/** Tokens and cost of this span and every model call below it, as an agent row in Agent Logs adds them up. */
+	subtreeTokens: number;
+	subtreeCost: number;
 }
 
 export interface TraceTree {
@@ -52,7 +55,8 @@ export function buildTraceTree(spans: TraceSpan[], showHTTP = false): TraceTree 
 
 	const visible = spans.filter((span) => showHTTP || span.kind !== "http");
 	const nodes = new Map<string, TraceTreeNode>();
-	for (const span of visible) nodes.set(span.span_id, { span, depth: 0, children: [], offset: 0, width: 0, orphan: false });
+	for (const span of visible)
+		nodes.set(span.span_id, { span, depth: 0, children: [], offset: 0, width: 0, orphan: false, subtreeTokens: 0, subtreeCost: 0 });
 
 	const roots: TraceTreeNode[] = [];
 	for (const span of visible) {
@@ -81,7 +85,16 @@ export function buildTraceTree(spans: TraceSpan[], showHTTP = false): TraceTree 
 		node.width = durationMs > 0 ? Math.max(endOf(node.span) - startOf(node.span), 0) / durationMs : 1;
 		rows.push(node);
 		node.children.sort(byStart);
-		for (const child of node.children) visit(child, depth + 1, seen);
+		// Only model calls carry usage of their own; a parent repeating its children's usage is not added again.
+		const own = spanUsage(node.span);
+		const counts = own.linked || node.span.kind === "llm" || node.span.kind === "embedding";
+		node.subtreeTokens = counts ? own.tokens : 0;
+		node.subtreeCost = counts ? (own.cost ?? 0) : 0;
+		for (const child of node.children) {
+			visit(child, depth + 1, seen);
+			node.subtreeTokens += child.subtreeTokens;
+			node.subtreeCost += child.subtreeCost;
+		}
 	};
 	roots.sort(byStart);
 	const seen = new Set<string>();
@@ -108,7 +121,7 @@ function contentText(content: unknown): string {
 	return "";
 }
 
-function messagesOf(value: unknown): { role: string; text: string }[] {
+export function messagesOf(value: unknown): { role: string; text: string }[] {
 	let parsed = value;
 	if (typeof value === "string") {
 		try {

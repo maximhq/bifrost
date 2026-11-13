@@ -311,6 +311,7 @@
 		"aboutPage": "关于此页面"
 	},
 	"titles": {
+		"traces": "追踪",
 		"dashboard": "仪表盘",
 		"adaptiveRoutingSettings": "自适应路由设置",
 		"alertChannels": "告警渠道",

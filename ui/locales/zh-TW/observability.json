@@ -2025,12 +2025,14 @@
 			"tokens": "Tokens",
 			"cost": "Cost",
 			"duration": "Duration",
-			"model": "Model"
+			"model": "Model",
+			"spans": "Spans"
 		},
 		"table": {
 			"range": "{{from}} to {{to}} of {{total}}",
 			"previous": "Previous",
-			"next": "Next"
+			"next": "Next",
+			"waiting": "Waiting for new traces..."
 		},
 		"overview": {
 			"traces": "Traces",
@@ -2083,7 +2085,16 @@
 			"identifiers": "Identifiers",
 			"gatewayNumbers": "Gateway numbers (counted)",
 			"sdkNumbers": "SDK numbers",
-			"attributes": "Attributes"
+			"attributes": "Attributes",
+			"title": "Trace",
+			"traceId": "Trace ID",
+			"spansLabel": "Spans",
+			"toolCalls": "Tool calls",
+			"viaGateway": "Via gateway",
+			"gatewayBadge": "Gateway",
+			"spanHeading": "{{kind}} span",
+			"spanId": "Span ID",
+			"parentSpan": "Parent span"
 		},
 		"refresh": "Refresh",
 		"filters": {

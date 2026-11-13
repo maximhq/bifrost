@@ -311,6 +311,7 @@
 		"aboutPage": "このページについて"
 	},
 	"titles": {
+		"traces": "トレース",
 		"dashboard": "ダッシュボード",
 		"adaptiveRoutingSettings": "適応型ルーティング設定",
 		"alertChannels": "アラートチャネル",

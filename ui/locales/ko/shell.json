@@ -311,6 +311,7 @@
 		"aboutPage": "이 페이지 정보"
 	},
 	"titles": {
+		"traces": "트레이스",
 		"dashboard": "대시보드",
 		"adaptiveRoutingSettings": "적응형 라우팅 설정",
 		"alertChannels": "알림 채널",
