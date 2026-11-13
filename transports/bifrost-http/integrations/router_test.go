@@ -288,6 +288,73 @@ func TestChatGPTPassthroughRouterHandsUpgradesToTheWebSocketHandler(t *testing.T
 	})
 }
 
+// /openai_passthrough serves Responses WebSocket mode on its responses path with the stored key:
+// a caller's bearer is never the upstream credential there, whatever issued it. A GET that does
+// not upgrade is forwarded over HTTP as before.
+func TestOpenAIPassthroughRouterHandsResponsesUpgradesToTheWebSocketHandler(t *testing.T) {
+	const chatGPTBearer = "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+	plugin := &codexPassthroughReceipt{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	var got []*PassthroughWebSocketTarget
+	r := router.New()
+	passthroughRouter := NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.SetPassthroughWebSocketHandler(func(ctx *fasthttp.RequestCtx, target *PassthroughWebSocketTarget) {
+		got = append(got, target)
+		ctx.SetStatusCode(fasthttp.StatusSwitchingProtocols)
+	})
+	passthroughRouter.RegisterRoutes(r)
+
+	request := func(uri string, upgrade bool) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("Authorization", chatGPTBearer)
+		if upgrade {
+			ctx.Request.Header.Set("Connection", "Upgrade")
+			ctx.Request.Header.Set("Upgrade", "websocket")
+			ctx.Request.Header.Set("Sec-WebSocket-Version", "13")
+			ctx.Request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		}
+		return ctx
+	}
+
+	for _, uri := range []string{"/openai_passthrough/v1/responses", "/openai_passthrough/responses"} {
+		ctx := request(uri, true)
+		r.Handler(ctx)
+		require.Equal(t, fasthttp.StatusSwitchingProtocols, ctx.Response.StatusCode(), "%s: %s", uri, ctx.Response.Body())
+	}
+	require.Len(t, got, 2)
+	require.Equal(t, "/v1/responses", got[0].Path)
+	require.Equal(t, "/responses", got[1].Path)
+	for _, target := range got {
+		require.Equal(t, schemas.OpenAI, target.Provider)
+		require.Empty(t, target.UpstreamURL, "the provider's own endpoint is dialed")
+		require.False(t, target.ForwardCallerAuth)
+		require.NotContains(t, target.Headers, "authorization")
+	}
+
+	// Another path under the prefix is not a WebSocket route, upgrade or not, and a plain GET on
+	// the responses path is still an HTTP passthrough request.
+	for _, tc := range []struct {
+		uri     string
+		upgrade bool
+	}{
+		{"/openai_passthrough/v1/responses/resp_1", true},
+		{"/openai_passthrough/v1/responses", false},
+	} {
+		plugin.request = nil
+		ctx := request(tc.uri, tc.upgrade)
+		r.Handler(ctx)
+		require.Equal(t, 403, ctx.Response.StatusCode(), "%s: %s", tc.uri, ctx.Response.Body())
+		require.NotNil(t, plugin.request, tc.uri)
+		require.Equal(t, fasthttp.MethodGet, plugin.request.PassthroughRequest.Method, tc.uri)
+	}
+	require.Len(t, got, 2, "neither reached the WebSocket handler")
+}
+
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
