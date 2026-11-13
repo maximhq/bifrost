@@ -24,11 +24,11 @@ import (
 func init() {
 	traceIngestAdapters = append(traceIngestAdapters, func(h *TraceIngestHandler, rt *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 		// Arize AX and Phoenix. Their exporters post to the endpoint as given or append /v1/traces.
-		arize := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) { h.receiveOTLP(ctx, logstore.TraceSourceArize) }, middlewares...)
+		arize := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) { h.receiveOTLP(ctx, logstore.TraceSourceArize, true) }, middlewares...)
 		rt.POST(tracingPrefix+"/arize", arize)
 		rt.POST(tracingPrefix+"/arize/v1/traces", arize)
 		// Any other OTLP/HTTP exporter: OpenLLMetry, the Vercel AI SDK, MLflow, LangSmith's OTel export.
-		otel := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) { h.receiveOTLP(ctx, logstore.TraceSourceOTel) }, middlewares...)
+		otel := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) { h.receiveOTLP(ctx, logstore.TraceSourceOTel, true) }, middlewares...)
 		rt.POST(tracingPrefix+"/otel", otel)
 		rt.POST(tracingPrefix+"/otel/v1/traces", otel)
 	})
@@ -55,7 +55,9 @@ func otlpCredential(ctx *fasthttp.RequestCtx) string {
 }
 
 // receiveOTLP handles an OTLP/HTTP trace export, protobuf or JSON, for the given source.
-func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string) {
+// resourceNamesProject says whether a resource attribute may pick the project. It may for Arize
+// and generic OTLP. It may not for Langfuse, whose key alone decides the project.
+func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string, resourceNamesProject bool) {
 	principal, ok := h.authenticate(ctx, otlpCredential(ctx))
 	if !ok {
 		return
@@ -69,7 +71,7 @@ func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string
 		SendError(ctx, fasthttp.StatusBadRequest, "malformed OTLP trace export: "+err.Error())
 		return
 	}
-	if err := h.ingestOTLP(ctx, principal, source, resources, string(ctx.Request.Header.Peek("x-project-name"))); err != nil {
+	if err := h.ingestOTLP(principal, source, resources, string(ctx.Request.Header.Peek("x-project-name")), resourceNamesProject); err != nil {
 		h.fail(ctx, err)
 		return
 	}
@@ -95,7 +97,7 @@ var otlpProjectAttributes = []string{"openinference.project.name", "arize.projec
 // ingestOTLP stores decoded resources. Each resource goes to the project it names. explicitProject,
 // from a request header, overrides every resource and must resolve. A name taken from a resource
 // attribute is a hint: when the key cannot use it, the next hint is tried, then the key's default.
-func (h *TraceIngestHandler) ingestOTLP(ctx *fasthttp.RequestCtx, principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string) error {
+func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool) error {
 	storeCtx, cancel := ingestContext()
 	defer cancel()
 	byProject := make(map[string][]*traceingest.SpanPart)
@@ -107,6 +109,9 @@ func (h *TraceIngestHandler) ingestOTLP(ctx *fasthttp.RequestCtx, principal *tra
 		if candidates[0] == "" {
 			candidates = candidates[:0]
 			for _, name := range otlpProjectAttributes {
+				if !resourceNamesProject {
+					break
+				}
 				if value, ok := resource.Attributes[name].(string); ok && strings.TrimSpace(value) != "" {
 					candidates = append(candidates, value)
 				}
