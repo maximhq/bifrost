@@ -309,6 +309,34 @@ func TestTelemetryForwarder_CollectorErrorsAreCounted(t *testing.T) {
 		"forwarded exports release their queue bytes")
 }
 
+// TestTelemetryForwarder_CloseDrainsQueue pins what every shutdown path relies on: Close forwards
+// the exports already queued before it returns, and refuses new ones after.
+func TestTelemetryForwarder_CloseDrainsQueue(t *testing.T) {
+	h, _, store, _ := newClaudeCodeGateway(t, true)
+	vk := seedGatewayVK(t, store, "vk-telemetry", "sk-bf-telemetry")
+	collector := newTelemetryCollector(t, http.StatusOK)
+	enableTelemetry(t, h, collector)
+	body, err := proto.Marshal(sampleMetricsExport())
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		require.Equal(t, fasthttp.StatusOK, signedInExport(t, h, vk, "metrics", body).Response.StatusCode())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.Close(ctx)
+	forwarded := func(outcome string) float64 {
+		return testutil.ToFloat64(h.telemetry.metrics.forwards.WithLabelValues("claude-code", "metrics", outcome))
+	}
+	assert.Equal(t, 3.0, forwarded("ok"), "queued exports are forwarded before Close returns")
+	assert.Zero(t, h.telemetry.bytes.Load())
+
+	require.Equal(t, fasthttp.StatusOK, signedInExport(t, h, vk, "metrics", body).Response.StatusCode())
+	assert.Equal(t, 1.0, testutil.ToFloat64(h.telemetry.metrics.exports.WithLabelValues("claude-code", "metrics", "dropped")),
+		"an export after Close is dropped, not queued")
+	assert.Equal(t, 3.0, forwarded("ok"))
+}
+
 // BenchmarkStampTelemetryExport measures the per-export work on the request
 // path before the hand-off to the queue: decode, stamp, filter, re-encode.
 func BenchmarkStampTelemetryExport(b *testing.B) {
