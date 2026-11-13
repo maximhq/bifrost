@@ -506,6 +506,10 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Kimchi:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Databricks:
 		// Both Databricks surfaces return the OpenAI-shaped usage object.
 		expectations.ShouldHaveUsageStats = true

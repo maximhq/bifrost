@@ -209,6 +209,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.MiniMax,
 		schemas.BytePlus,
 		schemas.Baseten,
+		schemas.Kimchi,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -572,6 +573,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.BASETEN_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Kimchi:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.KIMCHI_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
@@ -1053,6 +1063,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.BytePlus:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Kimchi:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

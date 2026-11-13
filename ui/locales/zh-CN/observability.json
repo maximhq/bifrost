@@ -70,7 +70,8 @@
 			"decision": "决策模型",
 			"llm": "LLM",
 			"skipped": "已跳过"
-		}
+		},
+		"modelRouter": "路由器"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1228,7 +1229,10 @@
 		"exactRoundTripID": "精确往返 ID",
 		"nothingRecorded": "此时间范围内没有记录",
 		"topics": "主题",
-		"searchTopics": "搜索主题"
+		"searchTopics": "搜索主题",
+		"modelRouters": "路由器",
+		"searchModelRouters": "搜索路由器",
+		"loadFailed": "无法加载此列表。"
 	},
 	"requestTypes": {
 		"chat_completion": "对话",
@@ -1627,6 +1631,70 @@
 				"publicAgentCardFetched": "已获取公开代理卡片",
 				"extendedAgentCardFetched": "已获取扩展代理卡片"
 			}
+		},
+		"trace": {
+			"title": "智能体追踪",
+			"loading": "正在加载追踪…",
+			"partial": "部分关联日志未能加载，此追踪可能不完整。",
+			"timeline": "时间线",
+			"findSpan": "查找跨度",
+			"treeLabel": "追踪跨度",
+			"noMatches": "没有匹配的跨度。",
+			"artifacts": "产物",
+			"latency": "延迟",
+			"tokens": "Token",
+			"cost": "成本",
+			"agents": "智能体",
+			"llmCalls": "LLM 调用",
+			"mcpCalls": "MCP 调用",
+			"errors": "错误",
+			"tokensShort": "{{value}} tok",
+			"errorsShort": "{{value}} 个错误",
+			"followUps": "+{{value}} 次后续调用",
+			"producedBy": "由 {{agent}} 生成",
+			"artifactKind": {
+				"data": "数据",
+				"text": "文本"
+			},
+			"expand": "展开 {{name}}",
+			"collapse": "折叠 {{name}}",
+			"openInLLMLogs": "在 LLM 日志中打开",
+			"openInMCPLogs": "在 MCP 日志中打开",
+			"a2a": "A2A",
+			"error": "错误",
+			"scopeTrace": "追踪",
+			"scopeSession": "会话",
+			"sessionName": "会话 {{value}}",
+			"turn": "第 {{value}} 轮",
+			"turnCount": "轮次 {{value}}",
+			"turns": "轮次",
+			"sessionId": "会话",
+			"taskId": "任务",
+			"copyLink": "复制链接",
+			"linkCopied": "链接已复制",
+			"guardrails": "护栏",
+			"guard": {
+				"guardrail": "护栏",
+				"rule": "规则",
+				"provider": "提供方",
+				"phase": "阶段",
+				"outcome": "结果",
+				"reason": "原因",
+				"judgeModel": "评判模型",
+				"assessments": "评估"
+			},
+			"turnsLoaded": "已加载 {{loaded}}/{{total}} 轮",
+			"loadMoreTurns": "加载更多轮次",
+			"userMessage": "用户",
+			"viewSpans": "查看跨度",
+			"noReply": "未记录回复。",
+			"spansTab": "跨度",
+			"threadTab": "对话",
+			"llmShort": "LLM {{value}}",
+			"mcpShort": "MCP {{value}}",
+			"guardShort": "护栏 {{value}}",
+			"agentSpan": "智能体跨度",
+			"conversationEnd": "结束"
 		},
 		"logSheet": {
 			"localOperationNote": "此操作由 Bifrost 直接处理，不涉及上游请求。下方的协议载荷是序列化数据，而非传输层捕获。",

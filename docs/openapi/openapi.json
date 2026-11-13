@@ -46444,6 +46444,16 @@
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
+                          },
                           "is_ping_available": {
                             "type": "boolean",
                             "default": true,
@@ -46797,6 +46807,16 @@
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
+                          },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
                           },
                           "is_ping_available": {
                             "type": "boolean",
@@ -47160,6 +47180,16 @@
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
+                          },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
                           },
                           "is_ping_available": {
                             "type": "boolean",
@@ -47544,6 +47574,16 @@
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
+                          },
                           "is_ping_available": {
                             "type": "boolean",
                             "default": true,
@@ -47919,6 +47959,15 @@
                   "is_code_mode_client": {
                     "type": "boolean",
                     "description": "Whether this client is available in code mode"
+                  },
+                  "server_type_on_slug": {
+                    "type": "string",
+                    "enum": [
+                      "inherit",
+                      "enabled",
+                      "disabled"
+                    ],
+                    "description": "Code mode on this client's own /mcp/<slug> endpoint only. Omit to keep the\ncurrent value; \"inherit\" goes back to following is_code_mode_client.\n"
                   },
                   "is_ping_available": {
                     "type": "boolean",
@@ -86074,7 +86123,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.",
         "tags": [
           "Routing"
         ],
@@ -87512,6 +87561,42 @@
                         }
                       }
                     },
+                    "suggestion_default_instructions": {
+                      "type": "string",
+                      "description": "The shipped phrase-writing instructions, served so a configuration client can seed its editor and offer a reset. The fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_tier_instructions": {
+                      "type": "string",
+                      "description": "The shipped tier-step instructions for suggestions, served so a configuration client can seed its editor and offer a reset. The tier definitions, examples and fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_tier_prompt": {
+                      "type": "string",
+                      "description": "Model router status only: the llm tier prompt this router's suggestion runs send while it is not edited, rendered from the router (its tier definitions and its own phrases as examples)."
+                    },
+                    "suggestion_default_tier_criteria": {
+                      "type": "object",
+                      "description": "Model router status only: the per-tier criteria a decision tier step sends while they are not edited, rendered from the router.",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "definition": {
+                            "type": "string"
+                          },
+                          "signals": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "examples": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
                     "llm_default_prompt": {
                       "type": "string",
                       "description": "The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured."
@@ -87668,6 +87753,42 @@
                             "ready"
                           ],
                           "description": "disabled = no llm configuration; ready = the llm block is configured. The classifier has no warmup, so it is ready as soon as it is saved."
+                        }
+                      }
+                    },
+                    "suggestion_default_instructions": {
+                      "type": "string",
+                      "description": "The shipped phrase-writing instructions, served so a configuration client can seed its editor and offer a reset. The fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_tier_instructions": {
+                      "type": "string",
+                      "description": "The shipped tier-step instructions for suggestions, served so a configuration client can seed its editor and offer a reset. The tier definitions, examples and fixed output and safety rules are not exposed."
+                    },
+                    "suggestion_default_tier_prompt": {
+                      "type": "string",
+                      "description": "Model router status only: the llm tier prompt this router's suggestion runs send while it is not edited, rendered from the router (its tier definitions and its own phrases as examples)."
+                    },
+                    "suggestion_default_tier_criteria": {
+                      "type": "object",
+                      "description": "Model router status only: the per-tier criteria a decision tier step sends while they are not edited, rendered from the router.",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "definition": {
+                            "type": "string"
+                          },
+                          "signals": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "examples": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
                         }
                       }
                     },
@@ -87866,6 +87987,3125 @@
           },
           "503": {
             "description": "The vector store could not be reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions": {
+      "get": {
+        "operationId": "listComplexitySuggestions",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List phrase suggestions",
+        "description": "Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the complexity analyzer config.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated statuses to list (open, accepted, dismissed, superseded); default open.",
+            "schema": {
+              "type": "string",
+              "example": "open,dismissed"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size; default 100, at most 500.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Suggestions to skip, in list order; default 0.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Suggestions retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "router_id": {
+                      "type": "string"
+                    },
+                    "router_version": {
+                      "type": "string",
+                      "description": "The version the router serves now."
+                    },
+                    "suggestions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "One suggested set of phrases for a cluster of one model router's traffic.",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "router_id": {
+                            "type": "string",
+                            "description": "The model router whose traffic the suggestion came from."
+                          },
+                          "router_version": {
+                            "type": "string",
+                            "description": "The router version (its phrase bank) the suggestion was computed against."
+                          },
+                          "stale": {
+                            "type": "boolean",
+                            "description": "True when the router now serves a different version than the one the suggestion was computed against."
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "accepted",
+                              "dismissed",
+                              "superseded"
+                            ],
+                            "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                          },
+                          "tier": {
+                            "type": "string",
+                            "enum": [
+                              "SIMPLE",
+                              "MEDIUM",
+                              "COMPLEX"
+                            ]
+                          },
+                          "phrases": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "uncovered",
+                              "weak",
+                              "misrouted",
+                              "mixed",
+                              "template"
+                            ],
+                            "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, its routing is split, or it is one prompt template sent with different fills (its phrases are written from the template's fixed wording)."
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "confidence": {
+                            "type": "string"
+                          },
+                          "request_count": {
+                            "type": "integer",
+                            "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                          },
+                          "coverage": {
+                            "type": "number",
+                            "description": "Share of the cluster's requests the phrases would take over routing for."
+                          },
+                          "nearest_phrase": {
+                            "type": "string",
+                            "description": "The live phrase closest to the cluster's centre."
+                          },
+                          "nearest_tier": {
+                            "type": "string"
+                          },
+                          "nearest_similarity": {
+                            "type": "number"
+                          },
+                          "example_log_ids": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The requests the suggestion was written from, the most central first."
+                          },
+                          "current_routing": {
+                            "type": "object",
+                            "description": "How the cluster's requests routed, per tier, when the suggestion's last run computed it - a snapshot from that run, not live routing; `none` counts those no phrase matched. Empty for a suggestion written before it was recorded.",
+                            "additionalProperties": {
+                              "type": "integer"
+                            },
+                            "example": {
+                              "MEDIUM": 291,
+                              "COMPLEX": 172,
+                              "none": 23
+                            }
+                          },
+                          "embedding_signature": {
+                            "type": "string"
+                          },
+                          "run_id": {
+                            "type": "string",
+                            "description": "The last run that proposed it."
+                          },
+                          "last_seen_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "resolved_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "counts": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Stored suggestions per status, whatever the filter selected."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Suggestions the status filter selects, across every page."
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "description": "Page size served."
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "description": "Offset served."
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "last_run": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "router_id": {
+                          "type": "string"
+                        },
+                        "router_version": {
+                          "type": "string"
+                        },
+                        "window_start": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Start of the window the run read; it ends at started_at."
+                        },
+                        "triggered_by": {
+                          "type": "string",
+                          "enum": [
+                            "schedule",
+                            "manual"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "queued",
+                            "skipped",
+                            "running",
+                            "succeeded",
+                            "failed",
+                            "cancelled"
+                          ],
+                          "description": "cancelled runs were stopped by a user; what they had written is kept."
+                        },
+                        "stage": {
+                          "type": "string",
+                          "enum": [
+                            "backfilling",
+                            "reading",
+                            "clustering",
+                            "suggesting",
+                            "saving"
+                          ],
+                          "description": "How far a running run got; absent once it ends."
+                        },
+                        "embedding_signature": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "provider/model the suggestions were written with."
+                        },
+                        "prompt_hash": {
+                          "type": "string",
+                          "description": "SHA-256 of the instructions and tier guidance in force."
+                        },
+                        "requests_read": {
+                          "type": "integer",
+                          "description": "Captured requests in the window."
+                        },
+                        "requests_clustered": {
+                          "type": "integer",
+                          "description": "The sample the clusters were formed from."
+                        },
+                        "requests_assigned": {
+                          "type": "integer",
+                          "description": "Requests counted into the clusters after the sample."
+                        },
+                        "requests_skipped": {
+                          "type": "integer",
+                          "description": "Requests past the counting bound, read into no cluster."
+                        },
+                        "requests_grouped": {
+                          "type": "integer",
+                          "description": "Requests in clusters big enough to keep."
+                        },
+                        "clusters": {
+                          "type": "integer"
+                        },
+                        "clusters_decided": {
+                          "type": "integer",
+                          "description": "Clusters matching an accepted or dismissed suggestion, not asked about again."
+                        },
+                        "clusters_over_limit": {
+                          "type": "integer",
+                          "description": "Clusters not suggested because of this run's limits: past the bound on clusters asked per run, or after the phrases already written filled the room left in the phrase bank."
+                        },
+                        "clusters_asked": {
+                          "type": "integer"
+                        },
+                        "clusters_done": {
+                          "type": "integer",
+                          "description": "Clusters asked about so far; equals clusters_asked once the run ends."
+                        },
+                        "clusters_failed": {
+                          "type": "integer"
+                        },
+                        "clusters_covered": {
+                          "type": "integer",
+                          "description": "Clusters the phrase bank already routes well."
+                        },
+                        "clusters_incoherent": {
+                          "type": "integer",
+                          "description": "Clusters that were not one kind of request, or got no usable answer."
+                        },
+                        "clusters_unreadable": {
+                          "type": "integer",
+                          "description": "Clusters none of whose example requests could be read back."
+                        },
+                        "created": {
+                          "type": "integer"
+                        },
+                        "refreshed": {
+                          "type": "integer"
+                        },
+                        "superseded": {
+                          "type": "integer"
+                        },
+                        "cost": {
+                          "type": "number",
+                          "description": "Cost of the run's suggestion-model calls, in USD."
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Why the run failed, why a skipped run did not start, or, on a run that succeeded, the clusters it left for the next run."
+                        },
+                        "started_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "finished_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "next_run_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown status, or a limit or offset out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/test": {
+      "post": {
+        "operationId": "testComplexitySuggestionPhrases",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Test phrases against routed requests",
+        "description": "Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "phrases"
+                ],
+                "properties": {
+                  "phrases": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "tier",
+                        "text"
+                      ],
+                      "properties": {
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "SIMPLE",
+                            "MEDIUM",
+                            "COMPLEX"
+                          ]
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000,
+                          "description": "At most 2,000 characters once trimmed, the phrase bank's own limit."
+                        }
+                      }
+                    }
+                  },
+                  "suggestion_id": {
+                    "type": "string",
+                    "description": "Route this suggestion's examples."
+                  },
+                  "log_ids": {
+                    "type": "array",
+                    "maxItems": 256,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Route these logs, instead of or as well as a suggestion's examples. They are routed first; a log that is gone or cannot be read is skipped, and at most 32 readable examples are routed. More than 256 is 400."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Phrases tested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "phrases": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tier": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "nearest_existing": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "examples": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "current": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          },
+                          "with_phrases": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string"
+                              },
+                              "phrase": {
+                                "type": "string"
+                              },
+                              "similarity": {
+                                "type": "number"
+                              },
+                              "accepted": {
+                                "type": "boolean",
+                                "description": "Whether the similarity clears semantic.min_similarity."
+                              },
+                              "candidate": {
+                                "type": "boolean",
+                                "description": "Whether the phrase is one being tested."
+                              }
+                            }
+                          },
+                          "changed": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "taken_over": {
+                      "type": "number",
+                      "description": "Share of the examples whose nearest phrase is one of the tested phrases. It counts the nearest phrase whether or not its similarity clears min_similarity, so it is not the share the router would route by the tested phrases; each example's with_phrases.accepted says that."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No phrases, too many, a phrase without text or a valid tier, or a phrase over 2,000 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The embedding provider failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/runs": {
+      "get": {
+        "operationId": "listComplexitySuggestionRuns",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List phrase suggestion runs",
+        "description": "Lists suggestion runs newest first, scheduled and manual, with what each read, created, refreshed and superseded, what its model calls cost, and why it failed if it did. The latest 200 runs are kept.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Runs retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "router_id": {
+                            "type": "string"
+                          },
+                          "router_version": {
+                            "type": "string"
+                          },
+                          "window_start": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "Start of the window the run read; it ends at started_at."
+                          },
+                          "triggered_by": {
+                            "type": "string",
+                            "enum": [
+                              "schedule",
+                              "manual"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "skipped",
+                              "running",
+                              "succeeded",
+                              "failed",
+                              "cancelled"
+                            ],
+                            "description": "cancelled runs were stopped by a user; what they had written is kept."
+                          },
+                          "stage": {
+                            "type": "string",
+                            "enum": [
+                              "backfilling",
+                              "reading",
+                              "clustering",
+                              "suggesting",
+                              "saving"
+                            ],
+                            "description": "How far a running run got; absent once it ends."
+                          },
+                          "embedding_signature": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string",
+                            "description": "provider/model the suggestions were written with."
+                          },
+                          "prompt_hash": {
+                            "type": "string",
+                            "description": "SHA-256 of the instructions and tier guidance in force."
+                          },
+                          "requests_read": {
+                            "type": "integer",
+                            "description": "Captured requests in the window."
+                          },
+                          "requests_clustered": {
+                            "type": "integer",
+                            "description": "The sample the clusters were formed from."
+                          },
+                          "requests_assigned": {
+                            "type": "integer",
+                            "description": "Requests counted into the clusters after the sample."
+                          },
+                          "requests_skipped": {
+                            "type": "integer",
+                            "description": "Requests past the counting bound, read into no cluster."
+                          },
+                          "requests_grouped": {
+                            "type": "integer",
+                            "description": "Requests in clusters big enough to keep."
+                          },
+                          "clusters": {
+                            "type": "integer"
+                          },
+                          "clusters_decided": {
+                            "type": "integer",
+                            "description": "Clusters matching an accepted or dismissed suggestion, not asked about again."
+                          },
+                          "clusters_over_limit": {
+                            "type": "integer",
+                            "description": "Clusters not suggested because of this run's limits: past the bound on clusters asked per run, or after the phrases already written filled the room left in the phrase bank."
+                          },
+                          "clusters_asked": {
+                            "type": "integer"
+                          },
+                          "clusters_done": {
+                            "type": "integer",
+                            "description": "Clusters asked about so far; equals clusters_asked once the run ends."
+                          },
+                          "clusters_failed": {
+                            "type": "integer"
+                          },
+                          "clusters_covered": {
+                            "type": "integer",
+                            "description": "Clusters the phrase bank already routes well."
+                          },
+                          "clusters_incoherent": {
+                            "type": "integer",
+                            "description": "Clusters that were not one kind of request, or got no usable answer."
+                          },
+                          "clusters_unreadable": {
+                            "type": "integer",
+                            "description": "Clusters none of whose example requests could be read back."
+                          },
+                          "created": {
+                            "type": "integer"
+                          },
+                          "refreshed": {
+                            "type": "integer"
+                          },
+                          "superseded": {
+                            "type": "integer"
+                          },
+                          "cost": {
+                            "type": "number",
+                            "description": "Cost of the run's suggestion-model calls, in USD."
+                          },
+                          "error": {
+                            "type": "string",
+                            "description": "Why the run failed, why a skipped run did not start, or, on a run that succeeded, the clusters it left for the next run."
+                          },
+                          "started_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "finished_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "next_run_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "startComplexitySuggestionRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Start a phrase suggestion run now",
+        "description": "Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "How much of the lookback the run reads, as hours or days (24h, 7d). Omitted reads the whole lookback; shorter than one second or longer than the lookback is 400.",
+            "schema": {
+              "type": "string",
+              "example": "7d"
+            }
+          },
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Run started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The window is not a duration, is shorter than one second, or is longer than the lookback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Suggestions are off, or a run is already queued or running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the semantic router has no warmed phrase bank to suggest against yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/runs/estimate": {
+      "get": {
+        "operationId": "estimateComplexitySuggestionRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Estimate a phrase suggestion run",
+        "description": "Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Hours or days (24h, 7d); omitted is the whole lookback. Shorter than one second or longer than the lookback is 400.",
+            "schema": {
+              "type": "string",
+              "example": "7d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run estimated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "requests": {
+                      "type": "integer",
+                      "description": "Requests in the window, captured and to be backfilled."
+                    },
+                    "clustered": {
+                      "type": "integer",
+                      "description": "Size of the sample of the window the run would cluster, up to its clustering budget."
+                    },
+                    "assigned": {
+                      "type": "integer",
+                      "description": "Requests outside the sample the run would try to assign to the clusters it finds. A request joins a cluster only if it is close enough to one, so fewer may end up counted."
+                    },
+                    "skipped": {
+                      "type": "integer",
+                      "description": "Requests past the run's assignment bound, not counted."
+                    },
+                    "max_model_calls": {
+                      "type": "integer",
+                      "description": "The most suggestion-model calls the run could make."
+                    },
+                    "backfill": {
+                      "type": "integer",
+                      "description": "Requests in the window from before the router captured them, which the run embeds from their logs first (up to the run's clustering budget); counted in requests. Omitted when none."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The window is not a duration, is shorter than one second, or is longer than the lookback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Suggestions are off for this router",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The router has no warmed phrase bank, or suggestions are not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancelComplexitySuggestionRun",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Cancel a phrase suggestion run",
+        "description": "Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the call waits a few seconds for that and returns the run as it ended, or, if it has not stopped by then, as it stands, still running.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run cancelled, or asked to stop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "router_id": {
+                      "type": "string"
+                    },
+                    "router_version": {
+                      "type": "string"
+                    },
+                    "window_start": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "Start of the window the run read; it ends at started_at."
+                    },
+                    "triggered_by": {
+                      "type": "string",
+                      "enum": [
+                        "schedule",
+                        "manual"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "skipped",
+                        "running",
+                        "succeeded",
+                        "failed",
+                        "cancelled"
+                      ],
+                      "description": "cancelled runs were stopped by a user; what they had written is kept."
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "backfilling",
+                        "reading",
+                        "clustering",
+                        "suggesting",
+                        "saving"
+                      ],
+                      "description": "How far a running run got; absent once it ends."
+                    },
+                    "embedding_signature": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "provider/model the suggestions were written with."
+                    },
+                    "prompt_hash": {
+                      "type": "string",
+                      "description": "SHA-256 of the instructions and tier guidance in force."
+                    },
+                    "requests_read": {
+                      "type": "integer",
+                      "description": "Captured requests in the window."
+                    },
+                    "requests_clustered": {
+                      "type": "integer",
+                      "description": "The sample the clusters were formed from."
+                    },
+                    "requests_assigned": {
+                      "type": "integer",
+                      "description": "Requests counted into the clusters after the sample."
+                    },
+                    "requests_skipped": {
+                      "type": "integer",
+                      "description": "Requests past the counting bound, read into no cluster."
+                    },
+                    "requests_grouped": {
+                      "type": "integer",
+                      "description": "Requests in clusters big enough to keep."
+                    },
+                    "clusters": {
+                      "type": "integer"
+                    },
+                    "clusters_decided": {
+                      "type": "integer",
+                      "description": "Clusters matching an accepted or dismissed suggestion, not asked about again."
+                    },
+                    "clusters_over_limit": {
+                      "type": "integer",
+                      "description": "Clusters not suggested because of this run's limits: past the bound on clusters asked per run, or after the phrases already written filled the room left in the phrase bank."
+                    },
+                    "clusters_asked": {
+                      "type": "integer"
+                    },
+                    "clusters_done": {
+                      "type": "integer",
+                      "description": "Clusters asked about so far; equals clusters_asked once the run ends."
+                    },
+                    "clusters_failed": {
+                      "type": "integer"
+                    },
+                    "clusters_covered": {
+                      "type": "integer",
+                      "description": "Clusters the phrase bank already routes well."
+                    },
+                    "clusters_incoherent": {
+                      "type": "integer",
+                      "description": "Clusters that were not one kind of request, or got no usable answer."
+                    },
+                    "clusters_unreadable": {
+                      "type": "integer",
+                      "description": "Clusters none of whose example requests could be read back."
+                    },
+                    "created": {
+                      "type": "integer"
+                    },
+                    "refreshed": {
+                      "type": "integer"
+                    },
+                    "superseded": {
+                      "type": "integer"
+                    },
+                    "cost": {
+                      "type": "number",
+                      "description": "Cost of the run's suggestion-model calls, in USD."
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Why the run failed, why a skipped run did not start, or, on a run that succeeded, the clusters it left for the next run."
+                    },
+                    "started_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "finished_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The model router, or a run of it with this id, does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The run has already ended, or suggestions are off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/impact": {
+      "post": {
+        "operationId": "replayComplexitySuggestionImpact",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Check what phrases would do to recent traffic",
+        "description": "Adds the phrases given, by tier, to the router's saved phrases for this replay only, routes the router's captured requests from the window, by nearest phrase, against the saved bank and against the bank with the phrases added, and reports what would change. Nothing is saved: the phrases are dropped after the replay, and only the add phrases endpoint saves phrases. A phrase its tier already holds is skipped and reported; one another tier holds is refused. A window that reaches back before the router captured requests is first filled from its logs. Reported: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.\n\nOnly requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Hours or days (24h, 7d); omitted is the whole lookback.",
+            "schema": {
+              "type": "string",
+              "example": "7d"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "phrases"
+                ],
+                "properties": {
+                  "phrases": {
+                    "type": "object",
+                    "description": "Phrases by tier, keyed SIMPLE, MEDIUM or COMPLEX; the gateway also accepts these keys in any case. A phrase is compared as the bank compares phrases, ignoring case and runs of whitespace.",
+                    "minProperties": 1,
+                    "additionalProperties": false,
+                    "properties": {
+                      "SIMPLE": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      },
+                      "MEDIUM": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      },
+                      "COMPLEX": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      }
+                    },
+                    "example": {
+                      "SIMPLE": [
+                        "where is my refund"
+                      ],
+                      "COMPLEX": [
+                        "plan a database migration"
+                      ]
+                    }
+                  },
+                  "min_similarity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMaximum": 1,
+                    "description": "The similarity floor the draft would save, when the draft changes it; the draft side is replayed at it and the live side at the serving floor. Omitted replays the draft at the serving floor. At least 0 and less than 1."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Draft replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "What the phrases tried would do to a router's recent captured traffic, added to its saved phrases. Costs are in USD over the window, for the changed requests only. added and skipped say which of the phrases tried were new and which the bank already held.",
+                  "properties": {
+                    "added": {
+                      "type": "object",
+                      "description": "The phrases the replay added to the router's saved ones, by tier.",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "skipped": {
+                      "type": "array",
+                      "description": "Phrases tried that their tier already holds.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tier": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "window_seconds": {
+                      "type": "integer"
+                    },
+                    "requests": {
+                      "type": "integer",
+                      "description": "Requests replayed."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Requests captured in the window; more than requests when a sample was replayed."
+                    },
+                    "tiers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tier": {
+                            "type": "string",
+                            "enum": [
+                              "SIMPLE",
+                              "MEDIUM",
+                              "COMPLEX",
+                              "none"
+                            ]
+                          },
+                          "live": {
+                            "type": "integer"
+                          },
+                          "draft": {
+                            "type": "integer"
+                          },
+                          "model": {
+                            "type": "object",
+                            "description": "The model the tier is priced at; absent when the router names none.",
+                            "properties": {
+                              "provider": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "changed_count": {
+                      "type": "integer"
+                    },
+                    "changed": {
+                      "type": "array",
+                      "description": "The first 25 requests that change tier.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string"
+                          },
+                          "phrase": {
+                            "type": "string",
+                            "description": "The draft phrase it now matches; empty when it matches none."
+                          },
+                          "similarity": {
+                            "type": "number"
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "The request text, when the caller may read its log."
+                          }
+                        }
+                      }
+                    },
+                    "attention": {
+                      "type": "array",
+                      "description": "New draft phrases that take requests the live bank placed confidently in another tier.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "phrase": {
+                            "type": "string"
+                          },
+                          "tier": {
+                            "type": "string"
+                          },
+                          "from_tier": {
+                            "type": "string"
+                          },
+                          "requests": {
+                            "type": "integer"
+                          },
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "live_cost": {
+                      "type": "number"
+                    },
+                    "draft_cost": {
+                      "type": "number"
+                    },
+                    "savings": {
+                      "type": "number",
+                      "description": "live_cost minus draft_cost; negative when the draft costs more."
+                    },
+                    "priced": {
+                      "type": "integer"
+                    },
+                    "unpriced": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No phrases, an empty or too-long phrase, an unknown tier, a phrase another tier already holds, a bank past its phrase limit, or a window that is not a duration or is longer than the lookback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The model router does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Suggestions are off for this router",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The embedding provider failed the draft's new phrases, or the logs could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The router has no warmed phrase bank, or suggestions are not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/{suggestion_id}": {
+      "get": {
+        "operationId": "getComplexitySuggestion",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get a phrase suggestion with its examples",
+        "description": "Returns one suggestion and the text of the requests it was written from, read from their logs within the caller's access scope. An example whose log was deleted, hides its content, or is outside the caller's access is listed without text.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "suggestion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestion retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "suggestion": {
+                      "type": "object",
+                      "description": "One suggested set of phrases for a cluster of one model router's traffic.",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "router_id": {
+                          "type": "string",
+                          "description": "The model router whose traffic the suggestion came from."
+                        },
+                        "router_version": {
+                          "type": "string",
+                          "description": "The router version (its phrase bank) the suggestion was computed against."
+                        },
+                        "stale": {
+                          "type": "boolean",
+                          "description": "True when the router now serves a different version than the one the suggestion was computed against."
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "accepted",
+                            "dismissed",
+                            "superseded"
+                          ],
+                          "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                        },
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "SIMPLE",
+                            "MEDIUM",
+                            "COMPLEX"
+                          ]
+                        },
+                        "phrases": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "category": {
+                          "type": "string",
+                          "enum": [
+                            "uncovered",
+                            "weak",
+                            "misrouted",
+                            "mixed",
+                            "template"
+                          ],
+                          "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, its routing is split, or it is one prompt template sent with different fills (its phrases are written from the template's fixed wording)."
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "confidence": {
+                          "type": "string"
+                        },
+                        "request_count": {
+                          "type": "integer",
+                          "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                        },
+                        "coverage": {
+                          "type": "number",
+                          "description": "Share of the cluster's requests the phrases would take over routing for."
+                        },
+                        "nearest_phrase": {
+                          "type": "string",
+                          "description": "The live phrase closest to the cluster's centre."
+                        },
+                        "nearest_tier": {
+                          "type": "string"
+                        },
+                        "nearest_similarity": {
+                          "type": "number"
+                        },
+                        "example_log_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The requests the suggestion was written from, the most central first."
+                        },
+                        "current_routing": {
+                          "type": "object",
+                          "description": "How the cluster's requests routed, per tier, when the suggestion's last run computed it - a snapshot from that run, not live routing; `none` counts those no phrase matched. Empty for a suggestion written before it was recorded.",
+                          "additionalProperties": {
+                            "type": "integer"
+                          },
+                          "example": {
+                            "MEDIUM": 291,
+                            "COMPLEX": 172,
+                            "none": 23
+                          }
+                        },
+                        "embedding_signature": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string",
+                          "description": "The last run that proposed it."
+                        },
+                        "last_seen_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "resolved_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "examples": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "log_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "The request text as the router embedded it. Absent for a log that was deleted, hides its content, or is outside the caller's access."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/suggestions/{suggestion_id}/status": {
+      "put": {
+        "operationId": "updateComplexitySuggestionStatus",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Accept, dismiss or reopen a phrase suggestion",
+        "description": "Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank (staged and saved with the complexity analyzer config). Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "suggestion_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "accepted",
+                      "dismissed"
+                    ],
+                    "description": "accepted or dismissed from open; open again from either."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One suggested set of phrases for a cluster of one model router's traffic.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "router_id": {
+                      "type": "string",
+                      "description": "The model router whose traffic the suggestion came from."
+                    },
+                    "router_version": {
+                      "type": "string",
+                      "description": "The router version (its phrase bank) the suggestion was computed against."
+                    },
+                    "stale": {
+                      "type": "boolean",
+                      "description": "True when the router now serves a different version than the one the suggestion was computed against."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "accepted",
+                        "dismissed",
+                        "superseded"
+                      ],
+                      "description": "open waits for the user; accepted and dismissed are the user's call and are left alone by later runs; superseded was open when a later run no longer proposed it."
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "SIMPLE",
+                        "MEDIUM",
+                        "COMPLEX"
+                      ]
+                    },
+                    "phrases": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "uncovered",
+                        "weak",
+                        "misrouted",
+                        "mixed",
+                        "template"
+                      ],
+                      "description": "Why the cluster needs phrases - no phrase matches it, it matches weakly, it routes confidently to a different tier, its routing is split, or it is one prompt template sent with different fills (its phrases are written from the template's fixed wording)."
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "confidence": {
+                      "type": "string"
+                    },
+                    "request_count": {
+                      "type": "integer",
+                      "description": "Requests in the cluster over the lookback window, sampled ones counted once each."
+                    },
+                    "coverage": {
+                      "type": "number",
+                      "description": "Share of the cluster's requests the phrases would take over routing for."
+                    },
+                    "nearest_phrase": {
+                      "type": "string",
+                      "description": "The live phrase closest to the cluster's centre."
+                    },
+                    "nearest_tier": {
+                      "type": "string"
+                    },
+                    "nearest_similarity": {
+                      "type": "number"
+                    },
+                    "example_log_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The requests the suggestion was written from, the most central first."
+                    },
+                    "current_routing": {
+                      "type": "object",
+                      "description": "How the cluster's requests routed, per tier, when the suggestion's last run computed it - a snapshot from that run, not live routing; `none` counts those no phrase matched. Empty for a suggestion written before it was recorded.",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "example": {
+                        "MEDIUM": 291,
+                        "COMPLEX": 172,
+                        "none": 23
+                      }
+                    },
+                    "embedding_signature": {
+                      "type": "string"
+                    },
+                    "run_id": {
+                      "type": "string",
+                      "description": "The last run that proposed it."
+                    },
+                    "last_seen_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body, or a status that does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Suggestion not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The suggestion cannot move to that status from its current one, or it changed since it was read (another decision, or a run superseded it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Phrase suggestions are not available (no log store, or the routing plugin is not loaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/model-routers/{router_id}/phrases": {
+      "post": {
+        "operationId": "addModelRouterPhrases",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Add phrases to a model router",
+        "description": "Appends phrases, by tier, to the router's saved phrase bank and serves it; the one phrase suggestion endpoint that changes routing. A phrase its tier already holds is skipped and reported. A phrase another tier holds, a bank past its phrase limit, or a suggestion named that is not the router's or not open refuses the request, and nothing is saved. Once the phrases are saved, the suggestions named are marked accepted: the phrases stay saved even when one cannot be (a run superseded it meanwhile, or its status could not be written), and `accepted` lists only those that were. The router is served again even when every phrase was already there, so a retry after a failed reload reaches it. Unknown fields are refused with 400. Changed phrases are re-embedded in the background, as any phrase save is.\n",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "router_id",
+            "in": "path",
+            "required": true,
+            "description": "The model router; an unknown router is 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "phrases"
+                ],
+                "properties": {
+                  "phrases": {
+                    "type": "object",
+                    "description": "Phrases by tier, keyed SIMPLE, MEDIUM or COMPLEX; the gateway also accepts these keys in any case. A phrase is compared as the bank compares phrases, ignoring case and runs of whitespace.",
+                    "minProperties": 1,
+                    "additionalProperties": false,
+                    "properties": {
+                      "SIMPLE": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      },
+                      "MEDIUM": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      },
+                      "COMPLEX": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        }
+                      }
+                    },
+                    "example": {
+                      "SIMPLE": [
+                        "where is my refund"
+                      ],
+                      "COMPLEX": [
+                        "plan a database migration"
+                      ]
+                    }
+                  },
+                  "suggestion_ids": {
+                    "type": "array",
+                    "description": "The suggestions the phrases came from. Each must be the router's and open; once the phrases are saved they are marked accepted where they still can be (see `accepted` in the response).",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Phrases added and the router served",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "description": "What phrases given by tier did to a phrase bank.",
+                      "properties": {
+                        "added": {
+                          "type": "object",
+                          "description": "The phrases added, by tier.",
+                          "additionalProperties": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "skipped": {
+                          "type": "array",
+                          "description": "Phrases left out because their tier already holds them.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "tier": {
+                                "type": "string",
+                                "enum": [
+                                  "SIMPLE",
+                                  "MEDIUM",
+                                  "COMPLEX"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "router": {
+                          "type": "object",
+                          "description": "A model router - an id, a name and a description beside the same settings as ComplexityAnalyzerConfig, sent and returned at the top level; its phrase suggestions, which only model routers make; the model each tier gets; and the routing that decides which requests it takes. Routers are separate from the complexity analyzer config, which routing rules read complexity_tier from. The cross-field rules of ComplexityAnalyzerConfig apply, and the suggestion rules below.",
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "suggestions": {
+                                    "properties": {
+                                      "enabled": {
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "enabled"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "suggestions"
+                                ]
+                              },
+                              "then": {
+                                "required": [
+                                  "semantic"
+                                ],
+                                "not": {
+                                  "required": [
+                                    "classifier"
+                                  ],
+                                  "properties": {
+                                    "classifier": {
+                                      "enum": [
+                                        "decision",
+                                        "llm"
+                                      ]
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "if": {
+                                "properties": {
+                                  "suggestions": {
+                                    "properties": {
+                                      "enabled": {
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "enabled"
+                                    ],
+                                    "not": {
+                                      "required": [
+                                        "provider",
+                                        "model"
+                                      ]
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "suggestions"
+                                ]
+                              },
+                              "then": {
+                                "required": [
+                                  "llm"
+                                ]
+                              }
+                            }
+                          ],
+                          "additionalProperties": false,
+                          "required": [
+                            "name",
+                            "keywords"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "maxLength": 64,
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "description": "Stable router id; generated when omitted on create."
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255,
+                              "description": "Display name, unique across routers."
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "tier_boundaries": {
+                              "type": "object",
+                              "deprecated": true,
+                              "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
+                              "additionalProperties": false,
+                              "required": [
+                                "simple_medium",
+                                "medium_complex"
+                              ],
+                              "properties": {
+                                "simple_medium": {
+                                  "type": "number",
+                                  "deprecated": true,
+                                  "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
+                                  "exclusiveMinimum": 0,
+                                  "exclusiveMaximum": 1
+                                },
+                                "medium_complex": {
+                                  "type": "number",
+                                  "deprecated": true,
+                                  "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
+                                  "exclusiveMinimum": 0,
+                                  "exclusiveMaximum": 1
+                                }
+                              }
+                            },
+                            "keywords": {
+                              "type": "object",
+                              "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, the normalized lists may contain at most 750\nphrases combined, and the same phrase cannot appear in two tiers. The field\nnames predate semantic classification and are kept for backward compatibility.\n",
+                              "additionalProperties": false,
+                              "required": [
+                                "simple_keywords",
+                                "medium_keywords",
+                                "complex_keywords"
+                              ],
+                              "properties": {
+                                "simple_keywords": {
+                                  "type": "array",
+                                  "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 2000
+                                  },
+                                  "minItems": 1
+                                },
+                                "medium_keywords": {
+                                  "type": "array",
+                                  "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 2000
+                                  },
+                                  "minItems": 1
+                                },
+                                "complex_keywords": {
+                                  "type": "array",
+                                  "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 2000
+                                  },
+                                  "minItems": 1
+                                }
+                              }
+                            },
+                            "classifier": {
+                              "type": "string",
+                              "enum": [
+                                "semantic",
+                                "decision",
+                                "llm"
+                              ],
+                              "default": "semantic",
+                              "description": "Primary complexity classifier. llm classifies with the model in the llm block."
+                            },
+                            "semantic": {
+                              "type": "object",
+                              "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                              "additionalProperties": false,
+                              "required": [
+                                "provider",
+                                "embedding_model"
+                              ],
+                              "properties": {
+                                "provider": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "Provider used for embedding calls (must have an enabled key)"
+                                },
+                                "embedding_model": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "Embedding model, e.g. text-embedding-3-small"
+                                },
+                                "timeout": {
+                                  "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                                  "oneOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                                    },
+                                    {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0
+                                    }
+                                  ]
+                                },
+                                "min_similarity": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "exclusiveMaximum": 1,
+                                  "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                                },
+                                "message_history_count": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 10,
+                                  "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                                },
+                                "count_toward_budgets": {
+                                  "type": "boolean",
+                                  "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                                },
+                                "vector_store": {
+                                  "type": "string",
+                                  "enum": [
+                                    "embedded",
+                                    "vector_store"
+                                  ],
+                                  "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
+                                },
+                                "fallback": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none",
+                                    "llm",
+                                    "decision"
+                                  ],
+                                  "description": "What answers when semantic classification produces no tier. `none`\n(the default) records the request as skipped, `llm` uses the configured\nchat model, and `decision` uses the configured decision model.\n"
+                                }
+                              }
+                            },
+                            "decision": {
+                              "type": "object",
+                              "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
+                              "additionalProperties": false,
+                              "properties": {
+                                "provider": {
+                                  "type": "string",
+                                  "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                                },
+                                "model": {
+                                  "type": "string",
+                                  "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                                },
+                                "previous_message_count": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 5,
+                                  "default": 1,
+                                  "description": "Number of preceding user messages sent with the current user request. Assistant messages are excluded."
+                                },
+                                "timeout": {
+                                  "description": "Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.",
+                                  "oneOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                                    },
+                                    {
+                                      "type": "number",
+                                      "minimum": 0
+                                    }
+                                  ]
+                                },
+                                "min_confidence": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1,
+                                  "default": 0,
+                                  "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+                                },
+                                "criteria": {
+                                  "type": "object",
+                                  "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "SIMPLE": {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "definition": {
+                                          "type": "string",
+                                          "maxLength": 500,
+                                          "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                        },
+                                        "signals": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                        },
+                                        "examples": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                        }
+                                      }
+                                    },
+                                    "MEDIUM": {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "definition": {
+                                          "type": "string",
+                                          "maxLength": 500,
+                                          "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                        },
+                                        "signals": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                        },
+                                        "examples": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                        }
+                                      }
+                                    },
+                                    "COMPLEX": {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "definition": {
+                                          "type": "string",
+                                          "maxLength": 500,
+                                          "description": "Replaces this tier's shipped definition. Omit to use the default."
+                                        },
+                                        "signals": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped signals. Omit to use the default."
+                                        },
+                                        "examples": {
+                                          "type": "array",
+                                          "maxItems": 12,
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 300
+                                          },
+                                          "description": "Replaces this tier's shipped examples. Omit to use the default."
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "llm": {
+                              "type": "object",
+                              "description": "Chat-completion (LLM) fallback classifier settings. The block is inert\nunless `semantic.fallback` selects `llm`; the classifier runs only after\nsemantic classification produces no tier. Tier names (SIMPLE, MEDIUM,\nCOMPLEX) and the response format are fixed: the gateway always appends a\nnon-editable reinforcement stating them.\n",
+                              "additionalProperties": false,
+                              "required": [
+                                "provider",
+                                "model"
+                              ],
+                              "properties": {
+                                "provider": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "Provider used to run the classification chat completion (must have an enabled key)"
+                                },
+                                "model": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                                },
+                                "timeout": {
+                                  "description": "Per-request classification timeout. Accepts a duration string (\"2s\") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.",
+                                  "oneOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                                    },
+                                    {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0
+                                    }
+                                  ]
+                                },
+                                "prompt": {
+                                  "type": "string",
+                                  "maxLength": 4000,
+                                  "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited."
+                                },
+                                "message_history_count": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 10,
+                                  "description": "How many of the most recent user messages are given to the classifier, oldest first (default 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent."
+                                },
+                                "count_toward_budgets": {
+                                  "type": "boolean",
+                                  "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
+                                }
+                              }
+                            },
+                            "session": {
+                              "type": "object",
+                              "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                              "additionalProperties": false,
+                              "required": [
+                                "enabled"
+                              ],
+                              "properties": {
+                                "enabled": {
+                                  "type": "boolean",
+                                  "description": "Enable monotonic session tier retention; default is false."
+                                }
+                              }
+                            },
+                            "suggestions": {
+                              "type": "object",
+                              "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes is kept under each request's log ID (request text stays in the logs), and a run on the schedule clusters that traffic and asks the suggestion model for phrases. Vectors are captured only into the top-level vector_store, and not when that is Chromem, which keeps them in each gateway's memory; with no vector_store, or only the semantic classifier's embedded store, nothing is captured and no run has traffic to read. Captured vectors are deleted with their logs, and become due for deletion after lookback_days or the log retention, whichever is shorter; an hourly cleanup removes them, so one can remain up to an hour past that, and longer while the vector store is unavailable.",
+                              "additionalProperties": false,
+                              "required": [
+                                "enabled"
+                              ],
+                              "properties": {
+                                "enabled": {
+                                  "type": "boolean",
+                                  "description": "Capture a sample of classified requests and run suggestions on the schedule; default false. Capture needs a top-level vector_store other than Chromem; without one, enabling captures nothing. Enabling requires the semantic classifier as the primary classifier (a semantic block, classifier not decision) and a suggestion model (provider and model here, or an llm block)."
+                                },
+                                "sample_rate": {
+                                  "type": "number",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 1,
+                                  "description": "Share of classified requests captured; default 0.1."
+                                },
+                                "lookback_days": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 90,
+                                  "description": "Days of captured traffic a run draws on, and how long captured vectors are kept; default 7."
+                                },
+                                "schedule": {
+                                  "type": "object",
+                                  "description": "When suggestion runs start - at start_at and every fixed interval after it, the same on every node. Default daily at 03:00 UTC.",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "every": {
+                                      "type": "string",
+                                      "pattern": "^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$",
+                                      "description": "The interval, as a fixed duration - hours (1h-23h), days (1d-30d) or weeks (1w-4w). Default 1d.",
+                                      "example": "1d"
+                                    },
+                                    "start_at": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "description": "The first run, an RFC 3339 time such as 2026-11-12T03:00:00Z. Runs repeat every interval from it, so it also sets the time of day (in UTC - a daily run moves by an hour of local time across a daylight-saving change). Default 1970-01-01T03:00:00Z.",
+                                      "example": "2026-11-12T03:00:00Z"
+                                    }
+                                  }
+                                },
+                                "max_clustered_requests": {
+                                  "type": "integer",
+                                  "minimum": 1000,
+                                  "maximum": 100000,
+                                  "description": "Most captured requests one run clusters; the rest of the window is counted into the clusters found. Default 20000."
+                                },
+                                "min_cluster_requests": {
+                                  "type": "integer",
+                                  "minimum": 2,
+                                  "maximum": 1000,
+                                  "description": "Smallest cluster, in requests, a suggestion is written for; default 6. A run raises it to 0.1% of the requests in its window when that is larger."
+                                },
+                                "provider": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "pattern": "[^\\s\u000b   -     　]",
+                                  "description": "Provider of the suggestion model. Set together with model; both omitted use the llm block's model."
+                                },
+                                "model": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "pattern": "[^\\s\u000b   -     　]",
+                                  "description": "Suggestion model. Set together with provider; both omitted use the llm block's model."
+                                },
+                                "instructions": {
+                                  "type": "string",
+                                  "maxLength": 8000,
+                                  "description": "Replaces the shipped suggestion instructions (served as suggestion_default_instructions by the status endpoint). Tier definitions and the fixed output and safety rules are added either way."
+                                },
+                                "tier": {
+                                  "type": "object",
+                                  "description": "How each suggestion's tier is decided, after its phrases are written. Omitted: the llm classifier on the phrase model.",
+                                  "properties": {
+                                    "classifier": {
+                                      "type": "string",
+                                      "enum": [
+                                        "llm",
+                                        "decision"
+                                      ],
+                                      "description": "llm: a chat model prompted with instructions, the tier definitions, and the router's own phrases as examples. decision: a decision model asked one choice question with the router's tier definitions and its own phrases as examples. Shipped default phrases are never used as examples."
+                                    },
+                                    "provider": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "description": "Provider of the tier model. Set together with model; both omitted take the phrase model (llm) or the decision block's model, else the shipped decision model (decision), when the config is saved."
+                                    },
+                                    "model": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "description": "Tier model. Set together with provider."
+                                    },
+                                    "prompt": {
+                                      "type": "string",
+                                      "maxLength": 16000,
+                                      "description": "llm only: the whole tier prompt (instructions, tier definitions and examples), sent as written followed by the fixed output and safety rules. Empty: generated by each run from the router's tier definitions and its own phrases. The generated text is served as suggestion_default_tier_prompt by the model router status endpoint."
+                                    },
+                                    "instructions": {
+                                      "type": "string",
+                                      "maxLength": 8000,
+                                      "description": "decision only: the choice question's instructions, sent as written. Empty: the shipped instructions. Served as suggestion_default_tier_instructions."
+                                    },
+                                    "criteria": {
+                                      "type": "object",
+                                      "description": "decision only: each tier's definition, signals and examples, sent as written as that tier's choice. A tier left out is generated from the router (its decision definitions and signals, its own phrases as examples). The generated criteria are served as suggestion_default_tier_criteria.",
+                                      "properties": {
+                                        "SIMPLE": {
+                                          "type": "object",
+                                          "properties": {
+                                            "definition": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 500
+                                            },
+                                            "signals": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            },
+                                            "examples": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "definition"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "MEDIUM": {
+                                          "type": "object",
+                                          "properties": {
+                                            "definition": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 500
+                                            },
+                                            "signals": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            },
+                                            "examples": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "definition"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "COMPLEX": {
+                                          "type": "object",
+                                          "properties": {
+                                            "definition": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 500
+                                            },
+                                            "signals": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            },
+                                            "examples": {
+                                              "type": "array",
+                                              "maxItems": 12,
+                                              "items": {
+                                                "type": "string",
+                                                "maxLength": 300
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "definition"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "classifier"
+                                  ],
+                                  "additionalProperties": false,
+                                  "dependentRequired": {
+                                    "provider": [
+                                      "model"
+                                    ],
+                                    "model": [
+                                      "provider"
+                                    ]
+                                  }
+                                }
+                              },
+                              "dependentRequired": {
+                                "provider": [
+                                  "model"
+                                ],
+                                "model": [
+                                  "provider"
+                                ]
+                              }
+                            },
+                            "targets": {
+                              "type": "array",
+                              "readOnly": true,
+                              "description": "The model each tier gets. Returned with the router; set with PUT /api/routing/model-routers/{router_id}/targets. Ignored in a create or update body.",
+                              "items": {
+                                "type": "object",
+                                "description": "One model for one tier of a model router. Omitting provider or model keeps the request's value, but a target sets at least one.",
+                                "required": [
+                                  "tier",
+                                  "weight"
+                                ],
+                                "anyOf": [
+                                  {
+                                    "required": [
+                                      "provider"
+                                    ]
+                                  },
+                                  {
+                                    "required": [
+                                      "model"
+                                    ]
+                                  }
+                                ],
+                                "dependentRequired": {
+                                  "key_id": [
+                                    "provider"
+                                  ]
+                                },
+                                "properties": {
+                                  "tier": {
+                                    "type": "string",
+                                    "enum": [
+                                      "SIMPLE",
+                                      "MEDIUM",
+                                      "COMPLEX"
+                                    ]
+                                  },
+                                  "provider": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ],
+                                    "description": "Target provider (omit to keep the request's provider). Moving to another provider clears a key the routing rules pinned."
+                                  },
+                                  "model": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ],
+                                    "description": "Target model (omit to keep the request's model)"
+                                  },
+                                  "key_id": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ],
+                                    "description": "UUID of the API key to pin for this target"
+                                  },
+                                  "weight": {
+                                    "type": "number",
+                                    "format": "double",
+                                    "exclusiveMinimum": 0,
+                                    "description": "Probability weight within the tier; the weights of a tier sum to 1."
+                                  },
+                                  "fallbacks": {
+                                    "type": "array",
+                                    "description": "Fallback chain used when this target is chosen; it replaces the request's chain. Omit to keep the chain the routing rules set.",
+                                    "items": {
+                                      "description": "A fallback in a routing rule's chain. Either the \"provider/model\" string (\"provider/\" keeps the incoming model), or an object that additionally pins a provider key.",
+                                      "oneOf": [
+                                        {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "provider"
+                                          ],
+                                          "properties": {
+                                            "provider": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "description": "Fallback provider"
+                                            },
+                                            "model": {
+                                              "type": [
+                                                "string",
+                                                "null"
+                                              ],
+                                              "description": "Fallback model (omit or empty to use the incoming request model)"
+                                            },
+                                            "key_id": {
+                                              "type": [
+                                                "string",
+                                                "null"
+                                              ],
+                                              "description": "UUID of the API key to pin for this fallback (omit for load-balanced key selection). A fallback whose pinned key is missing from the provider's pool is skipped."
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "routing": {
+                              "allOf": [
+                                {
+                                  "type": "object",
+                                  "description": "Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it - narrowest scope first (virtual key, user, team, customer, global), by priority within a scope - and the first enabled router whose condition holds classifies the request. No other router is tried.",
+                                  "allOf": [
+                                    {
+                                      "if": {
+                                        "required": [
+                                          "scope"
+                                        ],
+                                        "properties": {
+                                          "scope": {
+                                            "not": {
+                                              "const": "global"
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "then": {
+                                        "required": [
+                                          "scope_id"
+                                        ]
+                                      }
+                                    }
+                                  ],
+                                  "properties": {
+                                    "enabled": {
+                                      "type": "boolean",
+                                      "default": false,
+                                      "description": "Whether the router takes requests."
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "global",
+                                        "team",
+                                        "customer",
+                                        "virtual_key",
+                                        "user"
+                                      ],
+                                      "default": "global",
+                                      "description": "Scope level. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked."
+                                    },
+                                    "scope_id": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "ID of the scope's entity. Required when scope is not global; dropped for global."
+                                    },
+                                    "cel_expression": {
+                                      "type": "string",
+                                      "description": "Optional CEL condition over the request as the routing rules left it. Empty takes every request in the scope. A condition of model == \"<name>\" lets apps ask for the router by that model name. Cannot use complexity_tier, which the router decides once it takes the request."
+                                    },
+                                    "query": {
+                                      "type": [
+                                        "object",
+                                        "null"
+                                      ],
+                                      "description": "Visual condition builder state (react-querybuilder combinator and rules). Not evaluated; cel_expression is."
+                                    },
+                                    "priority": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "default": 0,
+                                      "description": "Order within the scope; lower is tried first. Unique within the same scope and scope_id among model routers, separate from routing rule priorities; a duplicate returns 409."
+                                    }
+                                  }
+                                }
+                              ],
+                              "description": "Which requests the router takes. Always returned. Optional on create, where omitting it starts the router off, global, with the priority after the last global router. Ignored in an update body; set it with PUT /api/routing/model-routers/{router_id}/routing."
+                            }
+                          }
+                        },
+                        "accepted": {
+                          "type": "array",
+                          "description": "Only the suggestions actually marked accepted. One a run superseded while the phrases were saved, or whose status could not be written, is left out; the phrases stay saved either way.",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No phrases, an empty or too-long phrase, an unknown tier, a tier given twice, a phrase another tier already holds, or a bank past its phrase limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The router, or a suggestion named, does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A suggestion named is not open, or the stored router is one this version cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The suggestions named could not be read, the save failed, or the phrases were saved but the router could not be served; a retry saves nothing more and reaches the reload again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "suggestion_ids were sent while phrase suggestions are unavailable (no routing plugin or log store)",
             "content": {
               "application/json": {
                 "schema": {
@@ -88782,7 +92022,7 @@
           }
         },
         "summary": "Update complexity analyzer config (deprecated path)",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.",
         "tags": [
           "Routing"
         ],
@@ -108625,6 +111865,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109083,6 +112332,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109369,6 +112627,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109650,6 +112917,15 @@
             "name": "push_config_id",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
             "schema": {
               "type": "string"
             }
@@ -116329,6 +119605,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116541,6 +119821,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116752,6 +120036,10 @@
           },
           "push_config_id": {
             "type": "string"
+          },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
           },
           "delivery_id": {
             "type": "string"
@@ -118073,6 +121361,7 @@
           "minimax",
           "byteplus",
           "baseten",
+          "kimchi",
           "wally"
         ]
       },
@@ -123282,7 +126571,7 @@
         }
       },
       "DecisionInputPart": {
-        "description": "One part of a message's content. User messages take text, JSON, and image parts; assistant messages take output text and refusals.",
+        "description": "One part of a message's content. User messages take text, JSON, image, and file parts; assistant messages take output text and refusals.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/DecisionInputText"
@@ -123295,6 +126584,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImageAsset"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputFile"
           },
           {
             "$ref": "#/components/schemas/DecisionOutputText"
@@ -123409,6 +126701,66 @@
           "name": {
             "type": "string",
             "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
+          }
+        }
+      },
+      "DecisionInputFile": {
+        "type": "object",
+        "description": "A PDF, audio, or video file, read as evidence. Accepted on `/v1/decisions` only; `/openai/v1/decisions` rejects it with a 400, since OpenAI's Decisions API has no file part. Gemini reads it; every other provider rejects it with a 400. Send images as `input_image`. Exactly one of `data`, `url`, and `name` carries the file.",
+        "required": [
+          "type",
+          "mime_type"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "url"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_file"
+            ]
+          },
+          "mime_type": {
+            "type": "string",
+            "example": "application/pdf",
+            "description": "The file's media type, which decides how it is read. Gemini reads `application/pdf`, `audio/*`, and `video/*`; `image/*` is rejected."
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "The file, base64-encoded, without a `data:` prefix"
+          },
+          "url": {
+            "type": "string",
+            "description": "An HTTPS URL, or a Gemini Files API URI, that the model fetches the file from"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the file. A JSON request cannot use it."
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high",
+              "auto"
+            ],
+            "description": "A video's resolution. Audio and PDFs take none."
           }
         }
       },
@@ -125088,13 +128440,13 @@
           "alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -125111,13 +128463,13 @@
           "normalized_alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -136640,6 +139992,15 @@
           "is_code_mode_client": {
             "type": "boolean",
             "description": "Whether this client is available in code mode"
+          },
+          "server_type_on_slug": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "enabled",
+              "disabled"
+            ],
+            "description": "Code mode on this client's own /mcp/<slug> endpoint; \"inherit\" follows is_code_mode_client"
           },
           "connection_type": {
             "type": "string",

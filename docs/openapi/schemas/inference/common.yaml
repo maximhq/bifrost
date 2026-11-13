@@ -41,6 +41,7 @@ ModelProvider:
     - minimax
     - byteplus
     - baseten
+    - kimchi
     - wally
 
 Fallback:

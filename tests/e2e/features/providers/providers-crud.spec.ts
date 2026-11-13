@@ -471,6 +471,72 @@ test.describe("Providers", () => {
       expect(alias.deployment_url).toBeUndefined();
     });
 
+    test("should flag a pattern deployment whose model ID names a missing capture group", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("baseten"))) {
+        await providersPage.addKnownProviderFromDropdown("baseten");
+        createdProviders.push("baseten");
+      }
+      const keyName = `Baseten-Pattern-${Date.now()}`;
+      createdKeys.push({ provider: "baseten", keyName });
+      const pattern = "regex:(claude-.*)";
+      const created = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-baseten-key",
+          models: ["regex:claude-.*"],
+          weight: 1,
+          aliases: { [pattern]: { model_id: "global.anthropic.$1" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      const rejected = await page.request.post("/api/providers/baseten/keys", {
+        data: {
+          name: `${keyName}-bad`,
+          value: "e2e-baseten-key",
+          models: ["*"],
+          weight: 1,
+          aliases: { [pattern]: { model_id: "global.anthropic.$2" } },
+        },
+      });
+      expect(rejected.status(), await rejected.text()).toBe(400);
+      const savedAliases = async () => {
+        const response = await page.request.get("/api/providers/baseten/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases;
+      };
+
+      await page.reload();
+      await providersPage.selectProvider("baseten");
+      await providersPage.dismissToasts();
+      await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+      await page.getByRole("menuitem", { name: /Edit/i }).click();
+      await expect(providersPage.keyForm).toBeVisible();
+      await expect(page.getByTestId(`deployment-pattern-${pattern}`)).toBeVisible();
+      await expect(page.getByTestId(`deployment-pattern-error-${pattern}`)).toHaveCount(0);
+
+      // Without a capture group the saved model ID's $1 points at nothing.
+      const groupless = "regex:claude-.*";
+      await page.getByTestId(`deployment-name-${pattern}`).fill(groupless);
+      await expect(page.getByTestId(`deployment-pattern-error-${groupless}`)).toBeVisible();
+      await providersPage.keySaveBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      expect(await savedAliases(), "the groupless pattern must not be saved").toHaveProperty([pattern]);
+
+      // A different valid pattern keeps the form dirty; restoring the saved one would disable Save.
+      const corrected = "regex:(claude-opus-.*)";
+      await page.getByTestId(`deployment-name-${groupless}`).fill(corrected);
+      await expect(page.getByTestId(`deployment-pattern-error-${corrected}`)).toHaveCount(0);
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible();
+      const saved = await savedAliases();
+      expect(saved, "the replaced pattern must be gone").not.toHaveProperty([pattern]);
+      expect(saved[corrected].model_id).toBe("global.anthropic.$1");
+    });
+
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
       if (!(await providersPage.providerExists("azure"))) {
         await providersPage.addKnownProviderFromDropdown("azure");

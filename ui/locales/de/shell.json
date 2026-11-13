@@ -19,6 +19,7 @@
 		"budgetsLimits": "Budgets und Limits",
 		"routingRules": "Routing-Regeln",
 		"complexityRouter": "Komplexitäts-Router",
+		"routers": "Router",
 		"circuitBreaker": "Schutzschalter",
 		"pricingOverrides": "Preisüberschreibungen",
 		"modelSettings": "Modelleinstellungen",

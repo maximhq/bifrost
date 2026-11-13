@@ -12486,6 +12486,211 @@ const SYNC = SYNC_ROWS
   .flatMap((row) => SYNC_WAYS.filter((way) => !way.stickyOnly || row.sticky).map((way) => ({ row, way })))
   .map(({ row, way }, i) => syncCase(`SYNC-${String(i + 1).padStart(2, "0")}`, row, way));
 
+// ---------------------------------------------------------------- server_type_on_slug (SET-33..SET-35, EP-78..EP-82, PUD-91)
+// server_type_on_slug overrides is_code_mode_client on a client's own /mcp/<slug> only; /mcp, Virtual MCP slugs and
+// requests outside the gateway follow is_code_mode_client.
+const toolSetIs = (names) => A.custom(`tools/list names are ${lit([...names].sort())} in any order`, [
+  "var names = pm.response.json().result.tools.map(function (t) { return t.name; }).sort();",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit([...names].sort())});`,
+]);
+const codeModeAnd = (names) => toolSetIs([...CODE_MODE_TOOLS, ...names]);
+const execCode = (code) => call("executeToolCode", { code });
+const scriptRan = (contains) => A.custom(`the script ran${contains ? " and its result has " + lit(contains) : ""}`, [
+  "var r = pm.response.json().result;",
+  "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');",
+  "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+  ...(contains ? [`pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.include(${lit(contains)});`] : []),
+]);
+// stubFiles asserts whether the listToolFiles text (from the ES5 expression text) lists <server>.pyi.
+const stubFiles = (text, server, listed) => A.custom(`the listing ${listed ? "names" : "does not name"} ${server}.pyi`, [
+  `var files = (${text}).match(/[\\w.-]+\\.pyi/g) || [];`,
+  `pm.expect(files, 'body: ' + pm.response.text()).to${listed ? "" : ".not"}.include(${lit(server + ".pyi")});`,
+]);
+const notFound = (tool) => rpcError(-32602, `tool '${tool}' not found: tool not found`);
+const noInstructionsFor = (name) => A.custom(`instructions carry no ${name} block`, [
+  "var instr = (pm.response.json().result || {}).instructions || '';",
+  `pm.expect(instr, 'body: ' + pm.response.text()).to.not.include(${lit(`<mcp_server name="${name}">`)});`,
+]);
+// executeOutside lists the stub files through /v1/mcp/tool/execute, which no gateway slug reaches.
+const listFilesOutside = (id, title, asserts) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, asserts: [A.status(200), ...asserts],
+  body: { id: "c1", type: "function", function: { name: "listToolFiles", arguments: "{}" } },
+});
+// slugFleet is the two-server fleet with alpha and beta sending instructions "A1" and "B1", each client with its own
+// code mode settings.
+const slugFleet = (id, alphaOver, betaOver) => {
+  const p = id.toLowerCase();
+  return [
+    ...freshServer(id, "alpha", ["echo", "add"]),
+    ...freshServer(id, "beta", ["echo"]),
+    setInstructions(id, "alpha", "A1", "\"A1\""),
+    setInstructions(id, "beta", "B1", "\"B1\""),
+    createClient(id, httpClient(`${p}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false, ...alphaOver }), "setup: register client alpha"),
+    createClient(id, httpClient(`${p}-beta`, "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false, ...betaOver }), "setup: register client beta"),
+  ];
+};
+
+const SET33 = folder("SET-33 server_type_on_slug is stored, read back and validated", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; server_type_on_slug set to disabled, refused as \"on\", kept by an update that omits it, cleared with inherit; then a second client created with enabled, and a create with \"on\" refused.", [
+  ...setClient("SET-33", {}),
+  getClient("SET-33", "set-33-a", "a client that never set it reads back as inherit", [clientField("config.server_type_on_slug", "inherit")]),
+  request("SET-33", "set server_type_on_slug disabled", "PUT", "/api/mcp/client/set-33-a", { body: { server_type_on_slug: "disabled" }, asserts: [A.status(200)] }),
+  getClient("SET-33", "set-33-a", "disabled reads back", [clientField("config.server_type_on_slug", "disabled")]),
+  request("SET-33", "an update to \"on\" is refused", "PUT", "/api/mcp/client/set-33-a", { body: { server_type_on_slug: "on" }, asserts: [A.status(400), A.msgContains("server_type_on_slug")] }),
+  request("SET-33", "an update that omits server_type_on_slug", "PUT", "/api/mcp/client/set-33-a", { body: { tools_to_auto_execute: ["echo_tool"] }, asserts: [A.status(200)] }),
+  getClient("SET-33", "set-33-a", "neither update changed it", [clientField("config.server_type_on_slug", "disabled")]),
+  request("SET-33", "set server_type_on_slug inherit", "PUT", "/api/mcp/client/set-33-a", { body: { server_type_on_slug: "inherit" }, asserts: [A.status(200)] }),
+  getClient("SET-33", "set-33-a", "inherit clears the override", [clientField("config.server_type_on_slug", "inherit")]),
+  request("SET-33", "a create with \"on\" is refused", "POST", "/api/mcp/client", {
+    body: httpClient("set-33-bad", "alpha_bad", "alpha", { tools_to_execute: ["*"], server_type_on_slug: "on" }),
+    asserts: [A.status(400), A.msgEquals("Invalid request payload")],
+  }),
+  createClient("SET-33", httpClient("set-33-b", "alpha_b", "alpha", { tools_to_execute: ["*"], server_type_on_slug: "enabled" }), "create client alpha_b with server_type_on_slug enabled"),
+  getClient("SET-33", "set-33-b", "enabled reads back", [clientField("config.server_type_on_slug", "enabled")]),
+  deleteClient("SET-33", "set-33-b"),
+  deleteClient("SET-33", "set-33-a"),
+]);
+
+const SET34 = folder("SET-34 server_type_on_slug swaps the tools on the client's own slug", "Setup: alpha (echo_tool, add_tool) as client alpha (slug \"alpha\"), a code-mode client, per call, tools_to_execute [\"*\"]; server_type_on_slug set disabled, then cleared to inherit; then is_code_mode_client false with server_type_on_slug enabled; then inherit. /mcp follows is_code_mode_client throughout.", [
+  ...setClient("SET-34", { is_code_mode_client: true }),
+  list("SET-34", "control: /mcp/alpha inherits code mode", "/mcp/alpha", [], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  request("SET-34", "set server_type_on_slug disabled", "PUT", "/api/mcp/client/set-34-a", { body: { server_type_on_slug: "disabled" }, asserts: [A.status(200)] }),
+  list("SET-34", "/mcp/alpha serves alpha's tools directly", "/mcp/alpha", [], [A.status(200), toolSetIs(["alpha-add_tool", "alpha-echo_tool"])]),
+  list("SET-34", "/mcp stays in code mode", "/mcp", [], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  request("SET-34", "clear it back to inherit", "PUT", "/api/mcp/client/set-34-a", { body: { server_type_on_slug: "inherit" }, asserts: [A.status(200)] }),
+  list("SET-34", "/mcp/alpha is in code mode again", "/mcp/alpha", [], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  request("SET-34", "set is_code_mode_client false and server_type_on_slug enabled", "PUT", "/api/mcp/client/set-34-a", { body: { is_code_mode_client: false, server_type_on_slug: "enabled" }, asserts: [A.status(200)] }),
+  list("SET-34", "/mcp/alpha serves code mode", "/mcp/alpha", [], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  list("SET-34", "/mcp serves alpha's tools directly", "/mcp", [], [A.status(200), toolSetIs(["alpha-add_tool", "alpha-echo_tool"])]),
+  request("SET-34", "set server_type_on_slug inherit", "PUT", "/api/mcp/client/set-34-a", { body: { server_type_on_slug: "inherit" }, asserts: [A.status(200)] }),
+  list("SET-34", "/mcp/alpha follows is_code_mode_client again", "/mcp/alpha", [], [A.status(200), toolSetIs(["alpha-add_tool", "alpha-echo_tool"])]),
+  deleteClient("SET-34", "set-34-a"),
+]);
+
+const EP78 = folder("EP-78 A code-mode client served directly on its own slug", `Setup: ${FLEET}, alpha a code-mode client with server_type_on_slug disabled; alpha and beta send instructions "A1" and "B1"; no credential (enforce_auth_on_inference off). gamma (echo) is registered the same way at the end, so the server-given name echo is ambiguous on /mcp.`, [
+  ...slugFleet("EP-78", { is_code_mode_client: true, server_type_on_slug: "disabled" }, {}),
+  initialize("EP-78", "initialize on /mcp carries beta's block only", [instructionsEqual(block("beta", "B1"))]),
+  initialize("EP-78", "initialize on /mcp/alpha carries alpha's block", [instructionsEqual(block("alpha", "A1"))], { path: "/mcp/alpha" }),
+  list("EP-78", "/mcp lists the code-mode tools and beta", "/mcp", [], [A.status(200), codeModeAnd(["beta-echo"])]),
+  list("EP-78", "/mcp/alpha lists alpha's tools directly", "/mcp/alpha", [], [A.status(200), toolSetIs(["alpha-add", "alpha-echo"])]),
+  list("EP-78", "/mcp/beta is unchanged", "/mcp/beta", [], [A.status(200), toolSetIs(["beta-echo"])]),
+  rpc("EP-78", "alpha-echo on /mcp is unknown", call("alpha-echo", { text: "hi" }), { asserts: [A.status(200), notFound("alpha-echo")] }),
+  mockCalls("EP-78", "alpha", "echo", 0),
+  rpc("EP-78", "alpha-echo on /mcp/alpha runs", call("alpha-echo", { text: "hi" }), { path: "/mcp/alpha", asserts: [A.status(200), rpcResult()] }),
+  mockCalls("EP-78", "alpha", "echo", 1),
+  rpc("EP-78", "the server-given name echo on /mcp/alpha runs alpha's echo", call("echo", { text: "hi" }), { path: "/mcp/alpha", asserts: [A.status(200), rpcResult()] }),
+  mockCalls("EP-78", "alpha", "echo", 2),
+  rpc("EP-78", "the server-given name echo on /mcp resolves to beta, never alpha", call("echo", { text: "hi" }), { asserts: [A.status(200), rpcResult()] }),
+  mockCalls("EP-78", "beta", "echo", 1),
+  mockCalls("EP-78", "alpha", "echo", 2),
+  rpc("EP-78", "executeToolCode on /mcp/alpha is refused", execCode("result = 1"), { path: "/mcp/alpha", asserts: [A.status(200), toolResultError(null, "not permitted")] }),
+  rpc("EP-78", "a script on /mcp calls alpha", execCode("result = alpha.echo(text=\"hi\")"), { asserts: [A.status(200), scriptRan("echo:")] }),
+  mockCalls("EP-78", "alpha", "echo", 3),
+  rpc("EP-78", "a script on /mcp has no binding for beta", execCode("result = beta.echo(text=\"hi\")"), { asserts: [A.status(200), toolResultError(null, "undefined: beta")] }),
+  mockCalls("EP-78", "beta", "echo", 1),
+  listFilesOutside("EP-78", "listToolFiles outside the gateway lists alpha", [stubFiles("pm.response.json().content", "alpha", true)]),
+  ...freshServer("EP-78", "gamma", ["echo"]),
+  createClient("EP-78", httpClient("ep-78-gamma", "gamma", "gamma", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client gamma"),
+  rpc("EP-78", "with gamma also serving echo, the server-given name echo on /mcp is ambiguous between beta and gamma only", call("echo", { text: "hi" }), {
+    asserts: [A.status(200), toolResultError("tool 'echo' is ambiguous here"), A.custom("the refusal offers beta-echo and gamma-echo, never alpha-echo", [
+      "var text = pm.response.json().result.content[0].text;",
+      "pm.expect(text, 'text: ' + text).to.include('beta-echo');",
+      "pm.expect(text).to.include('gamma-echo');",
+      "pm.expect(text).to.not.include('alpha-echo');",
+    ])],
+  }),
+  mockCalls("EP-78", "alpha", "echo", 3),
+  deleteClient("EP-78", "ep-78-gamma"),
+  ...fleetTeardown("EP-78"),
+]);
+
+const EP79 = folder("EP-79 A direct client served in code mode on its own slug", `Setup: ${FLEET}, alpha with server_type_on_slug enabled; alpha and beta send instructions "A1" and "B1"; no other code-mode client; no credential (enforce_auth_on_inference off).`, [
+  ...slugFleet("EP-79", { server_type_on_slug: "enabled" }, {}),
+  initialize("EP-79", "initialize on /mcp carries both blocks", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"))]),
+  initialize("EP-79", "initialize on /mcp/alpha leaves alpha's block to its stub", [noInstructionsFor("alpha")], { path: "/mcp/alpha" }),
+  list("EP-79", "/mcp lists alpha and beta directly", "/mcp", [], [A.status(200), toolSetIs(["alpha-add", "alpha-echo", "beta-echo"])]),
+  list("EP-79", "/mcp/alpha lists the code-mode tools only", "/mcp/alpha", [], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  list("EP-79", "/mcp/beta is unchanged", "/mcp/beta", [], [A.status(200), toolSetIs(["beta-echo"])]),
+  rpc("EP-79", "alpha-echo on /mcp/alpha is unknown", call("alpha-echo", { text: "hi" }), { path: "/mcp/alpha", asserts: [A.status(200), notFound("alpha-echo")] }),
+  rpc("EP-79", "alpha-echo on /mcp runs", call("alpha-echo", { text: "hi" }), { asserts: [A.status(200), rpcResult()] }),
+  mockCalls("EP-79", "alpha", "echo", 1),
+  rpc("EP-79", "executeToolCode on /mcp is unknown", execCode("result = 1"), { asserts: [A.status(200), notFound("executeToolCode")] }),
+  rpc("EP-79", "executeToolCode on /mcp/beta is refused", execCode("result = 1"), { path: "/mcp/beta", asserts: [A.status(200), toolResultError(null, "not permitted")] }),
+  rpc("EP-79", "listToolFiles on /mcp/alpha lists alpha", call("listToolFiles", {}), { path: "/mcp/alpha", asserts: [A.status(200), stubFiles("pm.response.json().result.content[0].text", "alpha", true)] }),
+  rpc("EP-79", "a script on /mcp/alpha calls alpha", execCode("result = alpha.echo(text=\"hi\")"), { path: "/mcp/alpha", asserts: [A.status(200), scriptRan("echo:")] }),
+  mockCalls("EP-79", "alpha", "echo", 2),
+  listFilesOutside("EP-79", "listToolFiles outside the gateway does not list alpha", [A.custom("no client is in code mode there", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('none are configured for code mode');"])]),
+  ...fleetTeardown("EP-79"),
+]);
+
+const EP80 = folder("EP-80 A Virtual MCP slug follows is_code_mode_client", `Setup: ${FLEET}, alpha a code-mode client with server_type_on_slug disabled, beta with server_type_on_slug enabled; the full-access VK (${VKS.full.text}); ${TEAM_TEXT}.`, [
+  ...slugFleet("EP-80", { is_code_mode_client: true, server_type_on_slug: "disabled" }, { server_type_on_slug: "enabled" }),
+  createVK("EP-80", "full"), ...teamSetup("EP-80"),
+  list("EP-80", "/mcp/team lists the code-mode tools for alpha and beta directly", "/mcp/team", [vkHeader("EP-80", "full")], [A.status(200), codeModeAnd(["beta-echo"])]),
+  rpc("EP-80", "alpha-echo on /mcp/team is unknown", call("alpha-echo", { text: "hi" }), { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-80", "full")], asserts: [A.status(200), notFound("alpha-echo")] }),
+  rpc("EP-80", "beta-echo on /mcp/team runs", call("beta-echo", { text: "hi" }), { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-80", "full")], asserts: [A.status(200), rpcResult()] }),
+  mockCalls("EP-80", "beta", "echo", 1),
+  mockCalls("EP-80", "alpha", "echo", 0),
+  listFilesOutside("EP-80", "listToolFiles outside the gateway lists alpha", [stubFiles("pm.response.json().content", "alpha", true)]),
+  listFilesOutside("EP-80", "listToolFiles outside the gateway does not list beta", [stubFiles("pm.response.json().content", "beta", false)]),
+  teamTeardown("EP-80"), deleteVK("EP-80", "full"),
+  ...fleetTeardown("EP-80"),
+]);
+
+const EP81 = folder("EP-81 A slug-only code mode beside a per-user code-mode client", `Setup: ${FLEET}, alpha with server_type_on_slug enabled; ${HDOOR_TEXT("ep81")}, also a code-mode client; VK-A signed in to ep81 with key-a; the anonymous caller has no discovery (enforce_auth_on_inference off).`, [
+  ...slugFleet("EP-81", { server_type_on_slug: "enabled" }, {}),
+  ...hdoor("EP-81", "ep81", { over: { is_code_mode_client: true } }),
+  pudVK("EP-81", "ep81", "a"),
+  ...signInH("EP-81", "ep81", "a"),
+  gwList("EP-81", "VK-A's gw-list is the four code-mode tools", [vkOf("ep81", "a")], CODE_MODE_TOOLS),
+  rpc("EP-81", "VK-A's script on /mcp calls ep81", execCode("result = ep81.echo_tool(text=\"hi\")"), { headers: [MCP_ACCEPT, vkOf("ep81", "a")], asserts: [A.status(200), scriptRan("echo_tool:")] }),
+  list("EP-81", "the anonymous /mcp lists no code-mode tool", "/mcp", [], [A.status(200), A.custom("no code-mode tool is listed", [
+    `var names = ${mcpNames};`,
+    `pm.expect(names.filter(function (n) { return ${lit(CODE_MODE_TOOLS)}.indexOf(n) !== -1; }), 'body: ' + pm.response.text()).to.eql([]);`,
+  ])]),
+  rpc("EP-81", "executeToolCode on the anonymous /mcp is unknown", execCode("result = 1"), { asserts: [A.status(200), notFound("executeToolCode")] }),
+  rpc("EP-81", "executeToolCode on /mcp/alpha runs", execCode("result = 1"), { path: "/mcp/alpha", asserts: [A.status(200), scriptRan()] }),
+  deleteClient("EP-81", "ep81-h"),
+  pudVKDelete("EP-81", "ep81", "a"),
+  ...fleetTeardown("EP-81"),
+]);
+
+const SET35 = folder("SET-35 server_type_on_slug from config.json at boot", "Setup: the runner's config.json declares set35_c (slug \"set35\"), a code-mode client with server_type_on_slug disabled and tool_sync_interval \"5s\" on fleet server set35, which this test creates (echo_tool, add_tool).", [
+  ...freshServer("SET-35", "set35", ["echo_tool", "add_tool"]),
+  getClient("SET-35", "set35-c", "set35_c syncs its tools and reads back server_type_on_slug disabled", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), clientField("config.server_type_on_slug", "disabled")], { pre: pollClientTools("set35-c", 2, 30) }),
+  list("SET-35", "/mcp/set35 serves set35_c's tools directly", "/mcp/set35", [], [A.status(200), toolSetIs(["set35_c-add_tool", "set35_c-echo_tool"])]),
+  list("SET-35", "/mcp keeps set35_c behind code mode", "/mcp", [], [A.status(200), A.custom("lists the code-mode tools and no set35_c-* tool", [
+    `var names = ${mcpNames};`,
+    `${lit(CODE_MODE_TOOLS)}.forEach(function (n) { pm.expect(names, 'body: ' + pm.response.text()).to.include(n); });`,
+    "pm.expect(names.filter(function (n) { return n.indexOf('set35_c-') === 0; })).to.eql([]);",
+  ])]),
+  deleteClient("SET-35", "set35-c"),
+]);
+
+const EP82 = folder("EP-82 LLM requests follow is_code_mode_client, not server_type_on_slug", `Setup: ${FLEET}, alpha a code-mode client with server_type_on_slug disabled, beta with server_type_on_slug enabled; ${LLM_TEXT}.`, [
+  ...slugFleet("EP-82", { is_code_mode_client: true, server_type_on_slug: "disabled" }, { server_type_on_slug: "enabled" }),
+  llmScript("EP-82", "ep82", TEXT_OK),
+  infChat("EP-82", "chat completion", "ep82", [A.status(200), chatContent("ok")]),
+  llmCaptured("EP-82", "the model is offered alpha through code mode and beta directly", "ep82", [reqCount(1), A.custom(`request 1 declares exactly ${lit([...CODE_MODE_TOOLS, "beta-echo"].sort())}`, [
+    REQS, `pm.expect((reqs[0] && reqs[0].tools || []).slice().sort(), 'body: ' + pm.response.text()).to.eql(${lit([...CODE_MODE_TOOLS, "beta-echo"].sort())});`,
+  ])]),
+  ...fleetTeardown("EP-82"),
+]);
+
+const PUD91 = folder("PUD-91 A per-user client in code mode on its own slug only", `Setup: ${HDOOR_TEXT("pud91")}, with server_type_on_slug enabled (is_code_mode_client false); VK-A signed in with key-a; VK-B without a credential.`, [
+  ...hdoor("PUD-91", "pud91", { over: { server_type_on_slug: "enabled" } }),
+  pudVK("PUD-91", "pud91", "a"), pudVK("PUD-91", "pud91", "b"),
+  ...signInH("PUD-91", "pud91", "a"),
+  gwList("PUD-91", "VK-A's gw-list serves pud91's tools directly", [vkOf("pud91", "a")], ["pud91-add_tool", "pud91-echo_tool"]),
+  list("PUD-91", "VK-A's /mcp/pud91 is the four code-mode tools", "/mcp/pud91", [vkOf("pud91", "a")], [A.status(200), toolSetIs(CODE_MODE_TOOLS)]),
+  rpc("PUD-91", "pud91-echo_tool on VK-A's /mcp/pud91 is unknown", call("pud91-echo_tool", { text: "hi" }), { path: "/mcp/pud91", headers: [MCP_ACCEPT, vkOf("pud91", "a")], asserts: [A.status(200), notFound("pud91-echo_tool")] }),
+  resetCounters("PUD-91", "pud91"),
+  rpc("PUD-91", "VK-A's script on /mcp/pud91 calls pud91 as key-a", execCode("result = pud91.echo_tool(text=\"hi\")"), { path: "/mcp/pud91", headers: [MCP_ACCEPT, vkOf("pud91", "a")], asserts: [A.status(200), scriptRan("echo_tool:")] }),
+  mockGet("PUD-91", "pud91", "the nested call ran under key-a", [identityCallsAre({ "key-a": 1 }), callsIs("echo_tool", 1)]),
+  list("PUD-91", "VK-B's /mcp/pud91 offers pud91-connect only", "/mcp/pud91", [vkOf("pud91", "b")], [A.status(200), toolSetIs(["pud91-connect"])]),
+  deleteClient("PUD-91", "pud91-h"),
+  pudVKDelete("PUD-91", "pud91", "a"), pudVKDelete("PUD-91", "pud91", "b"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -12502,15 +12707,15 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
-    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, GO37]),
+    section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, PUD91, GO37]),
     section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
   ],
 };

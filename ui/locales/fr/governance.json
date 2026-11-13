@@ -50,7 +50,8 @@
 			"budgetLimits": "Limites budgétaires",
 			"updateAction": "Mettre à jour le client",
 			"createAction": "Créer le client",
-			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour ce client, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement."
+			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour ce client, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement.",
+			"limitsCheckFailed": "Impossible de vérifier ce qui encadre les dépenses de ce client : son budget et sa limite de débit ne peuvent pas encore être affichés."
 		},
 		"detail": {
 			"title": "Détails du client",
