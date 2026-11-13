@@ -27,30 +27,21 @@ func TestPreconditions(t *testing.T) {
 		logf(t, lc.at(1), "PASS", "bifrost_reachable", map[string]any{"status": status})
 	})
 
-	t.Run("0.2_openai_configured", func(t *testing.T) {
+	t.Run("0.2_providers_configured", func(t *testing.T) {
 		lc := lc
-		lc.name = "0.2_openai_configured"
+		lc.name = "0.2_providers_configured"
 		ps := providersList(t, lc, 1)
-		if !hasProvider(ps, "openai") {
-			logf(t, lc.at(2), "FAIL", "openai_missing", nil)
-			t.Fatalf("openai provider not configured (got %d providers)", len(ps))
-		}
-		logf(t, lc.at(2), "PASS", "openai_present", nil)
-	})
-
-	t.Run("0.3_optional_providers", func(t *testing.T) {
-		lc := lc
-		lc.name = "0.3_optional_providers"
-		ps := providersList(t, lc, 1)
-		for _, want := range []string{"gemini", "anthropic"} {
-			if hasProvider(ps, want) {
-				logf(t, lc.at(2), "PASS", "provider_present", map[string]any{"provider": want})
-			} else {
-				logf(t, lc.at(2), "WARN", "provider_absent", map[string]any{
-					"provider": want,
-					"effect":   "cross-provider cases will skip",
-				})
+		// All three are REQUIRED: the suite's config.json configures them and
+		// the cross-provider cases fail (not skip) when one is missing, so a
+		// gap here means the gateway isn't running against
+		// tests/semanticcache/config.json or a key env var isn't exported.
+		for _, want := range []string{"openai", "anthropic", "gemini"} {
+			if !hasProvider(ps, want) {
+				logf(t, lc.at(2), "FAIL", "provider_missing", map[string]any{"provider": want})
+				t.Errorf("%s provider not configured (got %d providers) — start Bifrost with APP_DIR=tests/semanticcache and export the provider's key env var", want, len(ps))
+				continue
 			}
+			logf(t, lc.at(2), "PASS", "provider_present", map[string]any{"provider": want})
 		}
 	})
 
