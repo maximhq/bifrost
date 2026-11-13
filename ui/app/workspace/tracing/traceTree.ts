@@ -107,13 +107,33 @@ export interface ThreadMessage {
 	role: string;
 	text: string;
 	spanId: string;
+	/** The model call the message was first seen in: its model and start time. */
+	model?: string;
+	at: string;
+	/** Images, audio and files in the message, shown under its text. */
+	attachments: SpanAttachment[];
 }
 
+// Message parts that carry a file, not text: OpenAI, Anthropic, OTel GenAI, Vercel AI, OpenInference.
+const BINARY_PART_TYPES = new Set([
+	"blob",
+	"uri",
+	"image",
+	"image_url",
+	"input_image",
+	"input_audio",
+	"audio",
+	"file",
+	"input_file",
+	"document",
+]);
+
 function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
+	if (typeof content === "string") return content.startsWith("data:") ? "" : content;
 	if (Array.isArray(content)) return content.map(contentText).filter(Boolean).join("\n");
 	if (content && typeof content === "object") {
 		const record = content as Record<string, unknown>;
+		if (typeof record.type === "string" && BINARY_PART_TYPES.has(record.type)) return "";
 		for (const key of ["text", "content", "message_content"]) {
 			if (key in record) return contentText(record[key]);
 		}
@@ -121,7 +141,7 @@ function contentText(content: unknown): string {
 	return "";
 }
 
-export function messagesOf(value: unknown): { role: string; text: string }[] {
+export function messagesOf(value: unknown): { role: string; text: string; content?: unknown }[] {
 	let parsed = value;
 	if (typeof value === "string") {
 		try {
@@ -135,14 +155,16 @@ export function messagesOf(value: unknown): { role: string; text: string }[] {
 		parsed = record.messages ?? record.input ?? record.choices ?? parsed;
 	}
 	if (!Array.isArray(parsed)) return [];
-	const messages: { role: string; text: string }[] = [];
+	const messages: { role: string; text: string; content?: unknown }[] = [];
 	for (const item of parsed) {
 		if (!item || typeof item !== "object") continue;
 		let record = item as Record<string, unknown>;
 		if (record.message && typeof record.message === "object") record = record.message as Record<string, unknown>;
 		const role = typeof record.role === "string" ? record.role : "";
-		const text = contentText(record.content ?? record.contents ?? record.parts);
-		if (role && text) messages.push({ role, text });
+		const content = record.content ?? record.contents ?? record.parts;
+		const text = contentText(content);
+		const hasFile = typeof content === "object" && content !== null && collectAttachments("", (c) => c.walk(content, "input")).length > 0;
+		if (role && (text || hasFile)) messages.push({ role, text, content });
 	}
 	return messages;
 }
@@ -155,19 +177,20 @@ export function buildThread(spans: TraceSpan[]): ThreadMessage[] {
 	const calls = spans.filter((span) => span.kind === "llm").sort((a, b) => startOf(a) - startOf(b));
 	const thread: ThreadMessage[] = [];
 	const seen = new Set<string>();
-	const add = (role: string, text: string, spanId: string) => {
-		const key = `${role}\u0000${text}`;
+	const add = (role: string, text: string, call: TraceSpan, content?: unknown) => {
+		const attachments = content === undefined ? [] : collectAttachments(call.project_id, (c) => c.walk(content, "input"));
+		const key = `${role}\u0000${text}\u0000${attachments.map((a) => a.uploadId ?? a.src).join(",")}`;
 		if (seen.has(key)) return;
 		seen.add(key);
-		thread.push({ role, text, spanId });
+		thread.push({ role, text, spanId: call.span_id, model: call.link_snapshot?.model || call.model, at: call.start_time, attachments });
 	};
 	for (const call of calls) {
-		for (const message of messagesOf(call.input)) add(message.role, message.text, call.span_id);
+		for (const message of messagesOf(call.input)) add(message.role, message.text, call, message.content);
 		const replies = messagesOf(call.output);
 		if (replies.length > 0) {
-			for (const reply of replies) add(reply.role || "assistant", reply.text, call.span_id);
+			for (const reply of replies) add(reply.role || "assistant", reply.text, call, reply.content);
 		} else if (call.output && !call.output.trim().startsWith("[") && !call.output.trim().startsWith("{")) {
-			add("assistant", call.output, call.span_id);
+			add("assistant", call.output, call);
 		}
 	}
 	return thread;
@@ -185,4 +208,151 @@ export function spanUsage(span: TraceSpan): { tokens: number; cost?: number; est
 		cachedShare: prompt > 0 ? Math.min(cached / prompt, 1) : 0,
 		linked: Boolean(linked),
 	};
+}
+/** A file a span refers to: uploaded to Bifrost, inline as base64, or at an outside URL. */
+export interface SpanAttachment {
+	kind: "upload" | "inline" | "url";
+	field: "input" | "output" | "expected" | "metadata";
+	name: string;
+	contentType: string;
+	/** The id under /api/traces/uploads, for kind "upload". */
+	uploadId?: string;
+	/** A data: URL for kind "inline", the outside URL for kind "url". */
+	src?: string;
+}
+
+const LANGFUSE_MEDIA = /@@@langfuseMedia:type=([^|@]+)\|id=([^|@]+)\|source=[^@]+@@@/g;
+const DATA_URL = /data:([\w.+-]+\/[\w.+-]+);base64,[A-Za-z0-9+/=]+/g;
+const EXTENSION_TYPES: Record<string, string> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	mp3: "audio/mpeg",
+	wav: "audio/wav",
+	ogg: "audio/ogg",
+	mp4: "video/mp4",
+	webm: "video/webm",
+	pdf: "application/pdf",
+};
+
+function typeFromURL(url: string): string {
+	const extension = url.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
+	return EXTENSION_TYPES[extension] ?? "";
+}
+
+// The upload id Bifrost gives a Braintrust attachment key: see braintrustAttachmentID on the server.
+function braintrustUploadId(key: string): string {
+	return "bt-" + key.replace(/[^a-zA-Z0-9-]/g, "-");
+}
+
+function decode(value: string): unknown {
+	const trimmed = value.trim();
+	if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return value;
+	}
+}
+
+/**
+ * Every attachment in a span's input, output, expected value and metadata, in the forms the SDKs send:
+ * Braintrust attachment and external-attachment references, Langfuse media tokens, base64 data URLs
+ * (OpenAI and OpenInference images), Anthropic base64 sources, and OTel GenAI blob and uri parts.
+ */
+export function spanAttachments(span: TraceSpan): SpanAttachment[] {
+	return collectAttachments(span.project_id, (c) => {
+		c.walk(span.input, "input");
+		c.walk(span.output, "output");
+		c.walk(span.expected, "expected");
+		c.walk(span.metadata, "metadata");
+	});
+}
+
+interface AttachmentCollector {
+	walk: (value: unknown, field: SpanAttachment["field"]) => void;
+}
+
+/** Runs fill over a fresh collector and returns what it found, each attachment once. */
+function collectAttachments(projectId: string, fill: (collector: AttachmentCollector) => void): SpanAttachment[] {
+	const found: SpanAttachment[] = [];
+	const seen = new Set<string>();
+	const add = (attachment: SpanAttachment) => {
+		const id = attachment.uploadId ?? attachment.src ?? "";
+		if (!id || seen.has(id)) return;
+		seen.add(id);
+		found.push(attachment);
+	};
+	const nameFor = (field: SpanAttachment["field"], contentType: string) =>
+		`${field} ${contentType.split("/")[0] || "file"} ${found.filter((a) => a.field === field).length + 1}`;
+
+	const scanText = (text: string, field: SpanAttachment["field"]) => {
+		for (const match of text.matchAll(LANGFUSE_MEDIA)) {
+			// Stored per project: see langfuseUploadID on the server.
+			add({ kind: "upload", field, contentType: match[1], uploadId: `lf-${projectId}-${match[2]}`, name: nameFor(field, match[1]) });
+		}
+		for (const match of text.matchAll(DATA_URL)) {
+			add({ kind: "inline", field, contentType: match[1], src: match[0], name: nameFor(field, match[1]) });
+		}
+	};
+
+	const walk = (value: unknown, field: SpanAttachment["field"], depth: number): void => {
+		if (depth > 12 || value === null || value === undefined) return;
+		if (typeof value === "string") {
+			const decoded = decode(value);
+			if (decoded !== value) walk(decoded, field, depth + 1);
+			else scanText(value, field);
+			return;
+		}
+		if (Array.isArray(value)) {
+			value.forEach((item) => walk(item, field, depth + 1));
+			return;
+		}
+		if (typeof value !== "object") return;
+		const node = value as Record<string, unknown>;
+		const str = (key: string) => (typeof node[key] === "string" ? (node[key] as string) : "");
+		const declaredType = str("content_type") || str("mime_type") || str("media_type") || str("contentType");
+		if (node.type === "braintrust_attachment" && str("key")) {
+			const contentType = declaredType || "application/octet-stream";
+			add({
+				kind: "upload",
+				field,
+				contentType,
+				uploadId: braintrustUploadId(str("key")),
+				name: str("filename") || nameFor(field, contentType),
+			});
+			return;
+		}
+		if (node.type === "external_attachment" && str("url")) {
+			const contentType = declaredType || typeFromURL(str("url"));
+			add({ kind: "url", field, contentType, src: str("url"), name: str("filename") || nameFor(field, contentType) });
+			return;
+		}
+		// OTel GenAI blob part and Anthropic base64 source: bytes inline with their type.
+		const base64 = node.type === "blob" ? str("content") : node.type === "base64" ? str("data") : "";
+		if (base64 && declaredType) {
+			add({
+				kind: "inline",
+				field,
+				contentType: declaredType,
+				src: `data:${declaredType};base64,${base64}`,
+				name: nameFor(field, declaredType),
+			});
+			return;
+		}
+		// A URL in a field that names a file: OTel uri parts, image_url, OpenInference image.url.
+		for (const key of ["uri", "url"]) {
+			const url = str(key);
+			if (/^https?:\/\//.test(url)) {
+				const contentType = declaredType || typeFromURL(url);
+				if (contentType) add({ kind: "url", field, contentType, src: url, name: str("filename") || nameFor(field, contentType) });
+			}
+		}
+		for (const child of Object.values(node)) walk(child, field, depth + 1);
+	};
+
+	fill({ walk: (value, field) => walk(value, field, 0) });
+	return found;
 }

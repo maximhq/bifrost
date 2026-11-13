@@ -134,9 +134,14 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 		UploadURL *string `json:"uploadUrl"`
 	}
 	require.NoError(t, sonic.Unmarshal(media.Response.Body(), &created))
+	// Langfuse 5 computes the id itself (url-safe base64 of the SHA-256, first 22 characters) and
+	// cancels the upload when the server answers with another one.
+	assert.Equal(t, "n4bQgYhMfWWaL-qgxVrQFa", created.MediaID)
 	require.NotNil(t, created.UploadURL)
-	assert.Equal(t, "http://bifrost.test/tracing/uploads/"+created.MediaID, *created.UploadURL)
-	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPut, "/tracing/uploads/"+created.MediaID, map[string]string{"Content-Type": "image/png"}, []byte("png-bytes")).Response.StatusCode())
+	// The stored upload is scoped to the project, so one file in two projects is two uploads.
+	storedID := "lf-p1-" + created.MediaID
+	assert.Equal(t, "http://bifrost.test/tracing/uploads/"+storedID, *created.UploadURL)
+	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPut, "/tracing/uploads/"+storedID, map[string]string{"Content-Type": "image/png"}, []byte("png-bytes")).Response.StatusCode())
 	assert.Equal(t, fasthttp.StatusNoContent, env.do(fasthttp.MethodPatch, "/tracing/langfuse/api/public/media/"+created.MediaID, auth, []byte(`{"uploadedAt":"2026-11-12T10:00:00Z","uploadHttpStatus":200}`)).Response.StatusCode())
 	again := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/media", auth, mediaBody)
 	require.Equal(t, fasthttp.StatusCreated, again.Response.StatusCode())
@@ -145,7 +150,7 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 
 	// The dashboard serves the file back, never as a page that could run script.
 	NewTracesHandler(env.store, nil, env.handler, logger).RegisterRoutes(env.router)
-	download := env.do(fasthttp.MethodGet, "/api/traces/uploads/"+created.MediaID, nil, nil)
+	download := env.do(fasthttp.MethodGet, "/api/traces/uploads/"+storedID, nil, nil)
 	require.Equal(t, fasthttp.StatusOK, download.Response.StatusCode())
 	assert.Equal(t, "png-bytes", string(download.Response.Body()))
 	assert.Equal(t, "nosniff", string(download.Response.Header.Peek("X-Content-Type-Options")))

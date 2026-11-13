@@ -204,9 +204,23 @@ func (h *TraceIngestHandler) langfuseCreateScore(ctx *fasthttp.RequestCtx) {
 	}
 }
 
-// langfuseCreateMedia hands the SDK an upload URL for a media file. The media id is derived from
-// the file's hash, so a file the project already holds is not uploaded again: the SDK is told so
-// with a null uploadUrl.
+// langfuseMediaID is the id Langfuse 5 SDKs compute for a file and check the server's answer
+// against: the url-safe base64 SHA-256 of the content, first 22 characters. Any other id makes the
+// SDK cancel the upload.
+func langfuseMediaID(sha256Base64 string) string {
+	id := strings.NewReplacer("+", "-", "/", "_").Replace(sha256Base64)
+	return id[:min(len(id), 22)]
+}
+
+// langfuseUploadID is where a project's media file is stored. The SDK's media id is the same for one
+// file in every project, so the stored id carries the project. The viewer rebuilds it from the
+// media token in span data and the span's project.
+func langfuseUploadID(projectID, mediaID string) string {
+	return "lf-" + projectID + "-" + mediaID
+}
+
+// langfuseCreateMedia hands the SDK an upload URL for a media file. A file the project already holds
+// is not uploaded again: the SDK is told so with a null uploadUrl.
 func (h *TraceIngestHandler) langfuseCreateMedia(ctx *fasthttp.RequestCtx) {
 	principal, ok := h.langfusePrincipal(ctx)
 	if !ok {
@@ -228,29 +242,21 @@ func (h *TraceIngestHandler) langfuseCreateMedia(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
-	mediaID := "lf" + strings.NewReplacer("+", "", "/", "", "=", "").Replace(body.SHA256Hash)
-	if len(mediaID) > 40 {
-		mediaID = mediaID[:40]
-	}
-	mediaID += "-" + project.ID[:min(len(project.ID), 8)]
-	store := h.service.Store()
-	if existing, err := store.FindTraceUpload(storeCtx, mediaID); err == nil {
-		if existing.ProjectID != project.ID {
-			h.fail(ctx, traceingest.ErrForbidden)
+	mediaID := langfuseMediaID(body.SHA256Hash)
+	uploadID := langfuseUploadID(project.ID, mediaID)
+	if existing, err := h.service.Store().FindTraceUpload(storeCtx, uploadID); err == nil {
+		if existing.Status == logstore.TraceUploadStatusDone {
+			writeJSONStatus(ctx, fasthttp.StatusCreated, map[string]any{"mediaId": mediaID, "uploadUrl": nil})
 			return
 		}
-		if existing.Status == logstore.TraceUploadStatusDone || time.Since(existing.CreatedAt) < traceUploadWindow {
-			var uploadURL any
-			if existing.Status != logstore.TraceUploadStatusDone {
-				uploadURL = h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + mediaID
-			}
+		if time.Since(existing.CreatedAt) < traceUploadWindow {
+			uploadURL := h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + uploadID
 			writeJSONStatus(ctx, fasthttp.StatusCreated, map[string]any{"mediaId": mediaID, "uploadUrl": uploadURL})
 			return
 		}
-		// A stale pending row from an upload that never came: a fresh id reopens the window.
-		mediaID += "-" + time.Now().UTC().Format("150405")
+		// A stale pending row from an upload that never came: writing it again reopens the window.
 	}
-	_, uploadURL, err := h.newUpload(ctx, project, logstore.TraceSourceLangfuse, mediaID, body.ContentType, body.Field)
+	_, uploadURL, err := h.newUpload(ctx, project, logstore.TraceSourceLangfuse, uploadID, body.ContentType, body.Field)
 	if err != nil {
 		h.fail(ctx, err)
 		return
@@ -275,13 +281,18 @@ func (h *TraceIngestHandler) langfuseGetMedia(ctx *fasthttp.RequestCtx) {
 	id, _ := ctx.UserValue("id").(string)
 	storeCtx, cancel := ingestContext()
 	defer cancel()
-	upload, err := h.service.Store().FindTraceUpload(storeCtx, id)
+	project, err := h.service.ResolveProject(storeCtx, principal, "")
+	if err != nil {
+		h.fail(ctx, err)
+		return
+	}
+	upload, err := h.service.Store().FindTraceUpload(storeCtx, langfuseUploadID(project.ID, id))
 	if err != nil || !principalAllowsProject(principal, upload.ProjectID) {
 		langfuseError(ctx, fasthttp.StatusNotFound, "media not found")
 		return
 	}
 	SendJSON(ctx, map[string]any{
-		"mediaId": upload.ID, "contentType": upload.ContentType, "contentLength": upload.SizeBytes,
+		"mediaId": id, "contentType": upload.ContentType, "contentLength": upload.SizeBytes,
 		"uploadedAt": upload.CreatedAt.UTC().Format(time.RFC3339Nano), "url": h.publicBaseURL(ctx) + "/api/traces/uploads/" + upload.ID,
 		"urlExpiry": time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
 	})

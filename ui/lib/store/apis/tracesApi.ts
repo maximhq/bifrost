@@ -47,6 +47,15 @@ export const tracesApi = baseApi.injectEndpoints({
 			query: ({ projectId, traceId }) => ({ url: `/traces/trace/${encodeURIComponent(projectId)}/${encodeURIComponent(traceId)}` }),
 			providesTags: (_r, _e, { projectId, traceId }) => [{ type: "Traces", id: `${projectId}/${traceId}` }],
 		}),
+		// A file an SDK uploaded beside its spans (a Braintrust attachment, Langfuse media), as an object
+		// URL the viewer can show. Fetched through the API client so it carries the dashboard auth.
+		getTraceUploadUrl: builder.query<string, string>({
+			query: (id) => ({
+				url: `/traces/uploads/${encodeURIComponent(id)}`,
+				responseHandler: async (response: Response) => (response.ok ? URL.createObjectURL(await response.blob()) : response.text()),
+			}),
+			keepUnusedDataFor: 300,
+		}),
 		// Review: a reviewer's scores and comments on a trace or on one of its spans.
 		saveTraceScore: builder.mutation<
 			{ score: TraceScore },
@@ -131,6 +140,7 @@ export const tracesApi = baseApi.injectEndpoints({
 });
 
 export const {
+	useGetTraceUploadUrlQuery,
 	useGetTracesQuery,
 	useGetTraceSpansQuery,
 	useGetTraceSessionsQuery,
