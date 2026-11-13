@@ -3903,13 +3903,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
 	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
-	s.Server = &fasthttp.Server{
-		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
-		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
-		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
-		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
-	}
+	s.Server = newFastHTTPServer(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler), maxRequestBodySizeMB, s.Config.ServerConfig.ReadBufferSize, logger.Warn)
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
@@ -4090,5 +4084,26 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	}
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
+	}
+}
+
+// newFastHTTPServer builds the gateway's fasthttp server around root, which must be wrapped by
+// handlers.ServerRootHandler (it holds handlers.RequestBodyMiddleware).
+//
+// Request bodies are streamed (StreamRequestBody) and multipart forms are not parsed while the
+// request is read (DisablePreParseMultipartForm). fasthttp's parse at read time buffers the first
+// 16 MB of every uploaded file before spilling it to disk, ~64 MB allocated per upload whatever
+// its size; parsed later from the stream, the file spills after 8 KB. RequestBodyMiddleware reads
+// every non-multipart body into memory as before and enforces MaxRequestBodySize, which a
+// streaming server no longer does itself.
+func newFastHTTPServer(root fasthttp.RequestHandler, maxRequestBodySizeMB, readBufferSize int, warn func(format string, args ...any)) *fasthttp.Server {
+	return &fasthttp.Server{
+		Handler:                      root,
+		MaxRequestBodySize:           maxRequestBodySizeMB * 1024 * 1024,
+		ReadBufferSize:               readBufferSize,
+		StreamRequestBody:            true,
+		DisablePreParseMultipartForm: true,
+		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
+		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, warn),
 	}
 }

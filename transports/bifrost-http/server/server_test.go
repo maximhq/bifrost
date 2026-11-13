@@ -1,15 +1,24 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2406,4 +2415,344 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
 	assert.Empty(t, cfg.ClientConfig.UsageEstimationTokenizers)
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
+}
+
+// gatewayTestServer serves root through newFastHTTPServer, the production server settings, on an
+// in-memory listener, and returns a client for it.
+func gatewayTestServer(tb testing.TB, limitMB int, router fasthttp.RequestHandler, buffered bool) *fasthttp.Client {
+	tb.Helper()
+	handlers.SetLogger(noopTestLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	srv := newFastHTTPServer(handlers.ServerRootHandler(handlers.NewCorsMiddleware(config), config, router), limitMB, 64<<10, nil)
+	if buffered {
+		// The settings before uploads were streamed, for comparison benchmarks.
+		srv.StreamRequestBody, srv.DisablePreParseMultipartForm = false, false
+	}
+	// A loopback TCP listener, not fasthttputil's in-memory pipe, which copies every write into
+	// new buffers and would count the whole upload as gateway allocations.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	tb.Cleanup(func() { ln.Close() })
+	addr := ln.Addr().String()
+	return &fasthttp.Client{Dial: func(string) (net.Conn, error) { return net.Dial("tcp", addr) }, MaxConnsPerHost: 1, MaxResponseBodySize: 1 << 20}
+}
+
+// multipartUploadRequest builds a Files API upload request carrying file.
+func multipartUploadRequest(tb testing.TB, file []byte) *fasthttp.Request {
+	tb.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("purpose", "batch")
+	part, err := w.CreateFormFile("file", "batch.jsonl")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	part.Write(file)
+	w.Close()
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/files")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType(w.FormDataContentType())
+	req.SetBody(body.Bytes())
+	return req
+}
+
+// TestGatewayServerStreamsMultipartUploads pins that the gateway server never buffers an upload: a
+// 17 MB file reaches the handler unread on the connection, is parsed into a temp file, and costs
+// a small fraction of its size. fasthttp's parse while reading the request (the previous settings)
+// buffered the first 16 MB of every file before spilling it, ~64 MB allocated per upload.
+func TestGatewayServerStreamsMultipartUploads(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte("0123456789abcdef"), fileSize/16)
+	wantSum := sha256.Sum256(file)
+	var onDisk, streamed bool
+	var gotSum [sha256.Size]byte
+	var purpose string
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		streamed = ctx.Request.IsBodyStream() // not parsed yet: the handler reads it from the connection
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			ctx.Error(err.Error(), fasthttp.StatusBadRequest)
+			return
+		}
+		purpose = form.Value["purpose"][0]
+		f, err := form.File["file"][0].Open()
+		if err != nil {
+			ctx.Error(err.Error(), fasthttp.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		_, onDisk = f.(*os.File)
+		h := sha256.New()
+		io.Copy(h, f)
+		copy(gotSum[:], h.Sum(nil))
+	}, false)
+	req := multipartUploadRequest(t, file)
+	resp := &fasthttp.Response{}
+
+	// TotalAlloc is process-wide, so goroutines left by other tests in the package add noise;
+	// the smallest of three uploads is the upload's own cost.
+	allocated := uint64(math.MaxUint64)
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if err := client.Do(req, resp); err != nil {
+			t.Fatal(err)
+		}
+		runtime.ReadMemStats(&after)
+		allocated = min(allocated, after.TotalAlloc-before.TotalAlloc)
+
+		if resp.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode(), resp.Body())
+		}
+		if purpose != "batch" || gotSum != wantSum {
+			t.Errorf("handler got purpose=%q and a file that differs from the upload", purpose)
+		}
+		if !onDisk {
+			t.Error("uploaded file was held in memory, want it in a temp file")
+		}
+		if !streamed {
+			t.Error("the upload reached the handler already parsed, want it unread on the connection (parsing while reading buffers 16 MB per file)")
+		}
+	}
+	t.Logf("%d-byte upload allocated %d bytes", fileSize, allocated)
+	// Alone this upload allocates ~0.2 MB; the bound leaves room for the package's background
+	// goroutines and still fails the read-time parse, which allocates ~64 MB.
+	if allocated > 32<<20 {
+		t.Errorf("a %d-byte upload allocated %d bytes; the file must be streamed to disk, not buffered", fileSize, allocated)
+	}
+}
+
+// TestGatewayServerBuffersOtherBodies asserts every body that is not a plain multipart upload
+// reaches handlers as a buffering server delivered it: in memory, with no body stream left, which
+// code such as GenAI request-type detection reads as "large payload". Bodies larger than
+// fasthttp's 8 KB streaming prefetch, compressed bodies and chunked bodies are covered.
+func TestGatewayServerBuffersOtherBodies(t *testing.T) {
+	jsonBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"` + strings.Repeat("hello ", 40_000) + `"}]}`)
+	var gzipped bytes.Buffer
+	zw := gzip.NewWriter(&gzipped)
+	zw.Write(jsonBody)
+	zw.Close()
+
+	var gotBody []byte
+	var hadStream bool
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		hadStream = ctx.RequestBodyStream() != nil
+		gotBody = append([]byte(nil), ctx.Request.Body()...)
+	}, false)
+	for _, tc := range []struct {
+		name string
+		set  func(req *fasthttp.Request)
+	}{
+		{"json over the prefetch", func(req *fasthttp.Request) { req.SetBody(jsonBody) }},
+		{"gzip json", func(req *fasthttp.Request) {
+			req.Header.Set("Content-Encoding", "gzip")
+			req.SetBody(gzipped.Bytes())
+		}},
+		{"chunked json", func(req *fasthttp.Request) { req.SetBodyStream(bytes.NewReader(jsonBody), -1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &fasthttp.Request{}
+			req.SetRequestURI("http://bifrost/v1/chat/completions")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			tc.set(req)
+			resp := &fasthttp.Response{}
+			if err := client.Do(req, resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status %d: %s", resp.StatusCode(), resp.Body())
+			}
+			if hadStream {
+				t.Error("handler saw a request body stream, want the body buffered as before")
+			}
+			if !bytes.Equal(gotBody, jsonBody) {
+				t.Errorf("handler got %d bytes, want the %d-byte body", len(gotBody), len(jsonBody))
+			}
+		})
+	}
+}
+
+// TestGatewayServerEnforcesBodyLimit asserts max_request_body_size_mb still answers 413 with the
+// explanatory message, for every body shape. A streaming fasthttp server does not reject an
+// oversized body itself, so RequestBodyMiddleware must: from Content-Length, and while reading a
+// chunked body. A chunked body under the limit still goes through whole.
+func TestGatewayServerEnforcesBodyLimit(t *testing.T) {
+	const limitMB = 1
+	over := bytes.Repeat([]byte("x"), 2<<20)
+	under := bytes.Repeat([]byte("y"), 512<<10)
+	var handlerBody int
+	client := gatewayTestServer(t, limitMB, func(ctx *fasthttp.RequestCtx) {
+		handlerBody = len(ctx.Request.Body())
+	}, false)
+	for _, tc := range []struct {
+		name       string
+		req        func() *fasthttp.Request
+		wantStatus int
+	}{
+		{"json over the limit", func() *fasthttp.Request {
+			req := &fasthttp.Request{}
+			req.Header.SetContentType("application/json")
+			req.SetBody(over)
+			return req
+		}, fasthttp.StatusRequestEntityTooLarge},
+		{"chunked over the limit", func() *fasthttp.Request {
+			req := &fasthttp.Request{}
+			req.SetBodyStream(bytes.NewReader(over), -1)
+			return req
+		}, fasthttp.StatusRequestEntityTooLarge},
+		{"multipart upload over the limit", func() *fasthttp.Request { return multipartUploadRequest(t, over) }, fasthttp.StatusRequestEntityTooLarge},
+		{"chunked under the limit", func() *fasthttp.Request {
+			req := &fasthttp.Request{}
+			req.SetBodyStream(bytes.NewReader(under), -1)
+			return req
+		}, fasthttp.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handlerBody = -1
+			req := tc.req()
+			req.SetRequestURI("http://bifrost/v1/chat/completions")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			resp := &fasthttp.Response{}
+			err := client.Do(req, resp)
+			if tc.wantStatus == fasthttp.StatusRequestEntityTooLarge && err != nil {
+				// The server refuses without reading the body and closes the connection, so a
+				// client still sending may see a reset instead of the 413 (the buffering
+				// server did the same). The handler must still not have run.
+				if handlerBody != -1 {
+					t.Error("handler ran for an oversized body")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode() != tc.wantStatus {
+				t.Fatalf("status %d, want %d: %s", resp.StatusCode(), tc.wantStatus, resp.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusRequestEntityTooLarge {
+				if !strings.Contains(string(resp.Body()), "request_too_large") || !strings.Contains(string(resp.Body()), "max_request_body_size_mb") {
+					t.Errorf("413 body lost the explanatory message: %s", resp.Body())
+				}
+				if handlerBody != -1 {
+					t.Error("handler ran for an oversized body")
+				}
+			} else if handlerBody != len(under) {
+				t.Errorf("handler got %d bytes, want %d", handlerBody, len(under))
+			}
+		})
+	}
+}
+
+// BenchmarkGatewayServerJSONBody measures a JSON request end to end through the gateway's server
+// settings and root middleware chain, against the previous buffered settings: the common path
+// must not regress now that request bodies are streamed and read back into memory by
+// RequestBodyMiddleware.
+func BenchmarkGatewayServerJSONBody(b *testing.B) {
+	for _, size := range []int{1 << 10, 64 << 10, 1 << 20} {
+		body := []byte(`{"model":"openai/gpt-4o-mini","input":"` + strings.Repeat("a", size) + `"}`)
+		for _, mode := range []struct {
+			name     string
+			buffered bool
+		}{{"buffered", true}, {"streaming", false}} {
+			b.Run(fmt.Sprintf("%dKB/%s", size>>10, mode.name), func(b *testing.B) {
+				client := gatewayTestServer(b, 100, func(ctx *fasthttp.RequestCtx) {
+					if len(ctx.Request.Body()) != len(body) {
+						ctx.SetStatusCode(fasthttp.StatusBadRequest)
+					}
+				}, mode.buffered)
+				req := &fasthttp.Request{}
+				req.SetRequestURI("http://bifrost/v1/responses")
+				req.Header.SetMethod(fasthttp.MethodPost)
+				req.Header.SetContentType("application/json")
+				req.SetBody(body)
+				resp := &fasthttp.Response{}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if err := client.Do(req, resp); err != nil || resp.StatusCode() != fasthttp.StatusOK {
+						b.Fatalf("status %d err %v", resp.StatusCode(), err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestGatewayServerRejectedUploadKeepsNextRequestIntact pins that an upload answered before its
+// body is read (here a 401, as an auth failure or a rate limit answers) reaches the client with
+// its status and does not leave the rest of the body on the keep-alive connection. A streaming
+// fasthttp server does not drain it, so the next request on that connection would be parsed from
+// the leftover upload bytes; RequestBodyMiddleware drains it.
+func TestGatewayServerRejectedUploadKeepsNextRequestIntact(t *testing.T) {
+	jsonBody := []byte(`{"model":"openai/gpt-4o-mini","input":"next request"}`)
+	var gotBody []byte
+	client := gatewayTestServer(t, 100, func(ctx *fasthttp.RequestCtx) {
+		if string(ctx.Path()) == "/v1/files" {
+			ctx.Error("unauthorized", fasthttp.StatusUnauthorized) // the upload is never read
+			return
+		}
+		gotBody = append([]byte(nil), ctx.Request.Body()...)
+	}, false)
+
+	upload := multipartUploadRequest(t, bytes.Repeat([]byte("u"), 4<<20))
+	resp := &fasthttp.Response{}
+	if err := client.Do(upload, resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("upload status %d, want 401", resp.StatusCode())
+	}
+
+	next := &fasthttp.Request{}
+	next.SetRequestURI("http://bifrost/v1/responses")
+	next.Header.SetMethod(fasthttp.MethodPost)
+	next.Header.SetContentType("application/json")
+	next.SetBody(jsonBody)
+	if err := client.Do(next, resp); err != nil {
+		t.Fatalf("next request failed: %v", err)
+	}
+	if resp.StatusCode() != fasthttp.StatusOK || !bytes.Equal(gotBody, jsonBody) {
+		t.Errorf("next request: status %d, handler body %q; want 200 and the JSON body", resp.StatusCode(), gotBody)
+	}
+}
+
+// TestGatewayServerOversizedBodyAnswered413BeforeBody asserts a request whose Content-Length is
+// over max_request_body_size_mb is answered 413, with the explanatory message, from its headers:
+// the client gets the reply after sending only fasthttp's 8 KB streaming prefetch of a 2 MB body.
+func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
+	handlerRan := false
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	handlers.SetLogger(noopTestLogger{})
+	srv := newFastHTTPServer(handlers.ServerRootHandler(handlers.NewCorsMiddleware(config), config, func(*fasthttp.RequestCtx) { handlerRan = true }), 1, 64<<10, nil)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	defer ln.Close()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "POST /v1/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: %d\r\n\r\n", 2<<20)
+	conn.Write(bytes.Repeat([]byte("p"), 8<<10))
+	resp := &fasthttp.Response{}
+	if err := resp.Read(bufio.NewReader(conn)); err != nil {
+		t.Fatalf("no reply before the body was sent: %v", err)
+	}
+	if resp.StatusCode() != fasthttp.StatusRequestEntityTooLarge || !strings.Contains(string(resp.Body()), "max_request_body_size_mb") {
+		t.Errorf("status %d body %s, want 413 naming max_request_body_size_mb", resp.StatusCode(), resp.Body())
+	}
+	if handlerRan {
+		t.Error("handler ran for an oversized body")
+	}
 }
