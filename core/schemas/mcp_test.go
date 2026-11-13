@@ -102,6 +102,10 @@ func TestMCPCodeModeDiscoveryRankerValidate(t *testing.T) {
 		{"other scheme", MCPCodeModeDiscoveryRanker{URL: "ftp://ranker.example/rank"}, true},
 		{"relative", MCPCodeModeDiscoveryRanker{URL: "/rank"}, true},
 		{"credentials in url", MCPCodeModeDiscoveryRanker{URL: "https://user:pass@ranker.example/rank"}, true},
+		{"token over https", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"token over loopback http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"plain http without token", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank"}, false},
+		{"token over non-loopback http", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank", TokenFile: "/run/secrets/ranker"}, true},
 	} {
 		if err := tc.ranker.Validate(); (err != nil) != tc.wantErr {
 			t.Fatalf("%s: Validate() = %v, wantErr %v", tc.name, err, tc.wantErr)

@@ -365,7 +365,7 @@ For ranking by meaning rather than shared words, point Bifrost at an HTTP servic
 | Field | Description |
 |-------|-------------|
 | `url` | `http` or `https` endpoint that receives the ranking request. Credentials in the URL are rejected. Use `https` unless the ranker runs on the same host or a trusted private network. |
-| `token_file` | Optional. File holding a bearer token, sent as `Authorization: Bearer <token>`. Read on every request, so the token can rotate without a restart. Send it only over `https` (or loopback): over plain `http` anyone on the network path can read it. |
+| `token_file` | Optional. File holding a bearer token, sent as `Authorization: Bearer <token>`. Read on every request, so the token can rotate without a restart. Requires an `https` URL, or plain `http` on a loopback host: over plain `http` anyone on the network path could read the token. Any other `url` with `token_file` set is rejected at startup with a warning, and the built-in ranking is used. |
 | `timeout_seconds` | Optional. Bound on one ranking call, 1 to 30 seconds. Defaults to 5. |
 
 The environment variables `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` and `BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE` override `url` and `token_file`. The ranker is deployment configuration: it is read from `config.json` and the environment at startup and is not stored in the config store or editable from the UI. Redirects are not followed.

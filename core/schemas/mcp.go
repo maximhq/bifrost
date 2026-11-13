@@ -543,6 +543,10 @@ func (r MCPCodeModeDiscoveryRanker) Validate() error {
 	if u.User != nil {
 		return fmt.Errorf("code mode discovery ranker url must not carry credentials; use token_file")
 	}
+	// The token file is sent as a bearer token on every request; plain http would expose it on the network path.
+	if r.TokenFile != "" && !IsHTTPSOrLoopbackURL(r.URL) {
+		return fmt.Errorf("code mode discovery ranker url must use https when token_file is set; plain http is allowed only for loopback")
+	}
 	return nil
 }
 
