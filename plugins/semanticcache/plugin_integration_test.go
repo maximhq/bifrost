@@ -1,6 +1,9 @@
 package semanticcache
 
 import (
+	"context"
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -8,7 +11,121 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
+
+// Exercise the actual plugin writers over Redis, with no paid provider calls.
+// Storage disappearance is checked before another lookup can lazily delete it.
+func TestSemanticCache_RedisNativeExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Redis integration test in short mode")
+	}
+	ctx := context.Background()
+	config := getRedisConfigFromEnv()
+	store, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeRedis, Config: config}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	namespace := "TestRedisCacheExpiry" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	defer store.Close(ctx, namespace)
+	defer store.DeleteNamespace(ctx, namespace)
+	llm, err := Init(ctx, &Config{VectorStoreNamespace: namespace, Dimension: 3, Provider: schemas.OpenAI, EmbeddingModel: "fake", TTL: time.Minute}, bifrost.NewDefaultLogger(schemas.LogLevelError), store)
+	require.NoError(t, err)
+	plugin := llm.(*Plugin)
+	defer plugin.Cleanup()
+	client := getMockedBifrostClient(t, schemas.NewBifrostContext(ctx, schemas.NoDeadline), bifrost.NewDefaultLogger(schemas.LogLevelError), plugin)
+	defer client.Shutdown()
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0, 0}}}}}, nil
+	})
+	inspect := redis.NewClient(&redis.Options{Addr: config.Addr.GetValue(), Username: config.Username.GetValue(), Password: config.Password.GetValue(), DB: config.DB.CoerceInt(0)})
+	defer inspect.Close()
+	for _, tc := range []struct {
+		name      string
+		mode      CacheType
+		responses bool
+		stream    bool
+	}{
+		{"chat direct", CacheTypeDirect, false, false},
+		{"responses direct", CacheTypeDirect, true, false},
+		{"chat semantic", CacheTypeSemantic, false, false},
+		{"chat stream", CacheTypeDirect, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := identityTestChatRequest("expiry test", nil)
+			if tc.responses {
+				request = &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: CreateBasicResponsesRequest("expiry test", 0.7, 50)}
+			}
+			cacheCtx := func(noStore bool) *schemas.BifrostContext {
+				c := CreateContextWithCacheKeyAndTTL(t, "native-expiry", 3*time.Second)
+				c.SetValue(CacheTypeKey, tc.mode)
+				c.SetValue(CacheNoStoreKey, noStore)
+				return c
+			}
+			// Drive core's public request pipeline, including final-stream hook
+			// handling. Mocker supplies responses; no live provider is called.
+			call := func(noStore bool) *schemas.BifrostResponse {
+				c := cacheCtx(noStore)
+				response := &schemas.BifrostResponse{}
+				if tc.responses {
+					r, bferr := client.ResponsesRequest(c, request.ResponsesRequest)
+					require.Nil(t, bferr)
+					response.ResponsesResponse = r
+				} else if tc.stream {
+					stream, bferr := client.ChatCompletionStreamRequest(c, request.ChatRequest)
+					require.Nil(t, bferr)
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if chunk.BifrostChatResponse != nil {
+							response.ChatResponse = chunk.BifrostChatResponse
+						}
+					}
+				} else {
+					r, bferr := client.ChatCompletionRequest(c, request.ChatRequest)
+					require.Nil(t, bferr)
+					response.ChatResponse = r
+				}
+				require.NotNil(t, response.GetExtraFields())
+				return response
+			}
+			response := call(false)
+			AssertNoCacheHit(t, response)
+			plugin.WaitForPendingOperations()
+			require.NotNil(t, response.GetExtraFields().CacheDebug)
+			require.NotNil(t, response.GetExtraFields().CacheDebug.CacheID)
+			id := *response.GetExtraFields().CacheDebug.CacheID
+			key := namespace + ":" + id
+			require.Positive(t, inspect.PTTL(ctx, key).Val())
+			expiresAt, err := strconv.ParseInt(inspect.HGet(ctx, key, "expires_at").Val(), 10, 64)
+			require.NoError(t, err)
+			require.LessOrEqual(t, expiresAt-time.Now().Unix(), int64(3), "per-request TTL must override the minute default")
+			AssertCacheHit(t, call(true), string(tc.mode))
+			time.Sleep(time.Until(time.Unix(expiresAt, 0)))
+			require.Eventually(t, func() bool { return inspect.Exists(ctx, key).Val() == 0 }, time.Second, 10*time.Millisecond)
+			AssertNoCacheHit(t, call(true))
+			plugin.WaitForPendingOperations()
+			require.Zero(t, inspect.Exists(ctx, key).Val(), "no-store miss must not repopulate the expired entry")
+		})
+	}
+	t.Run("stream finishing after first chunk deadline", func(t *testing.T) {
+		id := uuid.NewString()
+		metadata := plugin.buildUnifiedMetadata(schemas.OpenAI, "gpt-4o-mini", "", "stream", time.Second)
+		expiresAt := metadata["expires_at"].(int64)
+		data, err := json.Marshal(newChatStreamChunk(0, "cached", nil))
+		require.NoError(t, err)
+		chunk := &StreamChunk{Timestamp: time.Now(), Serialized: string(data)}
+		flush, err := plugin.addStreamingResponse(id, id, chunk, nil, metadata, time.Second, false)
+		require.NoError(t, err)
+		require.False(t, flush)
+		time.Sleep(time.Until(time.Unix(expiresAt, 0)))
+		laterMetadata := plugin.buildUnifiedMetadata(schemas.OpenAI, "gpt-4o-mini", "", "stream", time.Minute)
+		flush, err = plugin.addStreamingResponse(id, id, chunk, nil, laterMetadata, time.Minute, true)
+		require.NoError(t, err)
+		require.True(t, flush)
+		require.NoError(t, plugin.processAccumulatedStream(ctx, id))
+		require.Zero(t, inspect.Exists(ctx, namespace+":"+id).Val(), "flush must use the original deadline, not restart TTL")
+	})
+}
 
 // TestSemanticCacheBasicFlow tests the complete semantic cache flow
 func TestSemanticCacheBasicFlow(t *testing.T) {

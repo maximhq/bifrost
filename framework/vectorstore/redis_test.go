@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -148,6 +149,9 @@ func (ts *RedisTestSetup) ensureNamespaceExists(t *testing.T) {
 		},
 		"response": {
 			DataType: VectorStorePropertyTypeString,
+		},
+		"expires_at": {
+			DataType: VectorStorePropertyTypeInteger,
 		},
 		"from_bifrost_semantic_cache_plugin": {
 			DataType: VectorStorePropertyTypeBoolean,
@@ -354,12 +358,53 @@ func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to configure Redis TLS CA certificate")
 }
 
+func TestRedisExpirySeconds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   interface{}
+		want    int64
+		invalid bool
+	}{
+		{"int", int(123), 123, false},
+		{"int64", int64(123), 123, false},
+		{"string", "00123", 123, false},
+		{"float", float64(123), 123, false},
+		{"past", int64(-1), -1, false},
+		{"max", int64(math.MaxInt64 / 1000), math.MaxInt64 / 1000, false},
+		{"min", int64(math.MinInt64 / 1000), math.MinInt64 / 1000, false},
+		{"fraction", 123.5, 0, true},
+		{"nan", math.NaN(), 0, true},
+		{"infinity", math.Inf(1), 0, true},
+		{"float overflow", float64(math.MaxInt64), 0, true},
+		{"millisecond overflow", int64(math.MaxInt64/1000 + 1), 0, true},
+		{"millisecond underflow", int64(math.MinInt64/1000 - 1), 0, true},
+		{"string overflow", "9223372036854775808", 0, true},
+		{"malformed", "tomorrow", 0, true},
+		{"boolean", true, 0, true},
+		{"unsupported", []int{123}, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := redisExpirySeconds(tc.value)
+			if tc.invalid {
+				require.ErrorContains(t, err, "invalid expires_at")
+				// A nil client proves validation happens before any Redis write.
+				store := &RedisStore{}
+				require.ErrorContains(t, store.Add(context.Background(), "ns", "id", nil, map[string]interface{}{"expires_at": tc.value}), "invalid expires_at")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
 type fakeRedisSearchServer struct {
 	listener      net.Listener
 	searchErrors  int
 	mu            sync.Mutex
 	ftSearchCalls int
 	sawScan       bool
+	commands      [][]string
 }
 
 func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
@@ -411,6 +456,9 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		if len(command) == 0 {
 			continue
 		}
+		s.mu.Lock()
+		s.commands = append(s.commands, command)
+		s.mu.Unlock()
 
 		switch strings.ToUpper(command[0]) {
 		case "HELLO":
@@ -439,6 +487,10 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 			_, _ = writer.WriteString("*2\r\n$1\r\n0\r\n*0\r\n")
 		case "HGETALL":
 			_, _ = writer.WriteString("*0\r\n")
+		case "EVALSHA":
+			_, _ = writer.WriteString("-NOSCRIPT No matching script\r\n")
+		case "EVAL", "HSET":
+			_, _ = writer.WriteString(":1\r\n")
 		default:
 			_, _ = writer.WriteString("+OK\r\n")
 		}
@@ -446,6 +498,45 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		if err := writer.Flush(); err != nil {
 			return
 		}
+	}
+}
+
+func TestRedisStore_AddExpiryCommands(t *testing.T) {
+	for _, expiry := range []interface{}{nil, "00123"} {
+		t.Run(fmt.Sprintf("expiry=%v", expiry), func(t *testing.T) {
+			server := newFakeRedisSearchServer(t, 0)
+			defer server.close()
+			client := redis.NewClient(&redis.Options{Addr: server.addr(), Protocol: 2, DisableIdentity: true})
+			defer client.Close()
+			store := &RedisStore{client: client}
+			metadata := map[string]interface{}{"response": "owned", "expires_at": expiry}
+			require.NoError(t, store.Add(context.Background(), "custom:ns", "id", []float32{1}, metadata))
+			require.Equal(t, expiry, metadata["expires_at"], "Add must not mutate caller metadata")
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			var writes [][]string
+			for _, cmd := range server.commands {
+				if cmd[0] == "hset" || cmd[0] == "evalsha" || cmd[0] == "eval" {
+					writes = append(writes, cmd)
+				}
+			}
+			if expiry == nil {
+				require.Len(t, writes, 1)
+				require.Equal(t, "hset", writes[0][0])
+				return
+			}
+			require.Len(t, writes, 2, "NOSCRIPT must retry with EVAL, never a bare HSET")
+			require.Equal(t, "evalsha", writes[0][0])
+			require.Equal(t, "eval", writes[1][0])
+			require.Equal(t, []string{"1", "custom:ns:id", "123"}, writes[1][2:5], "script must operate on one cluster key")
+			fields := map[string]string{}
+			for i := 5; i < len(writes[1]); i += 2 {
+				fields[writes[1][i]] = writes[1][i+1]
+			}
+			require.Equal(t, "123", fields["expires_at"])
+			require.Equal(t, "owned", fields["response"])
+			require.Equal(t, string(float32SliceToBytes([]float32{1})), fields["embedding"])
+		})
 	}
 }
 
@@ -1316,6 +1407,279 @@ func TestMatchesQueriesForScan(t *testing.T) {
 // ============================================================================
 // INTEGRATION TESTS (require real Redis instance with RediSearch)
 // ============================================================================
+
+// Expiration must reclaim hashes and their vectors even when no later cache
+// request matches them. A hit-before/miss-after test alone cannot detect a leak.
+func TestRedisStore_ExpiresEntriesWithoutReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+	id := generateUUID()
+	key := buildKey(TestNamespace, id)
+	embedding := make([]float32, RedisTestDimension)
+	embedding[0] = 1
+	expiresAt := time.Now().Add(3 * time.Second).Unix()
+	require.NoError(t, setup.Store.Add(setup.ctx, TestNamespace, id, embedding, map[string]interface{}{
+		"type": id, "expires_at": expiresAt, "response": "cached response",
+	}))
+	ttl, err := setup.Store.client.PTTL(setup.ctx, key).Result()
+	require.NoError(t, err)
+	require.Positive(t, ttl, "expires_at must also set native key expiry")
+	freshID := generateUUID()
+	freshVector := make([]float32, RedisTestDimension)
+	freshVector[0], freshVector[1] = 0.9, float32(math.Sqrt(1-0.9*0.9))
+	require.NoError(t, setup.Store.Add(setup.ctx, TestNamespace, freshID, freshVector, map[string]interface{}{
+		"type": id, "expires_at": time.Now().Add(time.Minute).Unix(), "response": "fresh response",
+	}))
+	queries := []Query{{Field: "type", Operator: QueryOperatorEqual, Value: id}}
+	require.Eventually(t, func() bool {
+		results, err := setup.Store.GetNearest(setup.ctx, TestNamespace, embedding, queries, []string{"response"}, 0.8, 1)
+		return err == nil && len(results) == 1 && results[0].ID == id
+	}, time.Second, 10*time.Millisecond)
+	time.Sleep(time.Until(time.Unix(expiresAt, 0)))
+	require.Eventually(t, func() bool {
+		return setup.Store.client.Exists(setup.ctx, key).Val() == 0
+	}, time.Second, 10*time.Millisecond)
+	_, err = setup.Store.GetChunk(setup.ctx, TestNamespace, id)
+	require.ErrorContains(t, err, "not found")
+	results, err := setup.Store.GetNearest(setup.ctx, TestNamespace, embedding, queries, []string{"response"}, 0.8, 1)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "expired nearest neighbor must not mask a still-valid candidate")
+	require.Equal(t, freshID, results[0].ID)
+}
+
+func TestRedisStore_ExpiryWriteSafety(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+	store, ctx := setup.Store, setup.ctx
+	id := generateUUID()
+	key := buildKey(TestNamespace, id)
+	expiresAt := time.Now().Add(time.Minute).Unix()
+	for _, expiry := range []interface{}{int(expiresAt), expiresAt, float64(expiresAt), fmt.Sprintf("0%d", expiresAt)} {
+		metadata := map[string]interface{}{"response": "first", "expires_at": expiry}
+		require.NoError(t, store.Add(ctx, TestNamespace, id, nil, metadata))
+		require.Equal(t, expiry, metadata["expires_at"])
+		require.Equal(t, strconv.FormatInt(expiresAt, 10), store.client.HGet(ctx, key, "expires_at").Val())
+		actual, err := store.client.Do(ctx, "EXPIRETIME", key).Int64()
+		require.NoError(t, err)
+		require.Equal(t, expiresAt, actual)
+	}
+	// An actual rewrite refreshes the absolute deadline. Reads do not.
+	expiresAt += 60
+	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"response": "second", "expires_at": expiresAt}))
+	_, err := store.GetChunk(ctx, TestNamespace, id)
+	require.NoError(t, err)
+	actual, err := store.client.Do(ctx, "EXPIRETIME", key).Int64()
+	require.NoError(t, err)
+	require.Equal(t, expiresAt, actual)
+	before := store.client.HGetAll(ctx, key).Val()
+	for _, invalid := range []interface{}{true, "bad", 1.5, int64(math.MaxInt64)} {
+		require.ErrorContains(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"response": "bad", "expires_at": invalid}), "invalid expires_at")
+		require.Equal(t, before, store.client.HGetAll(ctx, key).Val())
+	}
+	// Metadata must be fully serialized before the script mutates Redis.
+	require.Error(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": expiresAt, "bad": make(chan int)}))
+	require.Equal(t, before, store.client.HGetAll(ctx, key).Val())
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	require.Error(t, store.Add(cancelled, TestNamespace, id, nil, map[string]interface{}{"expires_at": expiresAt, "response": "cancelled"}))
+	require.Equal(t, before, store.client.HGetAll(ctx, key).Val())
+	// Missing/null expiry leaves HSET's existing TTL semantics unchanged.
+	for _, metadata := range []map[string]interface{}{{"response": "plain"}, {"response": "plain", "expires_at": nil}} {
+		plainID := generateUUID()
+		plainKey := buildKey(TestNamespace, plainID)
+		require.NoError(t, store.Add(ctx, TestNamespace, plainID, nil, metadata))
+		require.Equal(t, time.Duration(-1), store.client.PTTL(ctx, plainKey).Val())
+		require.NoError(t, store.client.ExpireAt(ctx, plainKey, time.Unix(expiresAt, 0)).Err())
+		require.NoError(t, store.Add(ctx, TestNamespace, plainID, nil, metadata))
+		actual, err := store.client.Do(ctx, "EXPIRETIME", plainKey).Int64()
+		require.NoError(t, err)
+		require.Equal(t, expiresAt, actual)
+	}
+	wrongID := generateUUID()
+	wrongKey := buildKey(TestNamespace, wrongID)
+	require.NoError(t, store.client.Set(ctx, wrongKey, "not a hash", 0).Err())
+	defer store.client.Del(ctx, wrongKey)
+	require.ErrorContains(t, store.Add(ctx, TestNamespace, wrongID, nil, map[string]interface{}{"expires_at": expiresAt}), "WRONGTYPE")
+	require.Equal(t, "not a hash", store.client.Get(ctx, wrongKey).Val())
+	require.Equal(t, time.Duration(-1), store.client.PTTL(ctx, wrongKey).Val())
+	// A stream completing after its first-chunk deadline must not persist.
+	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": int64(1)}))
+	require.Zero(t, store.client.Exists(ctx, key).Val())
+	// Large metadata maps cannot overflow Lua's unpack stack.
+	metadata := map[string]interface{}{"expires_at": expiresAt}
+	for i := range 5000 {
+		metadata[fmt.Sprintf("field%d", i)] = "value"
+	}
+	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, metadata))
+	require.Equal(t, "value", store.client.HGet(ctx, key, "field4999").Val())
+	// Concurrent rewrites must leave matching hash metadata and native expiry.
+	var wg sync.WaitGroup
+	errors := make(chan error, 32)
+	for i := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errors <- store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": expiresAt + int64(i)})
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	stored, err := store.client.HGet(ctx, key, "expires_at").Int64()
+	require.NoError(t, err)
+	actual, err = store.client.Do(ctx, "EXPIRETIME", key).Int64()
+	require.NoError(t, err)
+	require.Equal(t, stored, actual)
+}
+
+func TestRedisStore_ExpiryPermissionDenied(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+	if _, ok := setup.Store.client.(*redis.Client); !ok {
+		t.Skip("ACL fixture requires standalone Redis; expiry writes are tested separately on clusters")
+	}
+	for _, denied := range []string{"expireat", "evalsha"} {
+		t.Run(denied, func(t *testing.T) {
+			user := "expiry-" + generateUUID()
+			key := buildKey(TestNamespace, user)
+			require.NoError(t, setup.Store.client.Do(setup.ctx, "ACL", "SETUSER", user, "on", ">expiry-test-password", "~"+key, "+@all", "-"+denied).Err())
+			defer setup.Store.client.Do(setup.ctx, "ACL", "DELUSER", user)
+			config := setup.Config
+			config.Username = schemas.NewSecretVar(user)
+			config.Password = schemas.NewSecretVar("expiry-test-password")
+			limited, err := newRedisStore(setup.ctx, config, setup.Logger)
+			require.NoError(t, err)
+			defer limited.Close(setup.ctx, TestNamespace)
+			require.ErrorContains(t, limited.Add(setup.ctx, TestNamespace, user, nil, map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "denied"}), "NOPERM")
+			require.Zero(t, setup.Store.client.Exists(setup.ctx, key).Val(), "permission errors must not leave immortal hashes")
+			// Existing cached entries must also remain unchanged on denial.
+			require.NoError(t, setup.Store.client.HSet(setup.ctx, key, "response", "original").Err())
+			defer setup.Store.client.Del(setup.ctx, key)
+			require.Error(t, limited.Add(setup.ctx, TestNamespace, user, nil, map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "denied"}))
+			require.Equal(t, "original", setup.Store.client.HGet(setup.ctx, key, "response").Val())
+		})
+	}
+}
+
+// Optional addresses cover legacy Redis with and without EXPIREAT, without
+// requiring another server version in the standard compose stack.
+func TestRedisStore_ExpiryCommandAvailability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Redis integration tests in short mode")
+	}
+	for _, tc := range []struct {
+		env      string
+		disabled bool
+	}{
+		{"REDIS_LEGACY_ADDR", false},
+		{"REDIS_EXPIRY_DISABLED_ADDR", true},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			addr := os.Getenv(tc.env)
+			if addr == "" {
+				t.Skipf("set %s to exercise command availability", tc.env)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), RedisTestTimeout)
+			defer cancel()
+			store, err := newRedisStore(ctx, RedisConfig{Addr: schemas.NewSecretVar(addr)}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			require.NoError(t, err)
+			defer store.Close(ctx, "")
+			id := generateUUID()
+			key := buildKey("TestRedisExpiryAvailability", id)
+			defer store.Delete(ctx, "TestRedisExpiryAvailability", id)
+			metadata := map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "updated"}
+			err = store.Add(ctx, "TestRedisExpiryAvailability", id, nil, metadata)
+			if !tc.disabled {
+				require.NoError(t, err)
+				require.Positive(t, store.client.PTTL(ctx, key).Val())
+				return
+			}
+			require.Error(t, err)
+			require.Zero(t, store.client.Exists(ctx, key).Val(), "disabled expiry must not leave an immortal hash")
+			require.NoError(t, store.client.HSet(ctx, key, "response", "original").Err())
+			require.Error(t, store.Add(ctx, "TestRedisExpiryAvailability", id, nil, metadata))
+			require.Equal(t, map[string]string{"response": "original"}, store.client.HGetAll(ctx, key).Val())
+		})
+	}
+}
+
+// The TLS/cluster fixtures need no search module to verify native hash expiry.
+func TestRedisStore_ExpiryClientModes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Redis client-mode integration tests in short mode")
+	}
+	for _, tc := range []struct {
+		name    string
+		addr    string
+		tls     bool
+		cluster bool
+	}{
+		{"standalone", getEnvWithDefault("REDIS_ADDR", DefaultTestAddr), false, false},
+		{"tls", getEnvWithDefault("REDIS_TLS_ADDR", "localhost:6380"), true, false},
+		{"cluster", getEnvWithDefault("REDIS_CLUSTER_ADDR", "localhost:7000"), false, true},
+		{"cluster tls", getEnvWithDefault("REDIS_CLUSTER_TLS_ADDR", "localhost:7100"), true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := RedisConfig{Addr: schemas.NewSecretVar(tc.addr), ClusterMode: schemas.NewSecretVar(strconv.FormatBool(tc.cluster))}
+			if tc.tls {
+				config.UseTLS = schemas.NewSecretVar("true")
+				config.CACertPEM = schemas.NewSecretVar(readTestCACert(t))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), RedisTestTimeout)
+			defer cancel()
+			store, err := newRedisStore(ctx, config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			require.NoError(t, err)
+			defer store.Close(ctx, "")
+			id := generateUUID()
+			key := buildKey("TestRedisExpiryModes", id)
+			defer store.Delete(ctx, "TestRedisExpiryModes", id)
+			expiresAt := time.Now().Add(2 * time.Second).Unix()
+			require.NoError(t, store.Add(ctx, "TestRedisExpiryModes", id, nil, map[string]interface{}{"expires_at": expiresAt}))
+			require.Positive(t, store.client.PTTL(ctx, key).Val())
+			time.Sleep(time.Until(time.Unix(expiresAt, 0)))
+			require.Eventually(t, func() bool { return store.client.Exists(ctx, key).Val() == 0 }, time.Second, 10*time.Millisecond)
+		})
+	}
+}
+
+func BenchmarkRedisStore_Add(b *testing.B) {
+	ctx := context.Background()
+	store, err := newRedisStore(ctx, RedisConfig{Addr: schemas.NewSecretVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr))}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close(ctx, "")
+	id := generateUUID()
+	defer store.Delete(ctx, "BenchmarkRedisAdd", id)
+	vector := make([]float32, RedisTestDimension)
+	vector[0] = 1
+	for _, withExpiry := range []bool{false, true} {
+		b.Run(fmt.Sprintf("expires_at=%t", withExpiry), func(b *testing.B) {
+			metadata := map[string]interface{}{"response": strings.Repeat("x", 22*1024)}
+			if withExpiry {
+				metadata["expires_at"] = time.Now().Add(time.Hour).Unix()
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := store.Add(ctx, "BenchmarkRedisAdd", id, vector, metadata); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestRedisStore_Integration(t *testing.T) {
 	if testing.Short() {
