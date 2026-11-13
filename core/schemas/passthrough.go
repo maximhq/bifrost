@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"path"
 	"strings"
@@ -144,7 +145,17 @@ type BifrostPassthroughRequest struct {
 	RawQuery     string // raw query string, no "?"
 	UpstreamURL  string // optional base URL override for host-backed passthrough routes
 	Body         []byte
+	BodySource   BodySource        // multipart body as an exact-length stream, set instead of Body; see PassthroughBodySourceSender
+	Form         *multipart.Form   // parsed multipart form (fields, file headers) behind BodySource; valid during the request
 	SafeHeaders  map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+}
+
+// PassthroughBodySourceSender is implemented by providers whose Passthrough and
+// PassthroughStream send BifrostPassthroughRequest.BodySource as a stream. For any other provider
+// Bifrost reads BodySource into Body before the call, so providers that need the bytes keep
+// working unchanged.
+type PassthroughBodySourceSender interface {
+	SendsPassthroughBodySource()
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream

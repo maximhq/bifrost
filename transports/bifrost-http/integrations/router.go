@@ -3676,6 +3676,53 @@ func isJSONMediaType(mediaType string) bool {
 	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
+// passthroughMultipartBody returns a multipart request's parsed form and an exact-length stream
+// of it. It returns nils for a request that is not multipart, or whose form does not parse; the
+// caller then reads the body as bytes and forwards it as before.
+func passthroughMultipartBody(req *fasthttp.Request) (*multipart.Form, schemas.BodySource) {
+	boundary := req.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	form, err := req.MultipartForm()
+	if err != nil {
+		return nil, nil
+	}
+	source, err := schemas.NewMultipartFormBodySource(form, string(boundary))
+	if err != nil {
+		return nil, nil
+	}
+	return form, source
+}
+
+// multipartFormModelAndStream reads the model and stream fields of a parsed multipart form. The
+// model field is as strict as a JSON body's model key (passthroughObjectKey): at most one, spelled
+// "model", since the forwarded body carries every value and the upstream may read another one than
+// routing and governance checked.
+func multipartFormModelAndStream(form *multipart.Form) (model string, isStream bool, err error) {
+	var values []string
+	spelled := false
+	for name, v := range form.Value {
+		if strings.EqualFold(name, "model") {
+			values = append(values, v...)
+			spelled = spelled || name == "model"
+		}
+	}
+	switch {
+	case len(values) > 1:
+		return "", false, errors.New("passthrough request body must carry the model field at most once")
+	case len(values) == 1 && !spelled:
+		return "", false, fmt.Errorf("passthrough request body model field must be spelled %q", "model")
+	case len(values) == 1:
+		model = strings.TrimSpace(values[0])
+	}
+	if v := form.Value["stream"]; len(v) > 0 {
+		s := strings.TrimSpace(strings.ToLower(v[0]))
+		isStream = s == "true" || s == "1"
+	}
+	return model, isStream, nil
+}
+
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
 //   - Form fields (Content-Disposition name="model"/"stream"): read as plain text.
 func parseMultipartPassthroughBody(body []byte, boundary string) (model string, isStream bool) {
@@ -3787,13 +3834,28 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	body := ctx.Request.Body()
-	// Parse body once to get both model and stream flag.
-	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
-	if err != nil {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
-		return
+	// A multipart upload is passed on as its parsed form and a stream of it, never as bytes:
+	// fasthttp parsed it while reading the request and keeps large files in temp files, and
+	// Body() would rebuild the whole form in memory. Anything else is read as bytes.
+	form, bodySource := passthroughMultipartBody(&ctx.Request)
+	var body []byte
+	var bodyModel string
+	var bodyStream bool
+	var err error
+	if form != nil {
+		bodyModel, bodyStream, err = multipartFormModelAndStream(form)
+		if err != nil {
+			g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+			return
+		}
+	} else {
+		body = ctx.Request.Body()
+		// Parse body once to get both model and stream flag.
+		bodyModel, bodyStream, err = parsePassthroughBody(string(ctx.Request.Header.ContentType()), body)
+		if err != nil {
+			g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+			return
+		}
 	}
 	if cfg.BodyModelKey != nil {
 		if key := cfg.BodyModelKey(string(ctx.Method()), path); key != "" {
@@ -3855,6 +3917,8 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		RawQuery:     string(ctx.URI().QueryString()),
 		UpstreamURL:  cfg.UpstreamURL,
 		Body:         body,
+		BodySource:   bodySource,
+		Form:         form,
 		SafeHeaders:  safeHeaders,
 		Provider:     provider,
 		BaseProvider: baseProvider,

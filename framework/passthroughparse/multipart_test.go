@@ -3,6 +3,7 @@ package passthroughparse
 import (
 	"bytes"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -226,4 +227,46 @@ func TestSummarizeMultipartFlagsACutField(t *testing.T) {
 	require.True(t, decoded.Truncated)
 	require.Len(t, decoded.Fields["prompt"], maxMultipartFieldBytes)
 	require.Equal(t, "whisper-1", decoded.Fields["model"])
+}
+
+// TestSummarizeMultipartFormMatchesBodySummary asserts a streamed upload, summarized from its
+// parsed form, logs the same summary as the same upload summarized from its bytes.
+func TestSummarizeMultipartFormMatchesBodySummary(t *testing.T) {
+	audio := bytes.Repeat([]byte{0x00, 0xff, 0x10}, 1000)
+	contentType, body := multipartBody(t, [][2]string{
+		{"language", "en"}, {"model", "whisper-1"},
+		{"timestamp_granularities[]", "word"}, {"timestamp_granularities[]", "segment"},
+	}, map[string][]byte{"file": audio})
+	fromBody, ok := SummarizeMultipart(contentType, body)
+	require.True(t, ok)
+
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1024)
+	require.NoError(t, err)
+	defer form.RemoveAll()
+	fromForm, ok := SummarizeMultipartForm(form)
+	require.True(t, ok)
+	require.JSONEq(t, string(fromBody), string(fromForm))
+	require.False(t, bytes.Contains(fromForm, audio[:30]), "file bytes must never be kept")
+
+	_, ok = SummarizeMultipartForm(nil)
+	require.False(t, ok)
+}
+
+// TestSummarizeMultipartFormKeepsBinaryValuesOut asserts a part without a filename whose content is
+// not text (Go's form reader files every such part under Value, whatever its Content-Type) is
+// recorded like a file, by field and size, never as text in the log summary, matching what the
+// byte-based summary does for a non-textual part.
+func TestSummarizeMultipartFormKeepsBinaryValuesOut(t *testing.T) {
+	binary := "\x00\x01\x02PNG\xff\xfe"
+	form := &multipart.Form{Value: map[string][]string{"prompt": {"a red fox"}, "mask": {binary}}}
+	summary, ok := SummarizeMultipartForm(form)
+	require.True(t, ok)
+	var decoded MultipartSummary
+	require.NoError(t, sonic.Unmarshal(summary, &decoded))
+	require.Equal(t, "a red fox", decoded.Fields["prompt"])
+	require.NotContains(t, decoded.Fields, "mask", "binary value logged as text: %s", summary)
+	require.Equal(t, []MultipartFile{{Field: "mask", Bytes: int64(len(binary))}}, decoded.Files)
+	require.False(t, bytes.Contains(summary, []byte("PNG")), "binary bytes reached the summary: %s", summary)
 }
