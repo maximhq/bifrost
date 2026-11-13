@@ -66,6 +66,13 @@ LogEntry:
     routing_rule_name:
       type: string
       nullable: true
+    model_router_id:
+      type: string
+      nullable: true
+      description: The model router that took the request; omitted when none did.
+    model_router_name:
+      type: string
+      nullable: true
     complexity_tier:
       type: string
       enum: ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
@@ -1525,6 +1532,8 @@ RankingDimension:
     - virtual_key
     - app
     - user_agent
+    - model_router
+    - complexity_tier
 
 DimensionRankingEntry:
   type: object

@@ -77,7 +77,8 @@
 		"modelLimits": "模型限额",
 		"agent": "Agent",
 		"relay": "中继",
-		"relays": "中继"
+		"relays": "中继",
+		"modelRouters": "路由器"
 	},
 	"aboutField": "关于{{field}}",
 	"thisField": "此字段",
