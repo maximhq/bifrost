@@ -234,6 +234,8 @@ Request and response format is identical to [OpenAI Context Compaction](/provide
 
 xAI's TTS endpoint takes no model field, so `model` only routes the request.
 
+Speech requests staged for large-payload passthrough are refused with a 400, because the staged OpenAI-shaped body cannot be converted to the `/v1/tts` schema in flight. Large-payload transcriptions are forwarded as staged, and xAI only reads the form fields that come before `file`.
+
 ---
 
 # 8. Transcription (STT)
