@@ -19,6 +19,7 @@ const (
 	// unchanged on an update, it means "keep the stored value".
 	traceForwardSecretMask = "********"
 	maxTraceMaskingRules   = 50
+	maxTraceEvaluatorRules = 20
 )
 
 func init() {
@@ -47,6 +48,30 @@ func validateTraceMaskingAndForward(payload *traceProjectPayload) error {
 		}
 		if compiled.MatchString("") {
 			return fmt.Errorf("masking rule %d matches empty text, which would rewrite every value", i+1)
+		}
+	}
+	if payload.Evaluators != nil {
+		rules := *payload.Evaluators
+		if len(rules) > maxTraceEvaluatorRules {
+			return fmt.Errorf("a project can have at most %d evaluator rules", maxTraceEvaluatorRules)
+		}
+		seen := make(map[string]struct{}, len(rules))
+		for i := range rules {
+			rule := &rules[i]
+			rule.EvaluatorID, rule.Name = strings.TrimSpace(rule.EvaluatorID), strings.TrimSpace(rule.Name)
+			if rule.EvaluatorID == "" {
+				return fmt.Errorf("evaluator rule %d names no evaluator", i+1)
+			}
+			if _, dup := seen[rule.EvaluatorID]; dup {
+				return fmt.Errorf("evaluator %s is listed twice", rule.EvaluatorID)
+			}
+			seen[rule.EvaluatorID] = struct{}{}
+			if rule.SampleRate < 0 || rule.SampleRate > 1 {
+				return fmt.Errorf("evaluator rule %d: sample_rate must be between 0 and 1", i+1)
+			}
+			if rule.DailyCap < 0 {
+				return fmt.Errorf("evaluator rule %d: daily_cap cannot be negative", i+1)
+			}
 		}
 	}
 	forward := payload.Forward

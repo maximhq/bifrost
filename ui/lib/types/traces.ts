@@ -254,6 +254,15 @@ export interface TraceForwardTarget {
 	enabled: boolean;
 }
 
+/** Runs one evaluator on the project's traces as they complete. Its result is a score on the trace. */
+export interface TraceEvaluatorRule {
+	evaluator_id: string;
+	name?: string;
+	sample_rate: number;
+	daily_cap: number;
+	enabled: boolean;
+}
+
 export interface TraceProject {
 	id: string;
 	name: string;
@@ -261,6 +270,7 @@ export interface TraceProject {
 	retention_days?: number | null;
 	masking_rules?: TraceMaskingRule[];
 	forward?: TraceForwardTarget | null;
+	evaluators?: TraceEvaluatorRule[];
 	created_at?: string;
 }
 
