@@ -533,7 +533,7 @@ Two compose files define overlapping services on the **same host ports** (9000, 
 |---|---|---|
 | Redis | plain 6379, **TLS 6380, cluster 7000, cluster-TLS 7100** | plain 6379 only |
 | TLS certs | `redis-certs-init` writes `tests/redis-certs/` | none |
-| Weaviate | 1.32.4, pins `CLUSTER_ADVERTISE_ADDR` | 1.25.0, no advertise addr |
+| Weaviate | 1.39.13, pins `CLUSTER_ADVERTISE_ADDR` | 1.39.13, no advertise addr |
 
 The differences are load-bearing, not cosmetic:
 
