@@ -446,6 +446,53 @@ func TestApplyRoutingRules_FallbacksReachResponsesRequests(t *testing.T) {
 	}, req.ResponsesRequest.Fallbacks)
 }
 
+// TestApplyRoutingRules_DecisionAliasRule pins the logical decision alias recipe in the routing
+// rules docs: a rule on request_type == "decisions" && model == "judge" rewrites a bare "judge"
+// decision request to its target and installs the rule's ordered fallbacks, while a chat request
+// for the same name is left alone.
+func TestApplyRoutingRules_DecisionAliasRule(t *testing.T) {
+	stored := &configstoreTables.TableRoutingRule{
+		ID:            "judge-alias",
+		Name:          "Judge alias",
+		CelExpression: `request_type == "decisions" && model == "judge"`,
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-6-luna"), Weight: 1.0}},
+		Fallbacks:     bifrost.Ptr(`["cloudflare/clef-flash",{"provider":"azure","model":"Microsoft-Decision-1"}]`),
+		Enabled:       bifrost.Ptr(true),
+		Scope:         "global",
+	}
+	require.NoError(t, stored.AfterFind(nil))
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	decisionReq := &schemas.BifrostRequest{
+		RequestType:     schemas.DecisionRequest,
+		DecisionRequest: &schemas.BifrostDecisionRequest{Model: "judge"},
+	}
+	decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), decisionReq, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, schemas.OpenAI, decisionReq.DecisionRequest.Provider)
+	assert.Equal(t, "gpt-6-luna", decisionReq.DecisionRequest.Model)
+	assert.Equal(t, []schemas.Fallback{
+		{Provider: schemas.Cloudflare, Model: "clef-flash"},
+		{Provider: schemas.Azure, Model: "Microsoft-Decision-1"},
+	}, decisionReq.DecisionRequest.Fallbacks)
+
+	chatReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Model: "judge"},
+	}
+	decision, err = plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), chatReq, rules.GovernanceScope{})
+	require.NoError(t, err)
+	assert.Nil(t, decision)
+	assert.Equal(t, schemas.ModelProvider(""), chatReq.ChatRequest.Provider)
+	assert.Equal(t, "judge", chatReq.ChatRequest.Model)
+	assert.Empty(t, chatReq.ChatRequest.Fallbacks)
+}
+
 // TestApplyRoutingRules_RuleFallbacksVersusCallerFallbacks pins how a matched rule treats the
 // fallbacks the caller sent: a rule without fallbacks leaves them alone, a rule with fallbacks
 // replaces them, and a rule whose every fallback is dropped still replaces them with an empty list.

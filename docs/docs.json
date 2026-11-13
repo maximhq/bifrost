@@ -1304,6 +1304,7 @@
                   "GET /api/providers/{provider}/keys/{key_id}",
                   "PUT /api/providers/{provider}/keys/{key_id}",
                   "DELETE /api/providers/{provider}/keys/{key_id}",
+                  "POST /api/providers/{provider}/decisions/probe",
                   "GET /api/keys",
                   "GET /api/models",
                   "GET /api/models/details",

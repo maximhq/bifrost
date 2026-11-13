@@ -778,6 +778,7 @@ var Catalog = []Operation{
 	{ID: "performOCR", Method: "POST", Path: "/v1/ocr", Summary: "Perform OCR", Tags: []string{"OCR"}, Deprecated: false},
 	{ID: "previewOpenAPISpec", Method: "POST", Path: "/api/mcp/openapi/preview", Summary: "Preview an OpenAPI spec as MCP tools", Tags: []string{"MCP"}, Deprecated: false},
 	{ID: "previewRelayUsage", Method: "POST", Path: "/api/relays/usage-preview", Summary: "Preview relay usage", Tags: []string{"Relays"}, Deprecated: false},
+	{ID: "probeProviderDecision", Method: "POST", Path: "/api/providers/{provider}/decisions/probe", Summary: "Probe a decision route", Tags: []string{"Providers"}, Deprecated: false},
 	{ID: "propagateAccessProfile", Method: "POST", Path: "/api/governance/access-profiles/{profile_id}/propagate", Summary: "Propagate template changes to user copies", Tags: []string{"Access Profiles"}, Deprecated: false},
 	{ID: "propagateAccessProfileLegacy", Method: "POST", Path: "/api/access-profiles/{profile_id}/propagate", Summary: "Propagate template changes to user copies (deprecated path)", Tags: []string{"Access Profiles"}, Deprecated: true},
 	{ID: "pydanticaiAnthropicMessages", Method: "POST", Path: "/pydanticai/anthropic/v1/messages", Summary: "Create message (PydanticAI - Anthropic format)", Tags: []string{"PydanticAI Integration"}, Deprecated: false},

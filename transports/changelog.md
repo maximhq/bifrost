@@ -1,6 +1,8 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Decision Route Probe** - New `POST /api/providers/{provider}/decisions/probe` sends one fixed decision request to exactly one provider and model, with no fallbacks and no routing rules, and reports whether it answered, which model answered, latency, usage, and on failure the provider's status, error type, code, and message with credentials removed
+- **Logical Alias for Decision Models** - The routing rules docs show how to map a logical model name such as `judge` to a decision model with ordered fallbacks, globally or per virtual key
 
 ## 🐞 Fixed
 
