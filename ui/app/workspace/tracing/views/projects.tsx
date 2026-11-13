@@ -14,11 +14,12 @@ import {
 } from "@/lib/store";
 import type { TraceProject } from "@/lib/types/traces";
 import { ChevronRight, FolderPlus, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { formatCost, formatTokens } from "./format";
 import { TraceMetricStrip } from "./traceOverview";
+import TracingProjectPolicies from "@enterprise/components/tracing/tracingProjectPolicies";
 
 /** The window project metrics cover: the last 30 days, fixed when the view opens. */
 const PROJECT_METRICS_DAYS = 30;
@@ -45,7 +46,11 @@ export function ProjectsDialog({
 	const { t } = useTranslation("observability");
 	const [query, setQuery] = useState("");
 	const [name, setName] = useState("");
-	const [since] = useState(() => sinceDays(PROJECT_METRICS_DAYS));
+	// The metrics window ends when the dialog opens, not when the page first rendered it.
+	const [since, setSince] = useState(() => sinceDays(PROJECT_METRICS_DAYS));
+	useEffect(() => {
+		if (open) setSince(sinceDays(PROJECT_METRICS_DAYS));
+	}, [open]);
 	const [createProject, { isLoading: creating }] = useCreateTraceProjectMutation();
 	const { data: stats, isLoading } = useGetTraceStatsQuery({ start_time: since }, { skip: !open });
 	const traffic = useMemo(() => new Map((stats?.by_project ?? []).map((row) => [row.key, row])), [stats]);
@@ -78,6 +83,7 @@ export function ProjectsDialog({
 						onChange={(event) => setName(event.target.value)}
 						placeholder={t("tracing.projects.newPlaceholder")}
 						aria-label={t("tracing.projects.newPlaceholder")}
+						aria-required="true"
 						data-testid="tracing-projects-new-name"
 					/>
 					<Button
@@ -141,15 +147,19 @@ export function ProjectSheet({
 	project,
 	onClose,
 	onViewTraces,
+	onDeleted,
 }: {
 	project: TraceProject | undefined;
 	onClose: () => void;
 	onViewTraces: (projectId: string) => void;
+	/** Called with the deleted project's id, which may no longer be the project the sheet shows. */
+	onDeleted: (projectId: string) => void;
 }) {
 	const { t } = useTranslation("observability");
 	const [updateProject, { isLoading: saving }] = useUpdateTraceProjectMutation();
 	const [deleteProject] = useDeleteTraceProjectMutation();
-	const [since] = useState(() => sinceDays(PROJECT_METRICS_DAYS));
+	const [since, setSince] = useState(() => sinceDays(PROJECT_METRICS_DAYS));
+	const viewTracesRef = useRef<HTMLButtonElement>(null);
 	const [name, setName] = useState("");
 	const [description, setDescription] = useState("");
 	const [retention, setRetention] = useState("");
@@ -158,9 +168,11 @@ export function ProjectSheet({
 	const stats = useGetTraceStatsQuery(filters, { skip: !open });
 	const histogram = useGetTraceHistogramQuery({ filters, bucketSizeSeconds: 86_400 }, { skip: !open });
 
-	// The form follows the project it is opened on, not a refetch while it is being edited.
+	// The form follows the project it is opened on, not a refetch while it is being edited, and the
+	// metrics window ends when it opens.
 	useEffect(() => {
 		if (!project) return;
+		setSince(sinceDays(PROJECT_METRICS_DAYS));
 		setName(project.name);
 		setDescription(project.description ?? "");
 		setRetention(project.retention_days ? String(project.retention_days) : "");
@@ -195,9 +207,11 @@ export function ProjectSheet({
 
 	const remove = async () => {
 		if (!project || !window.confirm(t("tracing.settings.deleteProjectConfirm"))) return;
+		const id = project.id;
 		try {
-			await deleteProject(project.id).unwrap();
-			onClose();
+			await deleteProject(id).unwrap();
+			// The parent closes the sheet only if it still shows this project.
+			onDeleted(id);
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -207,6 +221,12 @@ export function ProjectSheet({
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
 			<SheetContent
 				className="flex w-full flex-col gap-0 overflow-y-auto p-0 sm:max-w-2xl"
+				// Focus the main action instead of the first field, so opening the sheet does not put the
+				// cursor in the name of the project.
+				onOpenAutoFocus={(event) => {
+					event.preventDefault();
+					viewTracesRef.current?.focus();
+				}}
 				data-testid="tracing-project-sheet"
 				data-radius="md"
 			>
@@ -221,6 +241,7 @@ export function ProjectSheet({
 						<TraceMetricStrip data={stats.data} histogram={histogram.data} loading={stats.isFetching} error={stats.error} />
 					</div>
 					<Button
+						ref={viewTracesRef}
 						variant="outline"
 						className="h-9 self-start px-3"
 						onClick={() => project && onViewTraces(project.id)}
@@ -235,6 +256,7 @@ export function ProjectSheet({
 							<Label htmlFor="tracing-project-name">{t("tracing.settings.name")}</Label>
 							<Input
 								id="tracing-project-name"
+								aria-required="true"
 								value={name}
 								onChange={(event) => setName(event.target.value)}
 								data-testid="tracing-project-name"
@@ -277,6 +299,7 @@ export function ProjectSheet({
 							</Button>
 						</div>
 					</form>
+					{project && <TracingProjectPolicies projectId={project.id} />}
 				</div>
 			</SheetContent>
 		</Sheet>
