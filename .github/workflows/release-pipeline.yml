@@ -355,6 +355,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -478,6 +479,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -828,6 +830,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
@@ -958,6 +961,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -1314,6 +1318,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1554,6 +1559,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1634,6 +1640,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1680,6 +1687,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1770,6 +1778,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -1810,6 +1819,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1959,6 +1969,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2139,6 +2150,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2266,6 +2278,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
@@ -2431,6 +2444,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2531,6 +2545,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2636,6 +2651,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2728,6 +2744,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -2792,6 +2809,7 @@ jobs:
             api.minimax.io:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
+            llm.kimchi.dev:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2894,6 +2912,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3028,6 +3047,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3157,6 +3177,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -3303,6 +3324,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
           BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

@@ -10,6 +10,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // qdrantMaxRecvMsgSize is the gRPC max receive message size for Qdrant.
@@ -360,6 +362,12 @@ func (s *QdrantStore) Delete(ctx context.Context, namespace string, id string) e
 		CollectionName: namespace,
 		Points:         qdrant.NewPointsSelector(pointID),
 	})
+	// A missing point is already a no-op; a missing collection is reported as
+	// NotFound. Either way the point is absent, which is what the caller asked
+	// for, as on every other store.
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
 	return err
 }
 
