@@ -104,6 +104,7 @@ describe("Decision complexity configuration", () => {
 			classifier: "decision",
 		};
 		expect(toFormValues(saved).classifier).toBe("decision");
+		expect(toFormValues({ ...saved, classifier: "llm" }).classifier).toBe("llm");
 		expect(toFormValues({ ...saved, classifier: "" as never }).classifier).toBe("semantic");
 	});
 
@@ -591,6 +592,12 @@ describe("router configuration state", () => {
 		).toBe(true);
 	});
 
+	test("treats the llm classifier as configured once it has its model", () => {
+		const keywords = { simple_keywords: ["a"], medium_keywords: ["b"], complex_keywords: ["c"] };
+		expect(isRouterConfigured({ keywords, classifier: "llm" })).toBe(false);
+		expect(isRouterConfigured({ keywords, classifier: "llm", llm: { provider: "openai", model: "gpt-4o-mini" } })).toBe(true);
+	});
+
 	test("does not treat phrases alone as configured", () => {
 		expect(
 			isRouterConfigured({
@@ -693,5 +700,53 @@ describe("semantic complexity phrase limit", () => {
 
 	test("does not cap a form that will omit the semantic block", () => {
 		expect(analyzerConfigSchema.safeParse(formValues(750, false)).success).toBe(true);
+	});
+});
+describe("llm classifier", () => {
+	const keywords = { simple_keywords: ["a"], medium_keywords: ["b"], complex_keywords: ["c"] };
+
+	test("needs its model and names the classifier in the error", () => {
+		const parsed = analyzerConfigSchema.safeParse({ ...DEFAULT_FORM_VALUES, classifier: "llm", keywords });
+		expect(parsed.success).toBe(false);
+		const paths = parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+		expect(paths).toEqual(expect.arrayContaining(["llm.provider", "llm.model"]));
+	});
+
+	test("saves with its model and needs no semantic block", () => {
+		const values = {
+			...DEFAULT_FORM_VALUES,
+			classifier: "llm" as const,
+			keywords,
+			session: { enabled: true },
+			llm: { ...DEFAULT_FORM_VALUES.llm, provider: "openai", model: "gpt-4o-mini" },
+		};
+		expect(analyzerConfigSchema.safeParse(values).success).toBe(true);
+		const payload = toAnalyzerPayload(values);
+		expect(payload.classifier).toBe("llm");
+		expect(payload.llm).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
+		expect(payload.semantic).toBeUndefined();
+	});
+});
+
+describe("a model router's classifier form", () => {
+	const keywords = { simple_keywords: ["hi"], medium_keywords: ["summarize this"], complex_keywords: ["prove this"] };
+	const base = { ...DEFAULT_FORM_VALUES, keywords };
+	const embedding = { ...base.semantic, provider: "openai", embedding_model: "text-embedding-3-small" };
+	// The fields a submit of these values marks invalid.
+	const invalid = (values: unknown) => {
+		const parsed = analyzerConfigSchema.safeParse(values);
+		return parsed.success ? [] : [...new Set(parsed.error.issues.map((issue) => issue.path.join(".")))].sort();
+	};
+
+	test("an llm left half picked does not block the save while the llm is not in use", () => {
+		// Picking the llm's provider clears its model, and the llm's fields are
+		// only on screen while it is the classifier or the semantic fallback. Once
+		// another classifier is chosen, an error on them has nowhere to show, and
+		// the half-picked block is not sent anyway: toAnalyzerPayload drops it.
+		const halfPicked = { ...base.llm, provider: "openai" };
+		expect.soft(invalid({ ...base, classifier: "decision", llm: halfPicked }), "the decision model is the classifier").toEqual([]);
+		expect
+			.soft(invalid({ ...base, semantic: { ...embedding, fallback: "none" }, llm: halfPicked }), "semantic without a fallback")
+			.toEqual([]);
 	});
 });

@@ -42,6 +42,7 @@ import {
 	Shuffle,
 	Siren,
 	SlidersHorizontal,
+	Split,
 	SquareKanban,
 	Telescope,
 	ToolCase,
@@ -299,6 +300,14 @@ export function useNavItems(): NavItem[] {
 						url: "/workspace/complexity-router",
 						icon: GitCompareArrows,
 						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						id: "models.routers",
+						title: t("nav.routers"),
+						url: "/workspace/model-routers",
+						icon: Split,
+						// The model router APIs are gated on Governance.
+						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{
 						id: "models.circuit-breaker",

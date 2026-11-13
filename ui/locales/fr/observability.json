@@ -70,7 +70,8 @@
 			"decision": "Modèle de décision",
 			"llm": "LLM",
 			"skipped": "Ignoré"
-		}
+		},
+		"modelRouter": "Routeur"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1233,7 +1234,10 @@
 		"exactRoundTripID": "ID d'aller-retour exact",
 		"nothingRecorded": "Aucune donnée enregistrée sur cette période",
 		"topics": "Sujets",
-		"searchTopics": "Rechercher des sujets"
+		"searchTopics": "Rechercher des sujets",
+		"modelRouters": "Routeurs",
+		"searchModelRouters": "Rechercher des routeurs",
+		"loadFailed": "Impossible de charger cette liste."
 	},
 	"requestTypes": {
 		"chat_completion": "Chat",
