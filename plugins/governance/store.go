@@ -52,6 +52,9 @@ type LocalGovernanceStore struct {
 	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
 	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
 	virtualMCPAssignMu sync.Mutex // serializes the assignment-slice read-modify-write in attach/detach
+	// virtualKeyWriteMu serializes writers of virtualKeys and virtualKeysByID, so a key's value, ID and
+	// grace-period entries change together and a stale copy cannot outlive a delete. Reads stay lock-free.
+	virtualKeyWriteMu sync.Mutex
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -3588,10 +3591,12 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	}
 
 	// Build virtual keys map and track active VKs
+	gs.virtualKeyWriteMu.Lock()
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
 	}
+	gs.virtualKeyWriteMu.Unlock()
 
 	// Stamp team-owned budget and rate-limit entries in the flat caches so
 	// calendar-aligned resets survive restarts and reloads. GORM runs AfterFind
@@ -3811,11 +3816,18 @@ func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []S
 
 // PUBLIC API METHODS
 
-// CreateVirtualKeyInMemory adds a new virtual key to the in-memory store (lock-free)
+// CreateVirtualKeyInMemory adds a new virtual key to the in-memory store
 func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return // Nothing to create
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
+	gs.createVirtualKeyLocked(ctx, vk)
+}
+
+// createVirtualKeyLocked is CreateVirtualKeyInMemory for a caller already holding virtualKeyWriteMu.
+func (gs *LocalGovernanceStore) createVirtualKeyLocked(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 
 	clone := *vk
 
@@ -3852,14 +3864,17 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 		}
 	}
 
+	gs.linkCachedTeam(&clone)
 	gs.storeVirtualKey(clone.Value.GetValue(), &clone)
 }
 
-// UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
+// UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store
 func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64) {
 	if vk == nil {
 		return // Nothing to update
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
 
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
@@ -4048,9 +4063,10 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				gs.deleteVirtualKeyAlias(oldKey, clone.ID)
 			}
 		}
+		gs.linkCachedTeam(&clone)
 		gs.storeVirtualKey(newValue, &clone)
 	} else {
-		gs.CreateVirtualKeyInMemory(ctx, vk)
+		gs.createVirtualKeyLocked(ctx, vk)
 	}
 }
 
@@ -4059,6 +4075,8 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 	if vkID == "" {
 		return // Nothing to delete
 	}
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
 
 	// Find and delete the VK by ID (lock-free)
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
@@ -4163,6 +4181,8 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 	}
 
 	gs.teams.Store(clone.ID, &clone)
+	// A key can reach this node before its team does (gossip order), so it may hold an older copy.
+	gs.refreshVirtualKeysOfTeam(&clone)
 }
 
 // UpdateTeamInMemory updates an existing team in the in-memory store (lock-free)
@@ -4232,9 +4252,48 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 		}
 
 		gs.teams.Store(team.ID, &clone)
+		gs.refreshVirtualKeysOfTeam(&clone)
 	} else {
 		gs.CreateTeamInMemory(ctx, team)
 	}
+}
+
+// linkCachedTeam points a key being written at its team's cached record, so a key edit carrying a
+// copy of its team from before a concurrent team update cannot put the old customer back. Called
+// with virtualKeyWriteMu held.
+func (gs *LocalGovernanceStore) linkCachedTeam(vk *configstoreTables.TableVirtualKey) {
+	if vk.TeamID == nil {
+		return
+	}
+	if cached, ok := gs.teams.Load(*vk.TeamID); ok {
+		if team, ok := cached.(*configstoreTables.TableTeam); ok && team != nil {
+			vk.Team = team
+		}
+	}
+}
+
+// refreshVirtualKeysOfTeam points a team's cached keys at its latest record, so a changed or cleared
+// customer is charged and logged from the next request rather than after each key reloads.
+func (gs *LocalGovernanceStore) refreshVirtualKeysOfTeam(team *configstoreTables.TableTeam) {
+	gs.virtualKeyWriteMu.Lock()
+	defer gs.virtualKeyWriteMu.Unlock()
+	// Re-read under the lock: of two concurrent team updates, whichever refreshes last sees the newer record.
+	if cached, ok := gs.teams.Load(team.ID); ok {
+		if latest, ok := cached.(*configstoreTables.TableTeam); ok && latest != nil {
+			team = latest
+		}
+	}
+	gs.virtualKeys.Range(func(key, value interface{}) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		// Only the current-value entry: storeVirtualKey re-registers a grace-period alias with it.
+		if !ok || vk == nil || vk.TeamID == nil || *vk.TeamID != team.ID || key.(string) != vk.Value.GetValue() {
+			return true // continue
+		}
+		clone := *vk
+		clone.Team = team
+		gs.storeVirtualKey(key.(string), &clone)
+		return true // continue iteration
+	})
 }
 
 // DeleteTeamInMemory removes a team from the in-memory store (lock-free)
@@ -4259,6 +4318,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 
 	// Set team_id to null for all virtual keys associated with the team
 	// Iterate through all VKs since team.VirtualKeys may not be populated
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4272,6 +4332,7 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(ctx context.Context, teamID s
 		}
 		return true // continue iteration
 	})
+	gs.virtualKeyWriteMu.Unlock()
 
 	gs.teams.Delete(teamID)
 }
@@ -4375,6 +4436,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 	}
 	// Set customer_id to null for all virtual keys associated with the customer
 	// Iterate through all VKs since customer.VirtualKeys may not be populated
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4388,6 +4450,7 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(ctx context.Context, cust
 		}
 		return true // continue iteration
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Set customer_id to null for all teams associated with the customer
 	// Iterate through all teams since customer.Teams may not be populated
 	gs.teams.Range(func(key, value interface{}) bool {
@@ -4636,6 +4699,7 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		}
 	}
 	// Update VKs that reference these budgets
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4697,56 +4761,53 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Update teams that reference these budgets
 	gs.teams.Range(func(key, value interface{}) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil {
-			return true // continue
-		}
-		matched := false
-		for i := range team.Budgets {
-			if resets[team.Budgets[i].ID] != nil {
-				matched = true
-				break
+		patchCached(&gs.teams, key, value, func(team *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+			matched := false
+			for i := range team.Budgets {
+				if resets[team.Budgets[i].ID] != nil {
+					matched = true
+					break
+				}
 			}
-		}
-		if !matched {
-			return true // continue
-		}
-		clone := *team
-		clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
-		for i := range clone.Budgets {
-			if b := resets[clone.Budgets[i].ID]; b != nil {
-				clone.Budgets[i] = *b
+			if !matched {
+				return nil
 			}
-		}
-		gs.teams.Store(key, &clone)
+			clone := *team
+			clone.Budgets = append([]configstoreTables.TableBudget(nil), team.Budgets...)
+			for i := range clone.Budgets {
+				if b := resets[clone.Budgets[i].ID]; b != nil {
+					clone.Budgets[i] = *b
+				}
+			}
+			return &clone
+		})
 		return true // continue
 	})
 	// Update customers that own these budgets
 	gs.customers.Range(func(key, value interface{}) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil {
-			return true // continue
-		}
-		matched := false
-		for i := range customer.Budgets {
-			if resets[customer.Budgets[i].ID] != nil {
-				matched = true
-				break
+		patchCached(&gs.customers, key, value, func(customer *configstoreTables.TableCustomer) *configstoreTables.TableCustomer {
+			matched := false
+			for i := range customer.Budgets {
+				if resets[customer.Budgets[i].ID] != nil {
+					matched = true
+					break
+				}
 			}
-		}
-		if !matched {
-			return true // continue
-		}
-		clone := *customer
-		clone.Budgets = append([]configstoreTables.TableBudget(nil), customer.Budgets...)
-		for i := range clone.Budgets {
-			if b := resets[clone.Budgets[i].ID]; b != nil {
-				clone.Budgets[i] = *b
+			if !matched {
+				return nil
 			}
-		}
-		gs.customers.Store(key, &clone)
+			clone := *customer
+			clone.Budgets = append([]configstoreTables.TableBudget(nil), customer.Budgets...)
+			for i := range clone.Budgets {
+				if b := resets[clone.Budgets[i].ID]; b != nil {
+					clone.Budgets[i] = *b
+				}
+			}
+			return &clone
+		})
 		return true // continue
 	})
 }
@@ -4768,6 +4829,7 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 		}
 	}
 	// Update VKs that reference these rate limits
+	gs.virtualKeyWriteMu.Lock()
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
 		if !ok || vk == nil {
@@ -4801,36 +4863,50 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 		gs.storeVirtualKey(key.(string), &clone)
 		return true // continue
 	})
+	gs.virtualKeyWriteMu.Unlock()
 	// Update teams that reference these rate limits
 	gs.teams.Range(func(key, value interface{}) bool {
-		team, ok := value.(*configstoreTables.TableTeam)
-		if !ok || team == nil {
-			return true // continue
-		}
-		if team.RateLimitID != nil {
-			if rl := resets[*team.RateLimitID]; rl != nil {
-				clone := *team
-				clone.RateLimit = rl
-				gs.teams.Store(key, &clone)
+		patchCached(&gs.teams, key, value, func(team *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+			if team.RateLimitID == nil || resets[*team.RateLimitID] == nil {
+				return nil
 			}
-		}
+			clone := *team
+			clone.RateLimit = resets[*team.RateLimitID]
+			return &clone
+		})
 		return true // continue
 	})
 	// Update customers that reference these rate limits
 	gs.customers.Range(func(key, value interface{}) bool {
-		customer, ok := value.(*configstoreTables.TableCustomer)
-		if !ok || customer == nil {
-			return true // continue
-		}
-		if customer.RateLimitID != nil {
-			if rl := resets[*customer.RateLimitID]; rl != nil {
-				clone := *customer
-				clone.RateLimit = rl
-				gs.customers.Store(key, &clone)
+		patchCached(&gs.customers, key, value, func(customer *configstoreTables.TableCustomer) *configstoreTables.TableCustomer {
+			if customer.RateLimitID == nil || resets[*customer.RateLimitID] == nil {
+				return nil
 			}
-		}
+			clone := *customer
+			clone.RateLimit = resets[*customer.RateLimitID]
+			return &clone
+		})
 		return true // continue
 	})
+}
+
+// patchCached replaces a cached team or customer with patch's copy only if the entry still holds the
+// one read, and otherwise patches the latest copy, as the budget updates do. A reset therefore never
+// puts back a team or customer that a concurrent edit has replaced. patch returns nil for no change.
+func patchCached[T any](m *sync.Map, key, value any, patch func(*T) *T) {
+	for {
+		current, ok := value.(*T)
+		if !ok || current == nil {
+			return
+		}
+		next := patch(current)
+		if next == nil || m.CompareAndSwap(key, value, next) {
+			return
+		}
+		if value, ok = m.Load(key); !ok {
+			return
+		}
+	}
 }
 
 // GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
