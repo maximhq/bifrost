@@ -221,6 +221,13 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	return r, manager
 }
 
+// errorText reads the message of an error body serve decoded.
+func errorText(body map[string]any) string {
+	e, _ := body["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	return msg
+}
+
 func serve(t *testing.T, r *router.Router, method, uri, body string) (int, map[string]any) {
 	t.Helper()
 	var req fasthttp.Request
@@ -286,15 +293,17 @@ func TestComplexitySuggestionsStatusTransitions(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, rows[0].Centroid, "the centroid is kept for the next run's match")
 
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"dismissed"}`)
+	code, body = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"dismissed"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "accepted to dismissed goes through open")
+	assert.Equal(t, `an accepted suggestion cannot be marked "dismissed"`, errorText(body))
 	code, body = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"open"}`)
 	require.Equal(t, fasthttp.StatusOK, code)
 	assert.NotContains(t, body, "resolved_at", "undoing clears when it was resolved")
 	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-old/status", `{"status":"accepted"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "a superseded suggestion is stale")
-	code, _ = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"superseded"}`)
+	code, body = serve(t, r, fasthttp.MethodPut, "/api/routing/model-routers/default/suggestions/s-open/status", `{"status":"superseded"}`)
 	assert.Equal(t, fasthttp.StatusConflict, code, "superseding is the runs' call")
+	assert.Equal(t, `an open suggestion cannot be marked "superseded"`, errorText(body))
 
 	// A status that does not exist is a bad request, not a refused transition.
 	for _, status := range []string{`"approved"`, `""`, `"ACCEPTED"`} {

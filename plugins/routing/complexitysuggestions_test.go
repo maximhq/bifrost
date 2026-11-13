@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -971,13 +972,89 @@ func TestComplexitySuggestionsCancelRun(t *testing.T) {
 	require.Len(t, stillRunning, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunRunning, stillRunning[0].Status)
 
-	// A running run's handler records its own outcome when it stops.
+	// A running run's handler records its own outcome when it stops, and the
+	// cancel answers with that outcome once it is written.
+	defaultWait := suggestionCancelSettleWait
+	t.Cleanup(func() { suggestionCancelSettleWait = defaultWait })
 	running := logstore.ComplexitySuggestionRun{ID: "running", RouterID: captureRouterID, Status: logstore.ComplexitySuggestionRunRunning,
 		Stage: logstore.ComplexitySuggestionRunStageSuggesting, StartedAt: time.Now()}
 	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &running))
+	// The handler records its outcome only once the cancel has reached the
+	// queue, as a real one stops after its job is cancelled.
+	reached := make(chan struct{}, 1)
+	p.SetComplexitySuggestionJobs(hookQueue{cancel: func(context.Context, string) (bool, error) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+		return true, nil
+	}}, &inFlightJobs{})
+	recorded := make(chan error, 1)
+	go func() {
+		<-reached
+		ended := running
+		finished := time.Now().UTC()
+		ended.Status, ended.Stage, ended.FinishedAt = logstore.ComplexitySuggestionRunCancelled, "", &finished
+		recorded <- store.UpsertComplexitySuggestionRun(context.Background(), &ended)
+	}()
 	run, err = p.CancelComplexitySuggestionRun(ctx, captureRouterID, "running")
 	require.NoError(t, err)
+	require.NoError(t, <-recorded)
+	assert.Equal(t, logstore.ComplexitySuggestionRunCancelled, run.Status, "the handler's own record, not the one read before the cancel")
+	require.NotNil(t, run.FinishedAt)
+
+	// A handler that has not stopped within the wait leaves the record as it
+	// stands, still running.
+	suggestionCancelSettleWait = 100 * time.Millisecond
+	slow := logstore.ComplexitySuggestionRun{ID: "slow", RouterID: captureRouterID, Status: logstore.ComplexitySuggestionRunRunning,
+		Stage: logstore.ComplexitySuggestionRunStageSuggesting, StartedAt: time.Now()}
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &slow))
+	run, err = p.CancelComplexitySuggestionRun(ctx, captureRouterID, "slow")
+	require.NoError(t, err)
 	assert.Equal(t, logstore.ComplexitySuggestionRunRunning, run.Status, "left for the handler, which keeps what it wrote")
+}
+
+// slowRunReads is a store whose run reads after the first block until their
+// context ends, as a stalled database would.
+type slowRunReads struct {
+	logstore.LogStore
+	reads atomic.Int32
+}
+
+func (s *slowRunReads) ListComplexitySuggestionRuns(ctx context.Context, filter logstore.ComplexitySuggestionRunFilter, limit int) ([]logstore.ComplexitySuggestionRun, error) {
+	if s.reads.Add(1) == 1 {
+		return s.LogStore.ListComplexitySuggestionRuns(ctx, filter, limit)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A cancel waits for a running run's outcome no longer than the settle wait,
+// even when a read of the run stalls and the caller set no deadline.
+func TestComplexitySuggestionsCancelWaitIsBoundedWhenReadsStall(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	defaultWait := suggestionCancelSettleWait
+	suggestionCancelSettleWait = 100 * time.Millisecond
+	t.Cleanup(func() { suggestionCancelSettleWait = defaultWait })
+	run := logstore.ComplexitySuggestionRun{ID: uuid.NewString(), RouterID: captureRouterID, Status: logstore.ComplexitySuggestionRunRunning,
+		Stage: logstore.ComplexitySuggestionRunStageSuggesting, StartedAt: time.Now()}
+	require.NoError(t, store.UpsertComplexitySuggestionRun(context.Background(), &run))
+	slow := &slowRunReads{LogStore: store}
+	p.SetComplexitySuggestionStore(slow, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
+	p.SetComplexitySuggestionJobs(&recordingQueue{}, &inFlightJobs{})
+
+	done := make(chan logstore.ComplexitySuggestionRun, 1)
+	go func() {
+		got, err := p.CancelComplexitySuggestionRun(context.Background(), captureRouterID, run.ID)
+		assert.NoError(t, err)
+		done <- got
+	}()
+	select {
+	case got := <-done:
+		assert.Equal(t, logstore.ComplexitySuggestionRunRunning, got.Status, "the record as it stood")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancel waited past its settle wait on a stalled read")
+	}
 }
 
 // A run that stopped early reads as cancelled only when a user cancelled it:

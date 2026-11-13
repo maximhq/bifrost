@@ -228,9 +228,11 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 	switch {
 	case err == nil:
 		run.Status = logstore.ComplexitySuggestionRunSucceeded
-	case errors.Is(err, context.Canceled) && s.Cancelled != nil && s.Cancelled(recordCtx):
+	case (errors.Is(err, context.Canceled) || ctx.Err() != nil) && s.Cancelled != nil && s.Cancelled(recordCtx):
 		// Stopped on purpose: not a failure, and nothing was written past
-		// the stage it reached.
+		// the stage it reached. The run's own context is checked too, since
+		// not every error wraps the cancel it came from (the Weaviate
+		// client's do not).
 		run.Status, run.Error, err = logstore.ComplexitySuggestionRunCancelled, "", nil
 	default:
 		run.Status, run.Error = logstore.ComplexitySuggestionRunFailed, err.Error()
