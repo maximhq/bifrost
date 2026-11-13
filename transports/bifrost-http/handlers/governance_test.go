@@ -283,6 +283,61 @@ func TestClassifyAgentGrantReplacementError(t *testing.T) {
 	}
 }
 
+// A virtual key holds one config per provider, so create and update refuse provider_configs that name
+// a provider twice, before anything is written.
+func TestVirtualKeyProviderConfigsHoldOneConfigPerProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	// Configured, so the only thing wrong with each request below is the repeated provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	duplicates := []string{
+		`"provider_configs":[{"provider":"openai","allowed_models":["gpt-4o-mini"]},{"provider":"openai","allowed_models":["gpt-4.1-mini"]}]`,
+		`"provider_configs":[{"provider":"openai","allowed_models":["*"]},{"provider":" openai ","allowed_models":["*"]}]`,
+	}
+
+	for _, configs := range duplicates {
+		createCtx := newTestRequestCtx(`{"name":"two-openai",` + configs + `}`)
+		handler.createVirtualKey(createCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+		assert.Contains(t, string(createCtx.Response.Body()), `provider_configs names provider \"openai\" more than once`)
+	}
+	keys, err := store.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a refused create writes nothing")
+
+	createCtx := newTestRequestCtx(`{"name":"no-providers","description":"original"}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+
+	for _, configs := range duplicates {
+		updateCtx := newTestRequestCtx(`{"description":"changed",` + configs + `}`)
+		updateCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(updateCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+	}
+	persisted, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", persisted.Description, "a refused update changes nothing")
+	assert.Empty(t, persisted.ProviderConfigs)
+}
+
+func TestValidateVirtualKeyProviders(t *testing.T) {
+	assert.NoError(t, validateVirtualKeyProviders(nil))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"openai", "anthropic"}))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"", " "}), "blank names are the provider check's to refuse")
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", "anthropic", "openai"}), `"openai"`)
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", " openai"}), `"openai"`, "compared as stored, trimmed")
+}
+
 func TestVirtualKeyAgentAssignmentsHTTPContract(t *testing.T) {
 	SetLogger(&mockLogger{})
 	ctx := context.Background()
@@ -5143,6 +5198,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
 	ctx := context.Background()
 	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{}))
 
 	create := func(t *testing.T, name, weight string) *fasthttp.RequestCtx {
 		t.Helper()
@@ -5182,7 +5238,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"an existing config to a negative weight": fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":-0.5}]}`, pcID),
-		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"openai","allowed_models":["*"],"weight":-1}]}`, pcID),
+		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"anthropic","allowed_models":["*"],"weight":-1}]}`, pcID),
 	} {
 		put := newTestRequestCtx(body)
 		put.SetUserValue("vk_id", created.VirtualKey.ID)
