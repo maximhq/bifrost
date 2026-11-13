@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,85 @@ func TestRealtimeProviderInputLifecycle(t *testing.T) {
 	inputs = session.ConsumeRealtimeTurnInputs()
 	assert.Len(t, inputs, 1)
 	assert.Equal(t, "next", inputs[0].ItemID)
+}
+
+// TestRealtimeProviderInputEchoOfTheClientsMessage keeps a message the client sent without an id, and the
+// announcement the provider answers it with, as one input.
+func TestRealtimeProviderInputEchoOfTheClientsMessage(t *testing.T) {
+	const clientRaw = `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	announce := func(id, text string) string {
+		return `{"type":"conversation.item.added","item":{"id":"` + id + `","type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}}`
+	}
+	record := func(session *bfws.Session, raw string) {
+		t.Helper()
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		assert.NoError(t, err)
+		recordRealtimeProviderInput(nil, session, event, raw)
+	}
+
+	t.Run("the echo is the message it answers", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, announce("item_4", "Say hello."))
+		record(session, strings.Replace(announce("item_4", "Say hello."), "item.added", "item.done", 1))
+		inputs := session.ConsumeRealtimeTurnInputs()
+		assert.Len(t, inputs, 1)
+		assert.Equal(t, "item_4", inputs[0].ItemID)
+		assert.Equal(t, "Say hello.", inputs[0].Summary)
+	})
+
+	t.Run("each echo answers one message", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "yes", clientRaw)
+		session.RecordRealtimeInput("", "yes", clientRaw)
+		record(session, announce("a", "yes"))
+		record(session, announce("b", "yes"))
+		inputs := session.PeekRealtimeTurnInputs()
+		assert.Len(t, inputs, 2)
+		assert.Equal(t, []string{"a", "b"}, []string{inputs[0].ItemID, inputs[1].ItemID})
+		record(session, announce("c", "yes"))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 3, "an announcement with no message left to answer is an input of its own")
+	})
+
+	t.Run("an announcement of other text is an input of its own", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, announce("item_9", "Something else."))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 2)
+	})
+
+	t.Run("a provider's audio item does not take a typed message", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, `{"type":"conversation.item.added","item":{"id":"audio","type":"message","role":"user","content":[{"type":"input_audio","transcript":null}]}}`)
+		inputs := session.PeekRealtimeTurnInputs()
+		assert.Len(t, inputs, 2)
+		assert.Equal(t, realtimeMissingTranscriptText, inputs[1].Summary)
+	})
+
+	t.Run("a message that carries its id still merges by id", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("item_7", "Say hello.", clientRaw)
+		record(session, announce("item_7", "Say hello."))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 1)
+	})
+}
+
+// BenchmarkRealtimeProviderInputAnnouncement measures one user message: the client's record and the provider's announcement of it.
+func BenchmarkRealtimeProviderInputAnnouncement(b *testing.B) {
+	const clientRaw = `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	const raw = `{"type":"conversation.item.added","item":{"id":"item_4","type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	event, err := schemas.ParseRealtimeEvent([]byte(raw))
+	if err != nil {
+		b.Fatal(err)
+	}
+	session := bfws.NewSession(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		recordRealtimeProviderInput(nil, session, event, raw)
+		session.ConsumeRealtimeTurnInputs()
+	}
 }
 
 // BenchmarkRealtimeProviderInputDelta measures the common streaming path without input work.

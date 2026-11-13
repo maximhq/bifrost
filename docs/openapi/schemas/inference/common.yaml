@@ -43,6 +43,7 @@ ModelProvider:
     - baseten
     - kimchi
     - wally
+    - soniox
 
 Fallback:
   type: object

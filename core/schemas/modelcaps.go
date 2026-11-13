@@ -453,6 +453,16 @@ func (c ModelCaps) SupportsMultimodalToolOutput(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNativeStructuredOutput reports whether the model takes a JSON schema
+// natively (Bedrock Converse outputConfig.textFormat) rather than through the
+// synthetic bf_so_* tool.
+func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeStructuredOutput != nil {
+		return *c.record.SupportsNativeStructuredOutput
+	}
+	return fallback
+}
+
 // SupportsResponseSchemaWithTools reports whether the model accepts a JSON
 // response format alongside function declarations. Models without it reject the
 // pairing, so the response-format hint is dropped to keep tool calling working.

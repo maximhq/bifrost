@@ -8639,6 +8639,46 @@ const AUTH57 = folder("AUTH-57 A new public address moves the client ID", `Setup
   restoreConfig("AUTH-57"),
 ]);
 
+// AUTH-65: the hosted URL keeps DOC_PATH, so the mock's fetch through Bifrost's local address returns Bifrost's own
+// document, the copy an admin would publish unchanged.
+const HOSTED = "https://docs.example.test" + DOC_PATH;
+const hostedUrl = (value) => [`cc.mcp_client_metadata_url = ${value === null ? "null" : lit(value)};`];
+const AUTH65 = folder("AUTH-65 A hosted client metadata document", `Setup: ${EXT_TEXT(EXT_A)}; fleet server auth65 as an OAuth protected resource whose authorization server advertises client metadata documents; a shared OAuth client auth65-c on it, per call, signed in as id1 with ${EXT_A}'s document. Then mcp_client_metadata_url becomes ${HOSTED}, and is cleared with null.`, [
+  readConfig("AUTH-65"), extUrl("AUTH-65", EXT_A),
+  ...asServer("AUTH-65", "auth65", DOCS_ADVERTISED),
+  createOAuth("AUTH-65", "setup: create the client", oauthBody("auth65-c", "auth65", "auth65"), "auth65", [docAuthorize(EXT_A)]),
+  consentVia("AUTH-65", "setup: consent as id1", "auth65", "id1", EXT_A),
+  followCallback("AUTH-65", "setup: follow the callback", "auth65", callbackSuccess()),
+  completeOAuth("AUTH-65", "setup: complete", "auth65", [A.status(200)]),
+  execTool("AUTH-65", "control: the client executes", "auth65-echo_tool", [A.status(200)]),
+  extUrl("AUTH-65", EXT_A, hostedUrl(HOSTED), `, mcp_client_metadata_url ${HOSTED}`),
+  docGet("AUTH-65", "the document names the hosted URL as client_id and keeps the callback", [A.custom(`client_id ${HOSTED}, redirect_uris under ${EXT_A}`, [
+    "var d = pm.response.json();",
+    `pm.expect(d.client_id, 'body: ' + pm.response.text()).to.equal(${lit(HOSTED)});`,
+    `pm.expect(d.client_uri, 'body: ' + pm.response.text()).to.equal(${lit(EXT_A)});`,
+    `pm.expect(d.redirect_uris, 'body: ' + pm.response.text()).to.eql([${lit(EXT_A + CB_PATH)}]);`,
+  ]), docFields()]),
+  clientPost("AUTH-65", "reauthorize after the hosted URL is set", "auth65-c", "reauthorize", [A.status(200), authorizeClientId(HOSTED, HOSTED), A.custom(`redirect_uri is ${EXT_A}${CB_PATH}`, [QS_FN, "var u = pm.response.json().authorize_url;", `pm.expect(qs(u).redirect_uri, 'authorize_url: ' + u).to.equal(${lit(EXT_A + CB_PATH)});`])], { extraTests: ["pm.collectionVariables.set('auth65_au', pm.response.json().authorize_url);"] }),
+  execTool("AUTH-65", "execute before signing in again", "auth65-echo_tool", [A.status(400), A.msgContains("OAuth client credentials were rotated; tokens issued under the previous credentials must be re-authorized")]),
+  consentVia("AUTH-65", "consent as id1 with the hosted document", "auth65", "id1", EXT_A),
+  followCallback("AUTH-65", "follow the callback", "auth65", callbackSuccess()),
+  completeOAuth("AUTH-65", "complete", "auth65", [A.status(200)]),
+  execTool("AUTH-65", "execute with the hosted document", "auth65-echo_tool", [A.status(200)]),
+  mockGet("AUTH-65", "auth65", "the authorization server fetched both documents, registered nothing, and the code exchange sent the hosted URL", [docsFetched([EXT_A + DOC_PATH, HOSTED]), oauthCountsAre({ register: 0 }), A.custom(`the latest authorization_code exchange used client_id ${HOSTED}`, [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === 'authorization_code'; });",
+    `pm.expect(r[r.length - 1].client_id, 'log: ' + JSON.stringify(r)).to.equal(${lit(HOSTED)});`,
+  ])]),
+  extUrl("AUTH-65", EXT_A, hostedUrl(null), ", mcp_client_metadata_url null"),
+  docGet("AUTH-65", "after clearing, the document is served under the public address again", [docUnder(lit(EXT_A), EXT_A, "web")]),
+  clientPost("AUTH-65", "reauthorize after the hosted URL is cleared", "auth65-c", "reauthorize", [A.status(200), docAuthorize(EXT_A)], { extraTests: ["pm.collectionVariables.set('auth65_au', pm.response.json().authorize_url);"] }),
+  consentVia("AUTH-65", "consent as id1 with the public address's document", "auth65", "id1", EXT_A),
+  followCallback("AUTH-65", "follow the callback after clearing", "auth65", callbackSuccess()),
+  completeOAuth("AUTH-65", "complete after clearing", "auth65", [A.status(200)]),
+  execTool("AUTH-65", "execute after clearing", "auth65-echo_tool", [A.status(200)]),
+  deleteClient("AUTH-65", "auth65-c"),
+  putConfig("AUTH-65", "teardown: restore the original config with no hosted URL", hostedUrl(null), [A.status(200)]),
+]);
+
 // OAS-43: Bifrost fetches a client metadata document only from a public address, so the documents here are never fetched.
 const OAS43 = folder("OAS-43 Client metadata document client_ids on Bifrost's authorization server", "Setup: mcp_server_auth_mode oauth with issuer_url set to the base URL; no client is registered for these client_ids.", [
   readConfig("OAS-43"), setMode("OAS-43", "oauth"),
@@ -12705,7 +12745,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45]),

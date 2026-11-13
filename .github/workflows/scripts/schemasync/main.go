@@ -103,6 +103,7 @@ var ignoreSchemaProps = map[string]string{
 	// SecretVar-typed for env flexibility, not credentials.
 	"/properties/client/properties/oauth2_server_config/properties/issuer_url": "not a secret; env.X + envFrom pattern",
 	"/properties/client/properties/mcp_external_client_url":                    "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/mcp_client_metadata_url":                    "not a secret; env.X + envFrom pattern",
 	// CA certificates are trust anchors, not private keys; bulky values ride env.X + envFrom.
 	"/properties/governance/properties/providers/items/properties/network_config/properties/ca_cert_pem": "CA trust anchor, not a credential; env.X + envFrom pattern",
 	"/properties/governance/properties/providers/items/properties/proxy_config/properties/ca_cert_pem":   "CA trust anchor, not a credential; env.X + envFrom pattern",
@@ -232,7 +233,7 @@ var narrowedEnumPaths = map[string]struct {
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
-		excluded: []string{"baseten", "byteplus", "kimchi", "minimax", "sagemaker", "wally"},
+		excluded: []string{"baseten", "byteplus", "kimchi", "minimax", "sagemaker", "soniox", "wally"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
 }

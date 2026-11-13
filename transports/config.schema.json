@@ -473,6 +473,40 @@
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "mcp_client_metadata_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Bifrost presents it as its client_id. Publish the document served at /api/oauth/client-metadata.json there unchanged: its client_id must equal this URL with the scheme and host lowercased and a default :443 port removed, the form Bifrost presents, and its redirect_uris keep Bifrost's callback under mcp_external_client_url. Unset, the document is served under mcp_external_client_url. Must have a path, and no query or fragment. Supports env var syntax: \"env.MY_VAR\"."
+        },
         "skills_external_client_url": {
           "anyOf": [
             {
@@ -752,6 +786,9 @@
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
         "typesafe": {
+          "$ref": "#/$defs/provider"
+        },
+        "soniox": {
           "$ref": "#/$defs/provider"
         },
         "vllm": {

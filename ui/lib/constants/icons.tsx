@@ -1090,6 +1090,24 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// Generic waveform glyph, not Soniox's brand mark. It uses currentColor so it
+	// follows the surrounding text in both themes.
+	soniox: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Soniox</title>
+				<path stroke="currentColor" strokeWidth="2" strokeLinecap="round" d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

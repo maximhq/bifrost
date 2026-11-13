@@ -94,6 +94,7 @@ const (
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
 	Wally         ModelProvider = "wally"
+	Soniox        ModelProvider = "soniox"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -150,6 +151,7 @@ var StandardProviders = []ModelProvider{
 	Baseten,
 	Kimchi,
 	Wally,
+	Soniox,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -351,6 +353,7 @@ const (
 	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
 	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeyLiveDelegationFailed                BifrostContextKey = "bifrost-live-delegation-failed"                   // bool (set by the live transport on a backend unit the provider refused to run a delegation on)
+	BifrostContextKeySpeechSession                       BifrostContextKey = "bifrost-speech-session"                           // bool (set by the speech session transport on the one request a session is; logging records it as a speech.session row)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)

@@ -65,7 +65,7 @@ func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
 		ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
 	// Keep CDNs from caching API responses; handlers may override.
-	if strings.HasPrefix(string(ctx.Path()), apiPathPrefix) {
+	if strings.HasPrefix(string(ctx.Request.URI().PathOriginal()), apiPathPrefix) {
 		ctx.Response.Header.Set("Cache-Control", "no-store")
 	}
 }
@@ -1205,9 +1205,11 @@ func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostCon
 }
 
 // fasthttpToHTTPRequest populates a pooled HTTPRequest from fasthttp context.
+// Path is the raw request path (PathOriginal), the one fasthttp/router dispatched
+// on, so a plugin that decides by path sees the route that will actually run.
 func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
@@ -1266,8 +1268,8 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 // failed with 409 and the caller must stop.
 func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) bool {
 	// If path/method is different, throw error
-	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
-		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
+	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Request.URI().PathOriginal()) {
+		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return false
 	}
@@ -1384,7 +1386,9 @@ func isInferenceWSEndpoint(path string) bool {
 	case "/v1/responses",
 		"/responses",
 		"/v1/realtime",
-		"/realtime":
+		"/realtime",
+		"/v1/audio/speech/stream",
+		elevenlabsDialoguePath:
 		return true
 	default:
 		return false
@@ -1408,6 +1412,10 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
+	for _, path := range integrations.GenAIVertexRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
+	paths[elevenlabsScribePath] = struct{}{}
 	return paths
 }
 
@@ -1438,7 +1446,7 @@ func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 
-	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key", "xi-api-key"} {
 		if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek(header))); apiKey != "" {
 			if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
 				return apiKey
@@ -2099,7 +2107,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					path := string(ctx.Path())
+					path := url
 					if isInferenceWSEndpoint(path) {
 						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
 						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
