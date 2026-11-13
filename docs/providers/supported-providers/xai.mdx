@@ -242,7 +242,7 @@ Speech requests staged for large-payload passthrough are refused with a 400, bec
 
 `/v1/audio/transcriptions` requests go to xAI's `POST /v1/stt` as multipart form data, with the `file` field last because xAI ignores fields sent after it. The response's `text`, `language` and `duration` are returned as-is. xAI names each word `text`, which is mapped to Bifrost's `word`. Usage is reported as `duration` seconds.
 
-xAI answers with JSON only, so `response_format` `text`, `srt` and `vtt` are refused with a 400 before the request is sent. Leave `response_format` unset or use `json`.
+xAI answers with its own JSON only, so `response_format` `text`, `srt`, `vtt` and `diarized_json` are refused with a 400 before the request is sent. Leave `response_format` unset or use `json`.
 
 ---
 
