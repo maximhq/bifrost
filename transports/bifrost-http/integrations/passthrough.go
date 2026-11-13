@@ -98,6 +98,8 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 		StripPrefix: []string{
 			"/openai_passthrough",
 		},
+		// Responses WebSocket mode, with or without the version segment the HTTP routes also accept.
+		WebSocketPaths: []string{"/v1/responses", "/responses"},
 	})
 }
 
