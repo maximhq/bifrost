@@ -154,7 +154,10 @@ type TableTracingKey struct {
 	CanCreateProjects bool    `gorm:"not null;default:false" json:"can_create_projects"`
 	// CanReadPrompts lets the key fetch prompts from the prompt repository through the SDK prompt
 	// routes. It is off by default: a tracing key writes traces and does nothing else.
-	CanReadPrompts bool       `gorm:"not null;default:false" json:"can_read_prompts"`
+	CanReadPrompts bool `gorm:"not null;default:false" json:"can_read_prompts"`
+	// CanUseDatasets lets the key create evals datasets and add and read their rows through the
+	// SDK dataset routes. It is off by default.
+	CanUseDatasets bool       `gorm:"not null;default:false" json:"can_use_datasets"`
 	Enabled        bool       `gorm:"not null;default:true" json:"enabled"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt      time.Time  `gorm:"not null" json:"created_at"`
