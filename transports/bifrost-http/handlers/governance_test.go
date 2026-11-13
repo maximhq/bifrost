@@ -3518,6 +3518,20 @@ func TestBudgetsFromSingleBudgetUpdateKeepsResetConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("moving off the quarterly window drops the stored quarter start", func(t *testing.T) {
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetDuration: schemas.Ptr("1M")}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetDuration != "1M" || budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum on the new window, got %+v", budget)
+		}
+		if budget.ResetConfig != nil {
+			t.Fatalf("expected no quarter start on a monthly window, got %+v", budget.ResetConfig)
+		}
+	})
+
 	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
 		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
 		if got == nil || len(*got) != 1 {
@@ -4171,6 +4185,44 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	}
 	if len(governanceManager.adoptedBudgetIDs) != 1 || governanceManager.adoptedBudgetIDs[0] != budgetID {
 		t.Errorf("expected budget %s to be adopted onto its calendar boundary, got %v", budgetID, governanceManager.adoptedBudgetIDs)
+	}
+}
+
+// TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind pins the deprecated single-budget update that
+// moves a quarterly budget to another window: the stored quarter start does not travel onto a window it
+// is invalid for, so the request succeeds instead of failing validation with a 500.
+func TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	store.customers["cust-q"] = &configstoreTables.TableCustomer{
+		ID:   "cust-q",
+		Name: "Quarterly",
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "bud-q",
+			MaxLimit:      500,
+			ResetDuration: "1Q",
+			ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4},
+			LastReset:     time.Now(),
+		}},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"budget": map[string]any{"reset_duration": "1M"}})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-q")
+
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	budgets := store.customers["cust-q"].Budgets
+	if len(budgets) != 1 || budgets[0].ResetDuration != "1M" || budgets[0].MaxLimit != 500 {
+		t.Fatalf("expected the budget moved to 1M with its maximum, got %+v", budgets)
+	}
+	if budgets[0].ResetConfig != nil {
+		t.Fatalf("expected no quarter start on a monthly budget, got %+v", budgets[0].ResetConfig)
 	}
 }
 
@@ -5913,10 +5965,6 @@ func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
 		})
 	}
 }
-
-// TestApplyRateLimitUpdate pins what a team's or customer's update does to its stored rate limit: a
-// maximum left out is cleared with its window, a maximum sent with a window takes it, and a maximum
-// sent without one keeps the window already stored instead of failing validation.
 func TestApplyRateLimitUpdate(t *testing.T) {
 	hour, day := "1h", "1d"
 	tokens, requests := int64(100), int64(10)
@@ -5937,4 +5985,78 @@ func TestApplyRateLimitUpdate(t *testing.T) {
 	assert.Equal(t, "1d", *newWindow.TokenResetDuration)
 	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
 	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
+}
+func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset bool
+		want  float64
+	}{
+		{name: "keep carries the spend over", reset: false, want: 5},
+		{name: "reset starts it at zero", reset: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 10, ResetDuration: "1d"}}, nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateBudgetUsage(ctx, first[0].ID, 5))
+			daily, err := store.GetBudget(ctx, first[0].ID)
+			require.NoError(t, err)
+
+			out, err := reconcileOwned(t, store, []configstoreTables.TableBudget{*daily},
+				[]CreateBudgetRequest{{ID: daily.ID, MaxLimit: 10, ResetDuration: "1d"}, {MaxLimit: 100, ResetDuration: "1M"}},
+				NewBudgetUsageReset(tc.reset))
+			require.NoError(t, err)
+			require.Len(t, out, 2)
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.want, b.CurrentUsage)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateTeamNewBudgetStartsAtZero pins that a team's budgets go through the shared reconciler and
+// keep the team behaviour: a window added on an edit starts at zero whether usage is preserved or
+// reset, never with the spend counted in the team's shorter window. The existing window keeps its
+// spend unless the operator resets it.
+func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reset     bool
+		wantDaily float64
+	}{
+		{name: "preserve keeps the existing spend", reset: false, wantDaily: 5},
+		{name: "reset zeroes the existing spend", reset: true, wantDaily: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+			ctx := context.Background()
+			teamID := "team-carry"
+			require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: teamID, Name: "Carry " + tc.name}))
+			require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "team-daily", MaxLimit: 10, ResetDuration: "1d", TeamID: &teamID, LastReset: time.Now()}))
+			require.NoError(t, store.UpdateBudgetUsage(ctx, "team-daily", 5))
+
+			body := fmt.Sprintf(`{"budgets":[{"id":"team-daily","max_limit":10,"reset_duration":"1d"},{"max_limit":100,"reset_duration":"1M"}],"reset_budget_usage":%t}`, tc.reset)
+			put := newGovernanceTeamIDCtx(teamID, body)
+			handler.updateTeam(put)
+			require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), "body: %s", put.Response.Body())
+
+			team, err := store.GetTeam(ctx, teamID)
+			require.NoError(t, err)
+			require.Len(t, team.Budgets, 2)
+			for _, b := range team.Budgets {
+				switch b.ResetDuration {
+				case "1M":
+					assert.Equal(t, 0.0, b.CurrentUsage, "the new monthly budget starts at zero")
+				case "1d":
+					assert.Equal(t, tc.wantDaily, b.CurrentUsage, "the existing daily budget")
+				}
+			}
+		})
+	}
 }

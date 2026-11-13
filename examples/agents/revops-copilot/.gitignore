@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+*.pdf
+ngrok.yml
+# The root .gitignore ignores .env*; the template must still be committed.
+!.env.example
+cloudflared.yml

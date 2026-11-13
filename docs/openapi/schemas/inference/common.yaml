@@ -42,6 +42,7 @@ ModelProvider:
     - minimax
     - byteplus
     - baseten
+    - kimchi
 
 Fallback:
   type: object

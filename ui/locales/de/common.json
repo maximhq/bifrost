@@ -121,7 +121,8 @@
 		"searching": "Suche…",
 		"loadingMore": "Weitere werden geladen…",
 		"useModel": "<name>{{name}}</name> verwenden",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert",
+		"templateUnknownGroup": "Verweist auf die Erfassungsgruppe {{group}}, die das Muster nicht definiert"
 	},
 	"providerSelect": {
 		"select": "Anbieter auswählen",
@@ -581,7 +582,8 @@
 		"baseUrlIsRequiredForThisProvider": "Für diesen Anbieter ist eine Basis-URL erforderlich",
 		"baseUrlMustStartWithHttpOrHttps": "Die Basis-URL muss mit http:// oder https:// beginnen",
 		"atLeastOneApiKeyIsRequired": "Mindestens ein API-Schlüssel ist erforderlich",
-		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein"
+		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein",
+		"deploymentPatternInvalid": "Ein Deployment-Muster ist ungültig oder seine Modell-ID nutzt eine Erfassungsgruppe, die das Muster nicht definiert"
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",
