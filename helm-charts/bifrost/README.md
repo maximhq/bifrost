@@ -30,6 +30,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.bifrostUrl` (`client.bifrost_url`), the gateway's public base URL including `server.basePath`. `/v1/mcp` needs it; it accepts env and vault references.
 - Added `bifrost.client.bifrostMcpAllowWrites` (`client.bifrost_mcp_allow_writes`) to stop `/v1/mcp` serving configuration changes as tools. On by default.
 - Added `bifrost.framework.pricing.openapiUrl` (`framework.pricing.openapi_url`) to point `/v1/mcp` at a local OpenAPI spec on air-gapped installs.
+- Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
 
 ### 2.1.48
 
