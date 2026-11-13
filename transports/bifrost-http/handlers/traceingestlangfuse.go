@@ -312,7 +312,11 @@ func (h *TraceIngestHandler) langfuseProjects(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
-	entry := map[string]any{"id": project.ID, "name": project.Name, "metadata": map[string]any{}}
+	// organization is required by the Langfuse 5 SDK's response model. Bifrost has one organization.
+	entry := map[string]any{
+		"id": project.ID, "name": project.Name, "metadata": map[string]any{},
+		"organization": map[string]any{"id": "bifrost", "name": "Bifrost"},
+	}
 	if project.RetentionDays != nil {
 		entry["retentionDays"] = *project.RetentionDays
 	}
