@@ -1045,6 +1045,10 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 	}
 
 	m.mu.Lock()
+	if m.ctx != nil && m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return false, m.ctx.Err()
+	}
 
 	if _, ok := m.clientMap[config.ID]; ok {
 		m.mu.Unlock()
@@ -1211,6 +1215,9 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 			} else {
 				m.SetClientDiscovery(config.ID, discovery)
 			}
+		}
+		if m.ctx != nil && m.ctx.Err() != nil {
+			return false, m.ctx.Err()
 		}
 		// Start the connection checker so this client's tools stay current
 		// going forward. Released BEFORE this, mirroring connectToMCPClient's
@@ -1659,6 +1666,20 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 //     real tool call would (see each resolver's AdminConnectionHeaders —
 //     there is no separate "admin" concept for these types).
 func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *schemas.MCPClientConfig, eachList time.Duration) (*schemas.MCPDiscovery, error) {
+	// Discovery also serves caller-owned requests; either owner must be able
+	// to cancel the temporary connection without canceling the other context.
+	if m.ctx != nil {
+		if err := m.ctx.Err(); err != nil {
+			return nil, err
+		}
+		discoveryCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(m.ctx, cancel)
+		defer func() {
+			stop()
+			cancel()
+		}()
+		ctx = discoveryCtx
+	}
 	headers, err := m.credStore.AdminConnectionHeaders(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve admin credential: %w", err)
@@ -3124,6 +3145,10 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 	var entry *schemas.MCPClientState
 
 	m.mu.Lock()
+	if m.ctx != nil && m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return m.ctx.Err()
+	}
 	if existingClient, exists := m.clientMap[config.ID]; exists {
 		// If the client is disabled and the caller is not explicitly re-enabling it
 		// (EnableClient sets config.Disabled = false before calling here; ReconnectClient
@@ -3209,10 +3234,9 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 	var longLivedCancel context.CancelFunc
 
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-		// Create long-lived context for the connection (subprocess lifetime)
-		// Use context.Background() to avoid inheriting deadline from m.ctx
-		// This prevents STDIO/SSE from being limited by HTTP request timeouts
-		longLivedCtx, longLivedCancel = context.WithCancel(context.Background())
+		// Preserve the deadline-free transport lifetime, but let Cleanup cancel
+		// startup even before this candidate has a registered CancelFunc.
+		longLivedCtx, longLivedCancel = context.WithCancel(m.connectionCtx)
 		// dialCtx may stop the dial, never the connection it produced.
 		stopDialCancel := context.AfterFunc(dialCtx, longLivedCancel)
 		defer stopDialCancel()

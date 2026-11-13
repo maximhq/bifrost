@@ -39,6 +39,8 @@ const (
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
 	ctx                    context.Context
+	cancel                 context.CancelFunc                 // Cancels manager-owned work without canceling its caller
+	connectionCtx          context.Context                    // Deadline-free SSE/STDIO lifetime, canceled by Cleanup
 	logger                 schemas.Logger                     // Logger instance for this manager
 	credStore              schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
 	toolsManager           *ToolsManager                      // Handler for MCP tools
@@ -205,8 +207,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	}
 	// Creating new instance
 	discoveryStore := NewDiscoveryStore(config.SharedDiscoveryStore, config.PerUserDiscoveryStore)
+	managerCtx, cancelManager := context.WithCancel(ctx)
+	connectionCtx, cancelConnections := context.WithCancel(context.WithoutCancel(ctx))
 	manager := &MCPManager{
-		ctx:                    ctx,
+		ctx:                    managerCtx,
+		cancel:                 func() { cancelManager(); cancelConnections() },
+		connectionCtx:          connectionCtx,
 		logger:                 logger,
 		clientMap:              make(map[string]*schemas.MCPClientState),
 		discoveryStore:         discoveryStore,
@@ -324,6 +330,10 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone 
 				// (e.g. autoscaling cold start); the client was previously configured
 				// and should be recovered without user intervention.
 				m.mu.Lock()
+				if m.ctx.Err() != nil {
+					m.mu.Unlock()
+					return
+				}
 				if _, exists := m.clientMap[clientConfig.ID]; !exists {
 					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
 						Name:            clientConfig.Name,
@@ -533,6 +543,12 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 // Returns:
 //   - error: Always returns nil, but maintains error interface for consistency
 func (m *MCPManager) Cleanup() error {
+	// Candidates are not installed in clientMap yet, so closing registered clients
+	// alone cannot stop an in-flight transport startup or discovery request.
+	if m.cancel != nil {
+		m.cancel()
+	}
+
 	// Stop all connection checkers first
 	m.checkerManager.StopAll()
 
