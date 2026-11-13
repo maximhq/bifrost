@@ -409,6 +409,24 @@
 		"unlockTitle": "スコープ付きアクセスと支出のためプロジェクトをアンロック",
 		"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。プロジェクトはリクエストが選択するもので、呼び出し元が既に持つ権限に加えてアクセスを付与し、支出をどの台帳に計上するかを決めます。"
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "すべてのプロバイダーの AI 支出を一か所で確認",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。FinOps はプロバイダーアカウントから請求済みコストを読み取り、そのうちどれだけが Bifrost を経由したかを示します。"
+		},
+		"connections": {
+			"unlockTitle": "プロバイダーの請求アカウントを接続",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。OpenAI、Anthropic、AWS Bedrock、Vertex AI、Azure OpenAI の請求情報を読み取り専用アクセスで接続します。"
+		},
+		"explorer": {
+			"unlockTitle": "AI 支出をモデル別・アカウント別に分析",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。請求済みの支出と Bifrost が記録した内容をモデルごとに比較します。"
+		},
+		"forecast": {
+			"unlockTitle": "AI 支出を予測し異常を検知",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。予算に対する当月の支出を予測し、支出が急増したときにアラートを受け取ります。"
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "可視性向上のためユーザーランキングをアンロック"
 	},

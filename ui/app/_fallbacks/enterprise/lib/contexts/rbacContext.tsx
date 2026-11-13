@@ -50,6 +50,7 @@ export enum RbacResource {
 	BackgroundJobs = "BackgroundJobs",
 	Alerting = "Alerting",
 	Datasheet = "Datasheet",
+	FinOps = "FinOps",
 }
 
 // RBAC Operation Names (must match backend definitions)

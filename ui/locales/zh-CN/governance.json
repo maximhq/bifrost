@@ -409,6 +409,24 @@
 		"unlockTitle": "解锁项目以限定访问与支出",
 		"unlockDescription": "此功能属于 Bifrost 企业版许可证。项目由请求主动选择：它在调用方已有权限之外再授予访问，并决定花费记入谁的账本。"
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "在一处查看所有提供商的 AI 支出",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。FinOps 从你的提供商账户读取已开票成本，并显示其中有多少支出经过了 Bifrost。"
+		},
+		"connections": {
+			"unlockTitle": "连接提供商账单账户",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。以只读权限连接 OpenAI、Anthropic、AWS Bedrock、Vertex AI 和 Azure OpenAI 的账单。"
+		},
+		"explorer": {
+			"unlockTitle": "按模型和账户拆分 AI 支出",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。逐个模型对比已开票支出与 Bifrost 记录的数据。"
+		},
+		"forecast": {
+			"unlockTitle": "预测 AI 支出并发现异常",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。对照预算预测本月支出，并在支出激增时收到告警。"
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "解锁用户排行以获得更好可见性"
 	},
