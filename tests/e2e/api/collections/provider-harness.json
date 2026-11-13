@@ -321832,6 +321832,57 @@
           ]
         },
         {
+          "name": "[EXPECT-200] anthropic claude-code-gateway rotated refresh token refreshes again - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "refresh_token"
+                },
+                {
+                  "key": "refresh_token",
+                  "value": "{{cc_gateway_refresh_token}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the rotated refresh token works and rotates again', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, 'a rotated refresh token: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
+                  "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "[EXPECT-200] anthropic claude-code-gateway sign-out revokes the grant - #7963",
           "protocolProfileBehavior": {
             "followRedirects": false,
