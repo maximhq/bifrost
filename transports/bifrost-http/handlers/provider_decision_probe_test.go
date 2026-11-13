@@ -206,6 +206,36 @@ func TestProbeDecision_MapsUpstreamErrorsWithoutCredentials(t *testing.T) {
 	}
 }
 
+// TestProbeDecision_RedactsURLQueriesContainingApostrophes pins that an
+// apostrophe, which RFC 3986 allows in a URL, does not end the URL early: the
+// query values after it are masked too, in the type, code, and message.
+func TestProbeDecision_RedactsURLQueriesContainingApostrophes(t *testing.T) {
+	h, _ := newDecisionProbeHandler(t, http.StatusUnauthorized,
+		`{"error":{"message":"See https://keys.example.com/m?note=it's&sig=msg-apos-leak for details","type":"invalid_request_error https://keys.example.com/t?x=o'k&sig=type-apos-leak","code":"invalid_api_key https://keys.example.com/c?x=o'k&sig=code-apos-leak"}}`)
+
+	status, body := probeDecisionForTest(h, probeTestProvider, `{"model":"decider","key_id":"probe-key"}`)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", status, body)
+	}
+	var result DecisionProbeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to decode response: %v; body=%s", err, body)
+	}
+	if result.OK || result.Error == nil || result.Error.Type == nil || result.Error.Code == nil {
+		t.Fatalf("expected failed probe with type and code, got %s", body)
+	}
+	for field, text := range map[string]string{"message": result.Error.Message, "type": *result.Error.Type, "code": *result.Error.Code} {
+		for _, leaked := range []string{"msg-apos-leak", "type-apos-leak", "code-apos-leak"} {
+			if strings.Contains(text, leaked) {
+				t.Fatalf("%s leaks %q: %q", field, leaked, text)
+			}
+		}
+		if !strings.Contains(text, "keys.example.com/") {
+			t.Fatalf("%s lost its URL host and path: %q", field, text)
+		}
+	}
+}
+
 // TestProbeDecision_RejectsRoutesItCannotProbe pins the checks made before
 // any request is sent: an unknown provider, a missing model, a model the
 // provider does not serve on its decisions endpoint, and an unknown key.

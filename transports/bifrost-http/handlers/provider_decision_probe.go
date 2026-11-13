@@ -32,8 +32,10 @@ const (
 const decisionProbeMinSecretLength = 8
 
 // decisionProbeURLPattern finds URLs in an error message so their userinfo and
-// query values can be masked.
-var decisionProbeURLPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]+`)
+// query values can be masked. A URL runs to whitespace, a double quote, or an
+// angle bracket; an apostrophe is a valid URL character (RFC 3986 sub-delims),
+// so it does not end the match and leave the rest of the query unmasked.
+var decisionProbeURLPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"<>]+`)
 
 // decisionProbeRequest is the body of POST /api/providers/{provider}/decisions/probe.
 type decisionProbeRequest struct {
