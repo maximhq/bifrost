@@ -214,6 +214,7 @@ webhooks-by-id:
 webhooks-rotate-secret:
   post:
     operationId: rotateWebhookEndpointSecret
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
