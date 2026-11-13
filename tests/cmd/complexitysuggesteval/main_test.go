@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"hash/fnv"
 	"io"
 	"math"
@@ -160,6 +161,47 @@ func TestLoadSplitIsStableFNV32a(t *testing.T) {
 	}
 }
 
+// A follow-up is one item per conversation context, and is held out with
+// its conversation rather than by its text; a first turn still splits by its
+// text, as in a single-turn corpus.
+func TestLoadMultiTurnSplitsFollowupsByConversation(t *testing.T) {
+	var lines []string
+	for c := range 40 {
+		lines = append(lines,
+			fmt.Sprintf(`{"text":"write a poem","turn":1,"group":"c%d"}`, c),
+			fmt.Sprintf(`{"text":"make it shorter","turn":2,"group":"c%d","context":"User: write a poem %d"}`, c, c),
+		)
+	}
+	items, err := load(writeJSONL(t, lines...), 50)
+	require.NoError(t, err)
+	require.Len(t, items, 41, "one merged first turn and a follow-up per conversation")
+	var heldOut int
+	for _, it := range items {
+		if it.Turn == 1 {
+			assert.Equal(t, 40, it.Count)
+			continue
+		}
+		assert.Equal(t, 1, it.Count)
+		h := fnv.New32a()
+		h.Write([]byte(it.Group))
+		assert.Equal(t, int(h.Sum32()%100) < 50, it.test, it.Group)
+		if it.test {
+			heldOut++
+		}
+	}
+	assert.Positive(t, heldOut)
+	assert.Less(t, heldOut, 40, "the same follow-up text lands on both sides by conversation")
+}
+
+// A corpus that only widens the embedded window keeps the judge's message
+// and the judged sample, so labels carry over between history counts.
+func TestJudgeTextKeepsTheJudgedSample(t *testing.T) {
+	one := &item{Text: "make it shorter", Group: "c1", Context: "User: write a poem"}
+	two := &item{Text: "write a poem\nmake it shorter", JudgeText: "make it shorter", Group: "c1", Context: "User: write a poem"}
+	assert.Equal(t, one.judged(), two.judged())
+	assert.Equal(t, itemHash(one), itemHash(two))
+}
+
 func TestWriteOutputsReportsWriteFailure(t *testing.T) {
 	dir := t.TempDir()
 	// A directory where heldout.jsonl should be makes the create fail.
@@ -174,7 +216,7 @@ func TestWriteOutputsHeldoutKeysAreSorted(t *testing.T) {
 	require.NoError(t, writeOutputs(dir, nil, []*item{{Text: "x", Gold: "SIMPLE", Count: 1, vec: []float32{1}}}, set, 0.4))
 	data, err := os.ReadFile(filepath.Join(dir, "heldout.jsonl"))
 	require.NoError(t, err)
-	assert.Equal(t, `{"count":1,"gold":"SIMPLE","routed":"SIMPLE","text":"x","via":"p"}`+"\n", string(data))
+	assert.Equal(t, `{"chars":1,"count":1,"gold":"SIMPLE","routed":"SIMPLE","text":"x","turn":0,"via":"p"}`+"\n", string(data))
 }
 
 // captureStdout returns what fn prints; purity reports on stdout like the

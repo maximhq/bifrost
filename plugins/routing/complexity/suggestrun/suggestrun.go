@@ -21,6 +21,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +48,15 @@ const (
 	// DefaultMaxSuggestedClusters bounds the clusters one run sends to the
 	// model, heaviest first; each costs one or two calls.
 	DefaultMaxSuggestedClusters = 200
+	// DefaultMinClusterShare raises the smallest cluster a run keeps with
+	// the window's size: a cluster must hold at least 0.1% of the requests
+	// read (6 up to 6,000 requests, 27 at 27,000, 100 at 100,000), so a busy
+	// gateway is not asked about thousands of small request types and the
+	// phrases a run suggests fit the phrase bank.
+	DefaultMinClusterShare = 0.001
+	// callsPerCluster bounds one cluster's model calls: two phrase attempts
+	// and one tier decision.
+	callsPerCluster = 3
 	// keepRuns is how many run records are kept.
 	keepRuns = 200
 )
@@ -67,6 +77,7 @@ type Store interface {
 	UpsertComplexitySuggestionRun(ctx context.Context, run *logstore.ComplexitySuggestionRun) error
 	InsertComplexitySuggestionRun(ctx context.Context, run *logstore.ComplexitySuggestionRun) (bool, error)
 	ListComplexitySuggestionRuns(ctx context.Context, filter logstore.ComplexitySuggestionRunFilter, limit int) ([]logstore.ComplexitySuggestionRun, error)
+	UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error)
 	PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error)
 }
 
@@ -104,20 +115,40 @@ type Settings struct {
 	// assigned.
 	MaxClustered       int
 	MinClusterRequests int
+	// MinClusterShare raises MinClusterRequests with the window's size: a
+	// run keeps only clusters holding at least this share of the requests it
+	// read. Zero takes DefaultMinClusterShare.
+	MinClusterShare float64
+	// MaxPhrases is the phrase bank's capacity. A run suggests no more
+	// phrases than the bank has room for (MaxPhrases less the live phrases),
+	// keeping the heaviest clusters' phrases. Zero means no bound.
+	MaxPhrases int
 	// MaxSuggestedClusters bounds the clusters sent to the model; zero takes
 	// DefaultMaxSuggestedClusters.
 	MaxSuggestedClusters int
-	// Instructions and Guidance are the suggestion prompt's editable parts;
-	// empty takes the shipped ones.
+	// Instructions are the phrase step's editable prompt; empty takes the
+	// shipped one.
 	Instructions string
-	Guidance     string
-	Model        string // provider/model, for the run record
-	Workers      int
-	Seed         int64
+	// Tier picks each cluster's tier; required. TierPrompt identifies what
+	// it was told (classifier, model, instructions, definitions, examples) so
+	// the run's prompt hash changes when any of it does.
+	Tier       suggest.TierDecider
+	TierPrompt string
+	Model      string // the phrase model's provider/model, for the run record
+	Workers    int
+	Seed       int64
 	// Cost reports what the model calls have cost so far, read when the run
 	// ends; nil records no cost.
 	Cost func() float64
+	// Cancelled reports whether a user cancelled the run. It is asked only
+	// when the run's context ended: a cancelled run is recorded as cancelled
+	// rather than failed. Nil records every early end as a failure.
+	Cancelled func(ctx context.Context) bool
 }
+
+// progressSteps is how many progress writes the suggesting stage makes at
+// most: one each time another tenth of the groups has been asked about.
+const progressSteps = 10
 
 // Result is what a run did beyond its record.
 type Result struct {
@@ -128,16 +159,13 @@ type Result struct {
 	Skipped   int // requests past the assignment bound, not counted
 }
 
-// PromptHash identifies the prompt a run used, so a suggestion can be traced
-// to the instructions that wrote it.
-func PromptHash(instructions, guidance string) string {
+// PromptHash identifies the prompts a run used, so a suggestion can be traced
+// to the instructions that wrote its phrases and picked its tier.
+func PromptHash(instructions, tierPrompt string) string {
 	if instructions == "" {
 		instructions = suggest.DefaultInstructions()
 	}
-	if guidance == "" {
-		guidance = complexity.DefaultLLMClassifierGuidance()
-	}
-	sum := sha256.Sum256([]byte(instructions + "\x00" + guidance))
+	sum := sha256.Sum256([]byte(instructions + "\x00" + tierPrompt))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -168,26 +196,39 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 	}
 	run := logstore.ComplexitySuggestionRun{
 		ID: s.RunID, RouterID: s.RouterID, RouterVersion: s.RouterVersion, TriggeredBy: s.TriggeredBy, Status: logstore.ComplexitySuggestionRunRunning,
-		EmbeddingSignature: space.Namespace(), Model: s.Model, PromptHash: PromptHash(s.Instructions, s.Guidance),
+		EmbeddingSignature: space.Namespace(), Model: s.Model, PromptHash: PromptHash(s.Instructions, s.TierPrompt),
 		StartedAt: s.Now, WindowStart: s.Now.Add(-s.Window),
 	}
-	if err := store.UpsertComplexitySuggestionRun(ctx, &run); err != nil {
+	// Written on a context of its own, like the outcome below: a run whose
+	// context has already ended (a cancel that came as it started) is then
+	// still recorded, and ends through the outcome below.
+	startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	err := store.UpsertComplexitySuggestionRun(startCtx, &run)
+	cancelStart()
+	if err != nil {
 		return Result{}, fmt.Errorf("record suggestion run: %w", err)
 	}
 	result, err := run1(ctx, space, store, texts, llm, s, &run)
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
+	run.Stage = ""
 	if s.Cost != nil {
 		run.Cost = s.Cost()
-	}
-	run.Status = logstore.ComplexitySuggestionRunSucceeded
-	if err != nil {
-		run.Status, run.Error = logstore.ComplexitySuggestionRunFailed, err.Error()
 	}
 	// The outcome is recorded even when the run's own context has ended, or a
 	// cancelled run would read as still running.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
+	switch {
+	case err == nil:
+		run.Status = logstore.ComplexitySuggestionRunSucceeded
+	case errors.Is(err, context.Canceled) && s.Cancelled != nil && s.Cancelled(recordCtx):
+		// Stopped on purpose: not a failure, and nothing was written past
+		// the stage it reached.
+		run.Status, run.Error, err = logstore.ComplexitySuggestionRunCancelled, "", nil
+	default:
+		run.Status, run.Error = logstore.ComplexitySuggestionRunFailed, err.Error()
+	}
 	if recordErr := store.UpsertComplexitySuggestionRun(recordCtx, &run); recordErr != nil {
 		err = errors.Join(err, fmt.Errorf("record suggestion run outcome: %w", recordErr))
 	}
@@ -198,7 +239,10 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 
 func run1(ctx context.Context, space Space, store Store, texts Texts, llm suggest.LLM, s Settings, run *logstore.ComplexitySuggestionRun) (Result, error) {
 	if llm == nil {
-		return Result{}, errors.New("no suggestion model: set the suggestions provider and model, or configure the llm block")
+		return Result{}, errors.New("no suggestion model: set the suggestions provider and model")
+	}
+	if s.Tier == nil {
+		return Result{}, errors.New("no tier model: set the suggestions tier classifier and model")
 	}
 	if s.MaxClustered <= 0 || s.Window <= 0 {
 		return Result{}, errors.New("suggestion run needs a positive window and cluster budget")
@@ -209,6 +253,10 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		return Result{}, complexity.ErrNoServingGeneration
 	}
 	var result Result
+	run.Stage = logstore.ComplexitySuggestionRunStageReading
+	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+		return result, fmt.Errorf("record suggestion run progress: %w", err)
+	}
 
 	// 1. A uniform sample of the window: the store pages in no useful order,
 	//    so reservoir sampling is what spreads the sample across the window
@@ -232,9 +280,19 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	}
 	run.RequestsRead = int64(seen)
 	result.Clustered = len(sample)
+	run.RequestsClustered = int64(result.Clustered)
+	run.Stage = logstore.ComplexitySuggestionRunStageClustering
+	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+		return result, fmt.Errorf("record suggestion run progress: %w", err)
+	}
 
-	// 2. Cluster the sample, then count the rest of the window into it.
-	clusterer := suggest.NewClusterer(suggest.ClusterOptions{MinRequests: s.MinClusterRequests, Seed: max(s.Seed, 1)}, live, matchFloor)
+	// 2. Cluster the sample, then count the rest of the window into it. The
+	//    smallest cluster kept scales with the requests clustered and counted,
+	//    so a busy gateway is not asked about thousands of small request types;
+	//    requests past the assignment bound are in no cluster, so they do not
+	//    raise it.
+	minCluster := ClusterFloor(s.MinClusterRequests, s.MinClusterShare, representedRequests(seen, s.MaxClustered))
+	clusterer := suggest.NewClusterer(suggest.ClusterOptions{MinRequests: minCluster, Seed: max(s.Seed, 1)}, live, matchFloor)
 	clusterer.Add(sample)
 	if seen > len(sample) {
 		inSample := make(map[string]struct{}, len(sample))
@@ -264,6 +322,10 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	}
 	clusters := clusterer.Clusters()
 	run.Clusters = int64(len(clusters))
+	run.RequestsAssigned, run.RequestsSkipped = int64(result.Assigned), int64(result.Skipped)
+	for _, cl := range clusters {
+		run.RequestsGrouped += int64(cl.Weight)
+	}
 
 	// 3. Match clusters to stored suggestions; only open, superseded and new
 	//    ones go to the model.
@@ -272,32 +334,86 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		return result, fmt.Errorf("read stored suggestions: %w", err)
 	}
 	plan := matchClusters(clusters, stored, space.Namespace())
+	// The phrase bank's room is not a bound on the clusters asked: a cluster
+	// can come back covered or incoherent with no phrase at all. How many
+	// phrases a cluster yields is known only once it is asked, so suggestEach
+	// stops once the phrases written fill the room.
+	room := -1
+	limit := s.MaxSuggestedClusters
+	if s.MaxPhrases > 0 {
+		room = max(0, s.MaxPhrases-len(live))
+	}
 	var ask []*suggest.Cluster
 	for _, cl := range clusters {
 		if m, ok := plan.matched[cl]; ok && decided(m.Status) {
+			run.ClustersDecided++
 			continue
 		}
-		if len(ask) < s.MaxSuggestedClusters {
+		if len(ask) < limit {
 			ask = append(ask, cl)
+		} else {
+			run.ClustersOverLimit++
 		}
 	}
-
-	// 4. Ask the model.
-	opts := suggest.Options{MatchFloor: matchFloor, Instructions: s.Instructions, Guidance: s.Guidance, Texts: texts}
-	suggestions, failed, firstErr := suggestEach(ctx, suggest.NewSuggester(live, space, llm, opts), ask, s.Workers)
-	if failed > 0 && failed == len(ask) {
-		return result, fmt.Errorf("suggest phrases: every cluster failed: %w", firstErr)
+	run.ClustersAsked = int64(len(ask))
+	run.Stage = logstore.ComplexitySuggestionRunStageSuggesting
+	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+		return result, fmt.Errorf("record suggestion run progress: %w", err)
 	}
+
+	// 4. Ask the model. Progress is written each time another tenth of the
+	//    groups is done, under one lock so the writes are in order; a failed
+	//    progress write only costs the reader a stale count.
+	var progressMu sync.Mutex
+	var done int
+	step := max(1, len(ask)/progressSteps)
+	progress := func() {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		done++
+		if done%step != 0 || done == len(ask) {
+			return
+		}
+		run.ClustersDone = int64(done)
+		_ = store.UpsertComplexitySuggestionRun(ctx, run)
+	}
+	opts := suggest.Options{MatchFloor: matchFloor, Instructions: s.Instructions, Tier: s.Tier, Texts: texts}
+	suggestions, asked, failed, firstErr := suggestEach(ctx, suggest.NewSuggester(live, space, llm, opts), ask, s.Workers, room, progress)
+	run.ClustersOverLimit += int64(len(ask) - asked)
+	run.ClustersAsked, run.ClustersDone, run.ClustersFailed = int64(asked), int64(asked), int64(failed)
+	// Clusters still being asked when the room filled can overflow it; the
+	// lighter ones are left out like the clusters never asked.
+	suggestions = FitSuggestions(suggestions, room, &run.ClustersOverLimit)
+	for _, sg := range suggestions {
+		switch sg.Category {
+		case suggest.CategoryCovered:
+			run.ClustersCovered++
+		case suggest.CategoryUnreadable:
+			run.ClustersUnreadable++
+		case suggest.CategoryIncoherent:
+			run.ClustersIncoherent++
+		}
+	}
+	// A run whose context ended was stopped, not failed: the clusters' errors
+	// are what that ending did to the calls in flight, and a model adapter's
+	// error need not wrap the context's, so it is checked first.
 	if err := ctx.Err(); err != nil {
 		return result, err
+	}
+	if failed > 0 && failed == asked {
+		return result, fmt.Errorf("suggest phrases: every cluster failed: %w", firstErr)
 	}
 	if failed > 0 {
 		// Recorded on a run that still succeeded: the clusters that answered
 		// are written, and the failed ones are asked again next run.
-		run.Error = fmt.Sprintf("%d of %d clusters failed and were left for the next run: %v", failed, len(ask), firstErr)
+		run.Error = fmt.Sprintf("%d of %d clusters failed and were left for the next run: %v", failed, asked, firstErr)
 	}
 
 	// 5. Reconcile.
+	run.Stage = logstore.ComplexitySuggestionRunStageSaving
+	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+		return result, fmt.Errorf("record suggestion run progress: %w", err)
+	}
 	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, rowScope{
 		routerID: s.RouterID, routerVersion: s.RouterVersion, namespace: space.Namespace(), runID: s.RunID,
 	}, s.Now)
@@ -324,34 +440,63 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	return result, nil
 }
 
-// suggestEach asks about each cluster on workers goroutines. A cluster whose
-// model call fails is counted and skipped rather than failing the others.
-func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*suggest.Cluster, workers int) ([]suggest.Suggestion, int, error) {
+// suggestEach asks about clusters in order, heaviest first, on workers
+// goroutines. A cluster whose model call fails is counted and skipped rather
+// than failing the others. With a room of zero or more it starts no cluster
+// once the distinct phrases written so far fill the room; asked is how many
+// it started. done, when set, is called once per cluster as it finishes.
+func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*suggest.Cluster, workers, room int, done func()) (kept []suggest.Suggestion, asked, failed int, first error) {
 	if workers <= 0 {
 		workers = 4
 	}
 	out := make([]suggest.Suggestion, len(clusters))
 	ok := make([]bool, len(clusters))
 	errs := make([]error, len(clusters))
+	var mu sync.Mutex
+	written := map[string]bool{}
+	full := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return room >= 0 && len(written) >= room
+	}
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, workers)
 	for i, cl := range clusters {
 		if ctx.Err() != nil {
 			errs[i] = ctx.Err()
+			asked = i + 1
 			continue
 		}
+		if full() {
+			break
+		}
 		slots <- struct{}{}
+		// Answers that came in while waiting for a worker may have filled it.
+		if full() {
+			<-slots
+			break
+		}
+		asked = i + 1
 		wg.Go(func() {
 			defer func() { <-slots }()
 			sg, err := suggester.Suggest(ctx, cl)
 			out[i], ok[i], errs[i] = sg, err == nil, err
+			if err == nil && sg.Category.Actionable() {
+				mu.Lock()
+				for _, phrase := range sg.Phrases {
+					if key := normalizeText(phrase); key != "" {
+						written[key] = true
+					}
+				}
+				mu.Unlock()
+			}
+			if done != nil {
+				done()
+			}
 		})
 	}
 	wg.Wait()
-	var kept []suggest.Suggestion
-	var failed int
-	var first error
-	for i := range clusters {
+	for i := range asked {
 		if ok[i] {
 			kept = append(kept, out[i])
 			continue
@@ -361,7 +506,7 @@ func suggestEach(ctx context.Context, suggester *suggest.Suggester, clusters []*
 			first = errs[i]
 		}
 	}
-	return kept, failed, first
+	return kept, asked, failed, first
 }
 
 // decided reports whether the user has made a call on a suggestion that a
@@ -499,6 +644,24 @@ func fillSuggestion(row *logstore.ComplexitySuggestion, sg suggest.Suggestion, s
 		ids = append(ids, m.ID)
 	}
 	_ = row.SetExampleLogIDs(ids)
+	_ = row.SetCurrentRouting(currentRouting(sg.Cluster))
+}
+
+// currentRouting is how a cluster's requests route today, by tier, with the
+// ones that match no phrase above the floor under
+// ComplexitySuggestionUnmatchedTier.
+func currentRouting(cl *suggest.Cluster) map[string]int64 {
+	routing := make(map[string]int64, 4)
+	for tier, n := range cl.CurrentRouting() {
+		if n <= 0 {
+			continue
+		}
+		if tier == "" {
+			tier = logstore.ComplexitySuggestionUnmatchedTier
+		}
+		routing[tier] += int64(n)
+	}
+	return routing
 }
 
 // capturedTraffic reads everything captured in a space, which is one router's
@@ -551,8 +714,9 @@ type Estimate struct {
 	Clustered int `json:"clustered"`
 	Assigned  int `json:"assigned"`
 	Skipped   int `json:"skipped"`
-	// MaxModelCalls bounds the suggestion model's calls: at most two per
-	// cluster sent, and at most MaxSuggestedClusters clusters are sent.
+	// MaxModelCalls bounds the model calls: at most three per cluster sent
+	// (two phrase attempts and one tier decision), and at most
+	// MaxSuggestedClusters clusters are sent.
 	MaxModelCalls int `json:"max_model_calls"`
 }
 
@@ -569,11 +733,111 @@ func EstimateRun(requests int, s Settings) Estimate {
 	rest := requests - e.Clustered
 	e.Assigned = min(rest, assignFactor*max(0, s.MaxClustered))
 	e.Skipped = rest - e.Assigned
-	minCluster := s.MinClusterRequests
-	if minCluster <= 0 {
-		minCluster = suggest.DefaultMinClusterRequests
-	}
+	minCluster := ClusterFloor(s.MinClusterRequests, s.MinClusterShare, e.Clustered+e.Assigned)
 	clusters := (e.Clustered + e.Assigned) / minCluster
-	e.MaxModelCalls = 2 * min(clusters, maxSuggested)
+	e.MaxModelCalls = callsPerCluster * min(clusters, maxSuggested)
 	return e
+}
+
+// representedRequests is how many of seen requests a run can place in
+// clusters: the clustered sample and the requests counted into it after,
+// at most assignFactor times the sample.
+func representedRequests(seen, maxClustered int) int {
+	return min(seen, (assignFactor+1)*max(0, maxClustered))
+}
+
+// ClusterFloor is the smallest cluster a run keeps: the configured minimum,
+// raised to share of the requests read when that is larger. A share of zero
+// takes DefaultMinClusterShare; a negative one leaves the minimum alone.
+func ClusterFloor(minRequests int, share float64, requests int) int {
+	if minRequests <= 0 {
+		minRequests = suggest.DefaultMinClusterRequests
+	}
+	if share == 0 {
+		share = DefaultMinClusterShare
+	}
+	if share > 0 {
+		minRequests = max(minRequests, int(math.Ceil(share*float64(requests))))
+	}
+	return minRequests
+}
+
+// FitSuggestions is what a run keeps of what the model wrote, in one pass in
+// the order the clusters were asked (heaviest first). Each phrase stays with
+// the first kept suggestion written it; a lighter suggestion left with no
+// phrase of its own is covered by that one. A suggestion whose new phrases do
+// not fit the room left in the phrase bank is dropped and counted, and
+// reserves nothing, so a lighter one written one of its phrases can still
+// keep it. Non-actionable outcomes, and actionable ones without phrases of
+// their own (a misrouted cluster whose phrase repeats a live one), add no
+// phrases and are always kept, so reconciliation still sees them. A negative
+// room means no bound.
+func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) []suggest.Suggestion {
+	seen := map[string]bool{}
+	kept := suggestions[:0]
+	used := 0
+	for _, sg := range suggestions {
+		if !sg.Category.Actionable() || len(sg.Phrases) == 0 {
+			kept = append(kept, sg)
+			continue
+		}
+		var unique, keys []string
+		mine := map[string]bool{}
+		for _, phrase := range sg.Phrases {
+			key := strings.ToLower(strings.TrimSpace(phrase))
+			if key == "" || seen[key] || mine[key] {
+				continue
+			}
+			mine[key] = true
+			unique = append(unique, phrase)
+			keys = append(keys, key)
+		}
+		if len(unique) == 0 {
+			sg.Phrases = []string{}
+			sg.Category = suggest.CategoryCovered
+			kept = append(kept, sg)
+			continue
+		}
+		if room >= 0 && used+len(unique) > room {
+			*dropped++
+			continue
+		}
+		used += len(unique)
+		for _, key := range keys {
+			seen[key] = true
+		}
+		sg.Phrases = unique
+		kept = append(kept, sg)
+	}
+	return kept
+}
+
+// WithinRoom keeps the suggestions whose phrases fit the room left in the
+// phrase bank, heaviest cluster first (the order they were asked in), and
+// counts the actionable ones that did not fit. Non-actionable outcomes add no
+// phrases and are always kept, so reconciliation still supersedes what they
+// cover. A negative room means no bound.
+func WithinRoom(suggestions []suggest.Suggestion, room int, dropped *int64) []suggest.Suggestion {
+	if room < 0 {
+		return suggestions
+	}
+	kept := suggestions[:0]
+	used := 0
+	for _, sg := range suggestions {
+		if sg.Category.Actionable() {
+			if used+len(sg.Phrases) > room {
+				*dropped++
+				continue
+			}
+			used += len(sg.Phrases)
+		}
+		kept = append(kept, sg)
+	}
+	return kept
+}
+
+// withoutRepeatedPhrases is FitSuggestions with no bound on the room.
+func withoutRepeatedPhrases(suggestions []suggest.Suggestion) []suggest.Suggestion {
+	var dropped int64
+	return FitSuggestions(suggestions, -1, &dropped)
 }

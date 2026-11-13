@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -357,7 +358,11 @@ func (h *RoutingHandler) resetModelRouter(ctx *fasthttp.RequestCtx) {
 }
 
 // getModelRouterStatus reports one router's classifier readiness, in the
-// shape of the complexity analyzer status.
+// shape of the complexity analyzer status. Only this per-router status serves
+// the suggestion tier step's generated prompt and criteria: what the step sends
+// when nothing is edited, rendered from the router's config with its own
+// phrases as examples. The settings editors show them, and an edit replaces
+// them.
 func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 	id := pathID(ctx, "router_id")
 	semantic, llm, err := h.routingManager.GetModelRouterStatus(ctx, id)
@@ -369,12 +374,27 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get model router status: %v", err))
 		return
 	}
+	// The tier step's generated text comes from the saved router, so the
+	// editor shows exactly what an unedited run of it sends. A router that
+	// cannot be read gets none, rather than text rendered from the built-in
+	// defaults as if it were its own.
+	var tierPrompt string
+	var tierCriteria map[string]configstore.ComplexityDecisionTierDefaults
+	if router, loadErr := h.configStore.GetModelRouter(ctx, id); loadErr == nil {
+		normalized := router.ComplexityAnalyzerConfig.Normalized()
+		tierPrompt, tierCriteria = routing.SuggestionTierDefaults(&normalized)
+	} else {
+		logger.Warn("model router %s status: could not read the router for its suggestion tier defaults: %v", id, loadErr)
+	}
 	SendJSON(ctx, complexityStatusResponse{
-		SemanticStatusInfo:            semantic,
-		LLM:                           &llm,
-		DecisionDefaults:              configstore.DefaultComplexityDecisionGuidance(),
-		SuggestionDefaultInstructions: suggest.DefaultInstructions(),
-		LLMDefaultPrompt:              complexity.DefaultLLMClassifierGuidance(),
+		SemanticStatusInfo:                semantic,
+		LLM:                               &llm,
+		DecisionDefaults:                  configstore.DefaultComplexityDecisionGuidance(),
+		SuggestionDefaultInstructions:     suggest.DefaultInstructions(),
+		SuggestionDefaultTierInstructions: suggest.DefaultTierInstructions(),
+		SuggestionDefaultTierPrompt:       tierPrompt,
+		SuggestionDefaultTierCriteria:     tierCriteria,
+		LLMDefaultPrompt:                  complexity.DefaultLLMClassifierGuidance(),
 	})
 }
 

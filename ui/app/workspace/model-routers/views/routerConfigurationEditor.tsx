@@ -406,9 +406,16 @@ export function RouterConfigurationSheets({ config }: { config: RouterConfigForm
 				errors={errors.suggestions}
 				canUpdate={canUpdate}
 				chatProviders={providers.chat}
+				providers={providers.all}
 				keys={providers.keys}
-				fallbackModel={live.llm?.provider && live.llm?.model ? `${live.llm.provider}/${live.llm.model}` : undefined}
+				llmModel={live.llm?.provider && live.llm?.model ? { provider: live.llm.provider, model: live.llm.model } : undefined}
+				decisionModel={
+					live.decisionProvider && live.decisionModel ? { provider: live.decisionProvider, model: live.decisionModel } : undefined
+				}
 				defaultInstructions={status.semantic?.suggestion_default_instructions ?? ""}
+				defaultTierInstructions={status.semantic?.suggestion_default_tier_instructions ?? ""}
+				tierDefaults={config.defaults.tier}
+				tierDefaultsLoading={status.loading || status.fetching}
 				{...sheetProps}
 			/>
 

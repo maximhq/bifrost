@@ -213,6 +213,20 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		row.SuggestionsProvider = bifrost.Ptr(string(g.Provider))
 		row.SuggestionsModel = bifrost.Ptr(g.Model)
 		row.SuggestionsInstructions = bifrost.Ptr(g.Instructions)
+		if tier := g.Tier; tier != nil {
+			row.SuggestionsTierClassifier = bifrost.Ptr(tier.Classifier)
+			row.SuggestionsTierProvider = bifrost.Ptr(string(tier.Provider))
+			row.SuggestionsTierModel = bifrost.Ptr(tier.Model)
+			row.SuggestionsTierInstructions = bifrost.Ptr(tier.Instructions)
+			row.SuggestionsTierPrompt = bifrost.Ptr(tier.Prompt)
+			if len(tier.Criteria) > 0 {
+				criteria, err := json.Marshal(tier.Criteria)
+				if err != nil {
+					return nil, fmt.Errorf("encode suggestions tier criteria: %w", err)
+				}
+				row.SuggestionsTierCriteriaJSON = bifrost.Ptr(string(criteria))
+			}
+		}
 		if sc := g.Schedule; sc != nil {
 			row.SuggestionsScheduleEvery = bifrost.Ptr(sc.Every)
 			if sc.StartAt != nil {
@@ -307,6 +321,20 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 			}
 			if row.SuggestionsScheduleStartAt != nil {
 				suggestions.Schedule.StartAt = bifrost.Ptr(row.SuggestionsScheduleStartAt.UTC())
+			}
+		}
+		if row.SuggestionsTierClassifier != nil {
+			suggestions.Tier = &ComplexitySuggestionsTierConfig{
+				Classifier:   *row.SuggestionsTierClassifier,
+				Provider:     schemas.ModelProvider(valueOrZero(row.SuggestionsTierProvider)),
+				Model:        valueOrZero(row.SuggestionsTierModel),
+				Instructions: valueOrZero(row.SuggestionsTierInstructions),
+				Prompt:       valueOrZero(row.SuggestionsTierPrompt),
+			}
+			if raw := valueOrZero(row.SuggestionsTierCriteriaJSON); strings.TrimSpace(raw) != "" {
+				if err := json.Unmarshal([]byte(raw), &suggestions.Tier.Criteria); err != nil {
+					return nil, fmt.Errorf("%w: model router %q suggestions tier criteria: %w", ErrConfigUnreadable, row.ID, err)
+				}
 			}
 		}
 		cfg.Suggestions = suggestions

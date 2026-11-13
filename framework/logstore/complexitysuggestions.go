@@ -106,7 +106,7 @@ type ComplexitySuggestion struct {
 	NearestSimilarity  float64    `gorm:"not null" json:"nearest_similarity"`
 	Centroid           []byte     `json:"-"`
 	ExampleLogIDsJSON  string     `gorm:"column:example_log_ids;type:text" json:"-"` // JSON array; the medoid first
-	CurrentRoutingJSON string     `gorm:"column:current_routing;type:text" json:"-"` // JSON object: requests per tier they route to today
+	CurrentRoutingJSON string     `gorm:"column:current_routing;type:text" json:"-"` // JSON object: requests per tier as the last run routed them
 	EmbeddingSignature string     `gorm:"type:varchar(255);not null" json:"embedding_signature"`
 	RunID              string     `gorm:"type:varchar(36);not null" json:"run_id"` // the last run that proposed it
 	LastSeenAt         time.Time  `gorm:"not null" json:"last_seen_at"`
@@ -146,9 +146,10 @@ func (s *ComplexitySuggestion) SetExampleLogIDs(ids []string) error {
 	return nil
 }
 
-// CurrentRouting returns how many of the cluster's requests route to each
-// tier today, ComplexitySuggestionUnmatchedTier counting those that match no
-// phrase. Nil for a row written before it was recorded.
+// CurrentRouting returns how many of the cluster's requests routed to each
+// tier when the suggestion's last run computed it, a snapshot rather than
+// live routing; ComplexitySuggestionUnmatchedTier counts those that matched
+// no phrase. Nil for a row written before it was recorded.
 func (s *ComplexitySuggestion) CurrentRouting() map[string]int64 {
 	if s.CurrentRoutingJSON == "" {
 		return nil
@@ -210,7 +211,7 @@ type ComplexitySuggestionRun struct {
 	RequestsGrouped    int64      `gorm:"not null;default:0" json:"requests_grouped"`   // in a group big enough to keep
 	Clusters           int64      `gorm:"not null" json:"clusters"`
 	ClustersDecided    int64      `gorm:"not null;default:0" json:"clusters_decided"`    // matched an accepted or dismissed suggestion, not asked again
-	ClustersOverLimit  int64      `gorm:"not null;default:0" json:"clusters_over_limit"` // past the per-run bound on groups asked
+	ClustersOverLimit  int64      `gorm:"not null;default:0" json:"clusters_over_limit"` // past the run's limits: groups asked, or room in the phrase bank
 	ClustersAsked      int64      `gorm:"not null;default:0" json:"clusters_asked"`
 	ClustersDone       int64      `gorm:"not null;default:0" json:"clusters_done"` // asked so far, for a running run's progress
 	ClustersFailed     int64      `gorm:"not null;default:0" json:"clusters_failed"`
@@ -311,6 +312,11 @@ type ComplexitySuggestionStore interface {
 	// ListComplexitySuggestionRuns returns up to limit of the selected runs,
 	// newest first.
 	ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error)
+	// UpdateComplexitySuggestionRunStatus ends one run at status to, stamping
+	// finishedAt and clearing its stage, only while its status is one of from;
+	// everything else the run recorded is kept. It reports whether it did:
+	// false means the run is gone or already moved on (it ended first).
+	UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error)
 	// PruneComplexitySuggestionRuns keeps one router's newest keep runs and
 	// drops the rest of its runs; other routers' are untouched.
 	PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (deletedCount int64, err error)
@@ -327,7 +333,25 @@ type ComplexitySuggestionStore interface {
 	// DeleteComplexityVectorDeletes removes exactly the given (log, namespace)
 	// rows; the same log's row for another namespace stays.
 	DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error
+
+	// ListComplexityReplayUsage returns what an impact replay prices each
+	// request by: its provider, model, token counts and the tier it was routed
+	// to, for the logs the caller may see. A log that is gone is left out.
+	ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error)
 }
+
+// ComplexityReplayUsage is one logged request as an impact replay prices it.
+type ComplexityReplayUsage struct {
+	ID               string  `gorm:"column:id"`
+	Provider         string  `gorm:"column:provider"`
+	Model            string  `gorm:"column:model"`
+	PromptTokens     int64   `gorm:"column:prompt_tokens"`
+	CompletionTokens int64   `gorm:"column:completion_tokens"`
+	ComplexityTier   *string `gorm:"column:complexity_tier"`
+}
+
+// complexityReplayUsageBatch bounds the IDs one usage read binds.
+const complexityReplayUsageBatch = 1000
 
 // prepareComplexitySuggestions validates suggestions for a write and stamps
 // their times.
@@ -622,6 +646,25 @@ func (s *RDBLogStore) InsertComplexitySuggestionRun(ctx context.Context, run *Co
 	return result.RowsAffected == 1, nil
 }
 
+// UpdateComplexitySuggestionRunStatus ends a run with one conditional update,
+// so an outcome the run wrote first is never overwritten.
+func (s *RDBLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	if finishedAt != nil {
+		finished := finishedAt.UTC()
+		finishedAt = &finished
+	}
+	result := s.db.WithContext(ctx).Model(&ComplexitySuggestionRun{}).
+		Where("id = ? AND status IN ?", id, from).
+		Updates(map[string]any{"status": to, "stage": "", "finished_at": finishedAt})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // ListComplexitySuggestionRuns returns up to limit runs, newest first.
 func (s *RDBLogStore) ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error) {
 	if limit <= 0 {
@@ -700,4 +743,29 @@ func (s *RDBLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []
 		}
 	}
 	return nil
+}
+
+// ListComplexityReplayUsage reads the usage of the given logs within the
+// caller's access scope, a batch of IDs at a time. A store that has not merged
+// a rewritten row may return it twice; the first is kept.
+func (s *RDBLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error) {
+	out := make([]ComplexityReplayUsage, 0, len(logIDs))
+	seen := make(map[string]struct{}, len(logIDs))
+	for chunk := range slices.Chunk(logIDs, complexityReplayUsageBatch) {
+		var rows []ComplexityReplayUsage
+		if err := s.ScopedDB(ctx).Model(&Log{}).
+			Select("id", "provider", "model", "prompt_tokens", "completion_tokens", "complexity_tier").
+			Where("id IN ?", chunk).
+			Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if _, dup := seen[row.ID]; dup {
+				continue
+			}
+			seen[row.ID] = struct{}{}
+			out = append(out, row)
+		}
+	}
+	return out, nil
 }

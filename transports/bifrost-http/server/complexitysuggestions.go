@@ -3,8 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -124,7 +129,29 @@ func (s *BifrostHTTPServer) ComplexitySuggestionTexts(ctx context.Context, route
 	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
 		historyCount = routingPlugin.ComplexitySuggestionMessageHistoryCount(routerID)
 	}
-	return complexitySuggestionTexts(s.Config.LogsStore)(ctx, logIDs, historyCount)
+	// Each log is read once, in batches of what one read opens, so a caller
+	// showing more examples than that (an impact report's changes and its
+	// flagged phrases) gets every readable one.
+	seen := make(map[string]struct{}, len(logIDs))
+	unique := make([]string, 0, len(logIDs))
+	for _, id := range logIDs {
+		if _, dup := seen[id]; !dup {
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+	}
+	read := complexitySuggestionTexts(s.Config.LogsStore)
+	texts := make(map[string]string, len(unique))
+	for start := 0; start < len(unique); start += maxComplexitySuggestionTexts {
+		batch, err := read(ctx, unique[start:min(start+maxComplexitySuggestionTexts, len(unique))], historyCount)
+		if err != nil {
+			return nil, err
+		}
+		for id, text := range batch {
+			texts[id] = text
+		}
+	}
+	return texts, nil
 }
 
 // RoutingPluginLoaded reports whether the routing plugin is loaded.
@@ -172,4 +199,121 @@ func (s *BifrostHTTPServer) TestComplexitySuggestionPhrases(ctx context.Context,
 		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
 	}
 	return routingPlugin.TestComplexitySuggestionPhrases(ctx, routerID, phrases, examples)
+}
+
+// The server backs the phrase-suggestion endpoints; a missing method would
+// make every one of them answer 503, so it is checked here.
+var _ handlers.ComplexitySuggestionManager = (*BifrostHTTPServer)(nil)
+
+// CancelComplexitySuggestionRun stops one router's queued or running run.
+func (s *BifrostHTTPServer) CancelComplexitySuggestionRun(ctx context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return logstore.ComplexitySuggestionRun{}, routing.ErrComplexitySuggestionsOff
+	}
+	return routingPlugin.CancelComplexitySuggestionRun(ctx, routerID, runID)
+}
+
+// ComplexitySuggestionImpact replays one router's recent captured requests
+// against a draft phrase bank and prices what changes: each changed request's
+// logged tokens at the model it was served by and at the router's model for
+// its new tier. Logs and example text are read within the caller's scope.
+func (s *BifrostHTTPServer) ComplexitySuggestionImpact(ctx context.Context, routerID string, window time.Duration, draft []complexity.SuggestionPhrase, draftMinSimilarity *float64) (handlers.ComplexitySuggestionImpactReport, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return handlers.ComplexitySuggestionImpactReport{}, routing.ErrComplexitySuggestionsOff
+	}
+	impact, window, err := routingPlugin.ComplexitySuggestionImpact(ctx, routerID, window, draft, draftMinSimilarity)
+	if err != nil {
+		return handlers.ComplexitySuggestionImpactReport{}, err
+	}
+	var usage []logstore.ComplexityReplayUsage
+	if store := s.ComplexitySuggestionStore(); store != nil && len(impact.Changed) > 0 {
+		ids := make([]string, len(impact.Changed))
+		for i, c := range impact.Changed {
+			ids[i] = c.LogID
+		}
+		if usage, err = store.ListComplexityReplayUsage(ctx, ids); err != nil {
+			return handlers.ComplexitySuggestionImpactReport{}, err
+		}
+	}
+	// Text only for what the report lists: the first changes and each
+	// flagged phrase's example.
+	var shown []string
+	for i, c := range impact.Changed {
+		if i == 25 {
+			break
+		}
+		shown = append(shown, c.LogID)
+	}
+	for _, a := range impact.Attention {
+		shown = append(shown, a.LogID)
+	}
+	texts, err := s.ComplexitySuggestionTexts(ctx, routerID, shown)
+	if err != nil {
+		return handlers.ComplexitySuggestionImpactReport{}, err
+	}
+	models, err := complexityImpactModels(ctx, s.complexityImpactRouters(), routerID)
+	if err != nil {
+		return handlers.ComplexitySuggestionImpactReport{}, err
+	}
+	return handlers.PriceComplexitySuggestionImpact(impact, window, usage, models,
+		handlers.MemoizeComplexityImpactPrice(s.complexityImpactPrice), texts), nil
+}
+
+// complexityImpactRouterStore reads the router whose targets price a replay.
+type complexityImpactRouterStore interface {
+	GetModelRouter(ctx context.Context, id string) (*configstore.ModelRouter, error)
+}
+
+// complexityImpactRouters is where routers are read from, or nil without a
+// config store.
+func (s *BifrostHTTPServer) complexityImpactRouters() complexityImpactRouterStore {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil
+	}
+	return s.Config.ConfigStore
+}
+
+// complexityImpactModels names the model each of a router's tiers is priced
+// at: its highest-weighted target that names both a provider and a model
+// (targets are read heaviest first). A tier without one is not priced, and a
+// router the store does not hold (the Complexity Router page's) has none. A
+// store that cannot be read fails the report rather than price nothing.
+func complexityImpactModels(ctx context.Context, store complexityImpactRouterStore, routerID string) (map[string]handlers.ComplexityImpactModel, error) {
+	models := map[string]handlers.ComplexityImpactModel{}
+	if store == nil {
+		return models, nil
+	}
+	router, err := store.GetModelRouter(ctx, routerID)
+	if errors.Is(err, configstore.ErrNotFound) {
+		return models, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the router's targets: %w", err)
+	}
+	if router == nil {
+		return models, nil
+	}
+	for _, target := range router.Targets {
+		if _, seen := models[target.Tier]; seen || target.Provider == nil || target.Model == nil || *target.Provider == "" || *target.Model == "" {
+			continue
+		}
+		models[target.Tier] = handlers.ComplexityImpactModel{Provider: *target.Provider, Model: *target.Model}
+	}
+	return models, nil
+}
+
+// complexityImpactPrice prices token counts at list price, before caching,
+// as a chat completion. A model the catalog has no price for is not priced.
+func (s *BifrostHTTPServer) complexityImpactPrice(provider, model string, promptTokens, completionTokens int64) (float64, bool) {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return 0, false
+	}
+	catalog := s.Config.ModelCatalog
+	if catalog.GetPricingEntryForModel(model, schemas.ModelProvider(provider)) == nil {
+		return 0, false
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: int(promptTokens), CompletionTokens: int(completionTokens), TotalTokens: int(promptTokens + completionTokens)}
+	return catalog.CalculateCostForUsage(usage, schemas.ModelProvider(provider), model, schemas.ChatCompletionRequest, nil), true
 }

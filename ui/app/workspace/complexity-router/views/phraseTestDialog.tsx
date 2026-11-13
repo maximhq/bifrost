@@ -69,7 +69,6 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 				return value;
 		}
 	};
-	const percent = (value: number) => new Intl.NumberFormat(getLocale(), { style: "percent", maximumFractionDigits: 0 }).format(value);
 	const similarity = (value: number) =>
 		new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(value);
 
@@ -89,14 +88,30 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 			});
 	};
 
+	// routing shows where a request goes: the tier of its nearest phrase when
+	// that clears the router's similarity floor, and "no match" when it does
+	// not, since phrases then give no tier and the fallback decides. The
+	// similarity always shows; the phrase it was measured against is
+	// truncated after it.
 	const routing = (value: PhraseRouting, testid: string) => (
 		<div className="min-w-0 space-y-0.5" data-testid={testid}>
-			<div className="flex items-center gap-1.5">
-				<Badge variant={value.candidate ? "success" : "secondary"}>{tierLabel(value.tier)}</Badge>
-				{!value.accepted && <span className="text-muted-foreground text-[11px]">{t("belowFloor")}</span>}
-			</div>
-			<p className="text-muted-foreground truncate text-[11px]" title={value.phrase}>
-				{t("via", { phrase: value.phrase, similarity: similarity(value.similarity) })}
+			{value.accepted ? (
+				<Badge variant={value.candidate ? "success" : "secondary"} data-testid={`${testid}-tier`}>
+					{tierLabel(value.tier)}
+				</Badge>
+			) : (
+				<Badge variant="outline" title={t("belowFloorTip")} data-testid={`${testid}-unmatched`}>
+					{t("noMatch")}
+				</Badge>
+			)}
+			<p className="text-muted-foreground flex min-w-0 items-baseline gap-1 text-[11px]">
+				<span className="shrink-0 font-mono tabular-nums" title={t("similarityTip")}>
+					{similarity(value.similarity)}
+				</span>
+				{!value.accepted && <span className="shrink-0">{t("nearestTier", { tier: tierLabel(value.tier) })}</span>}
+				<span className="truncate" title={value.phrase}>
+					{t("quoted", { phrase: value.phrase })}
+				</span>
 			</p>
 		</div>
 	);
@@ -154,40 +169,38 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 						</Alert>
 					)}
 
-					{result && (
-						<div className="space-y-3" data-testid="complexity-phrase-test-result">
-							<p className="text-sm font-medium" data-testid="complexity-phrase-test-taken-over">
-								{result.examples.length > 0
-									? t("takenOver", { percent: percent(result.taken_over), count: result.examples.length })
-									: t("noReadableExamples")}
-							</p>
-							{result.phrases
-								.filter((phrase) => phrase.nearest_existing.similarity >= DUPLICATE_SIMILARITY)
-								.map((phrase) => (
-									<Alert key={phrase.text} variant="warning" data-testid="complexity-phrase-test-duplicate">
-										<TriangleAlert className="h-4 w-4" />
-										<AlertDescription>
-											{t("nearDuplicate", { phrase: phrase.text, existing: phrase.nearest_existing.phrase })}
-										</AlertDescription>
-									</Alert>
-								))}
-							<div className="divide-y rounded-sm border">
-								{result.examples.map((example) => (
-									<div
-										key={example.log_id}
-										className={cn(
-											"grid gap-3 p-3 text-xs sm:grid-cols-[1fr_9rem_auto_9rem] sm:items-center",
-											example.changed && "bg-muted/40",
-										)}
-										data-testid={`complexity-phrase-test-example-${example.log_id}`}
-									>
-										<p className="line-clamp-3 break-words">{example.text}</p>
-										{routing(example.current, `complexity-phrase-test-example-current-${example.log_id}`)}
-										<ArrowRight className="text-muted-foreground hidden size-3.5 sm:block" />
-										{routing(example.with_phrases, `complexity-phrase-test-example-with-${example.log_id}`)}
-									</div>
-								))}
+					{result && <PhraseTestSummary result={result} tier={tier} tierLabel={tierLabel} />}
+					{result && result.examples.length > 0 && (
+						<div className="divide-y rounded-sm border" data-testid="complexity-phrase-test-result">
+							<div className="text-muted-foreground hidden gap-3 px-3 py-2 text-[11px] font-medium sm:grid sm:grid-cols-[1fr_10rem_auto_10rem]">
+								<span>{t("testColumnExample")}</span>
+								<span>{t("testColumnNow")}</span>
+								<span aria-hidden className="w-3.5" />
+								<span>{t("testColumnWith")}</span>
 							</div>
+							{result.examples.map((example) => (
+								<div
+									key={example.log_id}
+									className={cn(
+										"grid gap-3 border-l-2 p-3 text-xs sm:grid-cols-[1fr_10rem_auto_10rem] sm:items-center",
+										example.changed ? "border-l-primary" : "border-l-transparent opacity-60",
+									)}
+									data-testid={`complexity-phrase-test-example-${example.log_id}`}
+									data-changed={example.changed}
+								>
+									<div className="min-w-0 space-y-1">
+										<p className="line-clamp-3 break-words">{example.text}</p>
+										{example.changed && (
+											<Badge variant="outline" className="text-[10px]">
+												{t("changedBadge")}
+											</Badge>
+										)}
+									</div>
+									{routing(example.current, `complexity-phrase-test-example-current-${example.log_id}`)}
+									<ArrowRight className="text-muted-foreground hidden size-3.5 sm:block" />
+									{routing(example.with_phrases, `complexity-phrase-test-example-with-${example.log_id}`)}
+								</div>
+							))}
 						</div>
 					)}
 				</div>
@@ -231,5 +244,63 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
+	);
+}
+interface SummaryProps {
+	result: PhraseTestResult;
+	tier: DecisionTier;
+	tierLabel: (tier: string) => string;
+}
+
+// PhraseTestSummary says what adding the phrases changes: how many examples
+// would route differently, how many land on the chosen tier, and how many
+// clear the similarity floor that did not before. It warns when a phrase
+// nearly repeats the bank, or nearly repeats one of the examples, which makes
+// it match that one request rather than requests like it.
+function PhraseTestSummary({ result, tier, tierLabel }: SummaryProps) {
+	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions" });
+	const examples = result.examples;
+	const changed = examples.filter((example) => example.changed).length;
+	const toTier = examples.filter((example) => example.with_phrases.accepted && example.with_phrases.tier === tier).length;
+	const newlyMatched = examples.filter((example) => !example.current.accepted && example.with_phrases.accepted).length;
+	const copies = examples.filter((example) => example.with_phrases.candidate && example.with_phrases.similarity >= DUPLICATE_SIMILARITY);
+	// With no example to route, what the phrases change is unknown, but a
+	// phrase that repeats the bank is still worth saying.
+	return (
+		<div className="space-y-3" data-testid="complexity-phrase-test-summary">
+			{examples.length === 0 ? (
+				<p className="text-sm font-medium" data-testid="complexity-phrase-test-no-examples">
+					{t("noReadableExamples")}
+				</p>
+			) : (
+				<>
+					<p className="text-sm font-medium" data-testid="complexity-phrase-test-changed">
+						{t("testChanged", { changed, count: examples.length })}
+					</p>
+					<div className="flex flex-wrap gap-2 text-xs">
+						<span className="bg-muted rounded-sm px-2 py-1" data-testid="complexity-phrase-test-to-tier">
+							{t("testToTier", { tier: tierLabel(tier), routed: toTier, count: examples.length })}
+						</span>
+						<span className="bg-muted rounded-sm px-2 py-1" data-testid="complexity-phrase-test-newly-matched">
+							{t("testNewlyMatched", { count: newlyMatched })}
+						</span>
+					</div>
+				</>
+			)}
+			{result.phrases
+				.filter((phrase) => phrase.nearest_existing.similarity >= DUPLICATE_SIMILARITY)
+				.map((phrase) => (
+					<Alert key={phrase.text} variant="warning" data-testid="complexity-phrase-test-duplicate">
+						<TriangleAlert className="h-4 w-4" />
+						<AlertDescription>{t("nearDuplicate", { phrase: phrase.text, existing: phrase.nearest_existing.phrase })}</AlertDescription>
+					</Alert>
+				))}
+			{copies.map((example) => (
+				<Alert key={example.log_id} variant="warning" data-testid="complexity-phrase-test-copies-example">
+					<TriangleAlert className="h-4 w-4" />
+					<AlertDescription>{t("copiesExample", { phrase: example.with_phrases.phrase, example: example.text })}</AlertDescription>
+				</Alert>
+			))}
+		</div>
 	);
 }

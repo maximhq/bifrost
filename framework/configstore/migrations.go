@@ -597,6 +597,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
 	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
 	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
+	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 }
@@ -13765,6 +13766,50 @@ func migrationAddModelRouterTargetsAndRouting(ctx context.Context, db *gorm.DB, 
 			return fmt.Errorf("%s is non-rollbackable: dropping model_router_targets would delete every router's models", migrationName)
 		},
 	})
+}
+
+// modelRouterSuggestionTierColumns hold a router's suggestions tier block: the
+// classifier that decides suggested tiers, its model, and the text it reads.
+var modelRouterSuggestionTierColumns = []string{
+	"SuggestionsTierClassifier", "SuggestionsTierProvider", "SuggestionsTierModel",
+	"SuggestionsTierPrompt", "SuggestionsTierInstructions", "SuggestionsTierCriteriaJSON",
+}
+
+// migrationAddModelRouterSuggestionTierColumns adds the suggestions tier
+// block's columns. A router without them reads as having no tier block, which
+// decides tiers with its phrase model, as before tiers were configurable.
+func migrationAddModelRouterSuggestionTierColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_suggestions_tier_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("add %s column to model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }
 
 func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {

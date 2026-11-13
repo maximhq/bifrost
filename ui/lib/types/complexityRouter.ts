@@ -109,7 +109,41 @@ export interface SuggestionsConfig {
 	provider?: string;
 	model?: string;
 	instructions?: string;
+	tier?: SuggestionsTierConfig;
 }
+
+// The classifiers a suggestion run can decide tiers with. Phrases are always
+// written by an LLM.
+export const SUGGESTION_TIER_CLASSIFIERS = ["llm", "decision"] as const;
+export type SuggestionTierClassifier = (typeof SUGGESTION_TIER_CLASSIFIERS)[number];
+
+// The tier step's text. Left out, a run generates it from the router (its
+// tier definitions, its own phrases as examples); once set, it is sent as
+// written. prompt is the llm's whole prompt; instructions and criteria are the
+// decision model's question and per-tier choices.
+export interface SuggestionsTierConfig {
+	classifier: SuggestionTierClassifier;
+	provider?: string;
+	model?: string;
+	prompt?: string;
+	instructions?: string;
+	criteria?: Partial<Record<DecisionTier, SuggestionTierCriteria>>;
+}
+
+export interface SuggestionTierCriteria {
+	definition: string;
+	signals?: string[];
+	examples?: string[];
+}
+
+// What a router's tier step sends while nothing is edited, rendered by the
+// gateway from the saved router.
+export interface SuggestionTierDefaults {
+	prompt: string;
+	criteria: Record<DecisionTier, { definition: string; signals: string[]; examples: string[] }>;
+}
+
+export const MAX_SUGGESTION_TIER_PROMPT_CHARACTERS = 16000;
 
 // The llm classifier has no warmup: it holds no corpus and makes its first
 // provider call on the first classified request, so it is simply ready the
@@ -120,6 +154,10 @@ export interface LLMStatusInfo {
 
 export interface SemanticStatusInfo {
 	state: "disabled" | "warming" | "ready" | "failed";
+	// Whether classified requests can be captured for suggestions: they need a
+	// shared vector store, not Chromem (each gateway's own memory) or none.
+	capture_available?: boolean;
+	capture_unavailable_reason?: "no_vector_store" | "embedded_vector_store";
 	loaded: number;
 	total: number;
 	serving_previous?: boolean;
@@ -157,6 +195,9 @@ export interface SemanticStatusInfo {
 	decision_defaults?: DecisionGuidanceDefaults;
 	// The shipped phrase-suggestion instructions, for the instructions editor.
 	suggestion_default_instructions?: string;
+	suggestion_default_tier_instructions?: string;
+	suggestion_default_tier_prompt?: string;
+	suggestion_default_tier_criteria?: SuggestionTierDefaults["criteria"];
 }
 
 export interface AnalyzerConfig {
@@ -571,7 +612,11 @@ export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed", "template"] as const;
 export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number];
 
-export const SUGGESTION_EVERY_OPTIONS = ["1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "2d", "3d", "1w", "2w", "4w"] as const;
+// An interval's units and how many of each the gateway accepts: hours up to
+// a day, days up to a month, weeks up to four, each a fixed duration.
+export const SUGGESTION_EVERY_UNITS = ["h", "d", "w"] as const;
+export type SuggestionEveryUnit = (typeof SUGGESTION_EVERY_UNITS)[number];
+export const MAX_SUGGESTION_EVERY: Record<SuggestionEveryUnit, number> = { h: 23, d: 30, w: 4 };
 export const DEFAULT_SUGGESTION_SAMPLE_RATE = 0.1;
 export const DEFAULT_SUGGESTION_LOOKBACK_DAYS = 7;
 export const MAX_SUGGESTION_LOOKBACK_DAYS = 90;
@@ -579,6 +624,8 @@ export const MAX_SUGGESTION_INSTRUCTIONS_CHARACTERS = 8000;
 export const DEFAULT_SUGGESTION_EVERY = "1d";
 // The gateway's default first run; runs repeat every interval from it.
 export const DEFAULT_SUGGESTION_START_AT = "1970-01-01T03:00:00Z";
+// The intervals the gateway accepts, as config.json and the API spell them.
+export const SUGGESTION_EVERY_PATTERN = /^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$/;
 
 // The router suggestions belong to until a gateway can define several.
 export const DEFAULT_COMPLEXITY_ROUTER_ID = "default";
@@ -608,6 +655,10 @@ export interface Suggestion {
 	nearest_tier?: string;
 	nearest_similarity: number;
 	example_log_ids: string[];
+	// How many of the group's requests route to each tier today; "none"
+	// counts those no phrase matches. Empty for a suggestion written before
+	// it was recorded.
+	current_routing: Partial<Record<DecisionTier | typeof UNMATCHED_TIER, number>>;
 	embedding_signature: string;
 	run_id: string;
 	last_seen_at: string;
@@ -616,18 +667,45 @@ export interface Suggestion {
 	updated_at: string;
 }
 
+// The key a group's routing counts and a replay's tiers use for requests no
+// phrase matches.
+export const UNMATCHED_TIER = "none";
+
+export const SUGGESTION_RUN_STAGES = ["reading", "clustering", "suggesting", "saving"] as const;
+export type SuggestionRunStage = (typeof SUGGESTION_RUN_STAGES)[number];
+
 export interface SuggestionRun {
 	id: string;
 	router_id: string;
 	router_version: string;
 	window_start: string;
 	triggered_by: "schedule" | "manual";
-	// queued and running are in progress; the rest are where a run ends.
 	status: "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+	// How far a running run got; absent once it ends.
+	stage?: SuggestionRunStage;
 	model?: string;
 	prompt_hash?: string;
 	requests_read: number;
+	// How the window became suggestions, in order: the sample groups were
+	// formed from, what was counted in after it, and what was past the bound;
+	// the requests in groups big enough to keep.
+	requests_clustered: number;
+	requests_assigned: number;
+	requests_skipped: number;
+	requests_grouped: number;
 	clusters: number;
+	// What became of the groups: decided ones are not asked again, ones past
+	// the run's limits (groups asked, room in the phrase lists) wait, and of
+	// those asked some failed, were already covered, were not one request
+	// type, or could not be read.
+	clusters_decided: number;
+	clusters_over_limit: number;
+	clusters_asked: number;
+	clusters_done: number;
+	clusters_failed: number;
+	clusters_covered: number;
+	clusters_incoherent: number;
+	clusters_unreadable: number;
 	created: number;
 	refreshed: number;
 	superseded: number;
@@ -637,14 +715,12 @@ export interface SuggestionRun {
 	finished_at?: string;
 }
 
-// One page of suggestions is listed at a time.
-export const SUGGESTIONS_PAGE_SIZE = 100;
-
 export interface SuggestionsList {
 	router_id: string;
 	router_version?: string;
 	suggestions: Suggestion[];
-	// How many the status filter selects across every page, and the page served.
+	// How many suggestions the status filter selects across every page;
+	// limit and offset are the page served.
 	total: number;
 	limit: number;
 	offset: number;
@@ -652,12 +728,6 @@ export interface SuggestionsList {
 	enabled: boolean;
 	last_run?: SuggestionRun;
 	next_run_at?: string;
-}
-
-// isSuggestionRunInProgress reports a run that has not reached its end yet: a
-// queued one waits for the job runner, and will run.
-export function isSuggestionRunInProgress(run?: SuggestionRun): boolean {
-	return run?.status === "queued" || run?.status === "running";
 }
 
 export interface SuggestionExample {
@@ -691,6 +761,48 @@ export interface PhraseTestResult {
 	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
 	taken_over: number;
 }
+export interface SuggestionImpactChange {
+	log_id: string;
+	from: string;
+	to: string;
+	phrase: string;
+	similarity: number;
+	text?: string;
+}
+
+export interface SuggestionImpactAttention {
+	phrase: string;
+	tier: string;
+	from_tier: string;
+	requests: number;
+	log_id: string;
+	text?: string;
+}
+
+export interface SuggestionImpactTier {
+	tier: string;
+	live: number;
+	draft: number;
+	model?: { provider: string; model: string };
+}
+
+// What a draft phrase bank would do to a router's recent captured traffic.
+// Costs are dollars over the window, for the changed requests only.
+export interface SuggestionImpact {
+	window_seconds: number;
+	requests: number;
+	total: number;
+	tiers: SuggestionImpactTier[];
+	changed_count: number;
+	changed: SuggestionImpactChange[];
+	attention: SuggestionImpactAttention[];
+	live_cost: number;
+	draft_cost: number;
+	savings: number;
+	priced: number;
+	unpriced: number;
+}
+
 export interface SuggestionRunEstimate {
 	requests: number;
 	clustered: number;

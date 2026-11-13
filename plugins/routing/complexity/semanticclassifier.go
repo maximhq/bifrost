@@ -101,8 +101,10 @@ type SemanticStatusInfo struct {
 	// up or inspecting them is guesswork without it. Empty while nothing is
 	// serving.
 	Namespace string `json:"namespace,omitempty"`
-	// CaptureAvailable reports a configured vector store to keep captured request vectors in.
-	CaptureAvailable bool `json:"capture_available"`
+	// CaptureAvailable reports a vector store to keep captured request vectors
+	// in; CaptureUnavailableReason says why not when there is none.
+	CaptureAvailable         bool   `json:"capture_available"`
+	CaptureUnavailableReason string `json:"capture_unavailable_reason,omitempty"`
 }
 
 // SemanticResult is the tier selected by the nearest labelled exemplar.
@@ -320,6 +322,24 @@ func (c *SemanticClassifier) captureStoreLocked() vectorstore.VectorStore {
 	return c.configuredStore
 }
 
+// CaptureUnavailableReason says why requests are not captured: no configured
+// vector store, or one (Chromem) capture does not use. Empty when they are.
+func (c *SemanticClassifier) captureUnavailableReasonLocked() string {
+	switch {
+	case c.configuredStore == nil:
+		return CaptureUnavailableNoStore
+	case isLocalChromemStore(c.configuredStore):
+		return CaptureUnavailableEmbeddedStore
+	}
+	return ""
+}
+
+// Reasons capture is unavailable, as SemanticStatusInfo reports them.
+const (
+	CaptureUnavailableNoStore       = "no_vector_store"
+	CaptureUnavailableEmbeddedStore = "embedded_vector_store"
+)
+
 // ErrNoCaptureStore is a suggestion run or estimate on a gateway that keeps no
 // captured requests.
 var ErrNoCaptureStore = errors.New("phrase suggestions need a shared vector store (Weaviate, Qdrant, Redis or Pinecone) to keep captured requests in; Chromem is not used for them because it keeps them in each gateway's memory")
@@ -356,6 +376,19 @@ func (c *SemanticClassifier) ServingVersion() string {
 		return ""
 	}
 	return servingVersion(c.active.namespace)
+}
+
+// ServingMessageHistoryCount is how many user turns the serving generation
+// embeds a request with, and false while nothing serves. A config change
+// takes effect only once its generation warms, so text rebuilt to match what
+// the serving bank classifies must use this, not the config's count.
+func (c *SemanticClassifier) ServingMessageHistoryCount() (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == nil || c.active.semantic == nil {
+		return 0, false
+	}
+	return c.active.semantic.MessageHistoryCount, true
 }
 
 // servingVersion shortens a generation namespace to its fingerprint prefix.
@@ -477,7 +510,8 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	status := c.status
 	cache := c.embeddingCache
 	status.StorageMode = c.resolvedStorage
-	status.CaptureAvailable = c.captureStoreLocked() != nil
+	status.CaptureUnavailableReason = c.captureUnavailableReasonLocked()
+	status.CaptureAvailable = status.CaptureUnavailableReason == ""
 	// Taken from the serving generation rather than the current configuration:
 	// while a new generation warms, the namespace being queried is still the
 	// previous one, and naming the one that is not yet in use would point an

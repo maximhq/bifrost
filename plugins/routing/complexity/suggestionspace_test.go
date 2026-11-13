@@ -107,3 +107,21 @@ func TestSuggestionSpaceCountsBeforeTheFirstCapture(t *testing.T) {
 	assert.Zero(t, count)
 	assert.True(t, store.created)
 }
+
+// Testing phrases needs the serving bank and its embedding, not captured
+// traffic: a router without a shared capture store can still test phrases,
+// while a run, an estimate and a replay keep needing one.
+func TestServingSpaceNeedsNoCaptureStore(t *testing.T) {
+	classifier := readySemanticClassifier(t) // embedded phrase bank, no capture store
+	_, err := classifier.SuggestionSpace(context.Background())
+	require.ErrorIs(t, err, ErrNoCaptureStore)
+
+	space, err := classifier.ServingSpace(context.Background())
+	require.NoError(t, err)
+	defer space.Close()
+	assert.Len(t, space.Phrases, 3)
+	vectors, err := space.Embed(context.Background(), []string{"simple request"})
+	require.NoError(t, err)
+	assert.Equal(t, [][]float32{{1, 0}}, vectors)
+	require.ErrorIs(t, space.EachCaptured(context.Background(), time.Now().Add(-time.Hour), time.Now(), func([]CapturedRequest) error { return nil }), ErrNoCaptureStore)
+}

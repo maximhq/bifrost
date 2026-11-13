@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -25,12 +26,13 @@ import (
 // log store.
 type suggestionManagerFake struct {
 	mockRoutingManager
-	store    logstore.LogStore
-	texts    map[string]string
-	runErr   error
-	tested   []suggestrun.TestExample
-	testErr  error
-	runCalls int
+	store       logstore.LogStore
+	texts       map[string]string
+	runErr      error
+	estimateErr error
+	tested      []suggestrun.TestExample
+	testErr     error
+	runCalls    int
 	// pluginMissing is a deployment whose routing plugin is not loaded.
 	pluginMissing bool
 	testCalls     int
@@ -38,6 +40,33 @@ type suggestionManagerFake struct {
 	// default router serves.
 	windows []time.Duration
 	version string
+	// cancelled is the run ID cancelled; cancelErr answers the cancel.
+	cancelled string
+	cancelErr error
+	// draft is the bank an impact replay was given; impact and impactErr
+	// answer it.
+	draft []complexity.SuggestionPhrase
+	// draftFloor is the floor the last replay judged the draft at.
+	draftFloor *float64
+	impact     ComplexitySuggestionImpactReport
+	impactErr  error
+}
+
+var _ ComplexitySuggestionManager = (*suggestionManagerFake)(nil)
+
+func (m *suggestionManagerFake) CancelComplexitySuggestionRun(_ context.Context, routerID, runID string) (logstore.ComplexitySuggestionRun, error) {
+	m.cancelled = runID
+	if m.cancelErr != nil {
+		return logstore.ComplexitySuggestionRun{}, m.cancelErr
+	}
+	return logstore.ComplexitySuggestionRun{ID: runID, RouterID: routerID, Status: logstore.ComplexitySuggestionRunCancelled}, nil
+}
+
+func (m *suggestionManagerFake) ComplexitySuggestionImpact(_ context.Context, _ string, window time.Duration, draft []complexity.SuggestionPhrase, draftMinSimilarity *float64) (ComplexitySuggestionImpactReport, error) {
+	m.draft = draft
+	m.draftFloor = draftMinSimilarity
+	m.windows = append(m.windows, window)
+	return m.impact, m.impactErr
 }
 
 func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (string, bool) {
@@ -45,6 +74,9 @@ func (m *suggestionManagerFake) ComplexitySuggestionRouter(routerID string) (str
 }
 
 func (m *suggestionManagerFake) EstimateComplexitySuggestionRun(_ context.Context, _ string, window time.Duration) (suggestrun.Estimate, error) {
+	if m.estimateErr != nil {
+		return suggestrun.Estimate{}, m.estimateErr
+	}
 	if window > 7*24*time.Hour {
 		return suggestrun.Estimate{}, routing.ErrComplexitySuggestionWindow
 	}
@@ -120,6 +152,7 @@ func suggestionHandler(t *testing.T) (*router.Router, *suggestionManagerFake) {
 	open := logstore.ComplexitySuggestion{ID: "s-open", RouterID: "default", RouterVersion: "bank-v2", Tier: "SIMPLE", Category: "uncovered", RequestCount: 40, Centroid: logstore.EncodeWarpVector([]float32{1, 0}), EmbeddingSignature: "ns"}
 	require.NoError(t, open.SetPhrases([]string{"where is my refund"}))
 	require.NoError(t, open.SetExampleLogIDs([]string{"log-1", "log-gone"}))
+	require.NoError(t, open.SetCurrentRouting(map[string]int64{"none": 31, "MEDIUM": 9}))
 	dismissed := logstore.ComplexitySuggestion{ID: "s-dismissed", RouterID: "default", RouterVersion: "bank-v1", Status: logstore.ComplexitySuggestionStatusDismissed, Tier: "COMPLEX", Category: "misrouted", RequestCount: 9, EmbeddingSignature: "ns"}
 	superseded := logstore.ComplexitySuggestion{ID: "s-old", RouterID: "default", Status: logstore.ComplexitySuggestionStatusSuperseded, Tier: "MEDIUM", Category: "weak", RequestCount: 3, EmbeddingSignature: "ns"}
 	// Another router's suggestion, for checking that nothing here reaches it.
@@ -158,6 +191,7 @@ func TestComplexitySuggestionsList(t *testing.T) {
 	assert.Equal(t, "s-open", first["id"])
 	assert.Equal(t, []any{"where is my refund"}, first["phrases"])
 	assert.NotContains(t, first, "centroid")
+	assert.Equal(t, map[string]any{"none": 31.0, "MEDIUM": 9.0}, first["current_routing"], "where the cluster routes today")
 	assert.Equal(t, map[string]any{"open": 1.0, "dismissed": 1.0, "superseded": 1.0}, body["counts"])
 	assert.Equal(t, true, body["enabled"])
 	assert.NotEmpty(t, body["next_run_at"])
@@ -246,7 +280,11 @@ func TestComplexitySuggestionsRuns(t *testing.T) {
 	manager.runErr = complexity.ErrNoServingGeneration
 	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "no warmed phrase bank to suggest against")
-	assert.Equal(t, 3, manager.runCalls)
+	manager.runErr = complexity.ErrNoCaptureStore
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", "")
+	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "nothing captured to suggest from")
+	assert.Contains(t, fmt.Sprint(body), "shared vector store", "the refusal says what is needed")
+	assert.Equal(t, 4, manager.runCalls)
 }
 
 func TestComplexitySuggestionsNeedALogStore(t *testing.T) {
@@ -457,4 +495,230 @@ func TestComplexitySuggestionsRunWindowAndEstimate(t *testing.T) {
 	assert.Equal(t, 300.0, body["max_model_calls"])
 	code, _ = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=30d", "")
 	assert.Equal(t, fasthttp.StatusBadRequest, code, "a window past the lookback")
+	manager.estimateErr = complexity.ErrNoCaptureStore
+	code, body = serve(t, r, fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate?window=7d", "")
+	assert.Equal(t, fasthttp.StatusServiceUnavailable, code, "Chromem or no store: a 503 with the reason, not a 500")
+	assert.Contains(t, fmt.Sprint(body), "shared vector store")
+}
+
+// Cancelling a run names it in the path and answers with its record; a run
+// that ended, or one the router does not have, is refused.
+func TestComplexitySuggestionsCancelRun(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel", "")
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, "run-9", manager.cancelled)
+	assert.Equal(t, "cancelled", body["status"])
+
+	for _, tc := range []struct {
+		err  error
+		code int
+	}{
+		{routing.ErrComplexitySuggestionRunEnded, fasthttp.StatusConflict},
+		{routing.ErrUnknownComplexitySuggestionRun, fasthttp.StatusNotFound},
+		{errors.New("store down"), fasthttp.StatusInternalServerError},
+	} {
+		manager.cancelErr = tc.err
+		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel", "")
+		assert.Equal(t, tc.code, code, body)
+	}
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/run-9/cancel?router_id=office", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code, "another router's run is not this router's to cancel")
+}
+
+// An impact replay takes the whole draft bank, tiers upper-cased and text
+// trimmed, and a window; a bank that is empty or a window past the lookback
+// is refused.
+func TestComplexitySuggestionsImpact(t *testing.T) {
+	r, manager := suggestionHandler(t)
+	manager.impact = ComplexitySuggestionImpactReport{Requests: 10, Total: 10, ChangedCount: 2, Savings: 1.5}
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact?window=7d",
+		`{"phrases":[{"tier":"simple","text":"  where is my refund "},{"tier":"COMPLEX","text":"write a poem"}]}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	assert.Equal(t, []complexity.SuggestionPhrase{{Tier: "SIMPLE", Text: "where is my refund"}, {Tier: "COMPLEX", Text: "write a poem"}}, manager.draft)
+	assert.Equal(t, []time.Duration{7 * 24 * time.Hour}, manager.windows)
+	assert.Equal(t, 2.0, body["changed_count"])
+	assert.Equal(t, 1.5, body["savings"])
+	assert.Nil(t, manager.draftFloor, "no floor in the body replays the draft at the serving one")
+
+	// A draft that changes the floor is replayed at it; a floor the router
+	// would refuse is refused here too.
+	code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact",
+		`{"phrases":[{"tier":"SIMPLE","text":"x"}],"min_similarity":0.62}`)
+	require.Equal(t, fasthttp.StatusOK, code, body)
+	require.NotNil(t, manager.draftFloor)
+	assert.InDelta(t, 0.62, *manager.draftFloor, 1e-9)
+	for _, bad := range []string{"-0.1", "1", "1.5"} {
+		code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"x"}],"min_similarity":`+bad+`}`)
+		assert.Equal(t, fasthttp.StatusBadRequest, code, bad)
+	}
+
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "an empty bank")
+	// The saved bank's limits: its phrase count and one phrase's length.
+	tooMany := make([]map[string]string, configstore.MaxComplexitySemanticPhrases+1)
+	for i := range tooMany {
+		tooMany[i] = map[string]string{"tier": "SIMPLE", "text": fmt.Sprintf("phrase %d", i)}
+	}
+	payload, err := json.Marshal(map[string]any{"phrases": tooMany})
+	require.NoError(t, err)
+	manager.draft = nil
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", string(payload))
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "more phrases than a bank can hold")
+	long := strings.Repeat("a", configstore.MaxComplexitySemanticPhraseCharacters+1)
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"`+long+`"}]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "a phrase longer than a bank allows")
+	assert.Nil(t, manager.draft, "neither is replayed")
+	code, _ = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact?window=soon", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, code, "an unreadable window")
+	for _, tc := range []struct {
+		err  error
+		code int
+	}{
+		{routing.ErrComplexitySuggestionWindow, fasthttp.StatusBadRequest},
+		{suggestrun.ErrInvalidPhraseTest, fasthttp.StatusBadRequest},
+		{routing.ErrComplexitySuggestionsOff, fasthttp.StatusConflict},
+		{complexity.ErrNoServingGeneration, fasthttp.StatusServiceUnavailable},
+		{errors.New("embedding provider down"), fasthttp.StatusBadGateway},
+	} {
+		manager.impactErr = tc.err
+		code, body = serve(t, r, fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`)
+		assert.Equal(t, tc.code, code, "%v: %v", tc.err, body)
+	}
+}
+
+// Pricing covers every changed request: at its live tier's model, and at its
+// new tier's model. A change into no match, to a tier with no model, or of a
+// gone log is unpriced; a sampled replay is scaled to its window.
+func TestPriceComplexitySuggestionImpact(t *testing.T) {
+	impact := suggestrun.Impact{
+		Requests: 5, Total: 10,
+		Live:  map[string]int{"MEDIUM": 4, "none": 1},
+		Draft: map[string]int{"SIMPLE": 3, "MEDIUM": 1, "none": 1},
+		Changed: []suggestrun.ImpactChange{
+			{LogID: "a", From: "MEDIUM", To: "SIMPLE", Phrase: "where is my refund"},
+			{LogID: "b", From: "MEDIUM", To: "SIMPLE", Phrase: "where is my refund"},
+			{LogID: "c", From: "none", To: "SIMPLE"},
+			{LogID: "gone", From: "MEDIUM", To: "SIMPLE"},
+			{LogID: "d", From: "MEDIUM", To: "COMPLEX"},
+			{LogID: "e", From: "MEDIUM", To: "none"},
+			{LogID: "f", From: "MEDIUM", To: "SIMPLE"},
+		},
+		Attention: []suggestrun.ImpactAttention{{Phrase: "where is my refund", Tier: "SIMPLE", FromTier: "MEDIUM", Requests: 2, LogID: "a"}},
+	}
+	usage := []logstore.ComplexityReplayUsage{
+		{ID: "a", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 100},
+		{ID: "b", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 100},
+		{ID: "c", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 100},
+		{ID: "d", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 100},
+		{ID: "e", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 100},
+		{ID: "f", Provider: "custom", Model: "unpriced", PromptTokens: 1000, CompletionTokens: 100},
+	}
+	models := map[string]ComplexityImpactModel{"SIMPLE": {Provider: "openai", Model: "gpt-small"}, "MEDIUM": {Provider: "openai", Model: "gpt-big"}}
+	price := func(_, model string, prompt, completion int64) (float64, bool) {
+		perToken := map[string]float64{"gpt-big": 0.01, "gpt-small": 0.001}[model]
+		if perToken == 0 {
+			return 0, false
+		}
+		return perToken * float64(prompt+completion), true
+	}
+	got := PriceComplexitySuggestionImpact(impact, 7*24*time.Hour, usage, models, price, map[string]string{"a": "where is my refund for order 9"})
+
+	assert.EqualValues(t, 7*24*3600, got.WindowSeconds)
+	assert.Equal(t, 4, got.Priced, "a, b, c, and f: served by an unpriced model, but priced at MEDIUM's target")
+	assert.Equal(t, 3, got.Unpriced, "gone, d (no COMPLEX model), e (into no match)")
+	assert.InDelta(t, 2*4*11.0, got.LiveCost, 1e-9, "four at 11 each, doubled for a half sample")
+	assert.InDelta(t, 2*4*1.1, got.DraftCost, 1e-9)
+	assert.InDelta(t, got.LiveCost-got.DraftCost, got.Savings, 1e-9)
+	assert.Equal(t, 7, got.ChangedCount)
+	require.Len(t, got.Changed, 7)
+	assert.Equal(t, "where is my refund for order 9", got.Changed[0].Text)
+	require.Len(t, got.Attention, 1)
+	assert.Equal(t, "where is my refund for order 9", got.Attention[0].Text)
+	require.Len(t, got.Tiers, 4)
+	assert.Equal(t, ComplexityImpactTier{Tier: "SIMPLE", Live: 0, Draft: 3, Model: &ComplexityImpactModel{Provider: "openai", Model: "gpt-small"}}, got.Tiers[0])
+	assert.Nil(t, got.Tiers[2].Model, "COMPLEX has no model to price at")
+	assert.Equal(t, ComplexityImpactTier{Tier: "none", Live: 1, Draft: 1}, got.Tiers[3])
+}
+
+// A memoized price probes each model once and prices from its rates, matching
+// the exact price below the long-context tiers; a model with no price is
+// asked once; a request past the bound is priced exactly.
+func TestMemoizeComplexityImpactPrice(t *testing.T) {
+	calls := map[string]int{}
+	exact := func(_ string, model string, prompt, completion int64) (float64, bool) {
+		calls[model]++
+		switch model {
+		case "gpt-big":
+			cost := 0.000002*float64(prompt) + 0.000008*float64(completion)
+			if prompt > 128_000 {
+				cost *= 2 // a long-context tier
+			}
+			return cost, true
+		}
+		return 0, false
+	}
+	price := MemoizeComplexityImpactPrice(exact)
+	for range 50 {
+		got, ok := price("openai", "gpt-big", 1200, 80)
+		require.True(t, ok)
+		assert.InDelta(t, 0.000002*1200+0.000008*80, got, 1e-12)
+		_, ok = price("custom", "unpriced", 1200, 80)
+		assert.False(t, ok)
+	}
+	assert.Equal(t, 3, calls["gpt-big"], "probed once each for the flat charge, prompt and completion rates")
+	assert.Equal(t, 1, calls["unpriced"], "a model with no price is asked once")
+
+	got, ok := price("openai", "gpt-big", 150_000, 100)
+	require.True(t, ok)
+	assert.InDelta(t, 2*(0.000002*150_000+0.000008*100), got, 1e-9, "past the bound the exact tiered price")
+	assert.Equal(t, 4, calls["gpt-big"])
+}
+
+// A model with a flat charge per request is charged it once, not folded into
+// its token rates and scaled with every request's tokens.
+func TestMemoizeComplexityImpactPriceChargesAFlatFeeOnce(t *testing.T) {
+	exact := func(_, _ string, prompt, completion int64) (float64, bool) {
+		return 0.05 + 0.000002*float64(prompt) + 0.000008*float64(completion), true
+	}
+	price := MemoizeComplexityImpactPrice(exact)
+	for _, tokens := range [][2]int64{{0, 0}, {1200, 80}, {50_000, 2_000}} {
+		got, ok := price("openai", "flat", tokens[0], tokens[1])
+		require.True(t, ok)
+		want, _ := exact("", "", tokens[0], tokens[1])
+		assert.InDelta(t, want, got, 1e-12, "%v", tokens)
+	}
+}
+
+// Both sides are priced at the router's current models: a request served
+// before the tier targets changed is priced at its live tier's target now,
+// so only the draft's tier change moves the cost. A request no live tier
+// target covers (no match) keeps the model that served it.
+func TestPriceComplexitySuggestionImpactUsesCurrentTargetsForLive(t *testing.T) {
+	impact := suggestrun.Impact{
+		Requests: 3, Total: 3,
+		Changed: []suggestrun.ImpactChange{
+			{LogID: "old", From: "MEDIUM", To: "SIMPLE"},
+			{LogID: "unmatched", From: "none", To: "SIMPLE"},
+			{LogID: "untargeted", From: "COMPLEX", To: "SIMPLE"},
+		},
+	}
+	usage := []logstore.ComplexityReplayUsage{
+		// Served by a cheap model before MEDIUM had a target.
+		{ID: "old", Provider: "openai", Model: "gpt-cheap", PromptTokens: 1000, CompletionTokens: 0},
+		{ID: "unmatched", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 0},
+		{ID: "untargeted", Provider: "openai", Model: "gpt-big", PromptTokens: 1000, CompletionTokens: 0},
+	}
+	models := map[string]ComplexityImpactModel{"SIMPLE": {Provider: "openai", Model: "gpt-small"}, "MEDIUM": {Provider: "openai", Model: "gpt-big"}}
+	price := func(_, model string, prompt, _ int64) (float64, bool) {
+		perToken := map[string]float64{"gpt-big": 0.01, "gpt-small": 0.001, "gpt-cheap": 0.0001}[model]
+		return perToken * float64(prompt), perToken > 0
+	}
+	got := PriceComplexitySuggestionImpact(impact, time.Hour, usage, models, price, nil)
+	assert.Equal(t, 3, got.Priced)
+	// old: MEDIUM's target now (10), not gpt-cheap as served (0.1);
+	// unmatched and untargeted: the model that served them (10 each).
+	assert.InDelta(t, 30.0, got.LiveCost, 1e-9)
+	assert.InDelta(t, 3.0, got.DraftCost, 1e-9)
+	assert.InDelta(t, 27.0, got.Savings, 1e-9, "moving all three down saves money")
 }
