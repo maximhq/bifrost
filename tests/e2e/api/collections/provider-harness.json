@@ -346913,11 +346913,11 @@
       ]
     },
     {
-      "name": "349. xAI speech through /v1/tts and transcription through /v1/stt (xai audio) (PR #10018)",
+      "name": "375. xAI speech through /v1/tts and transcription through /v1/stt (xai audio) (PR #10265)",
       "description": "xAI serves text to speech on POST /v1/tts (JSON body with text, language, voice_id and output_format.codec; raw audio back, no model field) and speech to text on POST /v1/stt (OpenAI-shaped multipart with the file field last; JSON back with text, language, duration and words named text). Before this change both operations returned UnsupportedOperationError for xai. The speech cases assert MP3 bytes on the native and OpenAI drop-in routes; the transcription cases send tests/e2e/api/fixtures/sample.mp3 (\"Hello, this is a sample test.\") and assert the transcript and duration usage in seconds. /v1/stt answers JSON only, so response_format text, srt and vtt are refused with a 400 before the request leaves the gateway: the shared OpenAI transcription handler would otherwise copy the JSON body verbatim into the transcript. Streaming speech and transcription stay unsupported (xAI offers them over WebSocket only).",
       "item": [
         {
-          "name": "349.1 xai/grok-tts native /v1/audio/speech returns mp3 audio from /v1/tts (xai audio)",
+          "name": "375.1 xai/grok-tts native /v1/audio/speech returns mp3 audio from /v1/tts (xai audio) - #10265",
           "event": [
             {
               "listen": "test",
@@ -346964,7 +346964,7 @@
           }
         },
         {
-          "name": "349.2 xai/grok-tts OpenAI drop-in /openai/v1/audio/speech returns mp3 audio from /v1/tts (xai audio)",
+          "name": "375.2 xai/grok-tts OpenAI drop-in /openai/v1/audio/speech returns mp3 audio from /v1/tts (xai audio) - #10265",
           "event": [
             {
               "listen": "test",
@@ -347012,7 +347012,7 @@
           }
         },
         {
-          "name": "349.3 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions returns the transcript with duration usage (xai audio)",
+          "name": "375.3 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions returns the transcript with duration usage (xai audio) - #10265",
           "event": [
             {
               "listen": "test",
@@ -347065,7 +347065,7 @@
           }
         },
         {
-          "name": "349.4 xai/grok-voice-transcribe-2.0 OpenAI drop-in /openai/v1/audio/transcriptions returns the transcript (xai audio)",
+          "name": "375.4 xai/grok-voice-transcribe-2.0 OpenAI drop-in /openai/v1/audio/transcriptions returns the transcript (xai audio) - #10265",
           "event": [
             {
               "listen": "test",
@@ -347116,7 +347116,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 349.5 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions response_format text is refused before reaching xAI (xai audio)",
+          "name": "[EXPECT-400] 375.5 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions response_format text is refused before reaching xAI (xai audio) - #10265",
           "event": [
             {
               "listen": "test",
