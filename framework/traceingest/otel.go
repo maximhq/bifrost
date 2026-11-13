@@ -294,6 +294,8 @@ var kindNames = map[string]string{
 	"function": logstore.TraceSpanKindFunction, "score": logstore.TraceSpanKindScore, "eval": logstore.TraceSpanKindEval,
 	"automation": logstore.TraceSpanKindTask, "facet": logstore.TraceSpanKindTask, "preprocessor": logstore.TraceSpanKindFunction,
 	"classifier": logstore.TraceSpanKindFunction, "review": logstore.TraceSpanKindScore,
+	// A routing step (Braintrust and OpenInference "decision"), a question put to a person, and a plain log row.
+	"decision": logstore.TraceSpanKindFunction, "question": logstore.TraceSpanKindTask, "log": logstore.TraceSpanKindEvent,
 }
 
 // KindFor maps a vendor's span type name onto a Bifrost kind, empty when the name is not known.
@@ -328,10 +330,10 @@ func mapLangfuse(part *SpanPart, a *attrs) {
 		setIfEmpty(&part.Error, a.str("langfuse.observation.status_message"))
 	}
 	if metadata, ok := a.family("langfuse.observation.metadata").(map[string]any); ok {
-		part.Metadata = mergeMap(part.Metadata, metadata)
+		part.Metadata = mergeMap(part.Metadata, decodeJSONStrings(metadata))
 	}
 	if metadata, ok := a.family("langfuse.trace.metadata").(map[string]any); ok {
-		part.Metadata = mergeMap(metadata, part.Metadata)
+		part.Metadata = mergeMap(decodeJSONStrings(metadata), part.Metadata)
 	}
 	part.Tags = appendTags(part.Tags, a.values["langfuse.trace.tags"])
 	if first := a.str("langfuse.observation.completion_start_time"); first != "" && part.StartTime != nil {
@@ -339,6 +341,23 @@ func mapLangfuse(part *SpanPart, a *attrs) {
 			part.TimeToFirstToken = new(float64(at.Sub(*part.StartTime)) / float64(time.Millisecond))
 		}
 	}
+}
+
+// decodeJSONStrings unwraps the metadata values Langfuse v5 SDKs JSON-encode, strings included
+// ("\"growth\"" becomes "growth"). Only quoted strings are decoded: a bare "123" from an older SDK
+// stays the string it was sent as.
+func decodeJSONStrings(metadata map[string]any) map[string]any {
+	for key, value := range metadata {
+		text, ok := value.(string)
+		if !ok || len(text) < 2 || text[0] != '"' {
+			continue
+		}
+		var decoded string
+		if err := sonic.UnmarshalString(text, &decoded); err == nil {
+			metadata[key] = decoded
+		}
+	}
+	return metadata
 }
 
 func mapOpenInference(part *SpanPart, a *attrs) {
@@ -422,7 +441,15 @@ func mapGenAI(part *SpanPart, a *attrs, events []OTelEvent) {
 		part.Output = choices
 	}
 	if part.Kind == logstore.TraceSpanKindTool {
-		setIfEmpty(&part.Name, a.str("gen_ai.tool.name"))
+		nameAfterTool(part, "execute_tool", a.str("gen_ai.tool.name"))
+	}
+}
+
+// nameAfterTool gives a tool span its tool's name when the span is named only after its operation,
+// so every tool in the tree does not read the same word. A name the instrumentation chose is kept.
+func nameAfterTool(part *SpanPart, operation, tool string) {
+	if tool != "" && (part.Name == "" || part.Name == operation) {
+		part.Name = tool
 	}
 }
 
@@ -444,7 +471,7 @@ func mapVercelAI(part *SpanPart, a *attrs) {
 		setIfEmpty(&part.Kind, logstore.TraceSpanKindLLM)
 	case operation == "ai.toolCall":
 		setIfEmpty(&part.Kind, logstore.TraceSpanKindTool)
-		setIfEmpty(&part.Name, a.str("ai.toolCall.name"))
+		nameAfterTool(part, "ai.toolCall", a.str("ai.toolCall.name"))
 	case strings.HasSuffix(operation, ".doEmbed"):
 		setIfEmpty(&part.Kind, logstore.TraceSpanKindEmbedding)
 	default:

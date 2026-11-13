@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy install-squid install-stunnel run-e2e-api-proxy run-mcp-harness-test run-log-store-matrix
+.PHONY: test-memory all help test-tracing-sdks dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy install-squid install-stunnel run-e2e-api-proxy run-mcp-harness-test run-log-store-matrix
 
 all: help
 
@@ -2068,6 +2068,26 @@ test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on t
 	STATUS=$$?; \
 	cd ../..; \
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+# Arize AX runs in its own environment: arize-otel only works with OpenTelemetry before 1.36, while
+# the other SDKs need the current release. Both environments come from the one uv.lock.
+test-tracing-sdks: ## Push traces from the Braintrust, Langfuse, Phoenix, Arize and OTel SDKs into a running gateway and check the Traces API (Usage: make test-tracing-sdks [PATTERN=substring] [BIFROST_BASE_URL=http://localhost:8080] [BIFROST_ADMIN_USERNAME=.. BIFROST_ADMIN_PASSWORD=..] [BIFROST_SETUP_TOKEN=..] [BIFROST_TRACING_GRPC_ENDPOINT=localhost:4317])
+	@$(ECHO) "$(GREEN)Running tracing SDK e2e tests against $${BIFROST_BASE_URL:-http://localhost:8080}...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	REPORTS="$$(pwd)/$(TEST_REPORTS_DIR)"; \
+	SUFFIX="$${TRACING_REPORT_SUFFIX:+-$$TRACING_REPORT_SUFFIX}"; \
+	cd tests/integrations/tracing || exit 1; \
+	uv sync --frozen --extra sdks --quiet || exit 1; \
+	UV_PROJECT_ENVIRONMENT=.venv-arize uv sync --frozen --extra arize --quiet || exit 1; \
+	STATUS=0; \
+	for suite in sdks arize; do \
+		if [ "$$suite" = "sdks" ]; then ENV_DIR=.venv; TARGET="tests --ignore=tests/test_arize.py"; else ENV_DIR=.venv-arize; TARGET=tests/test_arize.py; fi; \
+		UV_PROJECT_ENVIRONMENT=$$ENV_DIR uv run --frozen --no-sync pytest $$TARGET \
+			--junitxml="$$REPORTS/tracing-$$suite$$SUFFIX.xml" $(if $(PATTERN),-k '$(PATTERN)',); \
+		RC=$$?; \
+		if [ $$RC -ne 0 ] && ! { [ -n "$(PATTERN)" ] && [ $$RC -eq 5 ]; }; then STATUS=1; fi; \
+	done; \
 	exit $$STATUS
 
 test-realtime: install-gotestsum

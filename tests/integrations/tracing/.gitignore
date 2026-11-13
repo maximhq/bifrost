@@ -1,0 +1,2 @@
+# The Arize AX environment (uv run --extra arize, UV_PROJECT_ENVIRONMENT=.venv-arize)
+.venv-arize/

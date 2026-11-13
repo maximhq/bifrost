@@ -52,6 +52,9 @@ interface TraceViewerProps {
 	renderSpanExtras?: (detail: TraceDetail, span: TraceSpan) => { tabs: { id: string; label: string; content: React.ReactNode }[] };
 }
 
+// Width of the timeline bar track. The scale header uses the same class so its labels line up.
+const TIMELINE_TRACK = "w-32";
+
 function shortId(id: string): string {
 	return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
 }
@@ -428,9 +431,16 @@ export function TraceViewer({
 							</div>
 							<div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label={t("agentLogs.trace.treeLabel")}>
 								{view === "timeline" && tree.durationMs > 0 && (
-									<div className="text-muted-foreground flex justify-end gap-12 px-2 pb-1 text-[10.5px] tabular-nums">
-										<span>0</span>
-										<span>{formatDuration(tree.durationMs)}</span>
+									// Same box model as a row: button padding, then the bar track, then the chevron slot,
+									// so "0" and the total sit exactly over the ends of every bar.
+									<div className="text-muted-foreground flex items-center pr-1 pb-1 text-[10.5px] tabular-nums" aria-hidden="true">
+										<div className="flex min-w-0 flex-1 justify-end px-2">
+											<div className={cn("flex justify-between", TIMELINE_TRACK)}>
+												<span>0</span>
+												<span>{formatDuration(tree.durationMs)}</span>
+											</div>
+										</div>
+										<span className="size-7 shrink-0" />
 									</div>
 								)}
 								{visibleRows.map((node) => {
@@ -487,7 +497,7 @@ export function TraceViewer({
 														<span className="text-muted-foreground truncate text-[11.5px] tabular-nums">{meta(node)}</span>
 													</span>
 													{view === "timeline" && (
-														<span className="relative h-1.5 w-20 shrink-0" aria-hidden="true">
+														<span className={cn("bg-muted/70 relative h-1.5 shrink-0", TIMELINE_TRACK)} aria-hidden="true">
 															<span
 																className={cn(
 																	"absolute inset-y-0 overflow-hidden rounded-r-[1.5px]",
@@ -510,7 +520,7 @@ export function TraceViewer({
 														</span>
 													)}
 												</button>
-												{node.children.length > 0 && (
+												{node.children.length > 0 ? (
 													<button
 														type="button"
 														onClick={() => toggle(span.span_id)}
@@ -520,6 +530,9 @@ export function TraceViewer({
 													>
 														{isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
 													</button>
+												) : (
+													// Leaves keep the chevron slot so every bar track ends at the same x.
+													<span className="size-7 shrink-0" aria-hidden="true" />
 												)}
 											</div>
 										</div>

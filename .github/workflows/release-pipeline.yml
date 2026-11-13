@@ -1861,7 +1861,7 @@ jobs:
     needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: builder-8-32
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -1874,6 +1874,7 @@ jobs:
           allowed-endpoints: >
             127.0.0.1:8080
             127.0.0.1:9411
+            127.0.0.1:4317
             api.github.com:443
             files.pythonhosted.org:443
             getbifrost.ai:443
@@ -1919,6 +1920,14 @@ jobs:
           LIVE_PREBUILT: "1"
         run: ./.github/workflows/scripts/test-live.sh fake
 
+      # Braintrust, Langfuse, Phoenix, Arize and OpenTelemetry SDKs -> Tracing, with dashboard auth
+      # on and off. Like the live suite it needs no provider keys: no provider and no vendor is called.
+      - name: Run tracing SDK e2e tests
+        if: ${{ !cancelled() }}
+        env:
+          TRACING_PREBUILT: "1"
+        run: ./.github/workflows/scripts/test-tracing-sdks.sh
+
       - name: Upload live test report
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -1926,7 +1935,9 @@ jobs:
           name: live-test-report
           path: |
             test-reports/live.xml
+            test-reports/tracing-*.xml
             tmp/live-gateway.log
+            tmp/tracing-gateway-*.log
           if-no-files-found: ignore
 
   # Migration tests - validates database migrations from previous versions
