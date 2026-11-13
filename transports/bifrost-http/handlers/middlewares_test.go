@@ -3270,6 +3270,99 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 	}
 }
 
+// serveStreamingRequest sends req to handler through a real fasthttp server with
+// StreamRequestBody on (as enterprise runs with large payloads enabled, and the gateway runs by
+// default), so the handler sees fasthttp's own connection-backed body stream.
+func serveStreamingRequest(tb testing.TB, handler fasthttp.RequestHandler, maxBodyBytes int, req *fasthttp.Request) *fasthttp.Response {
+	tb.Helper()
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler, StreamRequestBody: true, DisablePreParseMultipartForm: true, MaxRequestBodySize: maxBodyBytes}
+	go srv.Serve(ln) //nolint:errcheck
+	tb.Cleanup(func() { ln.Close() })
+	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
+	resp := &fasthttp.Response{}
+	if err := client.Do(req, resp); err != nil {
+		tb.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream pins the streaming
+// decompression path against fasthttp's real request stream. The middleware wrapped that stream
+// and then called SetBodyStream, which releases it, so the first read of the decompressed body
+// panicked with "BUG: reading released body stream" for any compressed body over the 10 MB
+// streaming threshold. The other streaming-path tests set a bytes.Reader as the stream, which
+// fasthttp does not release, so they never saw it.
+func TestRequestDecompressionMiddleware_StreamingPath_RealRequestStream(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	raw := make([]byte, 9<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte(base64.StdEncoding.EncodeToString(raw)) // ~12 MB; compresses to ~9 MB
+	compressed, err := gzipCompress(append(plain, plain[:4<<20]...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(compressed)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Fatalf("compressed body %d bytes must exceed the %d-byte streaming threshold", len(compressed), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+	wantLen := len(plain) + 4<<20
+
+	var gotLen int
+	var readPanic any
+	handler := RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		defer func() { readPanic = recover() }()
+		gotLen = len(ctx.Request.Body())
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+	req := &fasthttp.Request{}
+	req.SetRequestURI("http://bifrost/v1/chat/completions")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBody(compressed)
+	resp := serveStreamingRequest(t, handler, 100<<20, req)
+
+	if readPanic != nil {
+		t.Fatalf("reading the decompressed body panicked: %v", readPanic)
+	}
+	if resp.StatusCode() != fasthttp.StatusOK || gotLen != wantLen {
+		t.Errorf("status=%d decompressed=%d bytes, want 200 and %d bytes; body: %.200s", resp.StatusCode(), gotLen, wantLen, resp.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit asserts a compressed body
+// over the request limit is refused with 413 before it is read, now that the streaming path reads
+// the compressed bytes into memory.
+func TestRequestDecompressionMiddleware_StreamingPath_CompressedOverLimit(t *testing.T) {
+	const limitMB = 1
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: limitMB}}
+	config.StreamingDecompressThreshold = 1024
+	raw := make([]byte, 2<<20)
+	if _, err := cryptoRand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := gzipCompress(raw) // random: stays ~2 MB compressed
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { called = true })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyStream(bytes.NewReader(compressed), -1)
+	handler(ctx)
+
+	if called {
+		t.Error("handler ran for a compressed body over the request limit")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413; body: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{

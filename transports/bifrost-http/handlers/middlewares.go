@@ -579,7 +579,11 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx, allowed)
+				cleanup, applied, err := streamingDecompress(ctx, allowed, maxRequestBodyBytes)
+				if errors.Is(err, errCompressedBodyTooLarge) {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
 				if providerUtils.IsDecompressionSizeLimitError(err) {
 					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 					return
@@ -647,27 +651,39 @@ func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 	return int64(contentLength) > threshold
 }
 
-// streamingDecompress wraps the request body stream with a streaming decompression
-// reader, avoiding full body materialization for large compressed requests.
-// The decompressed stream is capped at maxRequestBodyBytes: once a handler has
-// read past the cap the stream fails with errRequestBodyTooLarge, so a
-// decompression bomb cannot expand beyond the configured request limit.
+// streamingDecompress replaces the request body with a streaming decompression reader, so a
+// large compressed request is never held in memory decompressed. The decompressed stream is
+// capped at maxRequestBodyBytes: once a handler has read past the cap the stream fails with
+// errRequestBodyTooLarge, so a decompression bomb cannot expand beyond the configured limit.
+//
+// The compressed bytes are read into memory first, up to maxCompressedBytes. The reader cannot
+// wrap the request's own body stream: under StreamRequestBody that stream is fasthttp's
+// connection reader, and SetBodyStream releases it, so the next read panicked with
+// "BUG: reading released body stream". Holding the compressed body is what the buffered path
+// costs too; only the decompressed body is streamed.
+//
 // Returns (cleanup, applied, err):
-//   - applied=true: body stream was wrapped; caller must invoke cleanup after the
+//   - applied=true: the body stream was replaced; caller must invoke cleanup after the
 //     handler chain completes and the body is fully consumed.
 //   - applied=false: no body stream available (StreamRequestBody not enabled on the
 //     server). Caller should fall back to the buffered decompression path.
-func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cleanup func(), applied bool, err error) {
+//   - err wraps errCompressedBodyTooLarge when the compressed body is over maxCompressedBytes.
+func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes, maxCompressedBytes int) (cleanup func(), applied bool, err error) {
 	bodyStream := ctx.RequestBodyStream()
 	if bodyStream == nil {
 		return func() {}, false, nil
+	}
+
+	compressed, err := readCompressedBody(bodyStream, ctx.Request.Header.ContentLength(), maxCompressedBytes)
+	if err != nil {
+		return nil, false, err
 	}
 
 	encoding := strings.ToLower(strings.TrimSpace(
 		string(ctx.Request.Header.ContentEncoding()),
 	))
 
-	decompReader, cleanup, err := newDecompressReader(bodyStream, encoding)
+	decompReader, cleanup, err := newDecompressReader(bytes.NewReader(compressed), encoding)
 	if err != nil {
 		return nil, false, err
 	}
@@ -677,6 +693,31 @@ func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cle
 	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 
 	return cleanup, true, nil
+}
+
+var errCompressedBodyTooLarge = errors.New("compressed request body exceeds max allowed size")
+
+// readCompressedBody reads a compressed request body of contentLength bytes (-1 when chunked)
+// from its stream, refusing one over maxBytes. A known length is read into an exact buffer.
+func readCompressedBody(stream io.Reader, contentLength, maxBytes int) ([]byte, error) {
+	if contentLength > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	if contentLength >= 0 {
+		b := make([]byte, contentLength)
+		if _, err := io.ReadFull(stream, b); err != nil {
+			return nil, fmt.Errorf("read compressed request body: %w", err)
+		}
+		return b, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(stream, int64(maxBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read compressed request body: %w", err)
+	}
+	if len(b) > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	return b, nil
 }
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
