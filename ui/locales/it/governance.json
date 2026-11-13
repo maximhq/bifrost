@@ -50,7 +50,8 @@
 			"budgetLimits": "Limiti di budget",
 			"updateAction": "Aggiorna cliente",
 			"createAction": "Crea cliente",
-			"calendarAlignHelp": "L'abilitazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori dei limiti di frequenza di token/richieste a <bold1>0</bold1> per questo cliente, quindi allineerà ciascuna data di reimpostazione all'inizio del relativo periodo corrente (es. inizio del giorno, della settimana, del mese o dell'anno). L'azzeramento dell'utilizzo non può essere annullato, ma l'allineamento al calendario potrà essere disattivato in seguito. Questa modifica avrà effetto quando salvi."
+			"calendarAlignHelp": "L'abilitazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori dei limiti di frequenza di token/richieste a <bold1>0</bold1> per questo cliente, quindi allineerà ciascuna data di reimpostazione all'inizio del relativo periodo corrente (es. inizio del giorno, della settimana, del mese o dell'anno). L'azzeramento dell'utilizzo non può essere annullato, ma l'allineamento al calendario potrà essere disattivato in seguito. Questa modifica avrà effetto quando salvi.",
+			"limitsCheckFailed": "Impossibile verificare cosa regola la spesa di questo cliente, quindi budget e limite di frequenza non possono ancora essere mostrati."
 		},
 		"detail": {
 			"title": "Dettagli cliente",

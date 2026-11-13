@@ -70,7 +70,8 @@
 			"decision": "判断モデル",
 			"llm": "LLM",
 			"skipped": "スキップ"
-		}
+		},
+		"modelRouter": "ルーター"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1227,7 +1228,10 @@
 		"exactRoundTripID": "ラウンドトリップ ID（完全一致）",
 		"nothingRecorded": "この期間に記録はありません",
 		"topics": "トピック",
-		"searchTopics": "トピックを検索"
+		"searchTopics": "トピックを検索",
+		"modelRouters": "ルーター",
+		"searchModelRouters": "ルーターを検索",
+		"loadFailed": "このリストを読み込めませんでした。"
 	},
 	"requestTypes": {
 		"chat_completion": "チャット",
@@ -1256,6 +1260,7 @@
 		"decisions": "決定",
 		"speech": "スピーチ",
 		"speech_stream": "音声ストリーム",
+		"speech_session": "音声セッション",
 		"transcription": "文字起こし",
 		"transcription_stream": "文字起こしストリーム",
 		"image_generation": "画像生成",
@@ -1626,6 +1631,70 @@
 				"publicAgentCardFetched": "公開エージェントカードを取得",
 				"extendedAgentCardFetched": "拡張エージェントカードを取得"
 			}
+		},
+		"trace": {
+			"title": "エージェントトレース",
+			"loading": "トレースを読み込み中…",
+			"partial": "一部の関連ログを読み込めなかったため、このトレースは不完全な可能性があります。",
+			"timeline": "タイムライン",
+			"findSpan": "スパンを検索",
+			"treeLabel": "トレースのスパン",
+			"noMatches": "一致するスパンはありません。",
+			"artifacts": "アーティファクト",
+			"latency": "レイテンシ",
+			"tokens": "トークン",
+			"cost": "コスト",
+			"agents": "エージェント",
+			"llmCalls": "LLM 呼び出し",
+			"mcpCalls": "MCP 呼び出し",
+			"errors": "エラー",
+			"tokensShort": "{{value}} トークン",
+			"errorsShort": "{{value}} 件のエラー",
+			"followUps": "+{{value}} 件のフォローアップ呼び出し",
+			"producedBy": "{{agent}} が作成",
+			"artifactKind": {
+				"data": "データ",
+				"text": "テキスト"
+			},
+			"expand": "{{name}} を展開",
+			"collapse": "{{name}} を折りたたむ",
+			"openInLLMLogs": "LLM ログで開く",
+			"openInMCPLogs": "MCP ログで開く",
+			"a2a": "A2A",
+			"error": "エラー",
+			"scopeTrace": "トレース",
+			"scopeSession": "セッション",
+			"sessionName": "セッション {{value}}",
+			"turn": "ターン {{value}}",
+			"turnCount": "ターン {{value}}",
+			"turns": "ターン",
+			"sessionId": "セッション",
+			"taskId": "タスク",
+			"copyLink": "リンクをコピー",
+			"linkCopied": "リンクをコピーしました",
+			"guardrails": "ガードレール",
+			"guard": {
+				"guardrail": "ガードレール",
+				"rule": "ルール",
+				"provider": "プロバイダー",
+				"phase": "フェーズ",
+				"outcome": "結果",
+				"reason": "理由",
+				"judgeModel": "判定モデル",
+				"assessments": "評価"
+			},
+			"turnsLoaded": "{{total}} ターン中 {{loaded}} ターンを読み込み済み",
+			"loadMoreTurns": "さらにターンを読み込む",
+			"userMessage": "ユーザー",
+			"viewSpans": "スパンを表示",
+			"noReply": "応答は記録されていません。",
+			"spansTab": "スパン",
+			"threadTab": "スレッド",
+			"llmShort": "LLM {{value}}",
+			"mcpShort": "MCP {{value}}",
+			"guardShort": "ガードレール {{value}}",
+			"agentSpan": "エージェントスパン",
+			"conversationEnd": "終了"
 		},
 		"logSheet": {
 			"localOperationNote": "このオペレーションはアップストリームへのリクエストなしで Bifrost が処理します。以下のプロトコルペイロードはシリアライズされたデータであり、トランスポートのキャプチャではありません。",

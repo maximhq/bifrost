@@ -1054,7 +1054,10 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 	// Deep copy Custom if present
 	if original.Custom != nil {
-		copyTool.Custom = &ChatToolCustom{}
+		copyTool.Custom = &ChatToolCustom{Name: original.Custom.Name}
+		if original.Custom.Description != nil {
+			copyTool.Custom.Description = Ptr(*original.Custom.Description)
+		}
 
 		if original.Custom.Format != nil {
 			copyFormat := &ChatToolCustomFormat{
@@ -2463,6 +2466,20 @@ func IsClefModel(model string) bool {
 // snapshots share the prefix.
 func IsPerplexityDeciderModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
+// IsBasetenDecisionModel checks if the model is one of Baseten's decision models
+// ("decision-models/baseten-joey-2b-latest"), served on Model APIs' /v1/systemone
+// rather than chat. Baseten namespaces all of them under decision-models/.
+func IsBasetenDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "decision-models/")
+}
+
+// IsGeminiDecisionModel checks if the model is a Gemini Decision model
+// ("gemini-decision-1"), served on the Gemini API's /v1beta/decisions rather
+// than generateContent. The API's "models/" resource prefix is accepted.
+func IsGeminiDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "models/"), "gemini-decision-")
 }
 
 // ollamaDecisionModelPrefixes are the System One model families in Ollama's

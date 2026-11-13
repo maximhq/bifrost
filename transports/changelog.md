@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Claude Code Gateway Sign-In** - Claude Code can sign in to Bifrost with `/login` (Cloud gateway) at `<issuer_url>/claude-code`: device-code sign-in through the OAuth consent page (virtual key, user or anonymous), silent token refresh, Messages inference resolved to the approved virtual key, managed settings and an OTLP sink. Configured on the new Settings → Claude Code page, independent of the MCP auth mode (#7963) [@jimseiwert](https://github.com/jimseiwert)
+- **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 
 ## 🐞 Fixed
 
@@ -14,4 +15,5 @@
 
 ## 🗄️ Database Migrations
 
-- `add_oauth2_authorize_requests_device_code_columns` - Adds the nullable `device_code_hash` and `user_code_hash` columns to `oauth2_authorize_requests`, each with a unique index built concurrently on PostgreSQL, so writes are never blocked. Existing rows keep NULL. Rollback drops both indexes and columns, which only hold sign-in state that expires within minutes.
+- `add_oauth2_authorize_requests_device_code_columns` - Adds the nullable `device_code_hash` and `user_code_hash` columns to `oauth2_authorize_requests`, with a bounded lock wait on PostgreSQL.
+- `add_oauth2_authorize_requests_device_code_indexes` - Builds their unique indexes concurrently on PostgreSQL, so writes are never blocked.

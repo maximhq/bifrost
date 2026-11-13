@@ -65,15 +65,17 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
-	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	sarvam: "e.g. sarvam-105b, glm5.3-flash, gemma4",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
 	baseten: "e.g. zai-org/GLM-5.3, openai/gpt-oss-120b",
+	kimchi: "e.g. deepseek-v4.1-flash, glm-5.3-flash, minimax-m3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
+	soniox: "e.g. stt-async-v6, stt-rt-v6, tts-rt-v2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -111,10 +113,12 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	minimax: true,
 	byteplus: true,
 	baseten: true,
+	kimchi: true,
 	databricks: false,
 	cloudflare: true,
 	"github-copilot": true,
 	typesafe: true,
+	soniox: true,
 };
 
 export const DefaultNetworkConfig = {

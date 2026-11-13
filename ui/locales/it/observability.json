@@ -70,7 +70,8 @@
 			"decision": "Modello decisionale",
 			"llm": "LLM",
 			"skipped": "Saltato"
-		}
+		},
+		"modelRouter": "Router"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1233,7 +1234,10 @@
 		"exactRoundTripID": "ID di andata e ritorno esatto",
 		"nothingRecorded": "Nulla registrato in questo intervallo di tempo",
 		"topics": "Argomenti",
-		"searchTopics": "Cerca argomenti"
+		"searchTopics": "Cerca argomenti",
+		"modelRouters": "Router",
+		"searchModelRouters": "Cerca router",
+		"loadFailed": "Impossibile caricare questo elenco."
 	},
 	"requestTypes": {
 		"chat_completion": "Chat",
@@ -1262,6 +1266,7 @@
 		"decisions": "Decisioni",
 		"speech": "Voce",
 		"speech_stream": "Stream voce",
+		"speech_session": "Sessione vocale",
 		"transcription": "Trascrizione",
 		"transcription_stream": "Stream trascrizione",
 		"image_generation": "Generazione immagini",
@@ -1632,6 +1637,70 @@
 				"publicAgentCardFetched": "Agent card pubblica recuperata",
 				"extendedAgentCardFetched": "Agent card estesa recuperata"
 			}
+		},
+		"trace": {
+			"title": "Traccia dell'agente",
+			"loading": "Caricamento traccia…",
+			"partial": "Alcuni log collegati non sono stati caricati, quindi questa traccia potrebbe essere incompleta.",
+			"timeline": "Cronologia",
+			"findSpan": "Cerca span",
+			"treeLabel": "Span della traccia",
+			"noMatches": "Nessuno span corrisponde.",
+			"artifacts": "Artefatti",
+			"latency": "Latenza",
+			"tokens": "Token",
+			"cost": "Costo",
+			"agents": "Agenti",
+			"llmCalls": "Chiamate LLM",
+			"mcpCalls": "Chiamate MCP",
+			"errors": "Errori",
+			"tokensShort": "{{value}} tok",
+			"errorsShort": "{{value}} errori",
+			"followUps": "+{{value}} chiamate successive",
+			"producedBy": "Prodotto da {{agent}}",
+			"artifactKind": {
+				"data": "dati",
+				"text": "testo"
+			},
+			"expand": "Espandi {{name}}",
+			"collapse": "Comprimi {{name}}",
+			"openInLLMLogs": "Apri nei log LLM",
+			"openInMCPLogs": "Apri nei log MCP",
+			"a2a": "A2A",
+			"error": "Errore",
+			"scopeTrace": "Traccia",
+			"scopeSession": "Sessione",
+			"sessionName": "Sessione {{value}}",
+			"turn": "Turno {{value}}",
+			"turnCount": "Turni {{value}}",
+			"turns": "Turni",
+			"sessionId": "Sessione",
+			"taskId": "Attività",
+			"copyLink": "Copia link",
+			"linkCopied": "Link copiato",
+			"guardrails": "Guardrail",
+			"guard": {
+				"guardrail": "Guardrail",
+				"rule": "Regola",
+				"provider": "Provider",
+				"phase": "Fase",
+				"outcome": "Esito",
+				"reason": "Motivo",
+				"judgeModel": "Modello giudice",
+				"assessments": "Valutazioni"
+			},
+			"turnsLoaded": "{{loaded}} di {{total}} turni caricati",
+			"loadMoreTurns": "Carica altri turni",
+			"userMessage": "Utente",
+			"viewSpans": "Mostra span",
+			"noReply": "Nessuna risposta registrata.",
+			"spansTab": "Span",
+			"threadTab": "Thread",
+			"llmShort": "{{value}} LLM",
+			"mcpShort": "{{value}} MCP",
+			"guardShort": "{{value}} guardrail",
+			"agentSpan": "Span agente",
+			"conversationEnd": "Fine"
 		},
 		"logSheet": {
 			"localOperationNote": "Questa operazione viene gestita da Bifrost senza una richiesta upstream. I payload di protocollo riportati sotto sono dati serializzati, non acquisizioni del trasporto.",

@@ -3,6 +3,7 @@ package elevenlabs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -179,6 +180,22 @@ func (provider *ElevenlabsProvider) Embedding(ctx *schemas.BifrostContext, key s
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
+// nameRawSpeechModel names the model ElevenLabs knows in a body forwarded as the client wrote it, which may carry the
+// provider prefix or a key's alias; request.Model is the model after both.
+func nameRawSpeechModel(ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest, body []byte) ([]byte, *schemas.BifrostError) {
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !raw {
+		return body, nil
+	}
+	if sent := providerUtils.GetJSONField(body, "model_id"); !sent.Exists() || sent.Str == request.Model {
+		return body, nil
+	}
+	named, err := providerUtils.SetJSONField(body, "model_id", request.Model)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	return named, nil
+}
+
 // Speech performs a text to speech request
 func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Elevenlabs, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
@@ -233,6 +250,9 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		})
 
 	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if jsonData, bifrostErr = nameRawSpeechModel(ctx, request, jsonData); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -297,19 +317,23 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 		bifrostResponse.AudioBase64 = &timestampResponse.AudioBase64
 
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			bifrostResponse.ExtraFields.RawResponse = json.RawMessage(body)
+		}
+
 		if timestampResponse.Alignment != nil {
 			bifrostResponse.Alignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.Alignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.Alignment.CharEndTimesMs,
-				Characters:       timestampResponse.Alignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.Alignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.Alignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.Alignment.Characters,
 			}
 		}
 
 		if timestampResponse.NormalizedAlignment != nil {
 			bifrostResponse.NormalizedAlignment = &schemas.SpeechAlignment{
-				CharStartTimesMs: timestampResponse.NormalizedAlignment.CharStartTimesMs,
-				CharEndTimesMs:   timestampResponse.NormalizedAlignment.CharEndTimesMs,
-				Characters:       timestampResponse.NormalizedAlignment.Characters,
+				CharacterStartTimesSeconds: timestampResponse.NormalizedAlignment.CharacterStartTimesSeconds,
+				CharacterEndTimesSeconds:   timestampResponse.NormalizedAlignment.CharacterEndTimesSeconds,
+				Characters:                 timestampResponse.NormalizedAlignment.Characters,
 			}
 		}
 
@@ -1006,13 +1030,4 @@ func (provider *ElevenlabsProvider) ContainerFileContent(_ *schemas.BifrostConte
 // ContainerFileDelete is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
-}
-
-// Passthrough is not supported by the Elevenlabs provider.
-func (provider *ElevenlabsProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
-}
-
-func (provider *ElevenlabsProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

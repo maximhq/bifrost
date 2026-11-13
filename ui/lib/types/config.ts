@@ -311,6 +311,7 @@ export interface DatabricksKeyConfig {
 	client_id?: SecretVar;
 	client_secret?: SecretVar;
 	forward_gateway_tags?: boolean;
+	scopes?: string[];
 	// UI-only discriminator; not sent to the API.
 	_auth_type?: "pat" | "oauth_m2m";
 }
@@ -322,6 +323,7 @@ export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
 	client_id: { value: "", ref: "" },
 	client_secret: { value: "", ref: "" },
 	forward_gateway_tags: false,
+	scopes: [],
 	_auth_type: "pat",
 } as const satisfies Required<DatabricksKeyConfig>;
 
@@ -973,6 +975,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_client_metadata_url?: SecretVar;
 	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
 	a2a_store_raw_request_response?: boolean;

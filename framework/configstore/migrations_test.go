@@ -2532,6 +2532,41 @@ func TestMigrationAddMCPClientPendingVerificationColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPClientPendingVerificationColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddMCPClientServerTypeOnSlugColumn adds the column with the empty default, so every existing
+// client inherits is_code_mode_client on its slug exactly as before, and re-runs cleanly.
+func TestMigrationAddMCPClientServerTypeOnSlugColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	now := time.Now()
+	for _, name := range []string{"code_mode", "direct"} {
+		require.NoError(t, db.Exec(
+			`INSERT INTO config_mcp_clients (client_id, name, endpoint_slug, connection_type, auth_type, is_code_mode_client, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, name, name, "http", "headers", name == "code_mode", now, now).Error)
+	}
+
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
+
+	require.True(t, mg.HasColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	var rows []tables.TableMCPClient
+	require.NoError(t, db.Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, row.ServerTypeOnSlug, "%s: existing rows must inherit", row.Name)
+	}
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_server_type_on_slug_column").Error)
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
+}
+
 // TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait pins that on postgres the
 // pending_verification column's ALTER on config_mcp_clients gives up on a held lock instead of
 // queueing every later query on the table behind it.
@@ -5416,6 +5451,59 @@ func TestMigrationAddOAuthIssuerBindingColumns(t *testing.T) {
 	assert.True(t, issuer == nil || *issuer == "", "an existing config stays unbound")
 }
 
+// TestMigrationAddMCPClientMetadataURLColumns adds both columns, keeps existing rows unmarked, and is a
+// no-op on a re-run.
+func TestMigrationAddMCPClientMetadataURLColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO oauth_configs (id) VALUES ('existing')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPClientMetadataURLColumns(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_client_metadata_url"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableOauthConfig{}, "client_metadata_document"))
+	var marked *bool
+	require.NoError(t, db.Table("oauth_configs").Select("client_metadata_document").Where("id = ?", "existing").Scan(&marked).Error)
+	assert.True(t, marked == nil || !*marked, "an existing config stays unmarked")
+}
+
+// TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait pins that on postgres the migration gives up on
+// a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of queueing every
+// later OAuth query behind it.
+func TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	_, err = reader.ExecContext(ctx, "SELECT * FROM oauth_configs")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientMetadataURLColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationAddOAuthIssuerBindingColumnsBoundsLockWait pins that on postgres the migration gives up
 // on a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of
 // queueing every later OAuth query behind it.
@@ -5852,4 +5940,36 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasTable(&tables.TableDatasheetOverride{}))
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added where it is missing, left alone where it is there, and never tied to a business
+// unit row by a constraint, since the config loader may write the budget first. The column's index
+// is its own migration (TestMigrationAddBudgetBusinessUnitIDIndex).
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	db := setupCalendarAlignedPreMigrationDB(t)
+	mig := db.Migrator()
+	require.NoError(t, mig.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "BusinessUnitID"))
+	require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+	assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the owner column to a business unit row")
+
+	// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+	buID := "bu-elsewhere"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+}
+
+// TestMigrationAddModelRoutersTable pins that the migration creates the
+// model_routers table and is safe to run again.
+func TestMigrationAddModelRoutersTable(t *testing.T) {
+	db := setupComplexityExemplarMigrationDB(t)
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger))
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
+	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
 }

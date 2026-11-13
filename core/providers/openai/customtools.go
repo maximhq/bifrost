@@ -349,18 +349,23 @@ func (r *customToolStreamRestorer) tracked(itemID *string) bool {
 	return ok
 }
 
-// chatCustomToolAsFunction rewrites a Chat custom tool as a function tool. Chat
-// custom tools carry no description, so the function has none either.
+// chatCustomToolAsFunction rewrites a Chat custom tool as a function tool, keeping its name and description.
 func chatCustomToolAsFunction(tool schemas.ChatTool) schemas.ChatTool {
-	var syntax, definition string
-	if tool.Custom != nil && tool.Custom.Format != nil && tool.Custom.Format.Grammar != nil {
-		syntax = tool.Custom.Format.Grammar.Syntax
-		definition = tool.Custom.Format.Grammar.Definition
+	var name, syntax, definition string
+	var description *string
+	if tool.Custom != nil {
+		name = tool.Custom.Name
+		description = tool.Custom.Description
+		if tool.Custom.Format != nil && tool.Custom.Format.Grammar != nil {
+			syntax = tool.Custom.Format.Grammar.Syntax
+			definition = tool.Custom.Format.Grammar.Definition
+		}
 	}
 	tool.Type = schemas.ChatToolTypeFunction
 	tool.Function = &schemas.ChatToolFunction{
-		Name:       tool.Name,
-		Parameters: customToolParameters(syntax, definition),
+		Name:        name,
+		Description: description,
+		Parameters:  customToolParameters(syntax, definition),
 	}
 	tool.Custom = nil
 	tool.Name = ""

@@ -19,6 +19,7 @@
 		"budgetsLimits": "Presupuestos y límites",
 		"routingRules": "Reglas de enrutamiento",
 		"complexityRouter": "Enrutador por complejidad",
+		"routers": "Enrutadores",
 		"circuitBreaker": "Disyuntor",
 		"pricingOverrides": "Anulaciones de precios",
 		"modelSettings": "Ajustes de modelos",

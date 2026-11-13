@@ -573,3 +573,51 @@ func TestGenerateMCPClientHash_PerUserDiscovery(t *testing.T) {
 	assert.Equal(t, unsetHash, offHash, "an omitted per_user_discovery must hash like false")
 	assert.NotEqual(t, offHash, onHash, "flipping per_user_discovery must drift the hash")
 }
+
+// TestGenerateMCPClientHash_CodeMode: is_code_mode_client false and an inherited server_type_on_slug leave
+// stored hashes as they were; turning code mode on, or overriding it on the slug, drifts the hash so a
+// config.json edit is synced.
+func TestGenerateMCPClientHash_CodeMode(t *testing.T) {
+	hash := func(codeMode bool, slug schemas.MCPServerTypeOnSlug) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: codeMode, ServerTypeOnSlug: slug})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+
+	inherit, enabled, disabled := schemas.MCPServerTypeOnSlugInherit, schemas.MCPServerTypeOnSlugEnabled, schemas.MCPServerTypeOnSlugDisabled
+	assert.Equal(t, before, hash(false, inherit), "code mode off and inherited must not move existing stored hashes")
+	assert.NotEqual(t, before, hash(true, inherit), "turning is_code_mode_client on must drift the hash")
+	assert.NotEqual(t, before, hash(false, enabled), "an enabled override must drift the hash")
+	assert.NotEqual(t, before, hash(false, disabled), "a disabled override must drift the hash")
+	assert.NotEqual(t, hash(false, enabled), hash(false, disabled), "enabled and disabled hash apart")
+	assert.NotEqual(t, hash(true, inherit), hash(false, enabled), "code mode everywhere and only on the slug hash apart")
+}
+
+// TestMCPClientHashMatchesLegacyCodeMode: a hash stored before is_code_mode_client was hashed is recognised
+// for the same code-mode client, and for nothing else, so a real config.json edit is never mistaken for it.
+func TestMCPClientHashMatchesLegacyCodeMode(t *testing.T) {
+	row := tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: true, ToolsToExecute: []string{"*"}}
+	legacyRow := row
+	legacyRow.IsCodeModeClient = false
+	legacy, err := GenerateMCPClientHash(legacyRow)
+	require.NoError(t, err)
+	current, err := GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	require.NotEqual(t, legacy, current, "fixture check: the formula changed for this client")
+
+	match := func(m tables.TableMCPClient, stored string, storedCodeMode bool) bool {
+		ok, err := MCPClientHashMatchesLegacyCodeMode(m, stored, storedCodeMode)
+		require.NoError(t, err)
+		return ok
+	}
+	assert.True(t, match(row, legacy, true), "the same code-mode client under the old formula")
+	assert.False(t, match(row, current, true), "a current hash is not a legacy one")
+	assert.False(t, match(row, "", true), "no stored hash")
+	assert.False(t, match(legacyRow, legacy, false), "a client without code mode hashes the same under both formulas")
+	assert.False(t, match(row, legacy, false), "config.json turning code mode on for a stored client without it is a file edit")
+	edited := row
+	edited.ToolsToExecute = []string{"echo"}
+	assert.False(t, match(edited, legacy, true), "a real config.json edit is not a legacy hash")
+}

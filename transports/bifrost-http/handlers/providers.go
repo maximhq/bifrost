@@ -1201,11 +1201,14 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // allows decisions on a base that serves them (Typesafe, serving Laya, Nimble,
 // or Clef, OpenAI, exposing /v1/decisions, or vLLM and SGLang, serving
 // /v1/systemone for every loaded model), since its server rejects a
-// model it does not serve. Typesafe lists every model, and any other provider
+// model it does not serve. A custom provider on the Gemini base lists only
+// Gemini Decision models, as its Decision gates them, since the same server
+// serves chat models too. Typesafe lists every model, and any other provider
 // a model the datasheet marks supports_decisions, or without a row the
 // provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
-// Perplexity, a System One model on Ollama, a Microsoft decision model or the
+// Perplexity, a System One model on Ollama, a decision-models/ slug on Baseten,
+// a Gemini Decision model on Gemini, a Microsoft decision model or the
 // gpt-6-luna family on Azure, which serves it on /openai/v1/decisions). vLLM
 // and SGLang serve decisions for every model they load, so every listed model qualifies.
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
@@ -1217,7 +1220,8 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 	if custom := h.customProviderConfig(provider); custom != nil {
 		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
 			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
-				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL)
+				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL ||
+				(custom.BaseProviderType == schemas.Gemini && schemas.IsGeminiDecisionModel(h.aliasTarget(provider, model))))
 	}
 	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
@@ -1241,6 +1245,10 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		fallback = schemas.IsOllamaDecisionModel(model)
 	case provider == schemas.Databricks:
 		fallback = schemas.IsDatabricksDecisionModel(model)
+	case provider == schemas.Baseten:
+		fallback = schemas.IsBasetenDecisionModel(model)
+	case provider == schemas.Gemini:
+		fallback = schemas.IsGeminiDecisionModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }

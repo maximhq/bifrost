@@ -466,6 +466,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "soniox": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Soniox API Key",
+          "value": "env.SONIOX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "byteplus": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -496,6 +512,22 @@
         {
           "name": "Baseten API Key",
           "value": "env.BASETEN_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "kimchi": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Kimchi API Key",
+          "value": "env.KIMCHI_API_KEY",
           "weight": 1,
           "models": ["*"]
         }
@@ -1708,6 +1740,12 @@
           },
           {
             "provider": "baseten",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "kimchi",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

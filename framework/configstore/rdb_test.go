@@ -47,6 +47,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
 		&tables.TableGovernanceConfig{},
+		&tables.TableModelRouter{},
+		&tables.TableModelRouterTarget{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableMCPLibrary{},
@@ -2797,6 +2799,34 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t 
 	assert.NotEqual(t, offHash, creationHash)
 	assert.NotEqual(t, offHash, deletionHash)
 	assert.NotEqual(t, creationHash, deletionHash)
+}
+
+// TestUpdateClientConfig_MCPClientMetadataURLRoundTrip pins that the hosted Client ID Metadata Document URL
+// persists with its env reference, is hashed only when set, and is masked when it comes from env.
+func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+
+	unset := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	hosted := unset
+	hosted.MCPClientMetadataURL = schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")
+	require.NoError(t, store.UpdateClientConfig(ctx, &hosted))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.MCPClientMetadataURL)
+	assert.True(t, result.MCPClientMetadataURL.IsFromEnv(), "the env reference is stored, not its value")
+	assert.Equal(t, "https://public.example.com/bifrost/client.json", result.MCPClientMetadataURL.GetValue())
+	assert.NotEqual(t, "https://public.example.com/bifrost/client.json", result.Redacted().MCPClientMetadataURL.GetValue(), "an env-backed URL is masked")
+
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true, MCPClientMetadataURL: schemas.NewSecretVar("")}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	hostedHash, err := hosted.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, unsetHash, emptyHash, "configs written before the field existed keep their hash")
+	assert.NotEqual(t, unsetHash, hostedHash)
 }
 
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
@@ -7104,6 +7134,83 @@ func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
 	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
 }
 
+// TestUpdateMCPClientConfigHash pins that the hash upgrade writes config_hash alone, and only from the
+// expected old value, so a concurrent edit or an earlier upgrade by another node is never overwritten.
+func TestUpdateMCPClientConfigHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "hash-client",
+		Name:             "hash_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ToolsToExecute:   []string{"*"},
+		ConfigHash:       "legacy",
+	}))
+	// Another node edits the client after this node read it.
+	edited, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	edited.ToolsToExecute = []string{"echo"}
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "hash-client", edited))
+
+	moved, err := store.UpdateMCPClientConfigHash(ctx, "hash-client", "stale", "current")
+	require.NoError(t, err)
+	assert.False(t, moved, "a hash that is no longer the expected old value is left alone")
+
+	moved, err = store.UpdateMCPClientConfigHash(ctx, "hash-client", "legacy", "current")
+	require.NoError(t, err)
+	assert.True(t, moved)
+	row, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	assert.Equal(t, "current", row.ConfigHash)
+	assert.Equal(t, []string{"echo"}, []string(row.ToolsToExecute), "the concurrent edit survives the hash upgrade")
+}
+
+// TestMCPClientServerTypeOnSlugRoundTrip pins that the slug override is stored as given, including
+// clearing it back to inherit, unlike the keep-when-unset flags above.
+func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "scm-client",
+		Name:             "scm_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		IsCodeModeClient: true,
+		ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled,
+	}))
+	stored := func() schemas.MCPServerTypeOnSlug {
+		row, err := store.GetMCPClientByID(ctx, "scm-client")
+		require.NoError(t, err)
+		return row.ServerTypeOnSlug
+	}
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
+
+	config, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	var loaded *schemas.MCPClientConfig
+	for _, client := range config.ClientConfigs {
+		if client.ID == "scm-client" {
+			loaded = client
+		}
+	}
+	require.NotNil(t, loaded)
+	assert.Equal(t, schemas.MCPServerTypeOnSlugDisabled, loaded.ServerTypeOnSlug, "the loaded client config carries the override")
+
+	row, err := store.GetMCPClientByID(ctx, "scm-client")
+	require.NoError(t, err)
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugEnabled, stored(), "an update can change the override")
+
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugInherit
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, stored(), "an update can clear the override back to inherit")
+}
+
 // Saving by target updates the existing row in place: same ID and created_at,
 // new patches. Delete reports a missing row as ErrNotFound.
 func TestDatasheetOverride_UpsertByTargetAndDelete(t *testing.T) {
@@ -7211,4 +7318,31 @@ func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) 
 	rows, err := store.GetDatasheetOverrides(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
+}
+
+// TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite pins that a budget a business unit
+// holds stays the unit's when a write names no owner, as an edit of the budget's limits alone does.
+// Saving that row as given would null the owner, and the unit would silently stop being capped. A
+// write that names an owner is an ownership change and wins.
+func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	buID := "bu-1"
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 100, ResetDuration: "1M", BusinessUnitID: &buID}))
+
+	// The file's edit: a new limit, no owner named.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M"}))
+	edited, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, edited.MaxLimit)
+	require.NotNil(t, edited.BusinessUnitID, "an ownerless write must not detach the budget from its business unit")
+	assert.Equal(t, buID, *edited.BusinessUnitID)
+
+	// Another unit named outright takes it.
+	other := "bu-2"
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M", BusinessUnitID: &other}))
+	moved, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	require.NotNil(t, moved.BusinessUnitID)
+	assert.Equal(t, other, *moved.BusinessUnitID)
 }
