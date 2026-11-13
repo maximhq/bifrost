@@ -54,6 +54,7 @@ export default function GatewaysView() {
 	const [enabled, setEnabled] = useState(false);
 	const [issuerURL, setIssuerURL] = useState<SecretVar | undefined>(undefined);
 	const [accessTokenTTL, setAccessTokenTTL] = useState(accessTokenTTLText());
+	const [allowTempToken, setAllowTempToken] = useState(false);
 	const [managedSettings, setManagedSettings] = useState("");
 	const [telemetry, setTelemetry] = useState<TelemetryDraft>(() => telemetryDraftFromConfig(undefined));
 
@@ -62,6 +63,7 @@ export default function GatewaysView() {
 		setEnabled(config.oauth2_server_config?.gateways?.claude_code?.enabled ?? false);
 		setIssuerURL(config.oauth2_server_config?.issuer_url);
 		setAccessTokenTTL(accessTokenTTLText(config.oauth2_server_config?.access_token_ttl));
+		setAllowTempToken(config.mcp_enable_temp_token_auth ?? false);
 		setManagedSettings(formatManagedSettings(config.oauth2_server_config?.gateways?.claude_code?.managed_settings));
 		setTelemetry(telemetryDraftFromConfig(config.oauth2_server_config?.gateways?.claude_code?.telemetry));
 	}, [config]);
@@ -73,10 +75,11 @@ export default function GatewaysView() {
 			enabled !== (stored?.gateways?.claude_code?.enabled ?? false) ||
 			!secretVarEquals(issuerURL, stored?.issuer_url) ||
 			accessTokenTTL !== accessTokenTTLText(stored?.access_token_ttl) ||
+			allowTempToken !== (config.mcp_enable_temp_token_auth ?? false) ||
 			managedSettings !== formatManagedSettings(stored?.gateways?.claude_code?.managed_settings) ||
 			telemetryDraftKey(telemetry) !== telemetryDraftKey(telemetryDraftFromConfig(stored?.gateways?.claude_code?.telemetry))
 		);
-	}, [config, enabled, issuerURL, accessTokenTTL, managedSettings, telemetry]);
+	}, [config, enabled, issuerURL, accessTokenTTL, allowTempToken, managedSettings, telemetry]);
 
 	const urlTemplate = t("claudeCode.gatewayURLTemplate");
 	const url = gatewayURL(issuerURL, urlTemplate);
@@ -146,6 +149,7 @@ export default function GatewaysView() {
 				...bifrostConfig,
 				client_config: {
 					...clientConfig,
+					mcp_enable_temp_token_auth: allowTempToken,
 					oauth2_server_config: {
 						...clientConfig.oauth2_server_config,
 						issuer_url: issuerURL,
@@ -161,7 +165,18 @@ export default function GatewaysView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, enabled, issuerURL, accessTokenTTL, managedSettings, telemetry, telemetryErrorMessage, updateCoreConfig, t]);
+	}, [
+		bifrostConfig,
+		enabled,
+		issuerURL,
+		accessTokenTTL,
+		allowTempToken,
+		managedSettings,
+		telemetry,
+		telemetryErrorMessage,
+		updateCoreConfig,
+		t,
+	]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6" data-testid="gateways-view">
@@ -204,6 +219,23 @@ export default function GatewaysView() {
 						className="max-w-40"
 						value={accessTokenTTL}
 						onChange={(e) => setAccessTokenTTL(e.target.value)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="gateways-allow-temp-token" className="text-sm font-medium">
+							{t("gateways.allowTempTokenLabel")}
+						</label>
+						<p className="text-muted-foreground text-sm">{t("gateways.allowTempTokenDescription")}</p>
+					</div>
+					<Switch
+						id="gateways-allow-temp-token"
+						data-testid="gateways-allow-temp-token-switch"
+						size="md"
+						checked={allowTempToken}
+						onCheckedChange={setAllowTempToken}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>
