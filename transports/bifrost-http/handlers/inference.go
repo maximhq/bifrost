@@ -2527,7 +2527,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
 				chunk.BifrostImageGenerationStreamResponse != nil ||
-				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesRetrieveStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageEditStreamRequest)) {
+				(chunk.BifrostError != nil && streamErrorUsesEventType(chunk.BifrostError.ExtraFields.RequestType, requestType)) {
 				includeEventType = true
 			}
 
@@ -2621,6 +2621,24 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			}
 		}
 
+		// Core gives up on delivering the timeout chunk to a consumer that stays
+		// busy past its send bound, so the stream can close without it.
+		if fired, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool); fired && !sawErrorChunk {
+			timeoutErr := schemas.NewRequestTimeoutStreamError()
+			timeoutErr.ExtraFields.RequestType = requestType
+			if errorJSON, err := sonic.Marshal(&schemas.BifrostStreamChunk{BifrostError: timeoutErr}); err == nil {
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
+				var eventType string
+				if streamErrorUsesEventType(requestType, requestType) {
+					eventType = string(schemas.ResponsesStreamResponseTypeError)
+				}
+				reader.SendEvent(eventType, errorJSON)
+			}
+			sawErrorChunk = true
+		}
+
 		// Run the transport post-hook completer BEFORE the terminal [DONE] marker so
 		// that any plugin error can still be delivered to the client as an SSE event.
 		// Post-hooks emitted after [DONE] reach the wire but most clients stop reading
@@ -2643,6 +2661,20 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// Stream completed normally, Bifrost handles cleanup internally
 		cancel()
 	}()
+}
+
+// streamErrorUsesEventType reports whether an error frame goes out with an
+// "event: error" line. An error that does not name its request type, such as
+// core's request-timeout chunk, takes the stream's.
+func streamErrorUsesEventType(errorRequestType, streamRequestType schemas.RequestType) bool {
+	if errorRequestType == "" {
+		errorRequestType = streamRequestType
+	}
+	switch errorRequestType {
+	case schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ImageGenerationStreamRequest, schemas.ImageEditStreamRequest:
+		return true
+	}
+	return false
 }
 
 // validateAudioFile checks if the file size and format are valid

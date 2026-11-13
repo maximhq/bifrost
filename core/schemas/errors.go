@@ -11,6 +11,21 @@ const (
 	NoKeySupportsModel = "no_key_supports_model"
 )
 
+// NewRequestTimeoutStreamError is the terminal error of a stream whose
+// x-bf-request-timeout deadline fired.
+func NewRequestTimeoutStreamError() *BifrostError {
+	statusCode := 504
+	errorType := RequestTimedOut
+	return &BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &ErrorField{
+			Type:    &errorType,
+			Message: "request timed out: the x-bf-request-timeout deadline was reached before the stream finished",
+		},
+	}
+}
+
 // ErrorType is the normalized reason a request failed, used as the error_type metric
 // label. StatusCode remains the raw fact it was derived from.
 //

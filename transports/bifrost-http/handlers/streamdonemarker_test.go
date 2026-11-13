@@ -38,6 +38,18 @@ func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks [
 // runs on the request context before the handler, e.g. to install a trace completer.
 func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	return serveStreamingResponseWith(t, config, setup, schemas.ChatCompletionStreamRequest, nil, chunks)
+}
+
+// serveStreamingResponseWithContext serves a stream of requestType with a hook that
+// sees the request's BifrostContext before the stream is consumed.
+func serveStreamingResponseWithContext(t *testing.T, requestType schemas.RequestType, chunks []*schemas.BifrostStreamChunk, prepare func(*schemas.BifrostContext)) string {
+	t.Helper()
+	return serveStreamingResponseWith(t, &lib.Config{}, nil, requestType, prepare, chunks)
+}
+
+func serveStreamingResponseWith(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), requestType schemas.RequestType, prepare func(*schemas.BifrostContext), chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
 		if setup != nil {
@@ -47,6 +59,9 @@ func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup fun
 
 		base, cancel := context.WithCancel(context.Background())
 		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
+		if prepare != nil {
+			prepare(bifrostCtx)
+		}
 
 		getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
@@ -57,7 +72,7 @@ func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup fun
 			return stream, nil
 		}
 
-		h.handleStreamingResponse(reqCtx, bifrostCtx, schemas.ChatCompletionStreamRequest, getStream, cancel)
+		h.handleStreamingResponse(reqCtx, bifrostCtx, requestType, getStream, cancel)
 	}
 
 	serverConn, clientConn := net.Pipe()
@@ -236,5 +251,62 @@ func TestStreamingResponseTeardownPanicIsRecovered(t *testing.T) {
 	case <-traceRan:
 	case <-time.After(5 * time.Second):
 		t.Fatal("trace completer never ran")
+	}
+}
+
+// Core stops waiting for a consumer that stays busy past its send bound, so a
+// timed-out stream can close without its timeout chunk. The handler must still
+// report the timeout rather than mark a truncated stream as finished.
+func TestStreamingResponseReportsFiredRequestTimeoutWithoutChunk(t *testing.T) {
+	body := serveStreamingResponseWithContext(t, schemas.ChatCompletionStreamRequest, []*schemas.BifrostStreamChunk{
+		contentChunk("partial answer"),
+	}, func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	})
+
+	if !strings.Contains(body, schemas.RequestTimedOut) {
+		t.Errorf("expected a request_timed_out error frame, got:\n%s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("[DONE] must not end a timed-out stream, got:\n%s", body)
+	}
+}
+
+// The timeout chunk core did deliver is the only error frame the client gets.
+func TestStreamingResponseSendsOneTimeoutFrame(t *testing.T) {
+	body := serveStreamingResponseWithContext(t, schemas.ChatCompletionStreamRequest, []*schemas.BifrostStreamChunk{
+		contentChunk("partial answer"),
+		{BifrostError: schemas.NewRequestTimeoutStreamError()},
+	}, func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	})
+
+	if got := strings.Count(body, schemas.RequestTimedOut); got != 1 {
+		t.Errorf("expected exactly one request_timed_out frame, got %d:\n%s", got, body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("[DONE] must not end a timed-out stream, got:\n%s", body)
+	}
+}
+
+// A Responses client gets the timeout as an "event: error" frame whether core
+// delivered the chunk or the handler reported the fired marker itself.
+func TestStreamingResponseFramesTimeoutAsErrorEventOnResponses(t *testing.T) {
+	fired := func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	}
+	for name, chunks := range map[string][]*schemas.BifrostStreamChunk{
+		"core delivered the chunk": {{BifrostError: schemas.NewRequestTimeoutStreamError()}},
+		"stream closed without it": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := serveStreamingResponseWithContext(t, schemas.ResponsesStreamRequest, chunks, fired)
+			if !strings.Contains(body, "event: error\n") {
+				t.Errorf("expected an event: error frame, got:\n%s", body)
+			}
+			if got := strings.Count(body, schemas.RequestTimedOut); got != 1 {
+				t.Errorf("expected exactly one request_timed_out frame, got %d:\n%s", got, body)
+			}
+		})
 	}
 }
