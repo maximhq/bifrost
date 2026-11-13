@@ -34,6 +34,15 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 			"mode": "chat",
 			"base_model": "retired-model",
 			"is_deprecated": true
+		},
+		"gpt-4.1": {
+			"provider": "openai",
+			"mode": "chat",
+			"base_model": "gpt-4.1",
+			"supported_modalities": ["text", "image"],
+			"supported_output_modalities": ["text"],
+			"supports_pdf_input": true,
+			"supports_vision": true
 		}
 	}`)
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
@@ -123,6 +132,31 @@ func TestGetModelInfoReportsDeprecation(t *testing.T) {
 	}
 	if !info.IsDeprecated {
 		t.Error("IsDeprecated = false, want true")
+	}
+}
+
+// The datasheet ships modality flags and lists rather than an architecture
+// block; the listing must still report the modalities they describe.
+func TestGetModelInfoReportsDatasheetModalities(t *testing.T) {
+	mc := modelInfoCatalog(t)
+
+	info := mc.GetModelInfo(schemas.OpenAI, "gpt-4.1")
+	if info == nil {
+		t.Fatal("GetModelInfo = nil, want populated model")
+	}
+	if info.Architecture == nil {
+		t.Fatal("Architecture = nil, want modalities derived from the datasheet")
+	}
+	if want := []string{"text", "image", "file"}; !slices.Equal(info.Architecture.InputModalities, want) {
+		t.Errorf("InputModalities = %v, want %v", info.Architecture.InputModalities, want)
+	}
+	if want := []string{"text"}; !slices.Equal(info.Architecture.OutputModalities, want) {
+		t.Errorf("OutputModalities = %v, want %v", info.Architecture.OutputModalities, want)
+	}
+
+	// A row with no modality data stays without an architecture.
+	if info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5"); info == nil || info.Architecture != nil {
+		t.Errorf("claude-opus-5 Architecture = %+v, want nil", info)
 	}
 }
 

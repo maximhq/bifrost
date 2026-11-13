@@ -474,3 +474,45 @@ func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryUnmarshalJSON_DerivesModalities(t *testing.T) {
+	cases := []struct {
+		name       string
+		json       string
+		wantInput  []string
+		wantOutput []string
+	}{
+		{"supports_vision", `{"provider":"openai","mode":"chat","supports_vision":true}`, []string{"text", "image"}, nil},
+		{"supported_input_modalities", `{"provider":"x","mode":"chat","supported_input_modalities":["text","image"]}`, []string{"text", "image"}, nil},
+		{"supported_modalities", `{"provider":"x","mode":"chat","supported_modalities":["Text"," image "]}`, []string{"text", "image"}, nil},
+		{"list_and_flags_union", `{"provider":"x","mode":"chat","supported_modalities":["text","image"],"supports_pdf_input":true,"supports_audio_input":true,"supports_video_input":true}`, []string{"text", "image", "audio", "video", "file"}, nil},
+		{"pdf_maps_to_file", `{"provider":"x","mode":"chat","supported_input_modalities":["text","pdf"]}`, []string{"text", "file"}, nil},
+		{"output_modalities", `{"provider":"x","mode":"chat","supported_output_modalities":["text","image","image"]}`, nil, []string{"text", "image"}},
+		{"text_only", `{"provider":"openai","mode":"chat","supports_vision":false,"supported_modalities":["text"]}`, nil, nil},
+		{"no_signal", `{"provider":"openai","mode":"chat"}`, nil, nil},
+		{"explicit_architecture_wins", `{"provider":"x","mode":"chat","architecture":{"input_modalities":["text","audio"]},"supports_vision":true,"supported_output_modalities":["text"]}`, []string{"text", "audio"}, []string{"text"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var e Entry
+			if err := json.Unmarshal([]byte(tc.json), &e); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tc.wantInput == nil && tc.wantOutput == nil {
+				if e.Architecture != nil {
+					t.Fatalf("Architecture = %+v, want nil", e.Architecture)
+				}
+				return
+			}
+			if e.Architecture == nil {
+				t.Fatal("Architecture = nil, want derived modalities")
+			}
+			if !slices.Equal(e.Architecture.InputModalities, tc.wantInput) {
+				t.Errorf("InputModalities = %v, want %v", e.Architecture.InputModalities, tc.wantInput)
+			}
+			if !slices.Equal(e.Architecture.OutputModalities, tc.wantOutput) {
+				t.Errorf("OutputModalities = %v, want %v", e.Architecture.OutputModalities, tc.wantOutput)
+			}
+		})
+	}
+}

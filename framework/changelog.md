@@ -1,1 +1,2 @@
+- fix: model catalog derives architecture input/output modalities from the datasheet's `supports_vision`, `supports_audio_input`, `supports_video_input`, `supports_pdf_input` and `supported_*modalities` fields, so `/v1/models` reports them
 - chore: upgraded core to v1.15.2
