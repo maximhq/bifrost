@@ -1914,19 +1914,62 @@ func (s *ClickHouseLogStore) DeleteComplexitySuggestions(ctx context.Context, id
 	return nil
 }
 
+// complexitySuggestionRunLockKey is the shared lock for one run's row.
+func complexitySuggestionRunLockKey(id string) string {
+	return "model_routing_suggestion_run:" + id
+}
+
 // UpsertComplexitySuggestionRun writes a run whole, replacing any row with the
-// same ID.
+// same ID. It takes the run's locks, as UpdateComplexitySuggestionRunStatus
+// does, so a conditional status change is never interleaved with a write of
+// the same run.
 func (s *ClickHouseLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	held, release, err := s.lockShared(ctx, complexitySuggestionRunLockKey(run.ID))
+	if err != nil {
+		return fmt.Errorf("acquire suggestion run lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestion_runs", run.ID)
+	defer unlock()
 	if err := prepareComplexitySuggestionRun(run, time.Now().UTC()); err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Create(run).Error
+	return s.db.WithContext(held).Create(run).Error
 }
 
-// complexitySuggestionRunLockKey is the shared lock for writing one run's
-// first row.
-func complexitySuggestionRunLockKey(id string) string {
-	return "model_routing_suggestion_run:" + id
+// UpdateComplexitySuggestionRunStatus ends a run. ClickHouse has no
+// conditional update, so the row is read, checked and written back whole
+// under the run's locks: the shared one when a locker is set, so it is
+// serialized with every instance's writes of the run, and this process's row
+// lock. Every write of a run takes the same locks, so an outcome the run
+// wrote first is never overwritten.
+func (s *ClickHouseLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	held, release, err := s.lockShared(ctx, complexitySuggestionRunLockKey(id))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion run lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestion_runs", id)
+	defer unlock()
+	runs, err := s.ListComplexitySuggestionRuns(held, ComplexitySuggestionRunFilter{IDs: []string{id}}, 1)
+	if err != nil {
+		return false, err
+	}
+	if len(runs) == 0 || !slices.Contains(from, runs[0].Status) {
+		return false, nil
+	}
+	run := runs[0]
+	run.Status, run.Stage, run.FinishedAt = to, "", finishedAt
+	if err := prepareComplexitySuggestionRun(&run, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err := s.db.WithContext(held).Create(&run).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // InsertComplexitySuggestionRun writes a run unless one with its ID exists.

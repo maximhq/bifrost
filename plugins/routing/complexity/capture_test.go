@@ -19,7 +19,8 @@ import (
 )
 
 // newCaptureTestStore is an in-memory store that, like Qdrant and Weaviate,
-// accepts only UUID point IDs.
+// accepts only UUID point IDs. It is Chromem underneath but not of Chromem's
+// type, which capture refuses: Chromem keeps vectors in one gateway's memory.
 func newCaptureTestStore(t testing.TB) vectorstore.VectorStore {
 	t.Helper()
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{

@@ -10,22 +10,25 @@ import {
 } from "@/lib/store/apis/governanceApi";
 import {
 	AnalyzerConfig,
+	COMPLEXITY_TIER_VALUES,
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	MAX_SEMANTIC_PHRASES,
 	ModelRouter,
 	Suggestion,
+	SuggestionTierDefaults,
 } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Resolver, useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
 	AnalyzerFormValues,
 	analyzerConfigSchema,
+	withGeneratedTierCriteriaCleared,
 	countCanonicalSemanticPhrases,
 	decisionCriteriaFromDefaults,
 	decisionGuidanceFormValues,
@@ -33,7 +36,11 @@ import {
 	getDecisionProviderState,
 	isDecisionGuidanceDefault,
 	isDecisionGuidanceEmpty,
+	isDecisionTierEmpty,
+	KnownTierDefaults,
+	lastKnownTierDefaults,
 	shouldSeedLLMPrompt,
+	tierCriteriaFormValues,
 	toAnalyzerPayload,
 	toFormValues,
 } from "@/app/workspace/complexity-router/formSchema";
@@ -109,6 +116,11 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const [updateSuggestionStatus] = useUpdateComplexitySuggestionStatusMutation();
 	const [isSaving, setIsSaving] = useState(false);
 	const [submitError, setSubmitError] = useState<string | null>(null);
+	// Fields the last submit found invalid; 0 once a submit gets through.
+	const [invalidFields, setInvalidFields] = useState(0);
+	// Counts the saves that succeeded, so a caller can tell its own save went
+	// through: submit resolves the same way whether it did or not.
+	const [saveCount, setSaveCount] = useState(0);
 	const [openSheet, setOpenSheet] = useState<ConfigSheet>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	// Suggestions whose phrases are in the draft lists, waiting for Save.
@@ -135,8 +147,19 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const isVectorStoreConnected = coreConfig?.is_cache_connected ?? false;
 
+	// The generated tier criteria, for the resolver: it is built before they
+	// are known, and reads them when it runs.
+	const generatedTierCriteria = useRef<SuggestionTierDefaults["criteria"] | undefined>(undefined);
+	const resolver = useCallback<Resolver<AnalyzerFormValues>>(async (values, context, options) => {
+		const checked = withGeneratedTierCriteriaCleared(values, generatedTierCriteria.current);
+		const result = await zodResolver(analyzerConfigSchema)(checked, context, options);
+		if (checked === values || Object.keys(result.errors).length > 0) return result;
+		// Validated with the generated tiers cleared; saved as written.
+		const parsed = result.values as AnalyzerFormValues;
+		return { values: { ...parsed, suggestions: { ...parsed.suggestions, tier_criteria: values.suggestions.tier_criteria } }, errors: {} };
+	}, []);
 	const form = useForm<AnalyzerFormValues>({
-		resolver: zodResolver(analyzerConfigSchema),
+		resolver,
 		defaultValues: DEFAULT_FORM_VALUES,
 		mode: "onSubmit",
 		reValidateMode: "onChange",
@@ -158,6 +181,7 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const liveSession = watch("session");
 	const liveKeywords = watch("keywords");
 	const liveSuggestions = watch("suggestions");
+	const liveDecisionModel = watch("decision.model");
 	const liveDecisionCriteria = useWatch({ control, name: "decision.criteria" });
 
 	// Each model list is narrowed to what its provider's enabled keys can serve:
@@ -207,16 +231,24 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 		isError: statusIsError,
 		refetch: refetchStatus,
 	} = useGetModelRouterStatusQuery(routerId ?? "", {
-		skip: isCreating || (!savedRouter?.semantic && !savedRouter?.llm && !isLLMInUse && !isDecisionInUse),
+		// Suggestions read the tier step's generated text from it too.
+		skip:
+			isCreating ||
+			(!savedRouter?.semantic &&
+				!savedRouter?.llm &&
+				!isLLMInUse &&
+				!isDecisionInUse &&
+				!savedRouter?.suggestions &&
+				!liveSuggestions?.enabled),
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
 		setStatusPollInterval(semanticStatus?.state === "warming" ? 2000 : semanticStatus?.state === "failed" ? 10000 : 0);
 	}, [semanticStatus?.state]);
 
-	// The suggestions tab's pending count; the tab itself reads the same cached list.
+	// The suggestions tab's pending count: the counts alone, so one row is read.
 	const { data: openSuggestions } = useGetComplexitySuggestionsQuery(
-		{ statuses: ["open"], routerId: routerId ?? "" },
+		{ statuses: ["open"], routerId: routerId ?? "", limit: 1 },
 		{ skip: isCreating || liveClassifier !== "semantic" },
 	);
 
@@ -237,9 +269,15 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 
 	// stageSuggestion adds a suggestion's phrases to its tier's draft list and
 	// reports how many were new; phrases the bank already holds are skipped.
+	// Staging is closed while a save is in flight: the save sends the lists as
+	// they were when it started, and the reset after it would drop anything
+	// staged since.
 	const stageSuggestion = (suggestion: Suggestion, tier: DecisionTier, phrases: string[]): number => {
+		if (isSaving) return 0;
+		// Read from the form, not the render: a drop of several rows stages them
+		// one after another before the page renders again.
 		const keywords = getValues("keywords");
-		const room = Math.max(0, MAX_SEMANTIC_PHRASES - totalPhrases);
+		const room = Math.max(0, MAX_SEMANTIC_PHRASES - countCanonicalSemanticPhrases(keywords).total);
 		const adding = newPhrases(keywords, phrases).slice(0, room);
 		if (adding.length === 0) return 0;
 		setValue("keywords", addPhrases(keywords, tier, adding), { shouldDirty: true, shouldValidate: isSubmitted });
@@ -247,19 +285,22 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 		return adding.length;
 	};
 	const unstageSuggestion = (id: string) => {
+		if (isSaving) return;
 		const entry = activeStaged.find((candidate) => candidate.id === id);
 		if (entry) setValue("keywords", removePhrases(getValues("keywords"), entry.tier, entry.phrases), { shouldDirty: true });
 		setStaged((current) => current.filter((candidate) => candidate.id !== id));
 	};
-	const editStagedPhrase = (id: string, from: string, to: string) => {
+	// editStagedPhrase reports whether the edit was taken, so a refused one
+	// can put its input back to the phrase that will be saved.
+	const editStagedPhrase = (id: string, from: string, to: string): boolean => {
 		const entry = activeStaged.find((candidate) => candidate.id === id);
-		if (!entry) return;
+		if (!entry || isSaving) return false;
 		const keywords = getValues("keywords");
 		// An edit that collides with a phrase already in the bank is refused, as
 		// the gateway would refuse the duplicate on save.
 		if (newPhrases(removePhrases(keywords, entry.tier, [from]), [to]).length === 0) {
 			toast.info(tcpx("suggestions.alreadyInBank"), { position: "top-right" });
-			return;
+			return false;
 		}
 		setValue("keywords", replacePhrase(keywords, entry.tier, from, to.trim()), { shouldDirty: true });
 		setStaged((current) =>
@@ -269,12 +310,41 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 					: candidate,
 			),
 		);
+		return true;
+	};
+
+	// discardStaged takes every staged group's phrases back out of the draft
+	// lists, leaving the rest of the draft as it is.
+	const discardStaged = () => {
+		if (isSaving) return;
+		let keywords = getValues("keywords");
+		for (const entry of activeStaged) keywords = removePhrases(keywords, entry.tier, entry.phrases);
+		setValue("keywords", keywords, { shouldDirty: true, shouldValidate: isSubmitted });
+		setStaged([]);
+		setSubmitError(null);
+		setInvalidFields(0);
 	};
 
 	// Shipped guidance initializes untouched drafts; an empty edited prompt is
 	// valid and means "use default guidance" when saved.
 	const defaultLLMPrompt = semanticStatus?.llm_default_prompt ?? createDefaults?.llmPrompt ?? "";
 	const decisionDefaults = semanticStatus?.decision_defaults ?? createDefaults?.decision;
+	// What the suggestions tier step sends while nothing is edited, rendered
+	// by the gateway from the saved router. A router being created has none.
+	const tierDefaultPrompt = semanticStatus?.suggestion_default_tier_prompt;
+	const tierDefaultCriteria = semanticStatus?.suggestion_default_tier_criteria;
+	const liveTierDefaults = useMemo<SuggestionTierDefaults | undefined>(
+		() =>
+			tierDefaultPrompt !== undefined && tierDefaultCriteria ? { prompt: tierDefaultPrompt, criteria: tierDefaultCriteria } : undefined,
+		[tierDefaultPrompt, tierDefaultCriteria],
+	);
+	// A status refresh can leave the generated text out (the gateway could not
+	// read the router to render it); edits are still compared with the text
+	// they were made against, the last known for this router.
+	const knownTierDefaults = useRef<KnownTierDefaults | undefined>(undefined);
+	knownTierDefaults.current = lastKnownTierDefaults(knownTierDefaults.current, routerId, liveTierDefaults);
+	const tierDefaults = knownTierDefaults.current?.defaults;
+	generatedTierCriteria.current = tierDefaults?.criteria;
 	const livePrompt = liveLLM?.prompt ?? "";
 	// The decision model's Restore defaults only refills the form: it saves like
 	// any other edit and Discard undoes it.
@@ -333,9 +403,9 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 
 	useEffect(() => {
 		if (!saved || isDirty || promptEdited.current) return;
-		reset(toFormValues(saved, decisionDefaults));
+		reset(toFormValues(saved, decisionDefaults, tierDefaults));
 		setSubmitError(null);
-	}, [saved, isDirty, reset, decisionDefaults]);
+	}, [saved, isDirty, reset, decisionDefaults, tierDefaults]);
 
 	// Status usually lands after the config, so guidance the form hydrated
 	// without defaults is filled in once they arrive. Only still-empty guidance
@@ -345,6 +415,20 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 		const seeded = decisionGuidanceFormValues(saved.decision, decisionDefaults);
 		setValue("decision.criteria", seeded.criteria, { shouldDirty: false });
 	}, [saved, decisionDefaults, getValues, setValue]);
+
+	// The tier step's criteria editors are seeded the same way once the
+	// generated criteria arrive: every tier still empty gets its saved edit or
+	// the generated criteria, and a filled tier is never overwritten.
+	useEffect(() => {
+		if (!saved || !tierDefaults) return;
+		const current = getValues("suggestions.tier_criteria");
+		const seeded = tierCriteriaFormValues(saved.suggestions?.tier, tierDefaults.criteria);
+		for (const tier of COMPLEXITY_TIER_VALUES) {
+			if (isDecisionTierEmpty(current[tier])) {
+				setValue(`suggestions.tier_criteria.${tier}`, seeded[tier], { shouldDirty: false });
+			}
+		}
+	}, [saved, tierDefaults, getValues, setValue]);
 
 	// Run after saved-data hydration and read the current form value, not the
 	// previous render's value, when config and status arrive together.
@@ -356,8 +440,9 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const discard = () => {
 		promptEdited.current = false;
 		setStaged([]);
-		if (saved) reset(toFormValues(saved, decisionDefaults));
+		if (saved) reset(toFormValues(saved, decisionDefaults, tierDefaults));
 		setSubmitError(null);
+		setInvalidFields(0);
 	};
 
 	// Restoring phrases persists through its own endpoint for a saved router;
@@ -375,7 +460,7 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 			.then((defaults) => {
 				promptEdited.current = false;
 				setStaged([]);
-				reset(toFormValues(defaults, decisionDefaults));
+				reset(toFormValues(defaults, decisionDefaults, tierDefaults));
 				toast.success(t("routing.resetToDefaults"), { position: "top-right" });
 			})
 			.catch((err) => setSubmitError(tcpx("restoreFailed", { error: getErrorMessage(err) })));
@@ -395,19 +480,21 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	const onValid = async (values: AnalyzerFormValues) => {
 		if (!canUpdate) return;
 		setSubmitError(null);
+		setInvalidFields(0);
 		// The endpoint replaces the whole record. A half-filled block falls back
 		// to what is stored rather than being omitted, so a save from the page
 		// never clears a working classifier whose sheet was never opened.
-		const payload = toAnalyzerPayload(values, isCreating ? undefined : saved);
+		const payload = toAnalyzerPayload(values, isCreating ? undefined : saved, tierDefaults);
 		// Taken before the save: staging is cleared with the form afterwards.
 		const accepting = activeStaged;
 		setIsSaving(true);
 		try {
 			const stored = await save(payload);
 			promptEdited.current = false;
-			reset(toFormValues(stored, decisionDefaults));
+			reset(toFormValues(stored, decisionDefaults, tierDefaults));
 			setOpenSheet(null);
 			setStaged([]);
+			setSaveCount((count) => count + 1);
 			// The phrases are saved; recording the suggestions as accepted is what
 			// stops later runs proposing them again. A failure here is reported
 			// but harmless: the next run finds them covered.
@@ -432,6 +519,7 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	// never have opened it; errors on the page close it so they are not hidden
 	// under the overlay.
 	const submit = handleSubmit(onValid, (formErrors) => {
+		setInvalidFields(countFieldErrors(formErrors));
 		const decisionSheetError = Boolean(
 			formErrors.decision?.provider ||
 			formErrors.decision?.model ||
@@ -466,8 +554,10 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 			classifier: liveClassifier,
 			semantic: liveSemantic,
 			llm: liveLLM,
+			keywords: liveKeywords,
 			suggestions: liveSuggestions,
 			decisionProvider: liveDecisionProvider,
+			decisionModel: liveDecisionModel,
 			prompt: livePrompt,
 		},
 		providers: {
@@ -488,7 +578,7 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 			retryWarmup,
 			isRetryingWarmup,
 		},
-		defaults: { llmPrompt: defaultLLMPrompt, decision: decisionDefaults },
+		defaults: { llmPrompt: defaultLLMPrompt, decision: decisionDefaults, tier: tierDefaults },
 		derived: {
 			isClassifierConfigured,
 			isLLMFallbackEnabled,
@@ -523,6 +613,7 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 			stage: stageSuggestion,
 			unstage: unstageSuggestion,
 			edit: editStagedPhrase,
+			discard: discardStaged,
 		},
 		restore: {
 			dialogOpen: restoreDialogOpen,
@@ -536,6 +627,8 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 		isSaving,
 		canSave,
 		submitError,
+		invalidFields,
+		saveCount,
 		selectClassifier: (next: AnalyzerFormValues["classifier"]) => {
 			if (next !== getValues("classifier")) setValue("classifier", next, { shouldDirty: true });
 		},
@@ -543,3 +636,11 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 }
 
 export type RouterConfigForm = ReturnType<typeof useRouterConfigForm>;
+
+// countFieldErrors counts the fields a react-hook-form error tree marks
+// invalid: each node carrying a message is one field.
+export function countFieldErrors(errors: unknown): number {
+	if (!errors || typeof errors !== "object") return 0;
+	if ("message" in errors && typeof (errors as { message?: unknown }).message === "string") return 1;
+	return Object.entries(errors).reduce((total, [key, value]) => (key === "ref" ? total : total + countFieldErrors(value)), 0);
+}

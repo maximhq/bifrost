@@ -320296,6 +320296,273 @@
           }
         }
       ]
+    },
+    {
+      "name": "309. Model router suggestions: tier step settings (suggestions tier step)",
+      "description": "Phrase suggestions decide each suggestion's tier in a step of its own, after an LLM writes the phrases: suggestions.tier on a model router picks the classifier (llm or decision), its provider and model, and the tier prompt. A tier step saved without a model has it filled in when saved (the phrase model for llm; the router's decision model, else the shipped one, for decision), so the model a run uses is always the one the config shows.\n\nThe request creates a decision-classifier model router that no routing rule names, with suggestions off and a decision tier step that names its question and one edited tier's criteria but no model. The test pins: the phrase model is kept; the tier step comes back with the router's decision model (typesafe/jev-latest) filled in and the question and edited tier kept as written; a read-back returns the same; the status endpoint serves the shipped question beside suggestion_default_instructions, and the text an unedited tier step sends, rendered from this router with its own phrases as examples (suggestion_default_tier_prompt, suggestion_default_tier_criteria); and a misspelled tier field, an unknown classifier, a provider without a model and criteria without a definition are each refused with 400. The router is deleted on every path. It makes no paid model calls: the router is never warmed or asked to classify, and suggestions never run.",
+      "item": [
+        {
+          "name": "typesafe/jev-latest decision tier step on a model router round-trips via POST /api/routing/model-routers - suggestions tier step",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: typeof body === 'string' ? body : JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "// A fresh name per run; the router itself is created by the request below.",
+                  "pm.collectionVariables.set('suggestionTierRouterName', 'Harness suggestions tier ' + Date.now());",
+                  "pm.collectionVariables.set('suggestionTierRouterId', 'harness-suggestions-tier-not-created');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: typeof body === 'string' ? body : JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "var TIER_PROMPT = 'Judge the work each request asks for.';",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('the router with a suggestions tier step is created (200)', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(body && body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "var ROUTER = body && body.id ? body.id : 'harness-suggestions-tier-not-created';",
+                  "pm.collectionVariables.set('suggestionTierRouterId', ROUTER);",
+                  "var expectedTier = { classifier: 'decision', provider: 'typesafe', model: 'jev-latest', instructions: TIER_PROMPT,",
+                  "  criteria: { COMPLEX: { definition: 'Multi-step design work.', examples: ['design our failover'] } } };",
+                  "if (body && body.suggestions) {",
+                  "  pm.test('the phrase model is kept as sent', function () {",
+                  "    pm.expect(body.suggestions.provider, JSON.stringify(body.suggestions)).to.eql('openai');",
+                  "    pm.expect(body.suggestions.model, JSON.stringify(body.suggestions)).to.eql('gpt-4.1-mini');",
+                  "  });",
+                  "  pm.test('a decision tier step without a model takes the router\\'s decision model, and keeps its question and edited tier', function () {",
+                  "    pm.expect(body.suggestions.tier, JSON.stringify(body.suggestions)).to.eql(expectedTier);",
+                  "  });",
+                  "}",
+                  "var probes = [",
+                  "  { label: 'a misspelled tier field is 400, not silently dropped', tier: '{\"mode\":\"llm\"}' },",
+                  "  { label: 'an unknown tier classifier is 400', tier: '{\"classifier\":\"lexical\"}' },",
+                  "  { label: 'a tier provider without a model is 400', tier: '{\"classifier\":\"llm\",\"provider\":\"openai\"}' },",
+                  "  { label: 'tier criteria without a definition are 400', tier: '{\"classifier\":\"decision\",\"criteria\":{\"SIMPLE\":{\"examples\":[\"hi\"]}}}' }",
+                  "];",
+                  "function routerWithTier(tier) {",
+                  "  return '{\"name\":\"Harness suggestions tier refusal ' + Date.now() + '\",\"classifier\":\"decision\",' +",
+                  "    '\"keywords\":{\"simple_keywords\":[\"hi\"],\"medium_keywords\":[\"write one function\"],\"complex_keywords\":[\"design a system\"]},' +",
+                  "    '\"decision\":{\"provider\":\"typesafe\",\"model\":\"jev-latest\"},' +",
+                  "    '\"suggestions\":{\"enabled\":false,\"provider\":\"openai\",\"model\":\"gpt-4.1-mini\",\"tier\":' + tier + '}}';",
+                  "}",
+                  "function cleanup() {",
+                  "  if (ROUTER === 'harness-suggestions-tier-not-created') { return; }",
+                  "  call('DELETE', '/api/routing/model-routers/' + ROUTER, null, function (res) {",
+                  "    pm.test('cleanup: the temporary router is deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  });",
+                  "}",
+                  "function refusals(i) {",
+                  "  if (i >= probes.length) { return cleanup(); }",
+                  "  var p = probes[i];",
+                  "  call('POST', '/api/routing/model-routers', routerWithTier(p.tier), function (res, json) {",
+                  "    pm.test('refusal: ' + p.label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(400); });",
+                  "    // A probe the gateway wrongly accepted is not left behind.",
+                  "    if (res && res.code === 200 && json && json.id) { return call('DELETE', '/api/routing/model-routers/' + json.id, null, function () { refusals(i + 1); }); }",
+                  "    refusals(i + 1);",
+                  "  });",
+                  "}",
+                  "if (ROUTER === 'harness-suggestions-tier-not-created') { refusals(0); } else {",
+                  "  // Read back: the tier step is persisted, not only echoed.",
+                  "  call('GET', '/api/routing/model-routers/' + ROUTER, null, function (res, json) {",
+                  "    pm.test('the tier step reads back as saved', function () {",
+                  "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(json && json.suggestions && json.suggestions.tier, res ? res.text() : '').to.eql(expectedTier);",
+                  "    });",
+                  "    // The status endpoint serves the shipped tier prompt for the editor.",
+                  "    call('GET', '/api/routing/model-routers/' + ROUTER + '/status', null, function (sres, sjson) {",
+                  "      pm.test('status serves the shipped question beside the phrase prompt', function () {",
+                  "        pm.expect(sres && sres.code, 'unexpected status: ' + (sres ? sres.text() : 'no response')).to.eql(200);",
+                  "        pm.expect(sjson && sjson.suggestion_default_tier_instructions, sres ? sres.text() : '').to.be.a('string').and.not.empty;",
+                  "        pm.expect(sjson.suggestion_default_instructions, sres.text()).to.be.a('string').and.not.empty;",
+                  "        pm.expect(sjson.suggestion_default_tier_instructions).to.not.eql(sjson.suggestion_default_instructions);",
+                  "      });",
+                  "      // What an unedited tier step sends, rendered from this router: its own phrases are the examples.",
+                  "      pm.test('status serves the generated llm prompt with the router\\'s own phrases as examples', function () {",
+                  "        var prompt = sjson && sjson.suggestion_default_tier_prompt;",
+                  "        pm.expect(prompt, sres ? sres.text() : '').to.be.a('string');",
+                  "        pm.expect(prompt.indexOf(sjson.suggestion_default_tier_instructions), prompt).to.eql(0);",
+                  "        pm.expect(prompt, prompt).to.match(/SIMPLE:\\n- a greeting or a one-word fact\\nMEDIUM:\\n- write or fix one function\\nCOMPLEX:\\n- design a distributed system with tradeoffs$/);",
+                  "      });",
+                  "      pm.test('status serves generated tier criteria with the router\\'s own phrases as examples', function () {",
+                  "        var criteria = sjson && sjson.suggestion_default_tier_criteria;",
+                  "        pm.expect(criteria, sres ? sres.text() : '').to.be.an('object').that.has.all.keys('SIMPLE', 'MEDIUM', 'COMPLEX');",
+                  "        pm.expect(criteria.MEDIUM.examples, JSON.stringify(criteria)).to.eql(['write or fix one function']);",
+                  "        pm.expect(criteria.MEDIUM.definition, JSON.stringify(criteria)).to.be.a('string').and.not.empty;",
+                  "      });",
+                  "      refusals(0);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{suggestionTierRouterName}}\",\n  \"classifier\": \"decision\",\n  \"keywords\": {\n    \"simple_keywords\": [\n      \"a greeting or a one-word fact\"\n    ],\n    \"medium_keywords\": [\n      \"write or fix one function\"\n    ],\n    \"complex_keywords\": [\n      \"design a distributed system with tradeoffs\"\n    ]\n  },\n  \"decision\": {\n    \"provider\": \"typesafe\",\n    \"model\": \"jev-latest\",\n    \"timeout\": \"10s\"\n  },\n  \"suggestions\": {\n    \"enabled\": false,\n    \"provider\": \"openai\",\n    \"model\": \"gpt-4.1-mini\",\n    \"tier\": {\n      \"classifier\": \"decision\",\n      \"instructions\": \"Judge the work each request asks for.\",\n      \"criteria\": {\n        \"COMPLEX\": {\n          \"definition\": \"Multi-step design work.\",\n          \"examples\": [\n            \"design our failover\"\n          ]\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/model-routers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "model-routers"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "340. Model router suggestions: cancel a run and replay a draft's impact (suggestions impact)",
+      "description": "Two management endpoints back the reworked Suggestions tab. POST /api/routing/complexity-suggestions/runs/{run_id}/cancel stops a queued or running phrase suggestion run on whichever node runs it. POST /api/routing/complexity-suggestions/impact replays the router's captured requests against a draft phrase bank and prices what would change tier.\n\nWhether a router has suggestions to cancel or traffic to replay depends on the gateway, so both cases name a router that cannot exist and pin the endpoint contract: each route is mounted, reads ?router_id=, and answers the handler's own 404 naming the router. Before the change the cancel path matched no route and a POST to /impact reached only the GET-only /{suggestion_id} route, so both cases were red. Neither case calls a provider.",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/complexity-suggestions/runs/{run_id}/cancel for an unknown model router - suggestions impact",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var message = body && body.error && body.error.message ? body.error.message : '';",
+                  "pm.test('the cancel handler answers 404 for a router that does not exist', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404, got: ' + pm.response.text()).to.eql(404);",
+                  "});",
+                  "pm.test('the 404 is the handler\\'s own, naming the router, not a missing route', function () {",
+                  "  pm.expect(message, 'unexpected error body: ' + pm.response.text()).to.eql('model router \"harness-no-such-suggestions-router\" not found');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-suggestions/runs/harness-no-such-run/cancel?router_id=harness-no-such-suggestions-router",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-suggestions",
+                "runs",
+                "harness-no-such-run",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "router_id",
+                  "value": "harness-no-such-suggestions-router"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/complexity-suggestions/impact for an unknown model router - suggestions impact",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var message = body && body.error && body.error.message ? body.error.message : '';",
+                  "pm.test('the impact handler answers 404 for a router that does not exist', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404, got: ' + pm.response.text()).to.eql(404);",
+                  "});",
+                  "pm.test('the 404 is the handler\\'s own, naming the router, not a missing route', function () {",
+                  "  pm.expect(message, 'unexpected error body: ' + pm.response.text()).to.eql('model router \"harness-no-such-suggestions-router\" not found');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-suggestions/impact?router_id=harness-no-such-suggestions-router&window=7d",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-suggestions",
+                "impact"
+              ],
+              "query": [
+                {
+                  "key": "router_id",
+                  "value": "harness-no-such-suggestions-router"
+                },
+                {
+                  "key": "window",
+                  "value": "7d"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phrases\":[{\"tier\":\"SIMPLE\",\"text\":\"where is my refund\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

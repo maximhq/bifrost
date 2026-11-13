@@ -196,6 +196,8 @@ test.describe('Complexity Router', () => {
         nearest_tier: 'MEDIUM',
         nearest_similarity: 0.46,
         example_log_ids: ['log-1', 'log-gone'],
+        // Where the group's requests route today.
+        current_routing: { MEDIUM: 180, none: 34 },
         embedding_signature: 'ns',
         run_id: 'run-1',
         last_seen_at: '2026-11-04T03:00:00Z',
@@ -215,6 +217,7 @@ test.describe('Complexity Router', () => {
         coverage: 1,
         nearest_similarity: 0.21,
         example_log_ids: [],
+        current_routing: { none: 12 },
         embedding_signature: 'ns',
         run_id: 'run-1',
         last_seen_at: '2026-11-04T03:00:00Z',
@@ -225,10 +228,25 @@ test.describe('Complexity Router', () => {
     const DISMISSED = [{ ...OPEN[1], id: 'sug-old', status: 'dismissed', phrases: ['translate this paragraph'] }]
     const LAST_RUN = {
       id: 'run-1',
+      router_id: 'default',
+      router_version: 'bank-v2',
+      window_start: '2026-10-28T03:00:00Z',
       triggered_by: 'schedule',
       status: 'succeeded',
       requests_read: 900,
+      requests_clustered: 900,
+      requests_assigned: 0,
+      requests_skipped: 0,
+      requests_grouped: 640,
       clusters: 30,
+      clusters_decided: 3,
+      clusters_over_limit: 0,
+      clusters_asked: 27,
+      clusters_done: 27,
+      clusters_failed: 0,
+      clusters_covered: 20,
+      clusters_incoherent: 5,
+      clusters_unreadable: 0,
       created: 2,
       refreshed: 0,
       superseded: 0,
@@ -236,13 +254,52 @@ test.describe('Complexity Router', () => {
       started_at: '2026-11-04T03:00:00Z',
       finished_at: '2026-11-04T03:02:00Z',
     }
+    const IMPACT = {
+      window_seconds: 7 * 24 * 3600,
+      requests: 640,
+      total: 640,
+      tiers: [
+        { tier: 'SIMPLE', live: 100, draft: 280, model: { provider: 'openai', model: 'gpt-4.1-mini' } },
+        { tier: 'MEDIUM', live: 300, draft: 154, model: { provider: 'openai', model: 'gpt-4.1' } },
+        { tier: 'COMPLEX', live: 206, draft: 206 },
+        { tier: 'none', live: 34, draft: 0 },
+      ],
+      changed_count: 214,
+      changed: [{ log_id: 'log-1', from: 'MEDIUM', to: 'SIMPLE', phrase: 'where is my refund', similarity: 0.91, text: 'where is my refund for order 12' }],
+      attention: [{ phrase: 'where is my refund', tier: 'SIMPLE', from_tier: 'MEDIUM', requests: 9, log_id: 'log-1', text: 'where is my refund for order 12' }],
+      live_cost: 4.2,
+      draft_cost: 1.05,
+      savings: 3.15,
+      priced: 200,
+      unpriced: 14,
+    }
     const CONFIG = {
       id: 'default',
       name: 'Complexity router',
       classifier: 'semantic',
       keywords: { simple_keywords: ['hello'], medium_keywords: ['summarize this support thread'], complex_keywords: ['design a system'] },
       semantic: { provider: 'openai', embedding_model: 'text-embedding-3-small', timeout: '2000ms', min_similarity: 0.4, vector_store: 'embedded', fallback: 'none' },
-      suggestions: { enabled: true, sample_rate: 0.1, lookback_days: 7, schedule: { every: '1d', start_at: '2026-11-12T03:00:00Z' }, max_clustered_requests: 20000, min_cluster_requests: 6 },
+      // As the gateway returns it: the models a run uses are filled in.
+      suggestions: {
+        enabled: true,
+        sample_rate: 0.1,
+        lookback_days: 7,
+        schedule: { every: '1d', start_at: '2026-11-12T03:00:00Z' },
+        max_clustered_requests: 20000,
+        min_cluster_requests: 6,
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        tier: { classifier: 'llm', provider: 'openai', model: 'gpt-4.1-mini' },
+      },
+    }
+    const TIER_PROMPT =
+      'Pick the tier by the work asked.\n\nTier definitions:\n- "SIMPLE": short answers\n\n' +
+      "Requests this router's administrator assigned to each tier; requests like these belong in that tier:\n" +
+      'SIMPLE:\n- hello\nMEDIUM:\n- summarize this support thread\nCOMPLEX:\n- design a system'
+    const TIER_CRITERIA = {
+      SIMPLE: { definition: 'One short answer.', signals: ['a lookup'], examples: ['hello'] },
+      MEDIUM: { definition: 'Routine multi-step work.', signals: ['a draft'], examples: ['summarize this support thread'] },
+      COMPLEX: { definition: 'Design with trade-offs.', signals: ['trade-offs'], examples: ['design a system'] },
     }
     let saved: Record<string, unknown>[] = []
     let statusCalls: { id: string; status: string }[] = []
@@ -271,7 +328,17 @@ test.describe('Complexity Router', () => {
         (url) => url.pathname === '/api/routing/model-routers/default/status',
         (route) =>
           route.fulfill({
-            json: { state: 'ready', loaded: 3, total: 3, cached_phrases: 3, suggestion_default_instructions: 'Write short reference phrases.' },
+            json: {
+              state: 'ready',
+              loaded: 3,
+              total: 3,
+              cached_phrases: 3,
+              suggestion_default_instructions: 'Write short reference phrases.',
+              suggestion_default_tier_instructions: 'Pick the tier by the work asked.',
+              // Rendered by the gateway from this router: its own phrases are the examples.
+              suggestion_default_tier_prompt: TIER_PROMPT,
+              suggestion_default_tier_criteria: TIER_CRITERIA,
+            },
           }),
       )
       await page.route(
@@ -344,11 +411,33 @@ test.describe('Complexity Router', () => {
                   log_id: 'log-1',
                   text: 'where is my refund for order 12',
                   current: { tier: 'MEDIUM', phrase: 'summarize this support thread', similarity: 0.46, accepted: true, candidate: false },
-                  with_phrases: { tier: body.phrases[0].tier, phrase: body.phrases[0].text, similarity: 0.91, accepted: true, candidate: true },
+                  // A phrase that repeats the example word for word matches it almost exactly.
+                  with_phrases: {
+                    tier: body.phrases[0].tier,
+                    phrase: body.phrases[0].text,
+                    similarity: body.phrases[0].text === 'where is my refund for order 12' ? 0.99 : 0.91,
+                    accepted: true,
+                    candidate: true,
+                  },
                   changed: true,
                 },
+                {
+                  log_id: 'log-2',
+                  text: 'refund for #47732 has not arrived',
+                  // Below the floor today: no tier from phrases.
+                  current: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.22, accepted: false, candidate: false },
+                  with_phrases: { tier: body.phrases[0].tier, phrase: body.phrases[0].text, similarity: 0.71, accepted: true, candidate: true },
+                  changed: true,
+                },
+                {
+                  log_id: 'log-3',
+                  text: 'design a caching layer for the api',
+                  current: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.81, accepted: true, candidate: false },
+                  with_phrases: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.81, accepted: true, candidate: false },
+                  changed: false,
+                },
               ],
-              taken_over: 1,
+              taken_over: 2 / 3,
             },
           })
         },
@@ -367,9 +456,14 @@ test.describe('Complexity Router', () => {
       const row = page.getByTestId('complexity-suggestion-row-sug-refund')
       await expect(row).toContainText('where is my refund')
       await expect(row).toContainText('Weak match')
-      await expect(row).toContainText('214 requests')
+      await expect(page.getByTestId('complexity-suggestion-count-sug-refund')).toHaveText('214')
+      // Why it is here: where its requests route today.
+      await expect(page.getByTestId('complexity-suggestion-split-sug-refund')).toHaveText('180 Medium · 34 no match')
+      await expect(page.getByTestId('complexity-suggestion-proposal-sug-refund')).toContainText('Simple')
+      await expect(page.getByTestId('complexity-suggestion-accept-sug-refund')).toBeVisible()
       await expect(page.getByTestId('complexity-suggestions-next-run')).toBeVisible()
-      await expect(page.getByTestId('complexity-suggestion-stale-sug-migration')).toContainText('Earlier phrase bank')
+      await expect(page.getByTestId('complexity-suggestions-last-run')).toContainText('900 analyzed · 2 groups')
+      await expect(page.getByTestId('complexity-suggestion-stale-sug-migration')).toContainText('Phrases changed since')
       await expect(page.getByTestId('complexity-suggestion-stale-sug-refund')).toHaveCount(0)
       expect(listRouters.every((id) => id === 'default')).toBe(true)
 
@@ -379,24 +473,68 @@ test.describe('Complexity Router', () => {
       const examples = page.getByTestId('complexity-suggestion-examples-sug-refund')
       await expect(examples).toContainText('where is my refund for order 12')
       await expect(examples).toContainText('1 example is not shown')
-
-      await page.getByTestId('complexity-suggestions-search-input').fill('migration')
-      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toHaveCount(0)
-      await expect(page.getByTestId('complexity-suggestion-row-sug-migration')).toBeVisible()
+      await expect(details).toContainText('Where the proposal comes from')
+      await expect(details).toContainText('refund status questions')
 
       await page.getByTestId('complexity-suggestions-list-dismissed').click()
-      await expect(page.getByTestId('complexity-suggestion-row-sug-old')).toHaveCount(0)
-      await page.getByTestId('complexity-suggestions-search-input').fill('')
       await expect(page.getByTestId('complexity-suggestion-row-sug-old')).toContainText('translate this paragraph')
+      await expect(page.getByTestId('complexity-suggestion-restore-sug-old')).toBeVisible()
+    })
+
+    test('should load more suggestions than one page holds', async ({ page }) => {
+      // More pending groups than a page holds; this route, added last, answers
+      // before the shared one and serves the requested page.
+      const MANY = Array.from({ length: 120 }, (_, i) => ({ ...OPEN[0], id: `sug-many-${i}`, request_count: 500 - i, phrases: [`question ${i}`] }))
+      const offsets: number[] = []
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) => {
+          const params = new URL(route.request().url()).searchParams
+          const limit = Number(params.get('limit') ?? 100)
+          const offset = Number(params.get('offset') ?? 0)
+          const rows = params.get('status') === 'dismissed' ? [] : MANY
+          if (limit > 1) offsets.push(offset)
+          return route.fulfill({
+            json: {
+              router_id: 'default',
+              router_version: 'bank-v2',
+              suggestions: rows.slice(offset, offset + limit),
+              total: rows.length,
+              limit,
+              offset,
+              counts: { open: MANY.length },
+              enabled: true,
+              last_run: LAST_RUN,
+              next_run_at: '2026-11-05T03:00:00Z',
+            },
+          })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+
+      await expect(page.getByTestId('complexity-suggestion-row-sug-many-99')).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestion-row-sug-many-100')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-suggestions-shown')).toHaveText('Showing 100 of 120')
+
+      await page.getByTestId('complexity-suggestions-load-more').click()
+      await expect(page.getByTestId('complexity-suggestion-row-sug-many-119')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-row-sug-many-0')).toBeVisible()
+      // Everything is loaded: no button, no "showing" line.
+      await expect(page.getByTestId('complexity-suggestions-list-footer')).toHaveCount(0)
+      expect(offsets).toContain(100)
     })
 
     test('should stage a suggestion, edit it, and accept it when the config is saved', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await page.getByTestId('complexity-suggestion-add-sug-refund').click()
+      await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
 
-      // Staged: gone from the list, shown in the staged panel, and the save is pending.
-      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toHaveCount(0)
-      const stagedInput = page.getByTestId('complexity-suggestions-staged-input-sug-refund-0')
+      // Accepted into the draft: the row stays, marked added, its tier counts
+      // it, the examples are replayed with its phrase, and the draft bar shows.
+      await expect(page.getByTestId('complexity-suggestion-added-sug-refund')).toHaveText('Added · Simple')
+      await expect(page.getByTestId('complexity-suggestions-zone-new-simple')).toHaveText('+1 new')
+      await expect(page.getByTestId('complexity-suggestion-replay-sug-refund')).toContainText('2 of 3 examples now go to Simple')
+      await expect(page.getByTestId('complexity-suggestions-draft-message')).toHaveText('1 group added from Suggestions. Not live yet.')
+      const stagedInput = page.getByTestId('complexity-suggestion-phrase-input-sug-refund')
       await expect(stagedInput).toHaveValue('where is my refund')
 
       await stagedInput.fill('where is my refund for an order')
@@ -409,22 +547,46 @@ test.describe('Complexity Router', () => {
       await expect.poll(() => saved.length).toBe(1)
       const keywords = saved[0].keywords as Record<string, string[]>
       expect(keywords.simple_keywords).toEqual(['hello', 'where is my refund for an order'])
-      // The suggestions block rides along unchanged.
+      // The suggestions block rides along unchanged, in the schedule shape the gateway accepts.
       expect(saved[0].suggestions).toMatchObject({ enabled: true, lookback_days: 7, schedule: { every: '1d', start_at: '2026-11-12T03:00:00Z' } })
+      expect((saved[0].suggestions as { schedule: Record<string, unknown> }).schedule).not.toHaveProperty('at')
       await expect.poll(() => statusCalls).toEqual([{ id: 'sug-refund', status: 'accepted' }])
     })
 
     test('should take a staged suggestion back without saving it', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await page.getByTestId('complexity-suggestion-tier-select-sug-migration').click()
-      await page.getByRole('option', { name: 'Medium' }).click()
-      await page.getByTestId('complexity-suggestion-add-sug-migration').click()
-      await expect(page.getByTestId('complexity-suggestions-staged-medium')).toContainText('+1 new')
+      await page.getByTestId('complexity-suggestion-set-tier-sug-migration').click()
+      await page.getByTestId('complexity-suggestion-set-tier-sug-migration-medium').click()
+      await expect(page.getByTestId('complexity-suggestions-zone-new-medium')).toHaveText('+1 new')
+      await expect(page.getByTestId('complexity-suggestion-added-sug-migration')).toHaveText('Added · Medium')
 
-      await page.getByTestId('complexity-suggestions-staged-undo-sug-migration').click()
-      await expect(page.getByTestId('complexity-suggestion-row-sug-migration')).toBeVisible()
+      await page.getByTestId('complexity-suggestion-undo-sug-migration').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-migration')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-suggestion-accept-sug-migration')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestions-draft-bar')).toHaveCount(0)
       await page.getByTestId('model-router-tab-configuration').click()
       await expect(page.getByTestId('complexity-router-save-changes-button')).toBeDisabled()
+    })
+
+    test('should add a selection to a tier, and a dragged row to the tier it is dropped on', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      const header = page.getByTestId('complexity-suggestions-list-header')
+      await expect(header).toContainText('2 groups')
+      await expect(page.getByTestId('complexity-suggestions-bulk-accept')).toHaveText('Accept all proposed (2)')
+
+      await page.getByTestId('complexity-suggestion-select-sug-refund').click()
+      await expect(header).toContainText('1 selected')
+      await expect(page.getByTestId('complexity-suggestions-bulk-dismiss')).toHaveText('Dismiss 1')
+      await expect(page.getByTestId('complexity-suggestions-bulk-accept')).toHaveText('Accept proposed tier (1)')
+      await page.getByTestId('complexity-suggestions-bulk-tier-complex').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-refund')).toHaveText('Added · Complex')
+      await expect(page.getByTestId('complexity-suggestions-zone-new-complex')).toHaveText('+1 new')
+
+      await page.getByTestId('complexity-suggestion-row-sug-migration').dragTo(page.getByTestId('complexity-suggestions-zone-simple'))
+      await expect(page.getByTestId('complexity-suggestion-added-sug-migration')).toHaveText('Added · Simple')
+      await expect(page.getByTestId('complexity-suggestions-draft-message')).toHaveText('2 groups added from Suggestions. Not live yet.')
+      await page.getByTestId('model-router-tab-configuration').click()
+      await expect(page.getByTestId('complexity-router-footer-note')).toContainText('2 suggested phrases staged')
     })
 
     test('should dismiss a suggestion and start a run', async ({ page }) => {
@@ -435,17 +597,166 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestions-run-now-button').click()
       const dialog = page.getByTestId('complexity-suggestions-run-dialog')
       await expect(dialog).toBeVisible()
+      // One line of copy; the estimate only gates Start and shows nothing when
+      // there is something to run on.
+      await expect(dialog).toContainText('Runs in the background inside your gateway, outside the request path.')
+      await expect(dialog).not.toContainText('requests in the window')
+      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toHaveCount(0)
+      const startButton = page.getByTestId('complexity-suggestions-run-start-button')
+      await expect(startButton).toBeEnabled()
       // The 7-day lookback offers 24 hours and 7 days, and starts on 7 days.
-      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('8,400 requests in the window')
       await page.getByTestId('complexity-suggestions-run-window-select').click()
       await expect(page.getByTestId('complexity-suggestions-run-window-14d')).toHaveCount(0)
       await page.getByTestId('complexity-suggestions-run-window-24h').click()
-      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('1,200 requests in the window')
-      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('At most 400 suggestion-model calls')
-      await page.getByTestId('complexity-suggestions-run-start-button').click()
+      await expect(startButton).toBeEnabled()
+      await startButton.click()
       await expect.poll(() => runStarts).toBe(1)
       expect(runWindows).toEqual(['24h'])
       await expect(dialog).toBeHidden()
+    })
+
+    test('should show a started run\'s suggestions without a reload', async ({ page }) => {
+      const STARTED = '6f1d2c3a-8b4e-4f5a-9c7d-1e2f3a4b5c6d'
+      const FRESH = { ...OPEN[0], id: 'sug-fresh', phrases: ['reset my password'], request_count: 9 }
+      let listedAfterStart = 0
+      // The gateway queues a run before the run records itself, so the lists
+      // refetched right after the start (the tab's and the tab count's) still
+      // show the previous run.
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) => {
+          if (runStarts === 0) return route.fallback()
+          listedAfterStart++
+          const fresh = listedAfterStart > 2
+          return route.fulfill({
+            json: {
+              router_id: 'default',
+              suggestions: fresh ? [...OPEN, FRESH] : OPEN,
+              counts: { open: OPEN.length + (fresh ? 1 : 0), dismissed: DISMISSED.length },
+              enabled: true,
+              last_run: fresh ? { ...LAST_RUN, id: STARTED, triggered_by: 'manual' } : LAST_RUN,
+              next_run_at: '2026-11-05T03:00:00Z',
+            },
+          })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-run-now-button').click()
+      await expect(page.getByTestId('complexity-suggestions-run-start-button')).toBeEnabled()
+      await page.getByTestId('complexity-suggestions-run-start-button').click()
+      await expect.poll(() => runStarts).toBe(1)
+      // Until the run records itself and ends, the card shows it in progress.
+      await expect(page.getByTestId('complexity-suggestions-run-progress')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestions-run-now-button')).toHaveCount(0)
+
+      await expect(page.getByTestId('complexity-suggestion-row-sug-fresh')).toBeVisible({ timeout: 15000 })
+      await expect(page.getByTestId('complexity-router-tab-suggestions-count')).toHaveText('3')
+      await expect(page.getByTestId('complexity-suggestions-run-now-button')).toBeEnabled()
+    })
+
+    test('should mark a suggestion that adds two phrases', async ({ page }) => {
+      const PAIR = { ...OPEN[0], id: 'sug-pair', phrases: ['translate this to formal german', 'formal german translation please'] }
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) =>
+          route.fulfill({
+            json: { suggestions: [PAIR], counts: { open: 1, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
+          }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      const row = page.getByTestId('complexity-suggestion-row-sug-pair')
+      await expect(row).toContainText('translate this to formal german')
+      await expect(row).toContainText('formal german translation please')
+    })
+
+    test('should decide suggestion tiers with a decision model, sending only the tiers edited', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-settings-button').click()
+      const sheet = page.getByTestId('complexity-suggestions-settings-sheet')
+      await expect(sheet).toBeVisible()
+      // No fallback model to explain away: both steps name their model.
+      await expect(sheet).not.toContainText('LLM fallback model')
+      await expect(page.getByTestId('complexity-suggestions-phrase-section')).toBeVisible()
+
+      await page.getByTestId('complexity-suggestions-tier-classifier-select').click()
+      await page.getByTestId('complexity-suggestions-tier-classifier-option-decision').click()
+      await expect(page.getByTestId('complexity-suggestions-tier-provider-select')).toBeVisible()
+      // The question shows the shipped text until it is edited.
+      const question = page.getByTestId('complexity-suggestions-tier-instructions-input')
+      await expect(question).toHaveValue('Pick the tier by the work asked.')
+      // The editor is named by its heading.
+      await expect(page.getByRole('textbox', { name: 'Question' })).toHaveAttribute('data-testid', 'complexity-suggestions-tier-instructions-input')
+      await expect(page.getByTestId('complexity-suggestions-tier-instructions-state')).toHaveText('Default')
+      await question.fill('Judge the work each request asks for.')
+      await expect(page.getByTestId('complexity-suggestions-tier-instructions-state')).toHaveText('Edited')
+
+      // Each tier's choice shows the router's own phrases as its examples.
+      const complex = page.getByTestId('complexity-suggestions-tier-criteria-tier-complex')
+      await expect(complex).toContainText('Design with trade-offs.')
+      await expect(complex).toContainText('design a system')
+      await page.getByTestId('complexity-suggestions-tier-criteria-complex-definition-edit-button').click()
+      await page.getByTestId('complexity-suggestions-tier-criteria-complex-definition-input').fill('Multi-step design work.')
+      await page.getByTestId('complexity-suggestions-settings-save-button').click()
+
+      await expect.poll(() => saved.length).toBe(1)
+      expect(saved[0].suggestions).toMatchObject({
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        // The router has no decision model of its own, so the shipped one.
+        tier: {
+          classifier: 'decision',
+          provider: 'typesafe',
+          model: 'jev-latest',
+          instructions: 'Judge the work each request asks for.',
+          // Only the edited tier is frozen; the others stay generated.
+          criteria: { COMPLEX: { definition: 'Multi-step design work.', signals: ['trade-offs'], examples: ['design a system'] } },
+        },
+      })
+      const tier = (saved[0].suggestions as { tier: { criteria: Record<string, unknown> } }).tier
+      expect(Object.keys(tier.criteria)).toEqual(['COMPLEX'])
+    })
+
+    test('should show and edit the whole llm tier prompt, examples included', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-settings-button').click()
+      const prompt = page.getByTestId('complexity-suggestions-tier-prompt-input')
+      // The editor is named by its heading.
+      await expect(page.getByRole('textbox', { name: 'Tier selection prompt' })).toHaveAttribute('data-testid', 'complexity-suggestions-tier-prompt-input')
+      // Unedited, the editor holds the generated prompt, examples and all.
+      await expect(prompt).toHaveValue(TIER_PROMPT)
+      await expect(page.getByTestId('complexity-suggestions-tier-prompt-state')).toHaveText('Default')
+      await expect(page.getByTestId('complexity-suggestions-tier-prompt-reset-button')).toHaveCount(0)
+
+      const edited = TIER_PROMPT.replace('MEDIUM:\n- summarize this support thread', 'MEDIUM:\n- summarize this support thread\n- draft a refund reply')
+      await prompt.fill(edited)
+      await expect(page.getByTestId('complexity-suggestions-tier-prompt-state')).toHaveText('Edited')
+      // Back to generated: the editor shows the generated prompt again.
+      await page.getByTestId('complexity-suggestions-tier-prompt-reset-button').click()
+      await expect(prompt).toHaveValue(TIER_PROMPT)
+      await expect(page.getByTestId('complexity-suggestions-tier-prompt-state')).toHaveText('Default')
+
+      await prompt.fill(edited)
+      await page.getByTestId('complexity-suggestions-settings-save-button').click()
+      await expect.poll(() => saved.length).toBe(1)
+      expect(saved[0].suggestions).toMatchObject({ tier: { classifier: 'llm', prompt: edited } })
+    })
+
+    test('should not save suggestions turned on without a model to write phrases', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default',
+        (route) => {
+          if (route.request().method() === 'PUT') return route.fallback()
+          const { provider: _p, model: _m, tier: _t, ...rest } = CONFIG.suggestions
+          return route.fulfill({ json: { ...CONFIG, suggestions: { ...rest, enabled: false } } })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-settings-button').click()
+      await page.getByTestId('complexity-suggestions-enabled-switch').click()
+      await page.getByTestId('complexity-suggestions-settings-save-button').click()
+      await expect(page.getByTestId('complexity-suggestions-settings-sheet')).toContainText('Choose the model that writes phrases')
+      await expect(page.getByTestId('complexity-suggestions-settings-sheet')).toContainText('Choose the model that decides tiers')
+      expect(saved).toHaveLength(0)
     })
 
     test('should not show or start on an estimate for another window', async ({ page }) => {
@@ -464,115 +775,107 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestions-run-now-button').click()
       const estimate = page.getByTestId('complexity-suggestions-run-estimate')
       const startButton = page.getByTestId('complexity-suggestions-run-start-button')
-      await expect(estimate).toContainText('8,400 requests in the window')
       await expect(startButton).toBeEnabled()
 
       await page.getByTestId('complexity-suggestions-run-window-select').click()
       await page.getByTestId('complexity-suggestions-run-window-24h').click()
-      // While the new window is estimated, the old window's counts are gone
-      // and the run cannot start.
-      await expect(estimate).toContainText('Estimating')
-      await expect(estimate).not.toContainText('8,400')
+      // While the new window is estimated, the run cannot start on the old
+      // window's estimate.
       await expect(startButton).toBeDisabled()
 
       release()
       await expect(estimate).toContainText('Could not estimate the run')
-      await expect(estimate).not.toContainText('8,400')
       await expect(startButton).toBeDisabled()
       expect(runStarts).toBe(0)
     })
 
-    test('should page through more suggestions than fit on one page', async ({ page }) => {
-      // 101 open suggestions: the gateway serves 100 a page, so the last one is
-      // on the second page.
-      const many = Array.from({ length: 101 }, (_, i) => ({
-        ...OPEN[1],
-        id: `sug-${String(i).padStart(3, '0')}`,
-        phrases: [`suggested phrase ${i}`],
-        request_count: 1000 - i,
-      }))
-      const offsets: number[] = []
+    test('should not start a run on a window with nothing captured', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
-        (route) => {
-          const params = new URL(route.request().url()).searchParams
-          const offset = Number(params.get('offset') ?? 0)
-          const limit = Number(params.get('limit') ?? 100)
-          offsets.push(offset)
-          return route.fulfill({
-            json: {
-              suggestions: many.slice(offset, offset + limit),
-              total: many.length,
-              limit,
-              offset,
-              counts: { open: many.length, dismissed: 0 },
-              enabled: true,
-              last_run: LAST_RUN,
-            },
-          })
-        },
+        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (route) => route.fulfill({ json: { requests: 0, clustered: 0, assigned: 0, skipped: 0, max_model_calls: 0 } }),
       )
-      await page.goto('/workspace/complexity-router?tab=suggestions')
-      await expect(page.getByTestId('complexity-suggestion-row-sug-000')).toBeVisible({ timeout: 10000 })
-      await expect(page.getByTestId('complexity-suggestion-row-sug-100')).toHaveCount(0)
-      await expect(page.getByTestId('complexity-suggestions-page-range')).toHaveText('1–100 of 101')
-      await expect(page.getByTestId('complexity-suggestions-prev-page')).toBeDisabled()
-
-      await page.getByTestId('complexity-suggestions-next-page').click()
-      const last = page.getByTestId('complexity-suggestion-row-sug-100')
-      await expect(last).toContainText('suggested phrase 100')
-      await expect(page.getByTestId('complexity-suggestions-page-range')).toHaveText('101–101 of 101')
-      await expect(page.getByTestId('complexity-suggestions-next-page')).toBeDisabled()
-      // The suggestion on the later page can be acted on.
-      await page.getByTestId('complexity-suggestion-dismiss-sug-100').click()
-      await expect.poll(() => statusCalls).toEqual([{ id: 'sug-100', status: 'dismissed' }])
-      expect(offsets).toContain(100)
-
-      await page.getByTestId('complexity-suggestions-prev-page').click()
-      await expect(page.getByTestId('complexity-suggestion-row-sug-000')).toBeVisible()
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-run-now-button').click()
+      await expect(page.getByTestId('complexity-suggestions-run-estimate')).toContainText('No requests have been captured in this window yet.')
+      await expect(page.getByTestId('complexity-suggestions-run-start-button')).toBeDisabled()
     })
 
-    test('should treat a queued run as in progress', async ({ page }) => {
+    test('should say why nothing is captured when the vector store is Chromem', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/status',
         (route) =>
           route.fulfill({
             json: {
-              suggestions: OPEN,
-              total: OPEN.length,
-              limit: 100,
-              offset: 0,
-              counts: { open: OPEN.length, dismissed: 0 },
-              enabled: true,
-              last_run: { ...LAST_RUN, status: 'queued', finished_at: undefined },
+              state: 'ready',
+              loaded: 3,
+              total: 3,
+              cached_phrases: 3,
+              capture_available: false,
+              capture_unavailable_reason: 'embedded_vector_store',
+              suggestion_default_instructions: 'Write short reference phrases.',
+              suggestion_default_tier_instructions: 'Pick the tier by the work asked.',
+              suggestion_default_tier_prompt: TIER_PROMPT,
+              suggestion_default_tier_criteria: TIER_CRITERIA,
             },
           }),
       )
-      await page.goto('/workspace/complexity-router?tab=suggestions')
-      const runNow = page.getByTestId('complexity-suggestions-run-now-button')
-      await expect(runNow).toBeDisabled({ timeout: 10000 })
-      await expect(page.getByTestId('complexity-suggestions-last-run')).toContainText('in progress')
-      await expect(page.getByTestId('complexity-suggestions-pagination')).toHaveCount(0)
-      expect(runStarts).toBe(0)
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      const callout = page.getByTestId('complexity-suggestions-capture-unavailable')
+      await expect(callout).toContainText('Chromem')
+      await expect(callout).toContainText('shared vector store')
+      // Nothing to run on, so no Run now.
+      await expect(page.getByTestId('complexity-suggestions-run-now-button')).toHaveCount(0)
+    })
+
+    test('should say that leaving the semantic classifier turns suggestions off', async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=configuration')
+      const note = page.getByTestId('complexity-router-footer-note')
+      // The classifier cards are folded away until the operator asks to change it.
+      await page.getByTestId('model-router-classifier-change-button').click()
+      await page.getByTestId('complexity-router-classifier-option-llm').click()
+      await expect(note).toContainText('Saving turns phrase suggestions off: they only work with the semantic classifier.')
+      // Back on semantic, nothing about suggestions changes.
+      await page.getByTestId('complexity-router-classifier-option-semantic').click()
+      await expect(note).not.toContainText('phrase suggestions')
     })
 
     test('should test an edited phrase before staging it', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
       await page.getByTestId('complexity-suggestion-test-sug-refund').click()
       const dialog = page.getByTestId('complexity-phrase-test-dialog')
       await expect(dialog).toBeVisible()
       await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('refund status for my order')
       await page.getByTestId('complexity-phrase-test-run-button').click()
-      await expect(page.getByTestId('complexity-phrase-test-taken-over')).toContainText('100%')
+      // The summary counts what changes, not how many examples the phrase is nearest to.
+      await expect(page.getByTestId('complexity-phrase-test-changed')).toHaveText('2 of 3 examples would route differently.')
+      await expect(page.getByTestId('complexity-phrase-test-to-tier')).toHaveText('Routed to Simple: 2 of 3')
+      await expect(page.getByTestId('complexity-phrase-test-newly-matched')).toHaveText('1 newly above the similarity floor')
       await expect(page.getByTestId('complexity-phrase-test-example-log-1')).toContainText('where is my refund for order 12')
+      // Below the floor reads as no match, not as a tier it does not route to.
+      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2-unmatched')).toHaveText('No match')
+      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2-tier')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-phrase-test-example-with-log-2-tier')).toHaveText('Simple')
+      // The similarity is shown in full, ahead of the phrase it was measured against.
+      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2')).toContainText('0.22')
+      await expect(page.getByTestId('complexity-phrase-test-example-log-1')).toHaveAttribute('data-changed', 'true')
+      await expect(page.getByTestId('complexity-phrase-test-example-log-3')).toHaveAttribute('data-changed', 'false')
+      await expect(page.getByTestId('complexity-phrase-test-copies-example')).toHaveCount(0)
+
+      // A phrase that repeats an example word for word is flagged.
+      await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('where is my refund for order 12')
+      await page.getByTestId('complexity-phrase-test-run-button').click()
+      await expect(page.getByTestId('complexity-phrase-test-copies-example')).toContainText('almost word for word')
+      await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('refund status for my order')
 
       await page.getByTestId('complexity-phrase-test-add-button').click()
       await expect(dialog).toBeHidden()
-      await expect(page.getByTestId('complexity-suggestions-staged-input-sug-refund-0')).toHaveValue('refund status for my order')
+      await expect(page.getByTestId('complexity-suggestion-phrase-input-sug-refund')).toHaveValue('refund status for my order')
     })
 
     test('should drop a phrase test result once the phrases or tier it was run on change', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
       await page.getByTestId('complexity-suggestion-test-sug-refund').click()
       const result = page.getByTestId('complexity-phrase-test-result')
       const runButton = page.getByTestId('complexity-phrase-test-run-button')
@@ -610,40 +913,215 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-phrase-test-error')).toHaveCount(0)
     })
 
-    test('should filter the list to prompt-template suggestions', async ({ page }) => {
-      const TEMPLATE = {
-        ...OPEN[1],
-        id: 'sug-template',
-        tier: 'MEDIUM',
-        category: 'template',
-        phrases: ['write an image prompt for a scene'],
-        reason: 'One image-prompt scaffold sent with different scenes.',
-      }
+    test('should say which groups accept-all could not add', async ({ page }) => {
+      // Two groups proposing the same phrase: once the first is staged, the
+      // second has nothing new to add.
+      const TWIN = { ...OPEN[0], id: 'sug-twin', request_count: 9 }
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) =>
+          route.fulfill({
+            json: { suggestions: [OPEN[0], TWIN], counts: { open: 2, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
+          }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-bulk-accept').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-refund')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-twin')).toHaveCount(0)
+      await expect(page.getByText('1 group not added: its phrases are already in the phrase lists or the draft.')).toBeVisible()
+    })
+
+    test('should leave the tier to the user when the tier model was not confident', async ({ page }) => {
+      const UNSURE = { ...OPEN[1], id: 'sug-unsure', tier: 'MEDIUM', confidence: 'low', phrases: ['plan the rollout of this flag'] }
       // Registered after beforeEach, so it answers first.
       await page.route(
         (url) => url.pathname === '/api/routing/complexity-suggestions',
         (route) =>
           route.fulfill({
-            json: {
-              suggestions: [...OPEN, TEMPLATE],
-              counts: { open: OPEN.length + 1, dismissed: DISMISSED.length },
-              enabled: true,
-              last_run: LAST_RUN,
-              next_run_at: '2026-11-05T03:00:00Z',
-            },
+            json: { suggestions: [OPEN[0], UNSURE], counts: { open: 2, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
           }),
       )
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-proposal-sug-unsure')).toContainText('You decide')
+      await expect(page.getByTestId('complexity-suggestion-accept-sug-unsure')).toHaveCount(0)
+      // Accepting every proposal leaves the undecided group pending.
+      await expect(page.getByTestId('complexity-suggestions-bulk-accept')).toHaveText('Accept all proposed (1)')
+      await page.getByTestId('complexity-suggestions-bulk-accept').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-refund')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-unsure')).toHaveCount(0)
+      await page.getByTestId('complexity-suggestion-set-tier-sug-unsure').click()
+      await page.getByTestId('complexity-suggestion-set-tier-sug-unsure-complex').click()
+      await expect(page.getByTestId('complexity-suggestion-added-sug-unsure')).toHaveText('Added · Complex')
+    })
 
-      await page.getByTestId('complexity-suggestions-category-select').click()
-      await expect(page.getByTestId('complexity-suggestions-category-option-template')).toContainText('Prompt template (1)')
-      await page.getByTestId('complexity-suggestions-category-option-template').click()
+    test("should break down how a run's window became its groups", async ({ page }) => {
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-breakdown-toggle').click()
+      const breakdown = page.getByTestId('complexity-suggestions-breakdown')
+      await expect(page.getByTestId('complexity-suggestions-breakdown-window')).toContainText('900')
+      await expect(page.getByTestId('complexity-suggestions-breakdown-ungrouped')).toContainText('260')
+      await expect(page.getByTestId('complexity-suggestions-breakdown-grouped')).toContainText('30 groups')
+      await expect(page.getByTestId('complexity-suggestions-breakdown-covered')).toContainText('20 groups')
+      await expect(page.getByTestId('complexity-suggestions-breakdown-shown')).toContainText('2 groups')
+      // A step that took nothing away is not listed.
+      await expect(page.getByTestId('complexity-suggestions-breakdown-skipped')).toHaveCount(0)
+      await expect(breakdown).not.toContainText("past this run's limits")
+    })
 
-      await expect(page.getByTestId('complexity-suggestion-row-sug-template')).toBeVisible()
-      await expect(page.getByTestId('complexity-suggestion-row-sug-template')).toContainText('write an image prompt for a scene')
-      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toHaveCount(0)
-      await expect(page.getByTestId('complexity-suggestion-row-sug-migration')).toHaveCount(0)
+    test("should show a running run's progress and cancel it", async ({ page }) => {
+      let cancelled: string | null = null
+      const RUNNING = { ...LAST_RUN, id: 'run-live', status: 'running', stage: 'suggesting', clusters_asked: 20, clusters_done: 5, finished_at: undefined }
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) =>
+          route.fulfill({
+            json: {
+              suggestions: OPEN,
+              counts: { open: OPEN.length, dismissed: 0 },
+              enabled: true,
+              last_run: cancelled ? { ...RUNNING, status: 'cancelled', stage: undefined } : RUNNING,
+            },
+          }),
+      )
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/run-live/cancel',
+        (route) => {
+          cancelled = new URL(route.request().url()).searchParams.get('router_id')
+          return route.fulfill({ json: { ...RUNNING, status: 'cancelled' } })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await expect(page.getByTestId('complexity-suggestions-run-progress')).toContainText('Analyzing the last 7 days')
+      await expect(page.getByTestId('complexity-suggestions-run-stage')).toHaveText('Proposing tiers: 5 of 20 groups…')
+      await page.getByTestId('complexity-suggestions-cancel-run-button').click()
+      await expect.poll(() => cancelled).toBe('default')
+      await expect(page.getByTestId('complexity-suggestions-last-run')).toContainText('cancelled', { timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestions-run-progress')).toHaveCount(0)
+    })
+
+    test("should review a draft's impact and apply it from the draft bar", async ({ page }) => {
+      let replayed: { tier: string; text: string }[] | null = null
+      let replayFloor: unknown
+      let replays = 0
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (route) => {
+          replays++
+          replayed = route.request().postDataJSON().phrases
+          replayFloor = route.request().postDataJSON().min_similarity
+          return route.fulfill({ json: IMPACT })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
+      await page.getByTestId('complexity-suggestions-draft-review').click()
+
+      const impact = page.getByTestId('complexity-suggestions-impact')
+      await expect(impact).toBeVisible()
+      await expect(page).toHaveURL(/view=impact/)
+      // The whole draft bank is replayed, the accepted phrase included.
+      await expect.poll(() => replayed).toEqual([
+        { tier: 'SIMPLE', text: 'hello' },
+        { tier: 'SIMPLE', text: 'where is my refund' },
+        { tier: 'MEDIUM', text: 'summarize this support thread' },
+        { tier: 'COMPLEX', text: 'design a system' },
+      ])
+      await expect(page.getByTestId('complexity-suggestions-impact-summary')).toContainText('214 requests (33.4%) would change tier.')
+      // One draft, one replay: an answer must not set off another request.
+      await page.waitForTimeout(1500)
+      expect(replays).toBe(1)
+      await expect(page.getByTestId('complexity-suggestions-impact-savings')).toContainText('$3.15')
+      await expect(page.getByTestId('complexity-suggestions-impact-mix-simple')).toContainText('+180')
+      await expect(page.getByTestId('complexity-suggestions-impact-attention')).toContainText('9 requests may have moved to Simple by mistake')
+      await page.getByTestId('complexity-suggestions-impact-pricing-toggle').click()
+      await expect(page.getByTestId('complexity-suggestions-impact-pricing')).toContainText('openai/gpt-4.1-mini')
+      await expect(page.getByTestId('complexity-suggestions-impact-pricing')).toContainText('No model set for this tier')
+
+      await page.getByTestId('complexity-suggestions-draft-apply').click()
+      await expect.poll(() => saved.length).toBe(1)
+      expect((saved[0].keywords as Record<string, string[]>).simple_keywords).toEqual(['hello', 'where is my refund'])
+      await expect.poll(() => statusCalls).toEqual([{ id: 'sug-refund', status: 'accepted' }])
+      await expect(page.getByTestId('complexity-suggestions-draft-bar')).toHaveCount(0)
+      // Applied: the impact of a draft that is now live has nothing to show.
+      await expect(page).not.toHaveURL(/view=impact/)
+      // The draft is replayed at the similarity floor it would save.
+      expect(replayFloor).toBe(0.4)
+    })
+
+    test('should keep the impact view and say why when applying the draft fails', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (route) => route.fulfill({ json: IMPACT }),
+      )
+      // Registered last, so it answers saves first; reads fall through.
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default',
+        (route) =>
+          route.request().method() === 'PUT'
+            ? route.fulfill({ status: 500, json: { is_bifrost_error: false, error: { message: 'the config store is unavailable' } } })
+            : route.fallback(),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
+      await page.getByTestId('complexity-suggestions-draft-review').click()
+      await expect(page.getByTestId('complexity-suggestions-impact-summary')).toBeVisible()
+
+      await page.getByTestId('complexity-suggestions-draft-apply').click()
+      await expect(page.getByTestId('complexity-suggestions-draft-error')).toContainText(/the config store is unavailable/i)
+      await expect(page.getByTestId('complexity-suggestions-impact')).toBeVisible()
+      await expect(page).toHaveURL(/view=impact/)
+      await expect(page.getByTestId('complexity-suggestions-draft-bar')).toBeVisible()
+    })
+
+    test('should open the group a flagged phrase came from', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (route) => route.fulfill({ json: IMPACT }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
+      await page.getByTestId('complexity-suggestions-draft-review').click()
+      await page.getByTestId('complexity-suggestions-impact-review-group').click()
+
+      await expect(page).not.toHaveURL(/view=impact/)
+      await expect(page.getByTestId('complexity-suggestion-details-sug-refund')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-details-sug-migration')).toHaveCount(0)
+    })
+
+    test('should say when the tier choices cannot be loaded', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/status',
+        (route) => route.fulfill({ status: 500, json: { is_bifrost_error: false, error: { message: 'status unavailable' } } }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestions-settings-button').click()
+      await page.getByTestId('complexity-suggestions-tier-classifier-select').click()
+      await page.getByTestId('complexity-suggestions-tier-classifier-option-decision').click()
+      await expect(page.getByTestId('complexity-suggestions-tier-criteria-unavailable')).toBeVisible()
+    })
+
+    test('should warn about a phrase that repeats the bank even with no example to route', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions/test',
+        (route) => {
+          const body = route.request().postDataJSON()
+          return route.fulfill({
+            json: {
+              phrases: body.phrases.map((p: { tier: string; text: string }) => ({
+                ...p,
+                nearest_existing: { tier: 'SIMPLE', phrase: 'hello', similarity: 0.99, accepted: true, candidate: false },
+              })),
+              examples: [],
+            },
+          })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
+      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
+      await page.getByTestId('complexity-suggestion-test-sug-refund').click()
+      await page.getByTestId('complexity-phrase-test-run-button').click()
+      await expect(page.getByTestId('complexity-phrase-test-no-examples')).toBeVisible()
+      await expect(page.getByTestId('complexity-phrase-test-duplicate')).toBeVisible()
     })
 
     test('should save an interval and a first run from the settings sheet', async ({ page }) => {
@@ -651,8 +1129,9 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestions-settings-button').click()
       await expect(page.getByTestId('complexity-suggestions-settings-sheet')).toBeVisible()
 
-      await page.getByTestId('complexity-suggestions-every-select').click()
-      await page.getByTestId('complexity-suggestions-every-option-1w').click()
+      await page.getByTestId('complexity-suggestions-every-count-input').fill('2')
+      await page.getByTestId('complexity-suggestions-every-unit-select').click()
+      await page.getByTestId('complexity-suggestions-every-unit-option-w').click()
       // Cluster sizes are not edited in the UI.
       await expect(page.getByTestId('complexity-suggestions-max-clustered-input')).toHaveCount(0)
       await expect(page.getByTestId('complexity-suggestions-min-cluster-input')).toHaveCount(0)
@@ -667,51 +1146,51 @@ test.describe('Complexity Router', () => {
       await expect.poll(() => saved.length).toBe(1)
       expect(saved[0].suggestions).toMatchObject({
         enabled: true,
-        schedule: { every: '1w', start_at: startAt },
+        schedule: { every: '2w', start_at: startAt },
         // Set outside the UI, they ride along unchanged.
         max_clustered_requests: 20000,
         min_cluster_requests: 6,
       })
-      expect((saved[0].suggestions as { schedule: Record<string, unknown> }).schedule).not.toHaveProperty('timezone')
     })
 
     test('should tie each settings error to its field for assistive tech', async ({ page }) => {
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
       await page.getByTestId('complexity-suggestions-settings-button').click()
       await expect(page.getByTestId('complexity-suggestions-settings-sheet')).toBeVisible()
-      // The instructions box has a name of its own, not only a placeholder.
-      await expect(page.getByRole('textbox', { name: 'Suggestion instructions' })).toHaveAttribute(
+      // Each prompt box has a name of its own, not only a heading beside it.
+      await expect(page.getByRole('textbox', { name: 'Phrase generation prompt' })).toHaveAttribute(
         'data-testid',
         'complexity-suggestions-instructions-input',
       )
 
       const sample = page.getByTestId('complexity-suggestions-sample-input')
+      const every = page.getByTestId('complexity-suggestions-every-count-input')
       const lookback = page.getByTestId('complexity-suggestions-lookback-input')
-      const firstRun = page.getByTestId('complexity-suggestions-start-at-input')
       await sample.fill('0')
-      await lookback.fill('0')
+      // Days go up to 30; past that the gateway wants weeks.
+      await every.fill('31')
       await page.getByTestId('complexity-suggestions-settings-save-button').click()
 
       for (const [input, id] of [
         [sample, 'suggestions-sample-error'],
-        [lookback, 'suggestions-lookback-error'],
+        [every, 'suggestions-every-error'],
       ] as const) {
         await expect(input).toHaveAttribute('aria-invalid', 'true')
         await expect(input).toHaveAttribute('aria-describedby', id)
         await expect(page.locator(`#${id}`)).toBeVisible()
       }
       // A valid field carries neither attribute.
-      await expect(firstRun).not.toHaveAttribute('aria-invalid')
-      await expect(firstRun).not.toHaveAttribute('aria-describedby')
+      await expect(lookback).not.toHaveAttribute('aria-invalid')
+      await expect(lookback).not.toHaveAttribute('aria-describedby')
       expect(saved).toHaveLength(0)
 
       // Fixed, the attributes go with the message.
       await sample.fill('10')
-      await lookback.fill('7')
+      await every.fill('30')
       await expect(sample).not.toHaveAttribute('aria-invalid')
       await expect(sample).not.toHaveAttribute('aria-describedby')
       await expect(page.locator('#suggestions-sample-error')).toHaveCount(0)
-      await expect(lookback).not.toHaveAttribute('aria-invalid')
+      await expect(every).not.toHaveAttribute('aria-invalid')
     })
   })
 })

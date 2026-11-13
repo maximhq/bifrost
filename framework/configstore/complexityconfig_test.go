@@ -1483,6 +1483,93 @@ func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
 	}))
 }
 
+// The tier block decodes strictly, defaults to the llm classifier, and every
+// model a run will use is filled in and shown: the phrase model from the llm
+// block, an llm tier from the phrase model, a decision tier from the decision
+// block or the shipped decision default. Models a block names are kept.
+func TestComplexitySuggestionsTierSettings(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","provider":"typesafe","model":"jev-latest","instructions":"judge the work"}}`), &cfg))
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: "typesafe", Model: "jev-latest", Instructions: "judge the work"}, cfg.Tier)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"mode":"llm"}}`), &cfg), `unknown complexity suggestions tier field "mode"`)
+
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = &ComplexityLLMConfig{Provider: schemas.OpenAI, Model: "gpt-4.1-mini"}
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	n := analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, schemas.OpenAI, n.Suggestions.Provider)
+	assert.Equal(t, "gpt-4.1-mini", n.Suggestions.Model, "the phrase model is filled from the llm block")
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: schemas.OpenAI, Model: "gpt-4.1-mini"}, n.Suggestions.Tier,
+		"no tier block decides tiers with the phrase model")
+
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.Anthropic, Model: "claude-haiku-4-5", Tier: &ComplexitySuggestionsTierConfig{Classifier: " Decision "}}
+	n = analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, "claude-haiku-4-5", n.Suggestions.Model, "a named phrase model is kept")
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: DefaultComplexityDecisionProvider, Model: DefaultComplexityDecisionModel}, n.Suggestions.Tier,
+		"a decision tier without a model takes the shipped decision default")
+
+	analyzer.Decision = &ComplexityDecisionConfig{Provider: schemas.OpenAI, Model: "gpt-5-mini"}
+	n = analyzer.Normalized()
+	assert.Equal(t, "gpt-5-mini", n.Suggestions.Tier.Model, "a decision tier takes the router's decision model")
+
+	analyzer.Suggestions.Tier = &ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: schemas.OpenAI, Model: "gpt-5"}
+	n = analyzer.Normalized()
+	assert.Equal(t, "gpt-5", n.Suggestions.Tier.Model, "a named tier model is kept")
+
+	// The editable text: an llm prompt and, for a decision model, the question
+	// and per-tier criteria. Blank text means generated; criteria keep order
+	// and case, lose blanks and duplicates, and an emptied list stays empty.
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","prompt":"Refunds are SIMPLE.",`+
+		`"instructions":"Which tier?","criteria":{"simple":{"definition":" One short answer. ","signals":["a lookup"," a lookup ",""],"examples":[]}}}}`), &cfg))
+	analyzer.Suggestions = &cfg
+	n = analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, "Refunds are SIMPLE.", n.Suggestions.Tier.Prompt)
+	assert.Equal(t, "Which tier?", n.Suggestions.Tier.Instructions)
+	assert.Equal(t, map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "One short answer.", Signals: []string{"a lookup"}}}, n.Suggestions.Tier.Criteria)
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Tier: &ComplexitySuggestionsTierConfig{Classifier: "llm", Prompt: "   "}}
+	n = analyzer.Normalized()
+	assert.Empty(t, n.Suggestions.Tier.Prompt, "a blank prompt is generated, not sent blank")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"definiton":"x"}}}}`), &cfg), "definiton")
+
+	tooMany := make([]string, MaxComplexityDecisionCriteriaItems+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("example %d", i)
+	}
+	for name, bad := range map[string]*ComplexitySuggestionsTierConfig{
+		"prompt too long":               {Classifier: "llm", Prompt: strings.Repeat("x", MaxComplexitySuggestionsTierPromptChars+1)},
+		"criteria for an unknown tier":  {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"HARD": {Definition: "x"}}},
+		"criteria without a definition": {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Examples: []string{"hi"}}}},
+		"too many examples":             {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "x", Examples: tooMany}}},
+		"unknown classifier":            {Classifier: "lexical"},
+		"provider without model":        {Classifier: "llm", Provider: "openai"},
+		"model without provider":        {Classifier: "decision", Model: "gpt-5"},
+		"instructions too long":         {Classifier: "llm", Instructions: strings.Repeat("x", MaxComplexitySuggestionsInstructionsChars+1)},
+	} {
+		analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.OpenAI, Model: "gpt-5", Tier: bad}
+		n := analyzer.Normalized()
+		assert.Error(t, n.Validate(), name)
+	}
+
+	// Two names for one tier are refused rather than left to map order to
+	// pick between; repeated, since map order changes from run to run.
+	for _, names := range [][2]string{{"simple", "SIMPLE"}, {" Simple ", "simple"}} {
+		for range 20 {
+			analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.OpenAI, Model: "gpt-5", Tier: &ComplexitySuggestionsTierConfig{
+				Classifier: "decision",
+				Criteria: map[string]ComplexityDecisionTierCriteria{
+					names[0]: {Definition: "one short answer"},
+					names[1]: {Definition: "a quick lookup"},
+				},
+			}}
+			n := analyzer.Normalized()
+			require.ErrorContains(t, n.Validate(), "SIMPLE more than once", "%q and %q", names[0], names[1])
+		}
+	}
+}
+
 // The suggestions block rides the semantic row as a top-level key, which the
 // row record decodes leniently; it must never land inside the strictly
 // decoded semantic block, or a rolled-back binary loses the whole row.

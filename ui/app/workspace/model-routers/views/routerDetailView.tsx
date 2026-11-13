@@ -6,12 +6,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteModelRouterMutation, useGetModelRouterQuery, useUpdateModelRouterMutation } from "@/lib/store/apis/governanceApi";
 import { MAX_SEMANTIC_PHRASES } from "@/lib/types/complexityRouter";
-import SuggestionsTab from "@/app/workspace/complexity-router/views/suggestionsTab";
+import SuggestionsDraftBar from "@/app/workspace/complexity-router/views/suggestionsDraftBar";
+import SuggestionsTab, { suggestionsViewParser } from "@/app/workspace/complexity-router/views/suggestionsTab";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, MoreHorizontal, Pencil, ScrollText, Trash2 } from "lucide-react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ConfigurationTab } from "./configurationTab";
@@ -52,6 +53,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
 	const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(ROUTER_TABS).withDefault("overview").withOptions({ history: "push" }));
+	const [suggestionsView, setSuggestionsView] = useQueryState("view", suggestionsViewParser);
 	const { data, isLoading, error, refetch } = useGetModelRouterQuery(routerId, { refetchOnMountOrArgChange: true });
 	const [updateRouter] = useUpdateModelRouterMutation();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
@@ -69,6 +71,15 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 		// made elsewhere since this page loaded is not written back.
 		save: (payload) => updateRouter({ ...payload, id: routerId }).unwrap(),
 	});
+	// The save count when the draft bar's Apply was pressed: once a save has
+	// gone through since, the impact view has nothing left to show. A failed
+	// save leaves it open, with the error beside the draft actions.
+	const [applyFrom, setApplyFrom] = useState<number | null>(null);
+	useEffect(() => {
+		if (applyFrom === null || config.saveCount === applyFrom) return;
+		setApplyFrom(null);
+		void setSuggestionsView(null);
+	}, [applyFrom, config.saveCount, setSuggestionsView]);
 
 	if (isLoading && !data) {
 		return (
@@ -236,15 +247,49 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 							enabled={Boolean(data.suggestions?.enabled)}
 							lookbackDays={data.suggestions?.lookback_days ?? config.live.suggestions.lookback_days}
 							staged={config.staging.active}
+							keywords={config.live.keywords ?? config.form.getValues("keywords")}
+							tierCounts={{
+								SIMPLE: config.live.keywords?.simple_keywords.length ?? 0,
+								MEDIUM: config.live.keywords?.medium_keywords.length ?? 0,
+								COMPLEX: config.live.keywords?.complex_keywords.length ?? 0,
+							}}
+							minSimilarity={data.semantic?.min_similarity}
+							draftMinSimilarity={config.live.semantic?.min_similarity}
 							remainingPhrases={Math.max(0, MAX_SEMANTIC_PHRASES - config.derived.totalPhrases)}
 							onStage={config.staging.stage}
 							onUnstage={config.staging.unstage}
 							onEditStaged={config.staging.edit}
+							stagingLocked={config.isSaving}
 							onOpenSettings={() => config.sheets.setOpen("suggestions")}
+							captureUnavailableReason={config.status.semantic?.capture_unavailable_reason}
 						/>
 					</TabsContent>
 				)}
 			</Tabs>
+
+			{showSuggestions && config.staging.active.length > 0 && (
+				<SuggestionsDraftBar
+					groups={config.staging.active.length}
+					onImpact={currentTab === "suggestions" && suggestionsView === "impact"}
+					canSave={config.canSave}
+					isSaving={config.isSaving}
+					error={config.submitError}
+					invalidFields={config.invalidFields}
+					onOpenConfiguration={() => void setTab("configuration")}
+					onDiscard={() => {
+						config.staging.discard();
+						void setSuggestionsView(null);
+					}}
+					onReviewImpact={() => {
+						void setTab("suggestions");
+						void setSuggestionsView("impact");
+					}}
+					onApply={() => {
+						setApplyFrom(config.saveCount);
+						void config.submit();
+					}}
+				/>
+			)}
 
 			<RouterConfigurationSheets config={config} />
 			<RouterDetailsDialog open={detailsOpen} onOpenChange={setDetailsOpen} router={data} />

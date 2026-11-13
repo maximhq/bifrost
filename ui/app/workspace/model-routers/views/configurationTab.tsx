@@ -35,7 +35,11 @@ export function ConfigurationTab({ config }: { config: RouterConfigForm }) {
 		: staging.count > 0
 			? tcpx("suggestions.footerStaged", { count: staging.count })
 			: classifier !== savedClassifier
-				? tcpx("footerClassifierChanged", { classifier: tcpx(CLASSIFIER_NAME_KEYS[classifier]) })
+				? // Suggestions only run on the semantic classifier, so leaving it
+					// turns saved-on suggestions off; say so before the save does it.
+					classifier !== "semantic" && saved?.suggestions?.enabled
+					? tcpx("footerClassifierChangedSuggestionsOff", { classifier: tcpx(CLASSIFIER_NAME_KEYS[classifier]) })
+					: tcpx("footerClassifierChanged", { classifier: tcpx(CLASSIFIER_NAME_KEYS[classifier]) })
 				: "";
 
 	return (

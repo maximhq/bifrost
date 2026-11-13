@@ -1,16 +1,18 @@
 // Package suggest turns routed traffic into phrase-bank suggestions for the
 // semantic complexity router.
 //
-// It clusters requests in the router's own embedding space, asks an LLM once
-// per cluster for a tier and one or two reference phrases written as minimal
-// edits of the cluster's most central request, removes request-specific
-// material from those phrases, and checks each phrase against the cluster it
-// came from before suggesting it: a phrase that would not take over routing
-// for most of its cluster is sent back once with the requests it missed.
+// It clusters requests in the router's own embedding space, asks an LLM per
+// cluster for one or two reference phrases written as minimal edits of the
+// cluster's most central request, removes request-specific material from
+// those phrases, and checks each phrase against the cluster it came from
+// before suggesting it: a phrase that would not take over routing for most of
+// its cluster is sent back once with the requests it missed. A separate tier
+// step (TierDecider: an LLM or a decision model) then picks the cluster's
+// tier.
 //
 // The package does no I/O of its own. Request vectors come from the caller
 // (the router already computed them), and embedding new phrases and calling
-// the LLM go through the Embedder and LLM interfaces.
+// the models go through the Embedder, LLM and TierDecider interfaces.
 package suggest
 
 import (
@@ -102,14 +104,12 @@ type Options struct {
 	MaxPhrases int
 	// DuplicateSimilarity drops a suggested phrase this similar to a live one.
 	DuplicateSimilarity float32
-	// Instructions replace the default suggestion instructions
-	// (DefaultInstructions); empty means the default. The tier definitions
-	// and the fixed JSON/injection reinforcement are added around them.
+	// Instructions replace the default phrase-step instructions
+	// (DefaultInstructions); empty means the default. The fixed JSON and
+	// injection reinforcement is added after them.
 	Instructions string
-	// Guidance is the tier definitions; empty means the router's default LLM
-	// classifier guidance. Callers pass the configured fallback guidance so
-	// both use one definition of the tiers.
-	Guidance string
+	// Tier picks each coherent cluster's tier; required.
+	Tier TierDecider
 	// Workers is how many clusters are sent to the LLM at once.
 	Workers int
 	// Texts, when set, supplies the text of requests clustered without it,
@@ -155,7 +155,8 @@ type Suggestion struct {
 	// Coverage is the request-weighted share of the cluster's kept members
 	// the phrases would take over routing for.
 	Coverage float64
-	// Attempts is how many LLM calls the cluster took.
+	// Attempts is how many phrase-step calls the cluster took; the tier step
+	// is one more for a coherent cluster.
 	Attempts int
 	// Leaked are phrases the LLM wrote that carried request-specific
 	// material and were rejected; Sanitized reports that Phrases came from
@@ -173,7 +174,8 @@ type Suggestion struct {
 	// template with different fills; empty otherwise.
 	Template string
 
-	vectors [][]float32
+	coherent bool
+	vectors  [][]float32
 }
 
 // Run clusters requests and suggests phrases for each cluster. Live phrases
@@ -245,10 +247,14 @@ func (s *Suggester) SuggestAll(ctx context.Context, clusters []*Cluster) ([]Sugg
 	return out, err
 }
 
-// Suggest runs the LLM on one cluster. A phrase set that covers less than
+// Suggest runs both steps on one cluster. A phrase set that covers less than
 // MinCoverage, or that only leaked, is sent back once with feedback; the
-// better of the two attempts is kept.
+// better of the two attempts is kept. The tier is decided once, after the
+// phrases, and only for a coherent cluster with something to categorize.
 func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error) {
+	if s.opts.Tier == nil {
+		return Suggestion{}, fmt.Errorf("no tier decider configured")
+	}
 	reps, err := s.withTexts(ctx, representatives(cl, s.opts.Representatives))
 	if err != nil {
 		return Suggestion{}, err
@@ -260,7 +266,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	if i, sim := nearest(cl.Centroid, s.live); i >= 0 {
 		base.Nearest, base.NearestSim = s.live[i], sim
 	}
-	messages := buildPrompt(s.opts.Instructions, s.opts.Guidance, reps, cl.Weight)
+	messages := buildPrompt(s.opts.Instructions, reps, cl.Weight)
 	if base.Template != "" {
 		messages[1].Content += "\n" + templateNote(base.Template)
 	}
@@ -283,13 +289,12 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		}
 		cand := base
 		cand.Attempts = attempt
-		cand.Tier, cand.Confidence, cand.Reason = v.Tier, v.Confidence, v.Reason
+		cand.coherent = v.Coherent
 		kept, leaked := filterLeaks(v.Phrases)
 		kept, leaked = withoutPasted(kept, leaked, base.Template, reps)
 		cand.Leaked = leaked
-		if !v.Coherent || !validTier(v.Tier) {
-			cand.Tier = ""
-			if best == nil || best.Tier == "" {
+		if !v.Coherent {
+			if best == nil || !best.coherent {
 				best = &cand
 			}
 			break
@@ -299,7 +304,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 		}
 		// Prefer an attempt with phrases, then higher coverage; on a tie
 		// keep the earlier one.
-		if best == nil || best.Tier == "" || (len(cand.Phrases) > 0 && (len(best.Phrases) == 0 || cand.Coverage > best.Coverage)) {
+		if best == nil || !best.coherent || (len(cand.Phrases) > 0 && (len(best.Phrases) == 0 || cand.Coverage > best.Coverage)) {
 			best = &cand
 		}
 		if len(cand.Phrases) > 0 && cand.Coverage >= s.opts.MinCoverage {
@@ -323,7 +328,7 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 	}
 
 	sg := *best
-	if sg.Tier != "" && len(sg.Phrases) == 0 && len(sg.Leaked) > 0 {
+	if sg.coherent && len(sg.Phrases) == 0 && len(sg.Leaked) > 0 {
 		var cleaned []string
 		for _, p := range sg.Leaked {
 			if c := sanitize(p); c != "" && !leaks(c) && !pastedFrom(c, sg.Template, reps) {
@@ -334,6 +339,15 @@ func (s *Suggester) Suggest(ctx context.Context, cl *Cluster) (Suggestion, error
 			return Suggestion{}, err
 		}
 		sg.Sanitized = len(sg.Phrases) > 0
+	}
+	// Categorizing needs a tier only when there are phrases or duplicates to
+	// judge; an incoherent or empty cluster costs no tier call.
+	if sg.coherent && (len(sg.Phrases) > 0 || len(sg.Duplicates) > 0) {
+		v, err := s.opts.Tier.DecideTier(ctx, TierInput{Requests: texts(reps), Total: cl.Weight, Template: base.Template})
+		if err != nil {
+			return Suggestion{}, err
+		}
+		sg.Tier, sg.Confidence, sg.Reason = v.Tier, v.Confidence, v.Reason
 	}
 	sg.Category = s.categorize(&sg)
 	// A template cluster is worth suggesting for whatever its routing is

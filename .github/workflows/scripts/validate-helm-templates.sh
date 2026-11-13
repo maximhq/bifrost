@@ -1108,6 +1108,11 @@ expect_render_failure "model routers: schema rejects a target whose only value i
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"targets":[{"tier":"SIMPLE","provider":" ","weight":1}]}]'
 expect_render_failure "model routers: schema rejects a whitespace-only suggestion provider" "provider" \
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":false,"provider":" ","model":"gpt-4.1-mini"}}]'
+expect_render_failure "model routers: schema rejects a whitespace-only suggestion tier provider" "provider" \
+  --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":false,"tier":{"classifier":"llm","provider":" ","model":"gpt-4.1-mini"}}}]'
+check_config "model routers: a suggestion tier with only a prompt renders, its classifier left to default to llm" \
+  'assert cfg["model_routers"][0]["suggestions"]["tier"] == {"prompt": "Refunds are SIMPLE."}, "tier changed: %r" % cfg["model_routers"][0]["suggestions"].get("tier")' \
+  --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":false,"tier":{"prompt":"Refunds are SIMPLE."}}}]'
 expect_render_failure "model routers: schema requires an llm block for the llm classifier" "llm" \
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","classifier":"llm","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]}}]'
 expect_render_failure "model routers: schema rejects user-scoped routing" "scope" \

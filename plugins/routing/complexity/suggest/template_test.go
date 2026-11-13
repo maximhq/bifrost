@@ -88,7 +88,7 @@ func TestSuggestTemplateCluster(t *testing.T) {
 	pasted := `{"coherent":true,"tier":"MEDIUM","confidence":"high","reason":"image prompt","phrases":["` + pastedPhrase + `"]}`
 	clean := `{"coherent":true,"tier":"MEDIUM","confidence":"high","reason":"image prompt","phrases":["act as a prompt generator for an image model, refund scene"]}`
 	llm := &scriptedLLM{answers: map[string][]string{"refund": {pasted, clean}}}
-	sg, err := NewSuggester(nil, testEmbedder, llm, Options{Representatives: 8}).Suggest(context.Background(), cl)
+	sg, err := NewSuggester(nil, testEmbedder, llm, Options{Representatives: 8, Tier: &markerTier{tiers: map[string]string{"": "SIMPLE"}}}).Suggest(context.Background(), cl)
 	if err != nil {
 		t.Fatal(err)
 	}
