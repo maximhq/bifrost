@@ -489,6 +489,10 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		// sending hidden, possibly invalid edits.
 		...(usesDecision(values) ? { decision: toDecisionPayload(values.decision) } : saved?.decision ? { decision: saved.decision } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
+		// This page has no suggestions controls yet, and the save replaces the
+		// whole config: carry the saved block through so a save here never
+		// turns suggestions off.
+		...(saved?.suggestions ? { suggestions: saved.suggestions } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};

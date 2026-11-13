@@ -1256,6 +1256,38 @@ func TestSemanticClassifierForgetsCapturesWithNothingServing(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestSemanticClassifierCleansCapturesWhileInactive: captured vectors live
+// as long as their logs whether or not semantic routing is still on, so with
+// no serving generation the deletes of deleted logs and the retention sweep
+// still reach the configured store.
+func TestSemanticClassifierCleansCapturesWhileInactive(t *testing.T) {
+	configured := newCaptureTestStore(t)
+	classifier := readySemanticClassifierWithStore(t, configured)
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+	for _, id := range []string{"gone", "kept"} {
+		_, err := classifier.Classify(requestCtx(id), ComplexityInput{LastUserText: "simple request"})
+		require.NoError(t, err)
+	}
+	waitWritten(t, capture, 2)
+	namespace := CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1)
+
+	off := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	off.Semantic = nil
+	classifier.Configure(&off)
+	require.Equal(t, SemanticStatusDisabled, classifier.Status().State)
+
+	ctx := context.Background()
+	classifier.ForgetCapturedRequests(ctx, []string{"gone"})
+	_, err := configured.GetChunk(ctx, namespace, capturePointID("gone"))
+	assert.Error(t, err, "a deleted log's vector goes even with semantic routing off")
+
+	n, err := classifier.SweepCapturedRequests(ctx, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "retention still sweeps what was captured")
+}
+
 // TestSemanticClassifierCapturesNothingWithoutAVectorStore: with no
 // configured vector store there is nowhere durable to keep captures, so none
 // are taken, not even into the embedded store, and the status says so.
