@@ -321229,6 +321229,180 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Gemini transcription models answer with audioTranscription parts (gemini audio transcription) (PR #10017)",
+      "description": "Gemini's dedicated transcription model gemini-3.5-transcribe returns the transcript in candidates[].content.parts[].audioTranscription.text and sends no text part. ToBifrostTranscriptionResponse (core/providers/gemini/transcription.go) and the TranscriptionStream loop (core/providers/gemini/gemini.go) read only part.Text, so /v1/audio/transcriptions answered 200 with \"text\": \"\" and billed usage, and a streamed request emitted no delta and a done event with empty text. Both paths now read the transcript through transcriptText(), which prefers audioTranscription.text and falls back to text parts, so general models such as gemini-2.5-flash are unchanged (8.4.K covers them). The cases send tests/e2e/api/fixtures/sample.mp3, which says \"Hello, this is a sample test.\", on the native route, the OpenAI drop-in route and the native route with stream=true, and assert the transcript is present. Each case is red before the change (empty transcript) and green after. The GenAI drop-in does not reach this code: /genai generateContent is a chat request, not a transcription request.",
+      "item": [
+        {
+          "name": "349.1 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('native: 200 with the transcript from the audioTranscription part', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 500)).to.be.a('string');",
+                  "  // sample.mp3 says \"Hello, this is a sample test.\" Before the fix text was \"\" while usage was billed.",
+                  "  pm.expect(j.text, 'transcript missing: ' + body.slice(0, 500)).to.match(/sample test/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.2 gemini/gemini-3.5-transcribe OpenAI drop-in /openai/v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai drop-in: 200 with the transcript from the audioTranscription part', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'expected a text field: ' + body.slice(0, 500)).to.be.a('string');",
+                  "  // sample.mp3 says \"Hello, this is a sample test.\" Before the fix text was \"\" while usage was billed.",
+                  "  pm.expect(j.text, 'transcript missing: ' + body.slice(0, 500)).to.match(/sample test/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.3 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions stream=true streams the audioTranscription transcript (gemini audio transcription)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('stream: 200 with transcript deltas and a done event carrying the full transcript', function () {",
+                  "  pm.expect(pm.response.code, 'transcription stream failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var deltas = '';",
+                  "  var done = null;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var ev = JSON.parse(data);",
+                  "    if (ev.type === 'transcript.text.delta') { deltas += ev.delta || ''; }",
+                  "    if (ev.type === 'transcript.text.done') { done = ev; }",
+                  "  });",
+                  "  pm.expect(deltas, 'no transcript in the deltas: ' + body.slice(0, 800)).to.match(/sample test/i);",
+                  "  pm.expect(done, 'no transcript.text.done event: ' + body.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(done.text, 'done event text should be the joined deltas: ' + body.slice(0, 800)).to.equal(deltas);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
