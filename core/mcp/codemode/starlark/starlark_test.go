@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -2387,9 +2386,8 @@ func TestCodeModeRuntimeErrorsNameTheFailingLine(t *testing.T) {
 
 type mediaClientManager struct {
 	testClientManager
-	conn           *client.Client
-	observeContext func(*schemas.BifrostContext)
-	postHook       func(*schemas.BifrostMCPResponse)
+	conn     *client.Client
+	postHook func(*schemas.BifrostMCPResponse)
 }
 
 func (m *mediaClientManager) AcquireClientConn(_ *schemas.BifrostContext, _ *schemas.MCPClientState) (*client.Client, func(), error) {
@@ -2397,9 +2395,6 @@ func (m *mediaClientManager) AcquireClientConn(_ *schemas.BifrostContext, _ *sch
 }
 
 func (m *mediaClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op codemcp.MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
-	if m.observeContext != nil {
-		m.observeContext(ctx)
-	}
 	resp, err := op(req)
 	if err != nil {
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
@@ -2557,31 +2552,37 @@ func TestExecuteToolCodeForwardsNestedImages(t *testing.T) {
 }
 
 func TestExecuteToolCodeOutsideGatewayAttachesNoMedia(t *testing.T) {
-	mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-		mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-	}})
-	manager.observeContext = func(ctx *schemas.BifrostContext) {
-		if ctx.Value(mediaCollectorKey{}) != nil {
-			t.Fatal("non-gateway context carries a media handle")
-		}
+	imageName := schemas.MediaPlaceholder("image/png", len(pngData))
+	for _, tc := range []struct {
+		name       string
+		structured any
+		code       string
+		want       string
+	}{
+		{name: "unstructured", code: "result = shots.capture()", want: imageName},
+		// Agent mode also names media under _media, so the script learns it exists.
+		{name: "structured", structured: map[string]any{"title": "page"}, code: "result = shots.capture()", want: `"_media": [`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, manager := mediaMode(t, &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"}},
+				StructuredContent: tc.structured,
+			})
+			manager.postHook = func(resp *schemas.BifrostMCPResponse) {
+				if forwardedResult(resp.ChatMessage) != nil {
+					t.Fatal("non-gateway nested result retained native media")
+				}
+			}
+			msg := runMediaCodeIn(t, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mode, tc.code)
+			if native := forwardedResult(msg); native != nil {
+				t.Fatalf("non-gateway reply carries a native result: %#v", native)
+			}
+			text := mediaResponseText(t, msg)
+			if strings.Contains(text, "Attached media") || strings.Contains(text, pngData) || !strings.Contains(text, tc.want) || !strings.Contains(text, imageName) {
+				t.Fatalf("non-gateway projection = %s", text)
+			}
+		})
 	}
-	manager.postHook = func(resp *schemas.BifrostMCPResponse) {
-		if forwardedResult(resp.ChatMessage) != nil {
-			t.Fatal("non-gateway nested result retained native media")
-		}
-	}
-	msg := runMediaCodeIn(t, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mode, "result = shots.capture()")
-	if native := forwardedResult(msg); native != nil {
-		t.Fatalf("non-gateway reply carries a native result: %#v", native)
-	}
-	text := mediaResponseText(t, msg)
-	if strings.Contains(text, "Attached media") || strings.Contains(text, pngData) || !strings.Contains(text, schemas.MediaPlaceholder("image/png", len(pngData))) {
-		t.Fatalf("non-gateway projection changed: %s", text)
-	}
-	if mode.mediaRunOrdinal.Load() != 0 {
-		t.Fatal("non-gateway run registered a media collector")
-	}
-	assertMediaRegistryEmpty(t, mode)
 }
 
 func TestExecuteToolCodeForwardsMediaBesideStructuredContent(t *testing.T) {
@@ -2701,7 +2702,6 @@ func TestExecuteToolCodeWithoutMediaKeepsTextResult(t *testing.T) {
 func TestExecuteToolCodeWithholdsMediaFromFailedRun(t *testing.T) {
 	for name, code := range map[string]string{
 		"runtime failure": "r = shots.capture()\nfail(\"stop\")",
-		"no data":         "shots.capture()",
 	} {
 		t.Run(name, func(t *testing.T) {
 			mode, _ := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
@@ -2718,6 +2718,27 @@ func TestExecuteToolCodeWithholdsMediaFromFailedRun(t *testing.T) {
 				t.Fatal("failed run exposed media")
 			}
 		})
+	}
+}
+
+func TestExecuteToolCodeForwardsMediaFromMediaOnlyRun(t *testing.T) {
+	mode, _ := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
+	}})
+	msg := runMediaCode(t, mode, "shots.capture()")
+	if msg.IsError != nil && *msg.IsError {
+		t.Fatalf("media-only run was marked as an error: %s", mediaResponseText(t, msg))
+	}
+	want := "Execution completed successfully.\nAttached media: " + schemas.MediaPlaceholder("image/png", len(pngData))
+	if text := mediaResponseText(t, msg); text != want {
+		t.Fatalf("media-only reply = %q, want %q", text, want)
+	}
+	native := forwardedResult(msg)
+	if native == nil || len(native.Content) != 2 {
+		t.Fatalf("forwarded %#v, want text and image", native)
+	}
+	if image, ok := native.Content[1].(mcp.ImageContent); !ok || image.Data != pngData {
+		t.Fatalf("image block = %#v", native.Content[1])
 	}
 }
 
@@ -2893,239 +2914,6 @@ func TestExtractTextFromMCPResponseStructuredMediaLimits(t *testing.T) {
 			if _, err := extractTextFromMCPResponse(result, "capture", 256); err == nil {
 				t.Fatal("oversized structured media projection accepted")
 			}
-		})
-	}
-}
-
-func assertMediaRegistryEmpty(t testing.TB, mode *StarlarkCodeMode) {
-	t.Helper()
-	count := 0
-	mode.mediaCollectors.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 0 {
-		t.Fatalf("completed executions retained %d media collectors", count)
-	}
-}
-
-func TestExecuteToolCodeContextContainsOnlyMediaHandle(t *testing.T) {
-	mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-		mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-	}})
-	observed := false
-	manager.observeContext = func(ctx *schemas.BifrostContext) {
-		observed = true
-		value := ctx.Value(mediaCollectorKey{})
-		kind := reflect.TypeOf(value)
-		if kind == nil {
-			t.Fatal("gateway nested context has no media handle")
-		}
-		if kind.Kind() != reflect.Struct || kind.NumField() != 2 ||
-			kind.Field(0).Type.Kind() != reflect.String || kind.Field(1).Type.Kind() != reflect.Uint64 {
-			t.Fatalf("nested context holds %T, want only a request ID and execution ordinal", value)
-		}
-	}
-	runMediaCode(t, mode, "result = shots.capture()")
-	if !observed {
-		t.Fatal("nested tool did not reach the pipeline")
-	}
-}
-
-func TestExecuteToolCodeMediaRegistryCleanup(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		code      string
-		wantError bool
-	}{
-		{name: "success", code: "result = shots.capture()"},
-		{name: "runtime failure", code: "shots.capture()\nfail(\"stop\")", wantError: true},
-		{name: "no data", code: "shots.capture()", wantError: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-				mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-			}})
-			var nested *schemas.BifrostContext
-			manager.observeContext = func(ctx *schemas.BifrostContext) {
-				nested = ctx
-				if mode.mediaCollectorFor(ctx) == nil {
-					t.Fatal("active gateway run has no registered collector")
-				}
-			}
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, "cleanup-request")
-			ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
-			msg := runMediaCodeIn(t, ctx, mode, tc.code)
-			if nested == nil {
-				t.Fatal("nested tool did not reach the pipeline")
-			}
-			if flagged := msg.IsError != nil && *msg.IsError; flagged != tc.wantError {
-				t.Fatalf("reply error flag = %v, want %v", flagged, tc.wantError)
-			}
-			if mode.mediaCollectorFor(nested) != nil {
-				t.Fatal("retained nested context still resolves completed run media")
-			}
-			assertMediaRegistryEmpty(t, mode)
-		})
-	}
-}
-
-func TestExecuteToolCodeMediaRegistryCancellationCleanup(t *testing.T) {
-	mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-		mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-	}})
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-	ctx.SetValue(schemas.BifrostContextKeyRequestID, "cancelled-request")
-	ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
-	var nested *schemas.BifrostContext
-	calls := 0
-	manager.observeContext = func(callCtx *schemas.BifrostContext) {
-		nested = callCtx
-		calls++
-		if calls != 2 {
-			return
-		}
-		collector := mode.mediaCollectorFor(callCtx)
-		if collector == nil || len(collector.blocks) != 1 {
-			t.Fatal("first nested result was not retained before cancellation")
-		}
-		cancel()
-		select {
-		case <-callCtx.Done():
-		case <-time.After(time.Second):
-			t.Fatal("context cancellation did not reach the nested call")
-		}
-	}
-	msg := runMediaCodeIn(t, ctx, mode, "shots.capture()\nresult = shots.capture()")
-	if calls != 2 {
-		t.Fatalf("nested calls = %d, want cancellation during the second call", calls)
-	}
-	if msg.IsError == nil || !*msg.IsError {
-		t.Fatal("cancelled run lost its error flag")
-	}
-	if forwardedResult(msg) != nil {
-		t.Fatal("cancelled run forwarded media")
-	}
-	if mode.mediaCollectorFor(nested) != nil {
-		t.Fatal("retained nested context still resolves cancelled run media")
-	}
-	assertMediaRegistryEmpty(t, mode)
-}
-
-func TestExecuteToolCodeParallelSameRequestIDIsolation(t *testing.T) {
-	for _, tc := range []struct{ name, requestID string }{
-		{name: "shared request ID", requestID: "shared-request"},
-		{name: "missing request ID"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			mode, manager := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-				mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-			}})
-			parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			type runIndexKey struct{}
-			type observation struct {
-				index int
-				ctx   *schemas.BifrostContext
-			}
-			type reply struct {
-				index   int
-				message *schemas.ChatMessage
-				err     error
-			}
-			entered := make(chan observation, 2)
-			done := make(chan reply, 2)
-			release := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
-			calls := [2]int{}
-			manager.observeContext = func(ctx *schemas.BifrostContext) {
-				index := ctx.Value(runIndexKey{}).(int)
-				calls[index]++
-				if calls[index] != 1 {
-					return
-				}
-				entered <- observation{index: index, ctx: ctx}
-				select {
-				case <-release[index]:
-				case <-ctx.Done():
-				}
-			}
-			for index, code := range []string{
-				"result = shots.capture()",
-				"result = [shots.capture(), shots.capture()]",
-			} {
-				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
-				ctx.SetValue(schemas.BifrostContextKeyRequestID, tc.requestID)
-				ctx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
-				ctx.SetValue(runIndexKey{}, index)
-				args, err := schemas.MarshalSorted(map[string]string{"code": code})
-				if err != nil {
-					t.Fatal(err)
-				}
-				call := schemas.ChatAssistantMessageToolCall{
-					ID: schemas.Ptr("parallel-call"),
-					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      schemas.Ptr("executeToolCode"),
-						Arguments: string(args),
-					},
-				}
-				go func() {
-					message, err := mode.handleExecuteToolCode(ctx, call)
-					done <- reply{index: index, message: message, err: err}
-				}()
-			}
-			var nested [2]*schemas.BifrostContext
-			for range nested {
-				select {
-				case observed := <-entered:
-					nested[observed.index] = observed.ctx
-				case result := <-done:
-					t.Fatalf("run %d finished before both nested calls were active: %v", result.index, result.err)
-				case <-parent.Done():
-					t.Fatal("same-ID executions did not reach their nested calls concurrently")
-				}
-			}
-			keys := [2]mediaRunKey{}
-			for index, ctx := range nested {
-				var ok bool
-				keys[index], ok = ctx.Value(mediaCollectorKey{}).(mediaRunKey)
-				if !ok || keys[index].requestID != tc.requestID || keys[index].ordinal == 0 {
-					t.Fatalf("run %d has invalid media handle: %#v", index, ctx.Value(mediaCollectorKey{}))
-				}
-				if mode.mediaCollectorFor(ctx) == nil {
-					t.Fatalf("run %d has no active collector", index)
-				}
-			}
-			if keys[0] == keys[1] {
-				t.Fatal("parallel executions with the same request ID share a media handle")
-			}
-			for index := range release {
-				close(release[index])
-				select {
-				case result := <-done:
-					if result.index != index || result.err != nil {
-						t.Fatalf("completed run = %d, error = %v; want run %d", result.index, result.err, index)
-					}
-					if result.message == nil || result.message.ChatToolMessage == nil ||
-						(result.message.IsError != nil && *result.message.IsError) {
-						t.Fatalf("run %d did not complete successfully: %#v", index, result.message)
-					}
-					native := forwardedResult(result.message)
-					if native == nil || len(native.Content) != index+2 {
-						t.Fatalf("run %d forwarded %#v, want text plus %d image(s)", index, native, index+1)
-					}
-				case <-parent.Done():
-					t.Fatalf("run %d did not finish after release", index)
-				}
-				if mode.mediaCollectorFor(nested[index]) != nil {
-					t.Fatalf("run %d retained its completed collector", index)
-				}
-				if index == 0 && mode.mediaCollectorFor(nested[1]) == nil {
-					t.Fatal("finishing one run removed the other run's collector")
-				}
-			}
-			assertMediaRegistryEmpty(t, mode)
 		})
 	}
 }

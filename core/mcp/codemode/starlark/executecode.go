@@ -240,9 +240,11 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 	} else {
 		hasLogs := len(result.Logs) > 0
 		hasResult := result.Result != nil
-		s.logger.Debug("%s Formatting success response. Has logs: %v, Has result: %v", codemcp.CodeModeLogPrefix, hasLogs, hasResult)
+		// Collected media is output: a script that only captures still produced something.
+		hasMedia := len(result.Media) > 0 || result.DroppedMedia > 0
+		s.logger.Debug("%s Formatting success response. Has logs: %v, Has result: %v, Has media: %v", codemcp.CodeModeLogPrefix, hasLogs, hasResult, hasMedia)
 
-		if !hasLogs && !hasResult {
+		if !hasLogs && !hasResult && !hasMedia {
 			executionSuccess = false
 			s.logger.Debug("%s Execution completed with no data (no logs, no result), marking as failure", codemcp.CodeModeLogPrefix)
 			hints := []string{
@@ -323,16 +325,14 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	defer cancel()
 	// A script's tool calls run one at a time on its thread, so a plain counter is safe.
 	failedCalls := 0
+	// Gateway media lives exactly as long as this run, so the collector is a local the
+	// tool-call closure captures; nothing about it goes on the context.
 	var media *mediaCollector
-	runCtx := context.Context(timeoutCtx)
 	if gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); gateway {
-		key, collector := s.registerMediaCollector(ctx)
-		defer s.mediaCollectors.Delete(key)
-		media = collector
-		runCtx = context.WithValue(timeoutCtx, mediaCollectorKey{}, key)
+		media = &mediaCollector{}
 	}
-	result := runSandbox(runCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
-		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log, func() { failedCalls++ })
+	result := runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
+		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log, media, func() { failedCalls++ })
 	})
 	result.FailedToolCalls = failedCalls
 	if media != nil {
@@ -340,37 +340,6 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		result.DroppedMedia = media.dropped
 	}
 	return result
-}
-
-type mediaCollectorKey struct{}
-
-// mediaRunKey lets nested contexts find a run without retaining its media after completion.
-type mediaRunKey struct {
-	requestID string
-	ordinal   uint64
-}
-
-// registerMediaCollector gives a gateway execution its own content owner, even when
-// request IDs are reused concurrently. The caller must delete the key when the run ends.
-func (s *StarlarkCodeMode) registerMediaCollector(ctx context.Context) (mediaRunKey, *mediaCollector) {
-	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
-	key := mediaRunKey{requestID: requestID, ordinal: s.mediaRunOrdinal.Add(1)}
-	collector := &mediaCollector{}
-	s.mediaCollectors.Store(key, collector)
-	return key, collector
-}
-
-// mediaCollectorFor resolves a nested call's handle only while its owning run is active.
-func (s *StarlarkCodeMode) mediaCollectorFor(ctx context.Context) *mediaCollector {
-	key, ok := ctx.Value(mediaCollectorKey{}).(mediaRunKey)
-	if !ok {
-		return nil
-	}
-	collector, ok := s.mediaCollectors.Load(key)
-	if !ok {
-		return nil
-	}
-	return collector.(*mediaCollector)
 }
 
 // completionLine closes the reply of a run that finished. A nested call that returned an
@@ -386,9 +355,10 @@ func completionLine(failedCalls int) string {
 	}
 }
 
-// callMCPTool calls an MCP tool and returns the result. onToolError is called when the tool
+// callMCPTool calls an MCP tool and returns the result. media, when set, collects the
+// result's image/audio blocks for the gateway reply. onToolError is called when the tool
 // answers with an error result that is handed to the script rather than raised.
-func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string), onToolError func()) (interface{}, error) {
+func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string), media *mediaCollector, onToolError func()) (interface{}, error) {
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
@@ -508,7 +478,6 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// Whether the server flagged the result with isError. The message's own flag also covers
 	// text that only opens with "Error: ", so it cannot tell the two apart after the pipeline.
 	wireIsError := false
-	media := s.mediaCollectorFor(ctx)
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
 		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):

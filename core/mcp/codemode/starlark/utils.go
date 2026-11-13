@@ -323,7 +323,7 @@ func structuredMediaPlaceholders(result *mcp.CallToolResult, valueLimit int) ([]
 		if data == "" {
 			continue
 		}
-		if len(result.Content) > valueLimit/128 || len(kind) > valueLimit-size {
+		if len(names) >= valueLimit/128 || len(kind) > valueLimit-size {
 			return nil, fmt.Errorf("code mode tool result exceeds size limit")
 		}
 		name := schemas.MediaPlaceholder(kind, len(data))
