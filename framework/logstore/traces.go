@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -101,6 +102,19 @@ func (p *TraceSpanPart) ContentID() string {
 		h.Write(strconv.AppendInt(length[:0], int64(len(field)), 10))
 		h.Write([]byte{':'})
 		// The payload can be megabytes. It is hashed in place: the hash only reads the bytes.
+		h.Write(unsafe.Slice(unsafe.StringData(field), len(field)))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// KeyedContentID is ContentID keyed with an HMAC, so the id says nothing about the content to anyone
+// without the key. It repeats ContentID's loop rather than sharing it: writing through a hash.Hash
+// interface moves ContentID's buffers to the heap, and ContentID runs on every received part.
+func (p *TraceSpanPart) KeyedContentID(key []byte) string {
+	h := hmac.New(sha256.New, key)
+	for _, field := range []string{p.ProjectID, p.TraceID, p.SpanID, p.RowID, strconv.FormatBool(p.IsMerge), p.Payload} {
+		h.Write(strconv.AppendInt(nil, int64(len(field)), 10))
+		h.Write([]byte{':'})
 		h.Write(unsafe.Slice(unsafe.StringData(field), len(field)))
 	}
 	return hex.EncodeToString(h.Sum(nil))

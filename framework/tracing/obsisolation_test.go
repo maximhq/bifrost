@@ -321,3 +321,77 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 		t.Fatalf("flushes took %v, expected them to be bounded by the ~50ms inject timeout each", elapsed)
 	}
 }
+
+// panickingCapabilityPlugin panics when asked whether it consumes overhead spans.
+type panickingCapabilityPlugin struct{ blockingObsPlugin }
+
+func (p *panickingCapabilityPlugin) ConsumesOverheadSpans() bool { panic("capability check failed") }
+
+// A connector whose capability check panics is skipped like one whose Inject panics: the panic is
+// contained and the other connectors still receive the trace.
+func TestCompleteAndFlushTrace_CapabilityPanicIsContained(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	broken := &panickingCapabilityPlugin{blockingObsPlugin{name: "broken"}}
+	healthy := &blockingObsPlugin{name: "healthy"}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{broken, healthy}, nil)
+	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
+	deadline := time.Now().Add(5 * time.Second)
+	for healthy.started.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if healthy.started.Load() == 0 {
+		t.Fatal("the healthy connector never received the trace")
+	}
+}
+
+// deadlineObsPlugin records the deadline of the context its Inject receives.
+type deadlineObsPlugin struct {
+	blockingObsPlugin
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (p *deadlineObsPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
+	p.mu.Lock()
+	p.deadline, _ = ctx.Deadline()
+	p.mu.Unlock()
+	return p.blockingObsPlugin.Inject(ctx, trace)
+}
+
+// ExportTrace passes its caller's deadline to the connectors, so an export cannot outlive it.
+func TestExportTrace_ConnectorsGetTheCallersDeadline(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	plugin := &deadlineObsPlugin{blockingObsPlugin: blockingObsPlugin{name: "deadline"}}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	callerDeadline, _ := ctx.Deadline()
+	tracer.ExportTrace(ctx, &schemas.Trace{TraceID: "external"})
+	plugin.mu.Lock()
+	defer plugin.mu.Unlock()
+	if plugin.deadline.IsZero() || plugin.deadline.After(callerDeadline) {
+		t.Fatalf("connector deadline %v is not within the caller's %v", plugin.deadline, callerDeadline)
+	}
+}
+
+// BenchmarkInjectAll measures handing one trace to two connectors, the fan-out every gateway
+// request's trace goes through after the response is written.
+func BenchmarkInjectAll(b *testing.B) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{&blockingObsPlugin{name: "a"}, &blockingObsPlugin{name: "b"}}, nil)
+	trace := &schemas.Trace{TraceID: "bench"}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		tracer.ExportTrace(ctx, trace)
+	}
+}

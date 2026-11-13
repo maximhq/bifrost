@@ -84,6 +84,17 @@ func (p *SpanPart) Validate() error {
 	return nil
 }
 
+// keyedIdentity is the part's id under key: KeyedContentID of the part as it is now. Ingest takes it
+// before the part hooks run, so the id follows what the client sent, not what the hooks made of it.
+func (p *SpanPart) keyedIdentity(projectID string, key []byte) (string, error) {
+	payload, err := schemas.MarshalSorted(p)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode span part: %w", err)
+	}
+	identity := &logstore.TraceSpanPart{ProjectID: projectID, TraceID: p.TraceID, SpanID: p.SpanID, RowID: p.RowID, IsMerge: p.IsMerge, Payload: ownedString(payload)}
+	return identity.KeyedContentID(key), nil
+}
+
 // toStoredPart wraps the part in the row the trace store keeps.
 func (p *SpanPart) toStoredPart(projectID, source string, receivedAt time.Time, expiresAt *time.Time) (*logstore.TraceSpanPart, error) {
 	payload, err := schemas.MarshalSorted(p)
