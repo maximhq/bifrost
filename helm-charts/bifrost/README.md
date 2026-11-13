@@ -14,6 +14,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` to authenticate the scrape when auth is enabled. `basicAuth` inherits the Secret and keys of the active `bifrost.governance.authConfig` or `bifrost.authConfig`; rendering fails if no Secret can be resolved.
 - `serviceMonitor.enabled: true` is refused at render time when `bifrost.plugins.telemetry.config.metrics_enabled` is `false`, since `/metrics` would return `404`.
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
+- Added `rbac.licenseCheck.create` (default `true`): a ClusterRole and ClusterRoleBinding (`<release>-license-check-<hash>`, unique per namespace and release) that let the pod `get` the `kube-system` namespace and the OpenShift `ClusterVersion` `version`. Bifrost Enterprise licenses bound to a Kubernetes or OpenShift cluster need them. **Upgrade note:** these are the chart's first cluster-scoped objects, so `helm upgrade` now needs rights to create ClusterRoles. If the deploying account cannot, set `rbac.licenseCheck.create=false`; a cluster-bound license then needs the same rule applied by hand, or it reports a mismatch.
 
 ### 2.1.48
 

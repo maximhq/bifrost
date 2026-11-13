@@ -42,6 +42,13 @@ rbac:
     # - bifrost.cluster.discovery.enabled=true
     # - bifrost.cluster.discovery.type=kubernetes
     enabled: true
+  licenseCheck:
+    # Bifrost Enterprise licenses bound to a Kubernetes or OpenShift cluster
+    # read the kube-system namespace UID, which needs this ClusterRole and
+    # ClusterRoleBinding. Keep it on. Set false only when the account running
+    # helm cannot create cluster-scoped RBAC: a cluster-bound license then
+    # needs the same rule applied by hand, or it reports a mismatch.
+    create: true
 
 # Annotations to add to the deployment metadata
 # Useful for tools like Keel (keel.sh) for automatic image updates

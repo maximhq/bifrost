@@ -36,3 +36,48 @@ roleRef:
   kind: Role
   name: {{ $podDiscoveryRoleName }}
 {{- end -}}
+
+{{- /*
+License deployment check (Bifrost Enterprise, bare-metal Kubernetes and OpenShift).
+A license bound to a cluster (check type k8scluster) is compared with the UID of
+the kube-system namespace, which the gateway reads through the API server. A pod
+may not read that namespace by default, so this grants exactly that one read.
+The clusterversions rule only lets the license page show the OpenShift cluster
+ID; it matches nothing on plain Kubernetes.
+*/ -}}
+{{- if .Values.rbac.licenseCheck.create }}
+{{- /* Cluster-scoped, so the name must be unique per release across namespaces.
+     A hash of namespace/release keeps it unique however long the names are. */ -}}
+{{- $licenseCheckRoleName := printf "%s-license-check-%s" (include "bifrost.fullname" . | trunc 30 | trimSuffix "-") (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 8) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $licenseCheckRoleName }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["kube-system"]
+    verbs: ["get"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["clusterversions"]
+    resourceNames: ["version"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $licenseCheckRoleName }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "bifrost.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $licenseCheckRoleName }}
+{{- end }}
