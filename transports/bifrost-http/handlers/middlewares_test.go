@@ -771,6 +771,7 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/v1/realtime",
 		"/openai/realtime",
 		"/openai/openai/realtime",
+		"/v1/audio/speech/stream",
 	}
 
 	for _, path := range paths {

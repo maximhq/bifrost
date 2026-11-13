@@ -321980,6 +321980,45 @@
           }
         }
       ]
+    },
+    {
+      "name": "340. Incremental speech session route (speech session route)",
+      "description": "GET /v1/audio/speech/stream is a WebSocket endpoint: a session cannot be driven by this HTTP collection, and tests/realtime covers sessions with a real WebSocket client. A plain GET is what HTTP can reach: the route exists and its upgrade refuses a request that is not a WebSocket handshake, where an absent route would not answer with the handshake error. No provider credentials, no inference calls.",
+      "item": [
+        {
+          "name": "speech session route refuses a request that is not a WebSocket upgrade [EXPECT-400]",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech",
+                "stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a plain GET is refused by the WebSocket upgrade of the speech session route', function () {",
+                  "  pm.expect(pm.response.code, 'expected the upgrade refusal: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text().toLowerCase(), 'expected the websocket handshake error: ' + pm.response.text()).to.include('websocket');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

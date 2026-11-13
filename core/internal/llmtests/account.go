@@ -97,6 +97,7 @@ type TestScenarios struct {
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
+	SpeechSession                bool // Incremental speech session (text streams in over a WebSocket, audio streams back)
 	Compaction                   bool // Server-side compaction (context management)
 	ToolSearch                   bool // Anthropic server-side tool search + defer_loading (on Bedrock via InvokeModel routing)
 	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
@@ -155,6 +156,7 @@ type ComprehensiveTestConfig struct {
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+	SpeechSessionModel       string                     // Model for the incremental speech session test
 
 	// SkipEmptyToolSchemas skips the empty/nil function-schema tool tests for providers that
 	// reject a function schema whose properties object is empty or absent (e.g. Runware, whose

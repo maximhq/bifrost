@@ -58,9 +58,9 @@ func postVirtualKey(name string, spec keySpec) (virtualKey, error) {
 			map[string]any{"provider": "anthropic", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
 			map[string]any{"provider": "azure", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
 			// Named, not "*": a wildcard allows the models the catalog lists for the provider, and it has no Scribe realtime model yet.
-			map[string]any{"provider": "elevenlabs", "weight": 1.0, "allowed_models": []string{"scribe_v2_realtime", "scribe_v3_live"}, "key_ids": []string{"*"}},
+			map[string]any{"provider": "elevenlabs", "weight": 1.0, "allowed_models": []string{"scribe_v2_realtime", "scribe_v3_live", "eleven_v4_turbo"}, "key_ids": []string{"*"}},
 			// Named for the same reason. stt-async-v6 is allowed so the test of a model Soniox cannot serve in realtime reaches the provider.
-			map[string]any{"provider": "soniox", "weight": 1.0, "allowed_models": []string{"stt-rt-v5", "stt-rt-v6", "stt-async-v6"}, "key_ids": []string{"*"}},
+			map[string]any{"provider": "soniox", "weight": 1.0, "allowed_models": []string{"stt-rt-v5", "stt-rt-v6", "stt-async-v6", "tts-rt-v2"}, "key_ids": []string{"*"}},
 		},
 	}
 	if spec.budgetUSD > 0 {
@@ -253,6 +253,53 @@ func turnRowsFor(t *testing.T, vk virtualKey) []turnRow {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// speechRowsFor lists the speech stream rows a virtual key has logged, oldest first.
+func speechRowsFor(t *testing.T, vk virtualKey) []turnRow {
+	t.Helper()
+	require.NotEmpty(t, vk.ID, "rows are found by virtual key; this session has none")
+	query := url.Values{"virtual_key_ids": {vk.ID}, "limit": {"50"}, "order": {"asc"}, "sort_by": {"timestamp"}}
+	status, list, err := apiCall(http.MethodGet, "/api/logs?"+query.Encode(), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, "list logs: %s", list.Raw)
+	var rows []turnRow
+	for _, summary := range list.Get("logs").Array() {
+		status, full, err := apiCall(http.MethodGet, "/api/logs/"+summary.Get("id").Str, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "get log: %s", full.Raw)
+		if full.Get("log").Exists() {
+			full = full.Get("log")
+		}
+		var row turnRow
+		require.NoError(t, json.Unmarshal([]byte(full.Raw), &row), "decode row: %s", full.Raw)
+		row.raw = full
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// waitSpeechRows waits until a virtual key has logged n finished speech sessions.
+func waitSpeechRows(t *testing.T, vk virtualKey, n int) []turnRow {
+	t.Helper()
+	deadline := time.Now().Add(rowWaitTimeout)
+	for {
+		rows := speechRowsFor(t, vk)
+		finished := 0
+		for _, row := range rows {
+			if row.Status != "processing" {
+				finished++
+			}
+		}
+		require.LessOrEqual(t, len(rows), n, "virtual key logged %d speech sessions, want %d", len(rows), n)
+		if finished == n {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("virtual key logged %d finished speech sessions of %d within %s, want %d", finished, len(rows), rowWaitTimeout, n)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // apiCall sends one JSON request to the management API and returns the status and parsed body.

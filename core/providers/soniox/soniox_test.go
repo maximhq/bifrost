@@ -5,18 +5,24 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/soniox"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -846,6 +852,20 @@ func TestSoniox(t *testing.T) {
 		assert.True(t, sawDone)
 	})
 
+	t.Run("SpeechSession", func(t *testing.T) {
+		english := "en"
+		llmtests.RunSpeechSession(t, newTestContext(t), provider, key, &schemas.BifrostSpeechRequest{
+			Provider: schemas.Soniox,
+			Model:    "tts-rt-v2",
+			Input:    &schemas.SpeechInput{},
+			Params: &schemas.SpeechParameters{
+				VoiceConfig:    &schemas.SpeechVoiceInput{Voice: &voice},
+				LanguageCode:   &english,
+				ResponseFormat: "pcm",
+			},
+		})
+	})
+
 	t.Run("Transcription round trip", func(t *testing.T) {
 		require.NotEmpty(t, mp3, "the Speech subtest must have produced audio")
 		response, bifrostErr := provider.Transcription(newTestContext(t), key, &schemas.BifrostTranscriptionRequest{
@@ -1079,4 +1099,763 @@ func TestSonioxRealtime(t *testing.T) {
 			assert.Equal(t, "unauthenticated", event.Get("error.code").String())
 		}
 	})
+}
+
+// fakeTTSConn is the TTS WebSocket as the session sees it: frames the test sends as Soniox, and the
+// frames the session wrote.
+type fakeTTSConn struct {
+	frames chan []byte
+	writes chan []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newFakeTTSConn() *fakeTTSConn {
+	return &fakeTTSConn{frames: make(chan []byte, 256), writes: make(chan []byte, 256), closed: make(chan struct{})}
+}
+
+func (c *fakeTTSConn) ReadMessage() (int, []byte, error) {
+	select {
+	case frame := <-c.frames:
+		return ws.TextMessage, frame, nil
+	case <-c.closed:
+		return 0, nil, io.EOF
+	}
+}
+
+func (c *fakeTTSConn) WriteMessage(_ int, data []byte) error {
+	select {
+	case <-c.closed:
+		return io.ErrClosedPipe
+	default:
+	}
+	c.writes <- append([]byte(nil), data...)
+	return nil
+}
+
+func (c *fakeTTSConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *fakeTTSConn) serve(frame string) { c.frames <- []byte(frame) }
+
+// brokenWriteConn is a TTS connection whose writes fail: at once, or, with hold, when the connection closes, as a
+// write does that is in flight when the session is closed.
+type brokenWriteConn struct {
+	*fakeTTSConn
+	hold    bool
+	entered chan struct{}
+}
+
+func (c *brokenWriteConn) WriteMessage(int, []byte) error {
+	if !c.hold {
+		return errors.New("write failed")
+	}
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	<-c.closed
+	return io.ErrClosedPipe
+}
+
+func ttsAudio(stream, audio string) string {
+	return fmt.Sprintf(`{"stream_id":%q,"audio":%q}`, stream, audio)
+}
+
+func ttsTerminated(stream string) string {
+	return fmt.Sprintf(`{"stream_id":%q,"terminated":true}`, stream)
+}
+
+func ttsError(stream string, code int, errorType, message string) string {
+	return fmt.Sprintf(`{"stream_id":%q,"error_code":%d,"error_type":%q,"error_message":%q,"request_id":"req-1"}`, stream, code, errorType, message)
+}
+
+func ttsSessionRequest(extra map[string]interface{}) *schemas.BifrostSpeechRequest {
+	voice, language, timestamps := "Daniel", "en", true
+	params := &schemas.SpeechParameters{
+		VoiceConfig:    &schemas.SpeechVoiceInput{Voice: &voice},
+		LanguageCode:   &language,
+		ResponseFormat: "pcm",
+		WithTimestamps: &timestamps,
+		ExtraParams:    map[string]interface{}{"sample_rate": 24000},
+	}
+	for name, value := range extra {
+		params.ExtraParams[name] = value
+	}
+	return &schemas.BifrostSpeechRequest{Provider: schemas.Soniox, Model: "tts-rt-v2", Params: params}
+}
+
+func openTTSSession(t *testing.T, ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest) (schemas.SpeechSession, *fakeTTSConn) {
+	t.Helper()
+	conn := newFakeTTSConn()
+	session, bifrostErr := newTestProvider(t, "https://api.soniox.com").OpenSpeechSession(ctx, testKey(), request,
+		func(*schemas.BifrostContext, string, map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+			return conn, nil
+		})
+	require.Nil(t, bifrostErr)
+	return session, conn
+}
+
+// written reads the next frame the session wrote.
+func (c *fakeTTSConn) written(t *testing.T) gjson.Result {
+	t.Helper()
+	select {
+	case frame := <-c.writes:
+		return gjson.ParseBytes(frame)
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "the session wrote nothing")
+		return gjson.Result{}
+	}
+}
+
+func nextSessionEvent(t *testing.T, session schemas.SpeechSession) *schemas.BifrostSpeechSessionEvent {
+	t.Helper()
+	select {
+	case event, ok := <-session.Events():
+		require.True(t, ok, "events closed")
+		return event
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "the session sent no event")
+		return nil
+	}
+}
+
+func requireSessionEnded(t *testing.T, session schemas.SpeechSession) {
+	t.Helper()
+	select {
+	case event, ok := <-session.Events():
+		require.False(t, ok, "unexpected event %+v", event)
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "the session did not end")
+	}
+}
+
+func TestSonioxSpeechSession(t *testing.T) {
+	t.Run("opens the TTS WebSocket of the base URL's region with the key", func(t *testing.T) {
+		var dialedURL string
+		var dialedHeaders map[string]string
+		session, bifrostErr := newTestProvider(t, "https://api.eu.soniox.com").OpenSpeechSession(newTestContext(t), testKey(), ttsSessionRequest(nil),
+			func(_ *schemas.BifrostContext, url string, headers map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+				dialedURL, dialedHeaders = url, headers
+				return newFakeTTSConn(), nil
+			})
+		require.Nil(t, bifrostErr)
+		defer session.Close()
+		assert.Equal(t, "wss://tts-rt.eu.soniox.com/tts-websocket", dialedURL)
+		assert.Equal(t, "Bearer test-key", dialedHeaders["Authorization"])
+		format, rate := session.AudioFormat()
+		assert.Equal(t, "pcm", format)
+		assert.Equal(t, 24000, rate)
+	})
+
+	t.Run("raw audio without a sample rate gets Soniox's default, sent and reported", func(t *testing.T) {
+		request := ttsSessionRequest(nil)
+		delete(request.Params.ExtraParams, "sample_rate")
+		session, conn := openTTSSession(t, newTestContext(t), request)
+		defer session.Close()
+		_, rate := session.AudioFormat()
+		assert.Equal(t, 24000, rate)
+		require.NoError(t, session.SendText("Hello"))
+		assert.Equal(t, int64(24000), conn.written(t).Get("sample_rate").Int())
+
+		request = ttsSessionRequest(nil)
+		delete(request.Params.ExtraParams, "sample_rate")
+		request.Params.ResponseFormat = "mp3"
+		mp3Session, mp3Conn := openTTSSession(t, newTestContext(t), request)
+		defer mp3Session.Close()
+		_, rate = mp3Session.AudioFormat()
+		assert.Zero(t, rate, "a container format carries its own rate")
+		require.NoError(t, mp3Session.SendText("Hello"))
+		assert.False(t, mp3Conn.written(t).Get("sample_rate").Exists())
+	})
+
+	t.Run("a failed dial is returned before the session exists", func(t *testing.T) {
+		refused := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "refused"}}
+		session, bifrostErr := newTestProvider(t, "https://api.soniox.com").OpenSpeechSession(newTestContext(t), testKey(), ttsSessionRequest(nil),
+			func(*schemas.BifrostContext, string, map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+				return nil, refused
+			})
+		assert.Nil(t, session)
+		assert.Same(t, refused, bifrostErr)
+	})
+
+	t.Run("opens nothing until the first text, then sends the config and the text", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		assert.Empty(t, conn.writes)
+
+		require.NoError(t, session.SendText("Hello"))
+		config := conn.written(t)
+		assert.Equal(t, "s1", config.Get("stream_id").String())
+		assert.Equal(t, "tts-rt-v2", config.Get("model").String())
+		assert.Equal(t, "en", config.Get("language").String())
+		assert.Equal(t, "Daniel", config.Get("voice").String())
+		assert.Equal(t, "pcm_s16le", config.Get("audio_format").String())
+		assert.Equal(t, int64(24000), config.Get("sample_rate").Int())
+		assert.True(t, config.Get("return_timestamps").Bool())
+		assert.False(t, config.Get("text").Exists(), "a config carries no text")
+
+		text := conn.written(t)
+		assert.Equal(t, "s1", text.Get("stream_id").String())
+		assert.Equal(t, "Hello", text.Get("text").String())
+		assert.False(t, text.Get("text_end").Bool())
+
+		require.NoError(t, session.SendText(" again"))
+		assert.Equal(t, " again", conn.written(t).Get("text").String(), "later text reuses the stream")
+		assert.Empty(t, conn.writes)
+	})
+
+	t.Run("the config carries the fields of the unary request, minus the text", func(t *testing.T) {
+		speed := 1.1
+		request := ttsSessionRequest(map[string]interface{}{"bitrate": 64, "reduce_silence": true, "client_reference_id": "ref-1"})
+		request.Params.Speed = &speed
+		session, conn := openTTSSession(t, newTestContext(t), request)
+		defer session.Close()
+		require.NoError(t, session.SendText("Hello"))
+
+		unary, err := json.Marshal(soniox.ToSonioxSpeechRequest(request))
+		require.NoError(t, err)
+		want := map[string]bool{"stream_id": true, "return_timestamps": true}
+		gjson.ParseBytes(unary).ForEach(func(name, _ gjson.Result) bool {
+			if name.String() != "text" {
+				want[name.String()] = true
+			}
+			return true
+		})
+		got := map[string]bool{}
+		conn.written(t).ForEach(func(name, _ gjson.Result) bool {
+			got[name.String()] = true
+			return true
+		})
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("extra params reach the config only with passthrough", func(t *testing.T) {
+		for _, passthrough := range []bool{false, true} {
+			ctx := newTestContext(t)
+			if passthrough {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			session, conn := openTTSSession(t, ctx, ttsSessionRequest(map[string]interface{}{"emotion": "calm"}))
+			require.NoError(t, session.SendText("Hello"))
+			assert.Equal(t, passthrough, conn.written(t).Get("emotion").Exists())
+			session.Close()
+		}
+	})
+
+	t.Run("flush ends the stream and the next text opens a new segment", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("Hello there."))
+		conn.written(t)
+		conn.written(t)
+
+		require.NoError(t, session.Flush())
+		end := conn.written(t)
+		assert.Equal(t, "s1", end.Get("stream_id").String())
+		assert.True(t, end.Get("text_end").Bool())
+		assert.Equal(t, `{"stream_id":"s1","text":"","text_end":true}`, end.Raw, "an ending message must carry an empty text")
+
+		require.NoError(t, session.Flush())
+		assert.Empty(t, conn.writes, "a flush with nothing buffered writes nothing")
+
+		require.NoError(t, session.SendText("More."))
+		assert.Equal(t, "s2", conn.written(t).Get("stream_id").String())
+		assert.Equal(t, "More.", conn.written(t).Get("text").String())
+	})
+
+	t.Run("audio of a later segment is held until the earlier one terminates", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		require.NoError(t, session.Flush())
+		require.NoError(t, session.SendText("two"))
+
+		conn.serve(ttsAudio("s2", "B1"))
+		conn.serve(ttsAudio("s1", "A1"))
+		first := nextSessionEvent(t, session)
+		assert.Equal(t, schemas.SpeechSessionEventAudioDelta, first.Type)
+		assert.Equal(t, 1, first.Segment)
+		assert.Equal(t, "A1", first.Audio)
+
+		conn.serve(ttsTerminated("s1"))
+		done := nextSessionEvent(t, session)
+		assert.Equal(t, schemas.SpeechSessionEventSegmentDone, done.Type)
+		assert.Equal(t, 1, done.Segment)
+		released := nextSessionEvent(t, session)
+		assert.Equal(t, schemas.SpeechSessionEventAudioDelta, released.Type)
+		assert.Equal(t, 2, released.Segment)
+		assert.Equal(t, "B1", released.Audio)
+
+		conn.serve(ttsAudio("s2", "B2"))
+		assert.Equal(t, "B2", nextSessionEvent(t, session).Audio, "the head segment's audio is not held")
+		conn.serve(ttsTerminated("s2"))
+		assert.Equal(t, 2, nextSessionEvent(t, session).Segment)
+	})
+
+	t.Run("audio held behind an earlier segment is bounded", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		require.NoError(t, session.Flush())
+		require.NoError(t, session.SendText("two"))
+
+		megabyte := strings.Repeat("A", 1<<20)
+		for range 9 {
+			conn.serve(ttsAudio("s2", megabyte))
+		}
+		requireSessionEnded(t, session)
+		bifrostErr := session.Err()
+		require.NotNil(t, bifrostErr)
+		assert.Contains(t, bifrostErr.Error.Message, "held too much audio")
+	})
+
+	t.Run("text over 5000 characters is split on rune boundaries", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		text := strings.Repeat("ह", 12001)
+		require.NoError(t, session.SendText(text))
+		conn.written(t)
+
+		var joined strings.Builder
+		var sizes []int
+		for range 3 {
+			chunk := conn.written(t).Get("text").String()
+			require.True(t, utf8.ValidString(chunk))
+			sizes = append(sizes, utf8.RuneCountInString(chunk))
+			joined.WriteString(chunk)
+		}
+		assert.Equal(t, []int{5000, 5000, 2001}, sizes)
+		assert.Equal(t, text, joined.String())
+		assert.Empty(t, conn.writes)
+	})
+
+	t.Run("end waits for the last segment, then reports audio done and closes", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("Goodbye."))
+		conn.written(t)
+		conn.written(t)
+
+		require.NoError(t, session.End())
+		assert.True(t, conn.written(t).Get("text_end").Bool())
+		assert.Error(t, session.SendText("late"), "no input is taken after the end")
+		assert.Error(t, session.Flush())
+
+		conn.serve(ttsAudio("s1", "A1"))
+		assert.Equal(t, "A1", nextSessionEvent(t, session).Audio)
+		conn.serve(ttsTerminated("s1"))
+		assert.Equal(t, schemas.SpeechSessionEventSegmentDone, nextSessionEvent(t, session).Type)
+		done := nextSessionEvent(t, session)
+		assert.Equal(t, schemas.SpeechSessionEventAudioDone, done.Type)
+		assert.Nil(t, done.Usage, "the transport fills in the usage")
+		requireSessionEnded(t, session)
+		assert.Nil(t, session.Err())
+		select {
+		case <-conn.closed:
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "the connection stayed open")
+		}
+	})
+
+	t.Run("end with nothing pending finishes at once", func(t *testing.T) {
+		session, _ := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.End())
+		assert.Equal(t, schemas.SpeechSessionEventAudioDone, nextSessionEvent(t, session).Type)
+		requireSessionEnded(t, session)
+		assert.Nil(t, session.Err())
+	})
+
+	t.Run("cancel drops every live stream, answers at once and starts a new segment", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		require.NoError(t, session.Flush())
+		require.NoError(t, session.SendText("two"))
+		for range 5 {
+			conn.written(t)
+		}
+
+		require.NoError(t, session.Cancel())
+		for _, stream := range []string{"s1", "s2"} {
+			cancel := conn.written(t)
+			assert.Equal(t, stream, cancel.Get("stream_id").String())
+			assert.True(t, cancel.Get("cancel").Bool())
+		}
+		cancelled := nextSessionEvent(t, session)
+		assert.Equal(t, schemas.SpeechSessionEventCancelled, cancelled.Type)
+		assert.Equal(t, 2, cancelled.Segment, "the last segment dropped")
+
+		// Audio already in flight, and the terminations, are discarded.
+		conn.serve(ttsAudio("s1", "late1"))
+		conn.serve(ttsAudio("s2", "late2"))
+		conn.serve(ttsTerminated("s1"))
+		conn.serve(ttsTerminated("s2"))
+		require.NoError(t, session.SendText("three"))
+		assert.Equal(t, "s3", conn.written(t).Get("stream_id").String())
+		conn.written(t)
+		conn.serve(ttsAudio("s3", "fresh"))
+		fresh := nextSessionEvent(t, session)
+		assert.Equal(t, "fresh", fresh.Audio, "late audio of a cancelled stream is dropped")
+		assert.Equal(t, 3, fresh.Segment)
+	})
+
+	t.Run("an error of a cancelled stream does not end the session", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		require.NoError(t, session.Cancel())
+		assert.Equal(t, schemas.SpeechSessionEventCancelled, nextSessionEvent(t, session).Type)
+
+		conn.serve(ttsError("s1", 400, "invalid_stream_state", "stream was cancelled"))
+		require.NoError(t, session.SendText("two"))
+		conn.serve(ttsAudio("s2", "alive"))
+		assert.Equal(t, "alive", nextSessionEvent(t, session).Audio)
+		assert.Nil(t, session.Err())
+	})
+
+	t.Run("an error of a live stream ends the session with the provider's error", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		conn.serve(ttsError("s1", 400, "invalid_request", "language is required"))
+		requireSessionEnded(t, session)
+
+		bifrostErr := session.Err()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, 400, *bifrostErr.StatusCode)
+		assert.Equal(t, "language is required", bifrostErr.Error.Message)
+		assert.Equal(t, "invalid_request", *bifrostErr.Error.Type)
+		assert.Equal(t, "req-1", *bifrostErr.EventID)
+		assert.Error(t, session.SendText("more"))
+	})
+
+	t.Run("a connection that closes under the session is an upstream error", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("one"))
+		conn.Close()
+		requireSessionEnded(t, session)
+		require.NotNil(t, session.Err())
+		assert.Equal(t, 502, *session.Err().StatusCode)
+	})
+
+	t.Run("carries character timings in seconds", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		require.NoError(t, session.SendText("Hi"))
+		conn.serve(`{"stream_id":"s1","audio":"QQ==","timestamps":{"characters":["H","i"],"character_start_times_seconds":[0,0.5],"character_end_times_seconds":[0.5,1.25]}}`)
+
+		event := nextSessionEvent(t, session)
+		require.NotNil(t, event.Alignment)
+		assert.Equal(t, []string{"H", "i"}, event.Alignment.Characters)
+		assert.Equal(t, []float64{0, 0.5}, event.Alignment.CharacterStartTimesSeconds)
+		assert.Equal(t, []float64{0.5, 1.25}, event.Alignment.CharacterEndTimesSeconds)
+
+		conn.serve(ttsAudio("s1", "Qg=="))
+		assert.Nil(t, nextSessionEvent(t, session).Alignment, "a frame without timestamps has no alignment")
+	})
+
+	t.Run("text waits for a slot while Soniox holds five streams", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		for i := range 5 {
+			require.NoError(t, session.SendText(fmt.Sprintf("sentence %d", i+1)))
+			require.NoError(t, session.Flush())
+			for range 3 {
+				conn.written(t)
+			}
+		}
+		require.NoError(t, session.SendText("sixth"))
+		require.NoError(t, session.Flush())
+		assert.Empty(t, conn.writes, "no sixth stream may be opened")
+
+		conn.serve(ttsTerminated("s1"))
+		assert.Equal(t, schemas.SpeechSessionEventSegmentDone, nextSessionEvent(t, session).Type)
+		assert.Equal(t, "s6", conn.written(t).Get("stream_id").String())
+		assert.Equal(t, "sixth", conn.written(t).Get("text").String())
+		assert.True(t, conn.written(t).Get("text_end").Bool())
+	})
+
+	t.Run("flushes queued behind busy streams are merged, so the queue cannot be grown by flushing", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		for i := range 5 {
+			require.NoError(t, session.SendText(fmt.Sprintf("sentence %d", i+1)))
+			require.NoError(t, session.Flush())
+			for range 3 {
+				conn.written(t)
+			}
+		}
+		require.NoError(t, session.SendText("waiting"))
+
+		liveHeap := func() int64 {
+			runtime.GC()
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			return int64(stats.HeapAlloc)
+		}
+		before := liveHeap()
+		for range 200_000 {
+			if err := session.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		assert.Less(t, liveHeap()-before, int64(1<<20), "a flush right after a flush ends nothing more, so it is not queued again")
+
+		// The merged flushes still end the waiting text once, when a slot frees.
+		conn.serve(ttsTerminated("s1"))
+		assert.Equal(t, "s6", conn.written(t).Get("stream_id").String())
+		assert.Equal(t, "waiting", conn.written(t).Get("text").String())
+		assert.True(t, conn.written(t).Get("text_end").Bool())
+		time.Sleep(50 * time.Millisecond)
+		assert.Empty(t, conn.writes, "no second end for the same stream")
+	})
+
+	t.Run("a cancel discards the text that was waiting for a slot", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		defer session.Close()
+		for i := range 5 {
+			require.NoError(t, session.SendText(fmt.Sprintf("sentence %d", i+1)))
+			require.NoError(t, session.Flush())
+		}
+		require.NoError(t, session.SendText("waiting"))
+		require.NoError(t, session.Cancel())
+		for range 15 + 5 {
+			conn.written(t)
+		}
+		conn.serve(ttsTerminated("s1"))
+		assert.Empty(t, conn.writes, "the waiting text is gone")
+		assert.Equal(t, schemas.SpeechSessionEventCancelled, nextSessionEvent(t, session).Type)
+	})
+
+	t.Run("close is idempotent, releases a blocked sender and leaks no goroutine", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			session, conn := openTTSSession(t, ctx, ttsSessionRequest(nil))
+			require.NoError(t, session.SendText("one"))
+			// Nobody reads the events, so the reader blocks once the buffer is full.
+			for range 80 {
+				conn.serve(ttsAudio("s1", "AAAA"))
+			}
+			synctest.Wait()
+
+			require.NoError(t, session.Close())
+			require.NoError(t, session.Close())
+			drained := 0
+			for range session.Events() {
+				drained++
+			}
+			assert.LessOrEqual(t, drained, 80)
+			assert.Nil(t, session.Err())
+			assert.Error(t, session.SendText("after close"))
+		})
+	})
+
+	t.Run("close does not wait behind a cancel that is blocked sending", func(t *testing.T) {
+		session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+		require.NoError(t, session.SendText("one"))
+		// Nobody reads the events, so the reader blocks once the buffer is full.
+		for range 80 {
+			conn.serve(ttsAudio("s1", "AAAA"))
+		}
+		time.Sleep(200 * time.Millisecond)
+		// The cancel holds the session lock while it waits behind the reader to send its event.
+		cancelled := make(chan struct{})
+		go func() { _ = session.Cancel(); close(cancelled) }()
+		time.Sleep(200 * time.Millisecond)
+
+		closed := make(chan struct{})
+		go func() { _ = session.Close(); close(closed) }()
+		select {
+		case <-closed:
+		case <-time.After(3 * time.Second):
+			require.FailNow(t, "close is blocked behind a cancel that is waiting to send")
+		}
+		select {
+		case <-cancelled:
+		case <-time.After(3 * time.Second):
+			require.FailNow(t, "the cancel was not released by the close")
+		}
+	})
+
+	t.Run("a late termination does not take speech.audio.done from a call that is waiting to send it", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			free   int // room left in the event buffer when the call that finishes the session is made
+			finish func(t *testing.T, session schemas.SpeechSession, finished chan<- struct{})
+		}{
+			{"a cancel that finishes an ended session", 0, func(t *testing.T, session schemas.SpeechSession, finished chan<- struct{}) {
+				require.NoError(t, session.End())
+				go func() { _ = session.Cancel(); close(finished) }()
+			}},
+			{"an end that finishes a cancelled session", 1, func(t *testing.T, session schemas.SpeechSession, finished chan<- struct{}) {
+				require.NoError(t, session.Cancel())
+				go func() { _ = session.End(); close(finished) }()
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				session, conn := openTTSSession(t, newTestContext(t), ttsSessionRequest(nil))
+				defer session.Close()
+				require.NoError(t, session.SendText("one"))
+				queued := cap(session.Events()) - tc.free
+				for range queued {
+					conn.serve(ttsAudio("s1", "AAAA"))
+				}
+				require.Eventually(t, func() bool { return len(session.Events()) == queued }, 2*time.Second, 5*time.Millisecond)
+
+				finished := make(chan struct{})
+				tc.finish(t, session, finished)
+				time.Sleep(200 * time.Millisecond) // the finishing call is now waiting for room in the buffer
+				conn.serve(ttsTerminated("s1"))
+				require.Eventually(t, func() bool { return len(conn.frames) == 0 }, 2*time.Second, time.Millisecond)
+				time.Sleep(200 * time.Millisecond) // the reader has handled the termination before anything is read
+
+				var types []schemas.SpeechSessionEventType
+				timeout := time.After(3 * time.Second)
+			drain:
+				for {
+					select {
+					case event, ok := <-session.Events():
+						if !ok {
+							break drain
+						}
+						types = append(types, event.Type)
+					case <-timeout:
+						require.FailNow(t, "the session did not end")
+					}
+				}
+				require.NotEmpty(t, types)
+				assert.Equal(t, schemas.SpeechSessionEventAudioDone, types[len(types)-1], "the events ended without speech.audio.done")
+				assert.Nil(t, session.Err())
+				select {
+				case <-finished:
+				case <-time.After(2 * time.Second):
+					require.FailNow(t, "the finishing call did not return")
+				}
+			})
+		}
+	})
+
+	t.Run("a write that fails because the session was closed is not an upstream failure", func(t *testing.T) {
+		conn := &brokenWriteConn{fakeTTSConn: newFakeTTSConn(), hold: true, entered: make(chan struct{}, 1)}
+		session, bifrostErr := newTestProvider(t, "https://api.soniox.com").OpenSpeechSession(newTestContext(t), testKey(), ttsSessionRequest(nil),
+			func(*schemas.BifrostContext, string, map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+				return conn, nil
+			})
+		require.Nil(t, bifrostErr)
+		sent := make(chan error, 1)
+		go func() { sent <- session.SendText("one") }()
+		select {
+		case <-conn.entered: // the write that opens the stream is in flight
+		case <-time.After(2 * time.Second):
+			require.FailNow(t, "the session never wrote")
+		}
+
+		require.NoError(t, session.Close())
+
+		assert.Error(t, <-sent)
+		assert.Nil(t, session.Err(), "the client closed the session, so nothing failed upstream")
+	})
+
+	t.Run("a write that fails while the session is open is an upstream failure", func(t *testing.T) {
+		conn := &brokenWriteConn{fakeTTSConn: newFakeTTSConn()}
+		session, bifrostErr := newTestProvider(t, "https://api.soniox.com").OpenSpeechSession(newTestContext(t), testKey(), ttsSessionRequest(nil),
+			func(*schemas.BifrostContext, string, map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+				return conn, nil
+			})
+		require.Nil(t, bifrostErr)
+
+		assert.Error(t, session.SendText("one"))
+
+		require.NotNil(t, session.Err())
+		assert.Contains(t, session.Err().Error.Message, "failed to write to the soniox text-to-speech websocket")
+		require.NoError(t, session.Close())
+	})
+
+	t.Run("keeps a quiet connection alive", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			session, conn := openTTSSession(t, ctx, ttsSessionRequest(nil))
+			defer session.Close()
+
+			time.Sleep(19 * time.Second)
+			synctest.Wait()
+			assert.Empty(t, conn.writes)
+			time.Sleep(2 * time.Second)
+			synctest.Wait()
+			require.Len(t, conn.writes, 1)
+			assert.Equal(t, `{"keep_alive":true}`, string(<-conn.writes))
+			time.Sleep(20 * time.Second)
+			synctest.Wait()
+			require.Len(t, conn.writes, 1)
+			assert.Equal(t, `{"keep_alive":true}`, string(<-conn.writes))
+		})
+	})
+
+	t.Run("ends a stream that gets no text before Soniox fails it", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			session, conn := openTTSSession(t, ctx, ttsSessionRequest(nil))
+			defer session.Close()
+
+			require.NoError(t, session.SendText("a"))
+			time.Sleep(2 * time.Second)
+			require.NoError(t, session.SendText("b"))
+			time.Sleep(2 * time.Second)
+			synctest.Wait()
+			require.Len(t, conn.writes, 3, "the second text restarted the idle timer: config, a, b")
+			<-conn.writes
+			<-conn.writes
+			<-conn.writes
+
+			time.Sleep(1500 * time.Millisecond)
+			synctest.Wait()
+			require.Len(t, conn.writes, 1)
+			assert.Equal(t, `{"stream_id":"s1","text":"","text_end":true}`, string(<-conn.writes))
+
+			require.NoError(t, session.SendText("c"))
+			assert.Equal(t, "s2", gjson.ParseBytes(<-conn.writes).Get("stream_id").String())
+		})
+	})
+}
+
+func BenchmarkSonioxSpeechSessionFrame(b *testing.B) {
+	provider, err := soniox.NewSonioxProvider(&schemas.ProviderConfig{}, bifrost.NewNoOpLogger())
+	require.NoError(b, err)
+	audio := strings.Repeat("A", 16384) // about 0.25 s of 24 kHz PCM
+	for name, frame := range map[string]string{
+		"audio":      ttsAudio("s1", audio),
+		"timestamps": fmt.Sprintf(`{"stream_id":"s1","audio":%q,"timestamps":{"characters":["H","e","l","l","o"],"character_start_times_seconds":[0,0.1,0.2,0.3,0.4],"character_end_times_seconds":[0.1,0.2,0.3,0.4,0.5]}}`, audio),
+	} {
+		b.Run(name, func(b *testing.B) {
+			conn := newFakeTTSConn()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			session, bifrostErr := provider.OpenSpeechSession(ctx, testKey(), ttsSessionRequest(nil),
+				func(*schemas.BifrostContext, string, map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
+					return conn, nil
+				})
+			require.Nil(b, bifrostErr)
+			defer session.Close()
+			require.NoError(b, session.SendText("Hello"))
+			<-conn.writes
+			<-conn.writes
+
+			payload := []byte(frame)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				conn.frames <- payload
+				<-session.Events()
+			}
+		})
+	}
 }

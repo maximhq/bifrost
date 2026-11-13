@@ -57,6 +57,52 @@ type ElevenlabsPronunciationDictionaryLocator struct {
 	VersionID                 *string `json:"version_id,omitempty"`
 }
 
+// SPEECH SESSION TYPES (text-to-dialogue stream-input WebSocket)
+
+// ElevenlabsSessionConfig is the first message of a session; it registers the voice the text speaks with.
+type ElevenlabsSessionConfig struct {
+	Voices                          []string                                   `json:"voices"`
+	VoiceSettings                   *ElevenlabsSessionVoiceSettings            `json:"voice_settings,omitempty"`
+	PronunciationDictionaryLocators []ElevenlabsPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators,omitempty"`
+}
+
+// ElevenlabsSessionVoiceSettings are the only voice settings the socket takes.
+type ElevenlabsSessionVoiceSettings struct {
+	Stability     *float64 `json:"stability,omitempty"`
+	CloneStrength *float64 `json:"clone_strength,omitempty"`
+}
+
+// ElevenlabsSessionText carries text to speak.
+type ElevenlabsSessionText struct {
+	Inputs []ElevenlabsSessionInput `json:"inputs"`
+}
+
+// ElevenlabsSessionInput is one piece of text of a turn.
+type ElevenlabsSessionInput struct {
+	Text    string `json:"text"`
+	VoiceID string `json:"voice_id"`
+	NewTurn bool   `json:"new_turn"`
+}
+
+// ElevenlabsSessionFrame is a message the socket sends: audio, a turn's end, the end of the session, or an error.
+type ElevenlabsSessionFrame struct {
+	Audio               string                      `json:"audio,omitempty"` // base64
+	Alignment           *ElevenlabsSessionAlignment `json:"alignment,omitempty"`
+	IsFinalAudioForTurn bool                        `json:"is_final_audio_for_turn,omitempty"`
+	IsFinal             bool                        `json:"is_final,omitempty"`
+	Message             string                      `json:"message,omitempty"`
+	Error               string                      `json:"error,omitempty"`
+	Code                int                         `json:"code,omitempty"`
+	Param               string                      `json:"param,omitempty"`
+}
+
+// ElevenlabsSessionAlignment is the character timing of an audio frame.
+type ElevenlabsSessionAlignment struct {
+	Chars            []string  `json:"chars"`
+	CharStartTimesMs []float64 `json:"char_start_times_ms"`
+	CharDurationsMs  []float64 `json:"char_durations_ms"`
+}
+
 // SOUND EFFECTS TYPES
 
 // ElevenlabsSoundGenerationRequest is the request body for POST /v1/sound-generation.

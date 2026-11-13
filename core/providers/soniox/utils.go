@@ -16,6 +16,7 @@ const (
 	realtimeHostPrefix = "stt-rt."
 	realtimePath       = "/transcribe-websocket"
 	sonioxHostSuffix   = ".soniox.com"
+	ttsWebSocketPath   = "/tts-websocket"
 
 	transcriptionPollInitial = 500 * time.Millisecond
 	transcriptionPollMax     = 3 * time.Second
@@ -71,6 +72,17 @@ func deriveRealtimeURL(baseURL string) (string, error) {
 		parsed.Scheme = "ws"
 	}
 	return strings.TrimRight(parsed.String(), "/") + realtimePath, nil
+}
+
+// ttsWebSocketURL returns the text-to-speech WebSocket URL for a text-to-speech base URL.
+func ttsWebSocketURL(ttsBaseURL string) string {
+	switch {
+	case strings.HasPrefix(ttsBaseURL, "https://"):
+		ttsBaseURL = "wss://" + strings.TrimPrefix(ttsBaseURL, "https://")
+	case strings.HasPrefix(ttsBaseURL, "http://"):
+		ttsBaseURL = "ws://" + strings.TrimPrefix(ttsBaseURL, "http://")
+	}
+	return ttsBaseURL + ttsWebSocketPath
 }
 
 // swapAPIHostPrefix replaces the leading api. host label of a Soniox host with prefix, leaving any other host

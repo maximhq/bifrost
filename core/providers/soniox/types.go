@@ -21,6 +21,59 @@ func (r *SonioxSpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+// SonioxTTSStreamConfig opens a stream on the TTS WebSocket. Its fields are those of POST /tts without the text.
+type SonioxTTSStreamConfig struct {
+	StreamID          string   `json:"stream_id"`
+	Model             string   `json:"model"`
+	Language          string   `json:"language,omitempty"`
+	Voice             string   `json:"voice,omitempty"`
+	AudioFormat       string   `json:"audio_format"`
+	SampleRate        *int     `json:"sample_rate,omitempty"`
+	Bitrate           *int     `json:"bitrate,omitempty"`
+	Speed             *float64 `json:"speed,omitempty"`
+	ReduceSilence     *bool    `json:"reduce_silence,omitempty"`
+	ClientReferenceID *string  `json:"client_reference_id,omitempty"`
+	ReturnTimestamps  *bool    `json:"return_timestamps,omitempty"`
+
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams satisfies providerUtils.RequestBodyWithExtraParams.
+func (c *SonioxTTSStreamConfig) GetExtraParams() map[string]interface{} {
+	return c.ExtraParams
+}
+
+// SonioxTTSText sends text on a stream. Text is never omitted: a message that ends a stream must carry "".
+type SonioxTTSText struct {
+	StreamID string `json:"stream_id"`
+	Text     string `json:"text"`
+	TextEnd  bool   `json:"text_end"`
+}
+
+// SonioxTTSCancel cancels a stream.
+type SonioxTTSCancel struct {
+	StreamID string `json:"stream_id"`
+	Cancel   bool   `json:"cancel"`
+}
+
+// SonioxTTSFrame is a frame of the TTS WebSocket: audio, the end of a stream, or an error.
+type SonioxTTSFrame struct {
+	SonioxError
+	StreamID   string              `json:"stream_id"`
+	Audio      string              `json:"audio"` // base64
+	AudioEnd   bool                `json:"audio_end"`
+	Terminated bool                `json:"terminated"`
+	Timestamps SonioxTTSTimestamps `json:"timestamps"`
+	MoreInfo   string              `json:"more_info"`
+}
+
+// SonioxTTSTimestamps is the character timing of one audio frame, in seconds.
+type SonioxTTSTimestamps struct {
+	Characters                 []string  `json:"characters"`
+	CharacterStartTimesSeconds []float64 `json:"character_start_times_seconds"`
+	CharacterEndTimesSeconds   []float64 `json:"character_end_times_seconds"`
+}
+
 // SonioxTranscriptionRequest carries the audio and the body of POST /v1/transcriptions.
 type SonioxTranscriptionRequest struct {
 	Model                        string   `json:"model"`
