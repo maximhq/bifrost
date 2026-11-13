@@ -39,6 +39,7 @@ export const KnownProvidersNames = [
 	"machgen",
 	"baseten",
 	"kimchi",
+	"voyage",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
@@ -83,6 +84,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"byteplus",
 	"baseten",
 	"kimchi",
+	"voyage",
 	"github-copilot",
 ] as const;
 
@@ -204,6 +206,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	machgen: "MachGen",
 	baseten: "Baseten",
 	kimchi: "Kimchi",
+	voyage: "Voyage AI",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",

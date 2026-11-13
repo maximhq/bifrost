@@ -235,6 +235,13 @@ EmbeddingData:
         Set when the provider returns several representations of the same input
         (Cohere `embedding_types`), since int8/binary and uint8/ubinary are otherwise
         indistinguishable once decoded.
+    chunks:
+      type: array
+      items:
+        type: string
+      description: |
+        Text of each vector of a 2D `embedding`, in the same order, when the provider chunked the
+        input itself (Voyage contextualized embeddings with `input_type: document`).
     embedding:
       $ref: '#/EmbeddingStruct'
 

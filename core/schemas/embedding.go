@@ -352,6 +352,9 @@ type EmbeddingData struct {
 	Modality     EmbeddingModality      `json:"modality,omitempty"`      // set for multimodal providers
 	VideoSegment *EmbeddingVideoSegment `json:"video_segment,omitempty"` // set for video modality only
 	Embedding    EmbeddingStruct        `json:"embedding"`               // can be string, []float64, [][]float64, []int8, or []int32
+	// Chunks holds the text of each vector of a 2D embedding when the provider chunked the input
+	// itself (Voyage contextualized embeddings); chunk i belongs to row i of the embedding.
+	Chunks []string `json:"chunks,omitempty"`
 	// EncodingFormat names the representation this vector was returned as when a
 	// provider emits several for one input; int8/binary and uint8/ubinary are
 	// otherwise indistinguishable once decoded into EmbeddingStruct.
