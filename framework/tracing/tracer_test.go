@@ -1172,6 +1172,46 @@ func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReasonForRespon
 	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
 }
 
+// TestTracer_ResponsesStreamUsageWithoutAccumulation preserves final-event tokens and cost on the LLM span.
+func TestTracer_ResponsesStreamUsageWithoutAccumulation(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, modelcatalog.NewTestCatalog(nil), nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+	tracer.PopulateLLMRequestAttributes(handle, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "test-model"},
+	})
+	accumulated, _, _ := tracer.GetAccumulatedChunks(traceID)
+	require.Nil(t, accumulated)
+
+	resp := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			Model: "test-model",
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens: 14, OutputTokens: 4, TotalTokens: 18,
+				Cost: &schemas.BifrostCost{TotalCost: 0.125},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesStreamRequest,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "test-model"},
+		},
+	}}
+	tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, schemas.NoDeadline), handle, resp, nil)
+
+	attrs := store.GetTrace(traceID).RootSpan.Attributes
+	require.Equal(t, 0.125, attrs[schemas.AttrUsageCost])
+	require.Equal(t, 14, attrs[schemas.AttrInputTokens])
+	require.Equal(t, 4, attrs[schemas.AttrOutputTokens])
+	require.Equal(t, 18, attrs[schemas.AttrTotalTokens])
+}
+
 // Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
 // request in flight during boot must still get its attributes; declaring an
 // empty plugin set is what expresses "nothing is listening".
