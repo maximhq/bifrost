@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 )
 
 type tracesAPITestEnv struct {
+	ingest  *TraceIngestHandler
 	router  *router.Router
 	store   logstore.LogStore
 	config  configstore.ConfigStore
@@ -45,7 +49,7 @@ func newTracesAPITestEnv(t *testing.T) *tracesAPITestEnv {
 	rt := router.New()
 	ingest.RegisterRoutes(rt)
 	NewTracesHandler(store, config, ingest, logger).RegisterRoutes(rt)
-	return &tracesAPITestEnv{router: rt, store: store, config: config, service: service}
+	return &tracesAPITestEnv{ingest: ingest, router: rt, store: store, config: config, service: service}
 }
 
 func (e *tracesAPITestEnv) call(t *testing.T, method, uri string, body any, out any) int {
@@ -213,4 +217,90 @@ func TestTraceReviewScoresAndComments(t *testing.T) {
 	trace, err = env.store.FindTrace(ctx, "p1", "t1")
 	require.NoError(t, err)
 	assert.NotContains(t, trace.ScoresParsed, "correctness")
+}
+
+// TestTraceProjectSettingsForwardAndDelete pins the project settings and what they drive: a
+// masking rule that does not compile is refused, the forward target's credential is never sent
+// back to the dashboard and survives an edit that leaves it masked, a stored request is replayed
+// to the upstream with that credential, and a deleted trace is gone.
+func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	var mu sync.Mutex
+	var upstreamAuth, upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		upstreamAuth, upstreamPath = r.Header.Get("Authorization"), r.URL.Path
+		mu.Unlock()
+	}))
+	defer upstream.Close()
+
+	var created struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	body := map[string]any{
+		"name": "agent", "retention_days": 14,
+		"masking_rules": []map[string]any{{"name": "email", "pattern": `[\w.]+@[\w.]+`, "replacement": "[email]"}},
+		"forward":       map[string]any{"vendor": "otel", "base_url": upstream.URL, "headers": map[string]string{"Authorization": "Bearer upstream-secret"}, "enabled": true},
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", body, &created))
+	projectID := created.Project.ID
+	assert.Equal(t, traceForwardSecretMask, created.Project.Forward.Headers["Authorization"], "the upstream credential is never sent back")
+
+	for name, bad := range map[string]map[string]any{
+		"pattern does not compile": {"name": "agent", "masking_rules": []map[string]any{{"pattern": "("}}},
+		"pattern matches nothing":  {"name": "agent", "masking_rules": []map[string]any{{"pattern": "a*"}}},
+		"unknown vendor":           {"name": "agent", "forward": map[string]any{"vendor": "datadog", "base_url": "https://x.test"}},
+		"relative url":             {"name": "agent", "forward": map[string]any{"vendor": "otel", "base_url": "/v1/traces"}},
+	} {
+		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, bad, nil), name)
+	}
+
+	// An edit that sends the mask back keeps the stored credential.
+	body["description"] = "edited"
+	body["forward"].(map[string]any)["headers"] = map[string]string{"Authorization": traceForwardSecretMask}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/projects/"+projectID, body, nil))
+	stored, err := env.config.GetTraceProject(ctx, projectID)
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer upstream-secret", stored.Forward.Headers["Authorization"])
+	assert.Equal(t, "edited", stored.Description)
+
+	var key struct {
+		Value string `json:"value"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "ci", "project_ids": []string{projectID}, "default_project_id": projectID}, &key))
+	forwarder := traceingest.NewForwarder(nil, logger)
+	defer forwarder.Close()
+	env.ingest.SetForwarder(forwarder)
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	reqCtx.Request.SetRequestURI("/tracing/otel/v1/traces")
+	reqCtx.Request.Header.Set("Authorization", key.Value)
+	reqCtx.Request.Header.SetContentType("application/x-protobuf")
+	reqCtx.Request.SetBody(otlpTestExport(t))
+	env.router.Handler(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return upstreamPath == "/v1/traces"
+	}, 3*time.Second, 10*time.Millisecond, "the stored request is replayed to the project's upstream")
+	mu.Lock()
+	assert.Equal(t, "Bearer upstream-secret", upstreamAuth, "with the upstream's credential, not the Bifrost tracing key")
+	mu.Unlock()
+
+	spans, err := env.store.ListTraceSpans(ctx, projectID, otlpTestTrace)
+	require.NoError(t, err)
+	require.Len(t, spans, 3)
+	require.NotNil(t, spans[0].ExpiresAt)
+	assert.WithinDuration(t, time.Now().AddDate(0, 0, 14), *spans[0].ExpiresAt, time.Minute, "the project's retention sets each span's expiry")
+
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", "/api/traces/trace/"+projectID+"/"+otlpTestTrace, nil, nil))
+	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "DELETE", "/api/traces/trace/"+projectID+"/"+otlpTestTrace, nil, nil))
+	spans, err = env.store.ListTraceSpans(ctx, projectID, otlpTestTrace)
+	require.NoError(t, err)
+	assert.Empty(t, spans)
+	parts, err := env.store.ListTraceSpanParts(ctx, projectID, otlpTestTrace, otlpTestLLM)
+	require.NoError(t, err)
+	assert.Empty(t, parts, "the received parts go with the trace")
 }

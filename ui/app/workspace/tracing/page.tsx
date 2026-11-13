@@ -12,11 +12,12 @@ import {
 	useGetTracesQuery,
 } from "@/lib/store";
 import type { TraceFilters, TracePagination } from "@/lib/types/traces";
-import { Loader2, Plug, Search } from "lucide-react";
+import { Loader2, Plug, Search, Settings } from "lucide-react";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConnectPanel } from "./views/connectPanel";
+import { ProjectSettings } from "./views/projectSettings";
 import { SOURCE_LABELS } from "./views/format";
 import { TraceOverview } from "./views/traceOverview";
 import { Pager, SessionsTable, SpansTable, TracesTable } from "./views/tracesTable";
@@ -56,6 +57,7 @@ export default function TracingPage() {
 		offset: parseAsInteger.withDefault(0),
 	});
 	const [connectOpen, setConnectOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [searchDraft, setSearchDraft] = useState(url.search);
 	const { data: projectsData, isLoading: projectsLoading } = useGetTraceProjectsQuery();
 	const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
@@ -181,6 +183,15 @@ export default function TracingPage() {
 						))}
 					</SelectContent>
 				</Select>
+				<Button
+					variant="outline"
+					size="icon"
+					aria-label={t("tracing.settings.button")}
+					data-testid="tracing-settings-button"
+					onClick={() => setSettingsOpen(true)}
+				>
+					<Settings className="h-4 w-4" />
+				</Button>
 				<Button data-testid="tracing-connect-button" onClick={() => setConnectOpen(true)}>
 					<Plug className="mr-1 h-4 w-4" />
 					{t("tracing.connect.button")}
@@ -292,6 +303,7 @@ export default function TracingPage() {
 				renderSpanExtras={renderTraceSpanExtras}
 			/>
 			<ConnectPanel open={connectOpen} onOpenChange={setConnectOpen} projects={projects} />
+			<ProjectSettings open={settingsOpen} onOpenChange={setSettingsOpen} projects={projects} initialProjectId={projectId} />
 		</div>
 	);
 }
