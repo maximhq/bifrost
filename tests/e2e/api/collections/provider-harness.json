@@ -289735,7 +289735,7 @@
     },
     {
       "name": "264. Bifrost publishes its OAuth Client ID Metadata Document (mcp-oauth-cimd-client)",
-      "description": "Client ID Metadata Documents (MCP 2025-11-25+, preferred over Dynamic Client Registration from 2026-07-28), client role: Bifrost publishes its own document at /api/oauth/client-metadata.json (public, no credential) and presents that URL as its client_id to upstream authorization servers that advertise client_id_metadata_document_supported, instead of registering through DCR. This case pins the document: client_id equal to the URL it is served at, client_name, a single redirect_uri on the same base as the client_id, a public client (token_endpoint_auth_method none) and an application_type. The choice between CIMD and DCR is covered by Go tests (TestInitiateOAuthFlow_ChoosesClientIDMetadataDocument) since it needs an upstream authorization server. No provider calls; run with PROVIDER=mcp FEATURE=mcp-oauth-cimd-client, the partition for MCP management rows.",
+      "description": "Client ID Metadata Documents (MCP 2025-11-25+, preferred over Dynamic Client Registration from 2026-07-28), client role: Bifrost publishes its own document at /api/oauth/client-metadata.json (public, no credential) and presents that URL as its client_id to upstream authorization servers that advertise client_id_metadata_document_supported, instead of registering through DCR. This case pins the document: client_id equal to the URL it is served at (or to mcp_client_metadata_url when the admin hosts the document elsewhere, with the callback staying on Bifrost's base), client_name, a single redirect_uri on the same base as the client_id, a public client (token_endpoint_auth_method none) and an application_type. The choice between CIMD and DCR is covered by Go tests (TestInitiateOAuthFlow_ChoosesClientIDMetadataDocument) since it needs an upstream authorization server. No provider calls; run with PROVIDER=mcp FEATURE=mcp-oauth-cimd-client, the partition for MCP management rows.",
       "item": [
         {
           "name": "[EXPECT-200] mcp-oauth-cimd-client Bifrost publishes its own client metadata document",
@@ -289767,6 +289767,12 @@
                   "  var external = (res.json().client_config || {}).mcp_external_client_url;",
                   "  var value = external && typeof external === 'object' ? external.value : external;",
                   "  pm.variables.set('cimdExternalURLSet', value ? 'true' : 'false');",
+                  "  // A hosted document (mcp_client_metadata_url) replaces the client_id; the callback stays on Bifrost's base.",
+                  "  var hosted = (res.json().client_config || {}).mcp_client_metadata_url;",
+                  "  // /api/config masks an env- or vault-backed value, so only a plain one can be compared exactly.",
+                  "  var hostedRef = !!(hosted && typeof hosted === 'object' && (hosted.type === 'env' || hosted.type === 'vault'));",
+                  "  pm.variables.set('cimdHostedURLRef', hostedRef ? 'true' : 'false');",
+                  "  pm.variables.set('cimdHostedURL', hostedRef ? '' : ((hosted && typeof hosted === 'object' ? hosted.value : hosted) || ''));",
                   "});"
                 ]
               }
@@ -289781,7 +289787,12 @@
                   "  pm.expect(pm.variables.get('cimdExternalURLSet'), 'this case expects a profile without mcp_external_client_url; with one set, client_id cannot be checked against baseUrl').to.equal('false');",
                   "  var base = pm.variables.get('baseUrl').replace(/\\/$/, '');",
                   "  var doc = pm.response.json();",
-                  "  pm.expect(doc.client_id, 'client_id must be the URL the document is served at: ' + pm.response.text()).to.equal(base + '/api/oauth/client-metadata.json');",
+                  "  var hosted = pm.variables.get('cimdHostedURL');",
+                  "  if (pm.variables.get('cimdHostedURLRef') === 'true') {",
+                  "    pm.expect(doc.client_id, 'the hosted URL is a secret reference that /api/config masks, so only its shape is checked: ' + pm.response.text()).to.match(/^https:\\/\\/[^?#\\/]+\\/[^?#]*$/);",
+                  "  } else {",
+                  "    pm.expect(doc.client_id, 'client_id must be the hosted document URL when one is set, else the URL the document is served at: ' + pm.response.text()).to.equal(hosted || base + '/api/oauth/client-metadata.json');",
+                  "  }",
                   "  pm.expect(doc.client_name, 'client_name: ' + pm.response.text()).to.equal('Bifrost MCP Gateway');",
                   "  pm.expect(doc.redirect_uris, 'redirect_uris: ' + pm.response.text()).to.deep.equal([base + '/api/oauth/callback']);",
                   "  pm.expect(doc.token_endpoint_auth_method).to.equal('none');",
@@ -289859,6 +289870,8 @@
                   "  var external = (res.json().client_config || {}).mcp_external_client_url;",
                   "  var value = external && typeof external === 'object' ? external.value : external;",
                   "  pm.variables.set('cimdExternalURLSet', value ? 'true' : 'false');",
+                  "  var hosted = (res.json().client_config || {}).mcp_client_metadata_url;",
+                  "  pm.variables.set('cimdLocalHostedURL', (hosted && typeof hosted === 'object' ? hosted.value : hosted) || '');",
                   "});"
                 ]
               }
@@ -289870,6 +289883,9 @@
                 "exec": [
                   "pm.test('the profile leaves mcp_external_client_url unset', function () {",
                   "  pm.expect(pm.variables.get('cimdExternalURLSet'), 'with a public external URL set the document is usable and this request would start a sign-in').to.equal('false');",
+                  "});",
+                  "pm.test('the profile leaves mcp_client_metadata_url unset', function () {",
+                  "  pm.expect(pm.variables.get('cimdLocalHostedURL'), 'with a hosted document set the toggle is usable and this request would start a sign-in').to.equal('');",
                   "});",
                   "pm.test('the harness reaches Bifrost on a local or plain-HTTP address', function () {",
                   "  var base = pm.variables.get('baseUrl');",
@@ -289909,6 +289925,55 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"harness_cimd_toggle_local_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"https://mcp.example.invalid/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {\n    \"authorize_url\": \"https://auth.example.invalid/authorize\",\n    \"token_url\": \"https://auth.example.invalid/token\",\n    \"use_client_metadata_document\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] mcp-oauth-cimd-client PUT /api/config refuses an unusable mcp_client_metadata_url before writing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body also carries an invalid skills_external_client_url, which is checked after mcp_client_metadata_url:",
+                  "// before the setting existed this request is refused for the skills URL (red, nothing written), and after it",
+                  "// for the hosted document URL (green). Either way the shared config is never changed.",
+                  "pm.test('a hosted document URL with a query is a 400 naming the setting, without echoing the value', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error: ' + pm.response.text()).to.include('mcp_client_metadata_url');",
+                  "  pm.expect(pm.response.text()).to.not.include('client.json?v=1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_config\": {\n    \"mcp_client_metadata_url\": \"https://public.example.invalid/bifrost/client.json?v=1\",\n    \"skills_external_client_url\": \"https://skills.example.invalid?token=refused\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"

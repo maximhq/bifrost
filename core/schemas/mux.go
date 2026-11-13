@@ -55,6 +55,10 @@ func (ct *ChatTool) ToResponsesTool() *ResponsesTool {
 
 	// Convert custom tools
 	if ct.Type == ChatToolTypeCustom && ct.Custom != nil {
+		if ct.Custom.Name != "" {
+			rt.Name = &ct.Custom.Name
+		}
+		rt.Description = ct.Custom.Description
 		if ct.Custom.Format != nil {
 			rt.ResponsesToolCustom = &ResponsesToolCustom{
 				Format: &ResponsesToolCustomFormat{
@@ -82,7 +86,7 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	}
 
 	// Convert function tools
-	if rt.Type == "function" {
+	if rt.Type == ResponsesToolTypeFunction {
 		ct.Function = &ChatToolFunction{}
 
 		if rt.Name != nil {
@@ -98,8 +102,13 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	}
 
 	// Convert custom tools
-	if rt.Type == "custom" && rt.ResponsesToolCustom != nil {
-		ct.Custom = &ChatToolCustom{}
+	if rt.Type == ResponsesToolTypeCustom {
+		ct.Custom = &ChatToolCustom{Description: rt.Description}
+		if rt.Name != nil {
+			ct.Custom.Name = *rt.Name
+		}
+	}
+	if rt.Type == ResponsesToolTypeCustom && rt.ResponsesToolCustom != nil {
 		if rt.ResponsesToolCustom.Format != nil {
 			ct.Custom.Format = &ChatToolCustomFormat{
 				Type: rt.ResponsesToolCustom.Format.Type,
