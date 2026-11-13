@@ -159,8 +159,9 @@ codex
 ```
 
 Bifrost forwards two routes under this base URL: `GET /models` for the Codex
-model picker and `POST /responses` for each turn. Bifrost refuses every other
-path and method.
+model picker and `POST /responses` for each turn. A WebSocket upgrade on
+`/responses` is also served, see [WebSocket mode](#websocket-mode). Bifrost
+answers every other path and method with `404`.
 
 <Note>
 Model names are the ones your ChatGPT plan offers, such as `gpt-5.5`, without
@@ -187,6 +188,63 @@ Codex reads `BIFROST_VIRTUAL_KEY` once at launch and never refreshes it. After
 you rotate the virtual key, restart Codex. The desktop app needs the variable
 set on the app process itself.
 </Warning>
+
+### WebSocket mode
+
+Over HTTP, Codex sends the whole conversation history on every turn, so a long
+session with many screenshots or large tool outputs grows until a request
+passes `client_config.max_request_body_size_mb` and Bifrost answers
+`413 Payload Too Large`. In Responses WebSocket mode the ChatGPT backend keeps
+the history on the connection and each turn carries only its new input.
+
+To use it, set `supports_websockets = true` on the provider:
+
+```toml
+[model_providers.bifrost]
+name = "Bifrost"
+base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = true
+env_http_headers = { "x-bf-vk" = "BIFROST_VIRTUAL_KEY" }
+```
+
+Codex then connects to
+`wss://gateway.example.com/chatgpt_passthrough/backend-api/codex/responses`.
+When Bifrost is mounted under `server.base_path`, the prefix comes first, as in
+`wss://gateway.example.com/bifrost/chatgpt_passthrough/backend-api/codex/responses`.
+
+Bifrost opens one connection to the ChatGPT backend for each Codex connection
+and relays messages in both directions unchanged. What applies to a turn over
+HTTP applies to a turn over WebSocket:
+
+- Each `response.create` message is one request. Bifrost checks it against the
+  virtual key's allowed models, budgets, and rate limits, logs it, and counts
+  the usage ChatGPT reports for it. A turn that is refused gets an `error`
+  event and the connection stays open.
+- The ChatGPT token in `Authorization` is forwarded on the upstream handshake
+  under the same rule as on HTTP. If ChatGPT refuses the handshake, for example
+  with `401` for an expired token, Codex receives that status.
+- `client_config.max_request_body_size_mb` is the largest single message
+  Bifrost accepts from Codex. Bifrost advertises the limit on the handshake
+  and closes the connection with code `1009` when a message passes it. A turn
+  normally stays far below the limit, but Codex resends the full history in one
+  message after it reconnects.
+- A reverse proxy or load balancer in front of Bifrost must forward the
+  `Upgrade` and `Connection` headers and allow long-lived connections.
+
+`/openai_passthrough/v1/responses` serves WebSocket mode the same way for
+OpenAI API keys: Bifrost connects to the provider's Responses WebSocket
+endpoint with its stored key, and the caller's `Authorization` is not
+forwarded.
+
+<Note>
+This is different from the `/openai/v1` setup above, where Bifrost may
+translate the request for another provider and `supports_websockets = false`
+is the safe choice. On the passthrough routes nothing is translated, so
+WebSocket mode works whenever the upstream supports it. If the upgrade fails,
+Codex retries and then falls back to HTTPS on its own.
+</Note>
 
 ### Sign in with your identity provider (Enterprise)
 
@@ -437,6 +495,13 @@ model on the command line and verify it with `/status`.
 Bifrost routes on the model Codex actually sends. Inspect
 `original_model_requested` in the error response or the Bifrost logs. Fixing a
 provider-key error will not change Codex's active model.
+
+### `413 Payload Too Large` in a long session
+
+Codex over HTTP resends the full history every turn, and the request passed
+`client_config.max_request_body_size_mb` (100 MB by default). Turn on
+[WebSocket mode](#websocket-mode) so a turn carries only its new input, or
+raise the limit.
 
 ### `401 Unauthorized`
 
