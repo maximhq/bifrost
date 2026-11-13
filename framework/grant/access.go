@@ -163,10 +163,16 @@ func permitAllowsEveryModel(p schemas.Permit, provider string) bool {
 	return unrestricted
 }
 
-// IsMCPToolAllowed implements schemas.Access.
+// IsMCPToolAllowed implements schemas.Access. A "<client>-*" wildcard is answered from the effective
+// tool list, so it's allowed only when some tool of the client survives composition.
 func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 	if a == nil || toolPattern == "" {
 		return false
+	}
+	if clientName, isWildcard := strings.CutSuffix(toolPattern, "-"+Wildcard); isWildcard {
+		return slices.ContainsFunc(a.MCPToolIncludeList(), func(entry string) bool {
+			return strings.HasPrefix(entry, clientName+"-")
+		})
 	}
 	base := a.anyBase(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
 	if a.scoping == nil {
@@ -586,7 +592,12 @@ func (a *Access) DeniedPermitsForMCPTool(toolPattern string) []schemas.Permit {
 	if a == nil {
 		return nil
 	}
-	return a.deniedBy(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
+	denied := a.deniedBy(func(p schemas.Permit) bool { return allowsTool(p, toolPattern) })
+	// Each side grants the client some tool but none in common: the scope narrowed them away.
+	if len(denied) == 0 && a.scoping != nil && !a.IsMCPToolAllowed(toolPattern) {
+		return []schemas.Permit{a.scoping}
+	}
+	return denied
 }
 
 // deniedBy identifies which permits refused, given a verdict per permit.
