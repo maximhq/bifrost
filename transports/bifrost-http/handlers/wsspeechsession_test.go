@@ -85,7 +85,7 @@ func startSpeechRelay(t *testing.T, idleTimeout time.Duration) *speechRelayFixtu
 	t.Cleanup(cleanup)
 	speech := newFakeSpeechSession()
 	clientConn := newRealtimeClientConn(bifrostSide)
-	run := &speechSessionRun{clientConn: clientConn, speech: speech, idleTimeout: idleTimeout}
+	run := &speechSessionRun{clientConn: clientConn, speech: speech, idleTimeout: idleTimeout, text: newSpeechSessionText()}
 	done := make(chan error, 1)
 	go func() {
 		done <- runRealtimeRelays(bifrostSide, run.relayClient, run.relayEvents, func() {
@@ -229,6 +229,7 @@ func TestSpeechSessionRelayAppliesEventsAndReportsUsage(t *testing.T) {
 	f.waitDone(t)
 	assert.Nil(t, f.run.failure)
 	assert.EqualValues(t, 11, f.run.chars.Load())
+	assert.Equal(t, "héllo wörld", f.run.text.String(), "the text the session spoke is kept for its log row")
 }
 
 // A bad event is answered with an error event and the session carries on.
@@ -266,6 +267,7 @@ func TestSpeechSessionRelayDoesNotCountRefusedText(t *testing.T) {
 	assert.EqualValues(t, 5, done["usage"].(map[string]any)["input_chars"], "only the accepted text is counted")
 	f.waitDone(t)
 	assert.EqualValues(t, 5, f.run.chars.Load())
+	assert.Equal(t, "héllo", f.run.text.String(), "refused text is not kept either")
 }
 
 // A provider that fails the session is reported to the client and to the settlement.
@@ -302,8 +304,10 @@ type speechHookRecorder struct {
 	preModel    string
 	preInput    string
 	preStream   bool
+	preSession  bool
 	postType    schemas.RequestType
 	postUsage   *schemas.SpeechUsage
+	postInput   string
 	postFinal   bool
 	postKeyName string
 	postErr     *schemas.BifrostError
@@ -322,6 +326,7 @@ func (r *speechHookRecorder) PreLLMHook(ctx *schemas.BifrostContext, req *schema
 	r.preProvider, r.preModel, _ = req.GetRequestFields()
 	r.preInput = req.SpeechRequest.Input.Input
 	r.preStream = bifrost.IsFinalChunk(ctx)
+	r.preSession, _ = ctx.Value(schemas.BifrostContextKeySpeechSession).(bool)
 	return req, nil, nil
 }
 func (r *speechHookRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -334,6 +339,7 @@ func (r *speechHookRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *sche
 	r.postErr = bifrostErr
 	if resp != nil && resp.SpeechStreamResponse != nil {
 		r.postUsage = resp.SpeechStreamResponse.Usage
+		r.postInput = resp.SpeechStreamResponse.SessionInput
 	}
 	return resp, bifrostErr, nil
 }
@@ -357,10 +363,14 @@ func TestSpeechSessionUnitIsOneSpeechStreamRequest(t *testing.T) {
 	assert.Equal(t, "gpt-4o-mini-tts", recorder.preModel)
 	assert.Empty(t, recorder.preInput, "the session's text is not in the admitted request")
 	assert.False(t, recorder.preStream, "the pre-hooks run before the stream ends")
+	assert.True(t, recorder.preSession, "the plugins are told it is a session, which is not an HTTP speech stream")
 	assert.Equal(t, 0, recorder.posts)
 
+	unit.text.add("Hello ")
+	unit.text.add("world.")
 	unit.settle(req, key, 42, nil)
 	assert.Equal(t, 1, recorder.posts)
+	assert.Equal(t, "Hello world.", recorder.postInput, "the session reports the text it spoke, for its log row")
 	assert.Equal(t, schemas.SpeechStreamRequest, recorder.postType)
 	assert.True(t, recorder.postFinal, "the session settles as the final chunk of its stream")
 	assert.Equal(t, "every-model", recorder.postKeyName)
@@ -372,7 +382,8 @@ func TestSpeechSessionUnitIsOneSpeechStreamRequest(t *testing.T) {
 	unit, bifrostErr = openSpeechSessionUnit(client, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "speech_2", req)
 	require.Nil(t, bifrostErr)
 	failure := newRealtimeWireBifrostError(502, "server_error", "provider hung up")
-	recorder.postUsage = nil
+	recorder.postUsage, recorder.postInput = nil, ""
+	unit.text.add("Hello")
 	unit.settle(req, key, 7, failure)
 	assert.Equal(t, 2, recorder.posts)
 	require.NotNil(t, recorder.postErr)
@@ -380,15 +391,34 @@ func TestSpeechSessionUnitIsOneSpeechStreamRequest(t *testing.T) {
 	assert.Equal(t, schemas.RequestType(""), failure.ExtraFields.RequestType, "the error sent to the client is not rewritten")
 	require.NotNil(t, recorder.postUsage, "the characters the client sent are billed when the provider fails the session")
 	assert.Equal(t, 7, recorder.postUsage.InputChars)
+	assert.Equal(t, "Hello", recorder.postInput, "and the row keeps the text the provider was asked to speak")
 
 	// A session that failed before any text was sent has nothing to bill.
 	unit, bifrostErr = openSpeechSessionUnit(client, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "speech_3", req)
 	require.Nil(t, bifrostErr)
-	recorder.postUsage = nil
+	recorder.postUsage, recorder.postInput = nil, ""
 	unit.settle(req, key, 0, failure)
 	assert.Equal(t, 3, recorder.posts)
 	require.NotNil(t, recorder.postErr)
 	assert.Nil(t, recorder.postUsage)
+	assert.Empty(t, recorder.postInput)
+}
+
+// The text a session keeps for its log row is bounded, and is cut at a character, not inside one.
+func TestSpeechSessionTextKeepsTheClientsTextUpToItsBound(t *testing.T) {
+	text := &speechSessionText{limit: 10}
+	text.add("Hello ")
+	text.add("world, and more")
+	text.add("ignored")
+	assert.Equal(t, "Hello worl", text.String())
+
+	runes := &speechSessionText{limit: 4}
+	runes.add("a\u00e9\u00e9") // a, then two characters of two bytes each
+	assert.Equal(t, "a\u00e9", runes.String(), "a character is not cut in half")
+
+	var none *speechSessionText
+	none.add("text nobody keeps")
+	assert.Empty(t, none.String())
 }
 
 // BenchmarkSpeechSessionWriteEvent is the gateway's own cost of one audio event, a 16 KiB frame of
@@ -414,38 +444,49 @@ func BenchmarkSpeechSessionWriteEvent(b *testing.B) {
 	}
 }
 
-// The characters of a text-to-dialogue frame are the text of its inputs, counted in runes; frames that carry
-// no text, such as the registration and the flush, are free.
+// The characters of a text-to-dialogue frame are the text of its inputs, counted in runes, and that text is what
+// the session's log row keeps; frames that carry no text, such as the registration and the flush, are free.
 func TestElevenlabsFrameChars(t *testing.T) {
 	for _, tc := range []struct {
 		name, frame string
 		want        int
+		wantText    string
 	}{
-		{"one input", `{"inputs":[{"text":"Hello there.","voice_id":"v1"}]}`, 12},
-		{"several inputs", `{"inputs":[{"text":"Hello","voice_id":"v1"},{"text":" wörld","voice_id":"v2","new_turn":true}]}`, 11},
-		{"runes, not bytes", `{"inputs":[{"text":"नमस्ते","voice_id":"v1"}]}`, 6},
-		{"a single-voice frame", `{"text":"Hello","flush":true}`, 5},
-		{"the registration", `{"voices":["v1"],"voice_settings":{"stability":0.5}}`, 0},
-		{"a flush", `{"flush":true}`, 0},
-		{"a keep-alive", `{"keep_alive":true}`, 0},
-		{"a close", `{"close_socket":true}`, 0},
-		{"text that is not a string", `{"inputs":[{"text":7}],"text":null}`, 0},
-		{"not JSON", `{"inputs":`, 0},
+		{"one input", `{"inputs":[{"text":"Hello there.","voice_id":"v1"}]}`, 12, "Hello there."},
+		{"several inputs", `{"inputs":[{"text":"Hello","voice_id":"v1"},{"text":" wörld","voice_id":"v2","new_turn":true}]}`, 11, "Hello wörld"},
+		{"runes, not bytes", `{"inputs":[{"text":"नमस्ते","voice_id":"v1"}]}`, 6, "नमस्ते"},
+		{"a single-voice frame", `{"text":"Hello","flush":true}`, 5, "Hello"},
+		{"the registration", `{"voices":["v1"],"voice_settings":{"stability":0.5}}`, 0, ""},
+		{"a flush", `{"flush":true}`, 0, ""},
+		{"a keep-alive", `{"keep_alive":true}`, 0, ""},
+		{"a close", `{"close_socket":true}`, 0, ""},
+		{"text that is not a string", `{"inputs":[{"text":7}],"text":null}`, 0, ""},
+		{"not JSON", `{"inputs":`, 0, ""},
 	} {
-		if got := elevenlabsFrameChars([]byte(tc.frame)); got != tc.want {
+		recorder := newSpeechSessionText()
+		if got := elevenlabsFrameChars([]byte(tc.frame), recorder); got != tc.want {
 			t.Errorf("%s: %d characters, want %d", tc.name, got, tc.want)
+		}
+		if got := recorder.String(); got != tc.wantText {
+			t.Errorf("%s: kept %q, want %q", tc.name, got, tc.wantText)
+		}
+		// A session that keeps no text counts the same.
+		if got := elevenlabsFrameChars([]byte(tc.frame), nil); got != tc.want {
+			t.Errorf("%s: %d characters without a recorder, want %d", tc.name, got, tc.want)
 		}
 	}
 }
 
-// BenchmarkElevenlabsFrameChars is the gateway's cost of counting one text frame of a text-to-dialogue session,
-// the only per-frame work its relay adds on the client side.
+// BenchmarkElevenlabsFrameChars is the gateway's cost of counting and keeping one text frame of a text-to-dialogue
+// session, the only per-frame work its relay adds on the client side.
 func BenchmarkElevenlabsFrameChars(b *testing.B) {
 	frame := []byte(`{"inputs":[{"text":"Namaste, this is a sentence of the kind a voice agent speaks.","voice_id":"21m00Tcm4TlvDq8ikWAM","new_turn":false}]}`)
+	recorder := newSpeechSessionText()
 	b.SetBytes(int64(len(frame)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if elevenlabsFrameChars(frame) == 0 {
+		recorder.text = recorder.text[:0]
+		if elevenlabsFrameChars(frame, recorder) == 0 {
 			b.Fatal("no characters counted")
 		}
 	}
@@ -459,7 +500,7 @@ func runElevenlabsDialogueRelay(t *testing.T) (app, provider *ws.Conn, run *elev
 	t.Cleanup(cleanupClient)
 	providerSide, provider, cleanupProvider := dialRealtimeTestConn(t)
 	t.Cleanup(cleanupProvider)
-	run = &elevenlabsDialogueRun{clientConn: newRealtimeClientConn(clientSide), upstream: providerSide}
+	run = &elevenlabsDialogueRun{clientConn: newRealtimeClientConn(clientSide), upstream: providerSide, text: newSpeechSessionText()}
 	ended = make(chan struct{})
 	go func() {
 		defer close(ended)
@@ -500,6 +541,9 @@ func TestElevenlabsDialogueRelaysFramesAsTheyAreAndCountsTheText(t *testing.T) {
 	}
 	if got := run.chars.Load(); got != 12 {
 		t.Errorf("characters = %d, want 12", got)
+	}
+	if got := run.text.String(); got != "Hello world." {
+		t.Errorf("text kept = %q, want %q", got, "Hello world.")
 	}
 
 	_ = app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second))

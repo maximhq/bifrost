@@ -1266,6 +1266,7 @@
 		"decisions": "Décisions",
 		"speech": "Synthèse vocale",
 		"speech_stream": "Flux de synthèse vocale",
+		"speech_session": "Session de synthèse vocale",
 		"transcription": "Transcription",
 		"transcription_stream": "Flux de transcription",
 		"image_generation": "Génération d’images",

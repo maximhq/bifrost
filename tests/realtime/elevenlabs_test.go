@@ -1043,7 +1043,11 @@ func TestElevenlabs_NativeDialogueSessionIsRelayedAndBilledByCharacters(t *testi
 		assert.Equal(t, fakeElevenKey, upstream.Header("xi-api-key"))
 		assert.Equal(t, voice, upstream.Registration().Get("voices.0").Str)
 		assert.Equal(t, []string{text}, upstream.Inputs())
-		costs = append(costs, waitSpeechRows(t, vk, len(costs)+1)[len(costs)].Cost)
+		row := waitSpeechRows(t, vk, len(costs)+1)[len(costs)]
+		assert.Equal(t, "speech.session", row.raw.Get("object").Str, "a session is not an HTTP speech stream")
+		assert.Equal(t, text, row.raw.Get("speech_input.input").Str, "the row keeps the text the client sent as its input")
+		assert.False(t, row.raw.Get("speech_output").Exists(), "the session streams its audio and keeps none: %s", row.raw.Get("speech_output").Raw)
+		costs = append(costs, row.Cost)
 	}
 	require.Len(t, costs, 2)
 	assert.Positive(t, costs[0], "the model has a price per character")
