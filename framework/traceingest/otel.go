@@ -101,7 +101,7 @@ type attrs struct {
 }
 
 func attributes(values map[string]any) *attrs {
-	return &attrs{values: values, used: make(map[string]struct{})}
+	return &attrs{values: values, used: make(map[string]struct{}), usedPrefixes: make([]string, 0, 4)}
 }
 
 func (a *attrs) consumed(key string) bool {
@@ -109,11 +109,27 @@ func (a *attrs) consumed(key string) bool {
 		return true
 	}
 	for _, prefix := range a.usedPrefixes {
-		if strings.HasPrefix(key, prefix) {
+		if inFamily(key, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// inFamily reports whether key is prefix followed by a dot and more: a member of the flattened
+// family the prefix names. It compares in place, so no "prefix." string is built per call.
+func inFamily(key, prefix string) bool {
+	return len(key) > len(prefix) && key[len(prefix)] == '.' && strings.HasPrefix(key, prefix)
+}
+
+// decodeAny is decodeValue for a value already held as any: a string that is a JSON object or array
+// is decoded, and anything else is returned as it is, without boxing the string a second time.
+func decodeAny(value any) any {
+	text, isString := value.(string)
+	if !isString || !looksLikeJSON(text) {
+		return value
+	}
+	return decodeValue(text)
 }
 
 func (a *attrs) has(key string) bool {
@@ -172,10 +188,7 @@ func (a *attrs) content(keys ...string) any {
 			continue
 		}
 		a.used[key] = struct{}{}
-		if text, isString := value.(string); isString {
-			return decodeValue(text)
-		}
-		return value
+		return decodeAny(value)
 	}
 	return nil
 }
@@ -187,7 +200,7 @@ func (a *attrs) object(key string) map[string]any {
 		return v
 	case string:
 		var decoded map[string]any
-		if sonic.Unmarshal([]byte(v), &decoded) == nil {
+		if sonic.UnmarshalString(v, &decoded) == nil {
 			return decoded
 		}
 	}
@@ -198,23 +211,22 @@ func (a *attrs) object(key string) map[string]any {
 // "p.0.message.role" and "p.0.message.content" become [{"message":{"role":..,"content":..}}].
 // It marks the whole family folded. nil when no key has the prefix.
 func (a *attrs) family(prefix string) any {
-	root := make(map[string]any)
-	found := false
+	// Most spans hold no key of a given family, so nothing is allocated until one is found.
+	var root map[string]any
 	for key, value := range a.values {
-		rest, ok := strings.CutPrefix(key, prefix+".")
-		if !ok {
+		if !inFamily(key, prefix) {
 			continue
 		}
-		found = true
+		if root == nil {
+			root = make(map[string]any)
+		}
 		node := root
-		segments := strings.Split(rest, ".")
-		for i, segment := range segments {
-			if i == len(segments)-1 {
-				if text, isString := value.(string); isString {
-					node[segment] = decodeValue(text)
-				} else {
-					node[segment] = value
-				}
+		// Walk the dotted path segment by segment. Cut does not allocate, where Split built a
+		// slice for every key.
+		for rest := key[len(prefix)+1:]; ; {
+			segment, tail, more := strings.Cut(rest, ".")
+			if !more {
+				node[segment] = decodeAny(value)
 				break
 			}
 			next, isMap := node[segment].(map[string]any)
@@ -222,13 +234,13 @@ func (a *attrs) family(prefix string) any {
 				next = make(map[string]any)
 				node[segment] = next
 			}
-			node = next
+			node, rest = next, tail
 		}
 	}
-	if !found {
+	if root == nil {
 		return nil
 	}
-	a.usedPrefixes = append(a.usedPrefixes, prefix+".")
+	a.usedPrefixes = append(a.usedPrefixes, prefix)
 	return listify(root)
 }
 
@@ -241,18 +253,38 @@ func listify(value any) any {
 	for key, child := range node {
 		node[key] = listify(child)
 	}
+	// A map is a list only when every key is an index. Most are not ("role", "content"), so the keys
+	// are checked before anything is allocated: Atoi on a name allocates an error each time.
+	if len(node) == 0 {
+		return node
+	}
+	for key := range node {
+		if !isIndex(key) {
+			return node
+		}
+	}
 	list := make([]any, len(node))
 	for key, child := range node {
 		index, err := strconv.Atoi(key)
-		if err != nil || index < 0 || index >= len(node) {
+		if err != nil || index >= len(node) {
 			return node
 		}
 		list[index] = child
 	}
-	if len(node) == 0 {
-		return node
-	}
 	return list
+}
+
+// isIndex reports whether key is a non-negative decimal number with no sign.
+func isIndex(key string) bool {
+	if key == "" || len(key) > 9 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func setIfEmpty(dst *string, value string) {

@@ -205,3 +205,62 @@ func TestMapOTelSpanNamesToolSpansAfterTheirTool(t *testing.T) {
 	assert.Equal(t, "execute_tool get_weather", named("execute_tool get_weather", map[string]any{"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_weather"}))
 	assert.Equal(t, "my step", named("my step", map[string]any{"ai.operationId": "ai.toolCall", "ai.toolCall.name": "lookup"}))
 }
+
+// benchOTelSpans are spans as the SDKs send them, one per convention, sized like real traffic.
+func benchOTelSpans() map[string]*OTelSpan {
+	withAttrs := func(attrs map[string]any) *OTelSpan {
+		span := otelSpan(attrs)
+		span.Kind, span.Scope = "internal", "bench"
+		span.Resource = map[string]any{"service.name": "bench", "telemetry.sdk.language": "python"}
+		return span
+	}
+	return map[string]*OTelSpan{
+		"openinference": withAttrs(map[string]any{
+			"openinference.span.kind": "LLM", "llm.model_name": "gpt-4o", "llm.provider": "openai",
+			"llm.invocation_parameters":             `{"temperature":0}`,
+			"llm.input_messages.0.message.role":     "system",
+			"llm.input_messages.0.message.content":  "Answer from context.",
+			"llm.input_messages.1.message.role":     "user",
+			"llm.input_messages.1.message.content":  "Who wrote Dune?",
+			"llm.output_messages.0.message.role":    "assistant",
+			"llm.output_messages.0.message.content": "Frank Herbert.",
+			"llm.token_count.prompt":                int64(18), "llm.token_count.completion": int64(4), "llm.token_count.total": int64(22),
+			"llm.cost.total": 0.00015, "session.id": "s-1", "user.id": "u-1", "tag.tags": []any{"rag", "sample"},
+			"metadata": `{"tenant":"acme"}`, "input.value": "Who wrote Dune?", "output.value": "Frank Herbert.",
+		}),
+		"genai": withAttrs(map[string]any{
+			"gen_ai.operation.name": "chat", "gen_ai.provider.name": "openai", "gen_ai.request.model": "gpt-4o",
+			"gen_ai.response.model": "gpt-4o-2024-11-20", "gen_ai.response.id": "chatcmpl-1", "gen_ai.conversation.id": "s-1",
+			"gen_ai.input.messages":     `[{"role":"system","parts":[{"type":"text","content":"You report the weather."}]},{"role":"user","parts":[{"type":"text","content":"Weather in Oslo?"}]}]`,
+			"gen_ai.output.messages":    `[{"role":"assistant","parts":[{"type":"tool_call","id":"call_1","name":"get_weather","arguments":{"city":"Oslo"}}]}]`,
+			"gen_ai.usage.input_tokens": int64(30), "gen_ai.usage.output_tokens": int64(9), "gen_ai.request.temperature": 0.1,
+		}),
+		"langfuse": withAttrs(map[string]any{
+			"langfuse.observation.type": "generation", "langfuse.observation.model.name": "claude-sonnet-5-5",
+			"langfuse.observation.input":         `[{"role":"user","content":"Plan 3 days in Lisbon"}]`,
+			"langfuse.observation.output":        "Day 1 Alfama, Day 2 Belem, Day 3 Sintra.",
+			"langfuse.observation.usage_details": `{"input":41,"output":12,"cache_read_input_tokens":20}`,
+			"langfuse.observation.cost_details":  `{"total":0.0012}`,
+			"langfuse.session.id":                "s-1", "langfuse.user.id": "u-1", "langfuse.environment": "staging",
+			"langfuse.trace.tags": []any{"travel"}, "langfuse.trace.metadata.team": `"growth"`,
+			"langfuse.observation.metadata.source": `"cron"`,
+		}),
+		// A span no convention claims: the common case for HTTP and framework spans in a trace.
+		"plain": withAttrs(map[string]any{
+			"http.request.method": "POST", "url.full": "https://api.openai.com/v1/chat/completions",
+			"http.response.status_code": int64(200), "server.address": "api.openai.com", "network.protocol.version": "1.1",
+		}),
+	}
+}
+
+// BenchmarkMapOTelSpan measures mapping one OTLP span of each convention onto a span part.
+func BenchmarkMapOTelSpan(b *testing.B) {
+	for name, span := range benchOTelSpans() {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				MapOTelSpan(span)
+			}
+		})
+	}
+}

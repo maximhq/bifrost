@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,9 @@ type ConfigStore interface {
 
 // Config tunes the ingest path. The zero value is usable.
 type Config struct {
-	// CommitWindow is how long the committer waits for more requests before it writes a batch.
+	// CommitWindow is an extra wait for more requests before a batch is written. Zero, the default,
+	// writes as soon as nothing more is queued: a lone request is written at once, and requests that
+	// arrive during a write share the next one. Set it only for a store that is slow per write.
 	CommitWindow time.Duration
 	// MaxBatchParts caps one commit. A request is never split across commits.
 	MaxBatchParts int
@@ -56,9 +59,6 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
-	if c.CommitWindow <= 0 {
-		c.CommitWindow = 5 * time.Millisecond
-	}
 	if c.MaxBatchParts <= 0 {
 		c.MaxBatchParts = 2000
 	}
@@ -417,18 +417,32 @@ func (s *Service) commitLoop() {
 			return
 		}
 		parts := len(batch[0].parts)
-		timer := time.NewTimer(s.cfg.CommitWindow)
-	collect:
+		// Take what is already queued. Requests that arrived while the last batch was being written
+		// are waiting here, so batches grow with load by themselves and an idle service adds no wait.
+	queued:
 		for parts < s.cfg.MaxBatchParts {
 			select {
 			case request := <-s.requests:
 				batch = append(batch, request)
 				parts += len(request.parts)
-			case <-timer.C:
-				break collect
+			default:
+				break queued
 			}
 		}
-		timer.Stop()
+		if s.cfg.CommitWindow > 0 {
+			timer := time.NewTimer(s.cfg.CommitWindow)
+		collect:
+			for parts < s.cfg.MaxBatchParts {
+				select {
+				case request := <-s.requests:
+					batch = append(batch, request)
+					parts += len(request.parts)
+				case <-timer.C:
+					break collect
+				}
+			}
+			timer.Stop()
+		}
 		s.commit(batch)
 	}
 }
@@ -467,10 +481,13 @@ func (s *Service) write(ctx context.Context, batch []*commitRequest) error {
 	fresh := make(map[spanRef][]*SpanPart)
 	meta := make(map[spanRef]*commitRequest)
 	source := make(map[spanRef]string)
+	// held maps a part id to the part this batch already holds decoded.
+	held := make(map[string]*SpanPart)
 	for _, request := range batch {
 		parts = append(parts, request.parts...)
 		for i, span := range request.spans {
 			ref := spanRef{request.parts[i].ProjectID, span.TraceID, span.SpanID}
+			held[span.ID] = span
 			fresh[ref] = append(fresh[ref], span)
 			meta[ref] = request
 			if source[ref] == "" {
@@ -493,18 +510,40 @@ func (s *Service) write(ctx context.Context, batch []*commitRequest) error {
 	dirty := make([]logstore.TraceKey, 0, len(byTrace))
 	for key, spanIDs := range byTrace {
 		dirty = append(dirty, key)
-		storedParts, err := s.store.ListTraceSpanPartsForSpans(ctx, key.ProjectID, key.TraceID, spanIDs)
+		// The parts are read back so a part another request or node stored is folded in too. Only
+		// their headers: a part this batch just wrote is already in memory, and decoding its JSON
+		// again was a third of ingest allocation. Payloads are fetched for the other parts alone.
+		headers, err := s.store.ListTraceSpanPartHeadersForSpans(ctx, key.ProjectID, key.TraceID, spanIDs)
 		if err != nil {
 			return fmt.Errorf("failed to load span parts: %w", err)
 		}
+		var missing []string
+		for _, header := range headers {
+			if held[header.ID] == nil {
+				missing = append(missing, header.ID)
+			}
+		}
+		earlier, err := s.store.FindTraceSpanParts(ctx, missing)
+		if err != nil {
+			return fmt.Errorf("failed to load span parts: %w", err)
+		}
+		decoded := make(map[string]*SpanPart, len(earlier))
+		for _, stored := range earlier {
+			// A part that no longer decodes is skipped, never a reason to fail the batch.
+			if part, err := partFromStored(stored); err == nil {
+				decoded[stored.ID] = part
+			}
+		}
 		all := make(map[string][]*SpanPart, len(spanIDs))
-		for _, stored := range storedParts {
-			part, err := partFromStored(stored)
-			if err != nil {
-				// A part that no longer decodes is skipped, never a reason to fail the batch.
+		for _, header := range headers {
+			part := held[header.ID]
+			if part != nil {
+				// The stored receive time is the first one when the same part was sent before.
+				part.ReceivedAt = header.ReceivedAt
+			} else if part = decoded[header.ID]; part == nil {
 				continue
 			}
-			all[stored.SpanID] = append(all[stored.SpanID], part)
+			all[header.SpanID] = append(all[header.SpanID], part)
 		}
 		spanKeys := make([]logstore.TraceSpanKey, len(spanIDs))
 		for i, id := range spanIDs {
@@ -600,11 +639,21 @@ func (s *Service) cachedProject(ctx context.Context, id string) (*tables.TableTr
 
 // rowID derives a stable id, so a score or comment sent again replaces its first copy.
 func rowID(fields ...string) string {
-	h := sha256.New()
+	size := 0
 	for _, field := range fields {
-		fmt.Fprintf(h, "%d:%s", len(field), field)
+		size += len(field) + 4
 	}
-	return hex.EncodeToString(h.Sum(nil))[:40]
+	// The hashed bytes are "<len>:<field>" for each field, in order. Stored ids depend on them.
+	buf := make([]byte, 0, size)
+	for _, field := range fields {
+		buf = strconv.AppendInt(buf, int64(len(field)), 10)
+		buf = append(buf, ':')
+		buf = append(buf, field...)
+	}
+	sum := sha256.Sum256(buf)
+	var encoded [sha256.Size * 2]byte
+	hex.Encode(encoded[:], sum[:])
+	return string(encoded[:40])
 }
 
 // rollupLoop rebuilds the rollup row of every trace marked dirty.

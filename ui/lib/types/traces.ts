@@ -83,6 +83,8 @@ export interface Trace {
 	in_progress: boolean;
 	start_time: string;
 	end_time?: string;
+	/** When the trace's rollup was last rebuilt: a part arrived, or a gateway link or price landed. */
+	updated_at?: string;
 	duration_ms?: number;
 	input?: string;
 	output?: string;

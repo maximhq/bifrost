@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"net"
 	"testing"
@@ -31,7 +32,7 @@ func otlpInt(key string, value int64) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: value}}}
 }
 
-func hexBytes(t *testing.T, s string) []byte {
+func hexBytes(t testing.TB, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
 	require.NoError(t, err)
@@ -46,7 +47,7 @@ const (
 
 // otlpTestExport is what an OpenInference-instrumented app exports: an agent span, a model call
 // under it, and a span no LLM convention explains.
-func otlpTestExport(t *testing.T, resourceAttributes ...*commonpb.KeyValue) []byte {
+func otlpTestExport(t testing.TB, resourceAttributes ...*commonpb.KeyValue) []byte {
 	t.Helper()
 	request := &collectortrace.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{
 		Resource: &resourcepb.Resource{Attributes: resourceAttributes},
@@ -221,4 +222,70 @@ func TestOTLPOverGRPC(t *testing.T) {
 	bearer := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+traceTestKey, "x-project-name", "grpc-project")
 	_, err = client.Export(bearer, &request)
 	require.NoError(t, err, "a project named in metadata is made on first use")
+}
+
+// benchOTLPExport is a 10-span OpenInference export under traceID: an agent, model calls with
+// messages and usage, and tool calls.
+func benchOTLPExport(b testing.TB, traceID []byte) []byte {
+	spans := make([]*tracepb.Span, 10)
+	for i := range spans {
+		spanID := []byte{0, 0, 0, 0, 0, 0, 1, byte(i + 1)}
+		span := &tracepb.Span{TraceId: traceID, SpanId: spanID, Name: "ChatCompletion", Kind: tracepb.Span_SPAN_KIND_CLIENT,
+			StartTimeUnixNano: 1_700_000_000_000_000_000 + uint64(i)*1_000_000, EndTimeUnixNano: 1_700_000_001_000_000_000,
+			Attributes: []*commonpb.KeyValue{
+				otlpString("openinference.span.kind", "LLM"), otlpString("llm.model_name", "gpt-4o"), otlpString("llm.provider", "openai"),
+				otlpString("llm.input_messages.0.message.role", "system"), otlpString("llm.input_messages.0.message.content", "Answer from context."),
+				otlpString("llm.input_messages.1.message.role", "user"), otlpString("llm.input_messages.1.message.content", "Who wrote Dune?"),
+				otlpString("llm.output_messages.0.message.role", "assistant"), otlpString("llm.output_messages.0.message.content", "Frank Herbert."),
+				otlpInt("llm.token_count.prompt", 18), otlpInt("llm.token_count.completion", 4), otlpString("session.id", "s-1"),
+			}}
+		if i > 0 {
+			span.ParentSpanId = []byte{0, 0, 0, 0, 0, 0, 1, 1}
+		}
+		spans[i] = span
+	}
+	body, err := proto.Marshal(&collectortrace.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{
+		Resource:   &resourcepb.Resource{Attributes: []*commonpb.KeyValue{otlpString("service.name", "bench"), otlpString("telemetry.sdk.language", "python")}},
+		ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "openinference.instrumentation.openai"}, Spans: spans}},
+	}}})
+	require.NoError(b, err)
+	return body
+}
+
+// BenchmarkOTLPDecode measures turning a 10-span protobuf export into spans, with no store.
+func BenchmarkOTLPDecode(b *testing.B) {
+	body := benchOTLPExport(b, hexBytes(b, otlpTestTrace))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		if _, err := decodeOTLP(body, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkOTLPExport measures one acknowledged 10-span export through the router: auth, decode,
+// map, group commit, fold and the SQLite writes. Each iteration is a new trace.
+func BenchmarkOTLPExport(b *testing.B) {
+	env := newTraceIngestTestEnv(b)
+	headers := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": traceTestKey}
+	traceID := hexBytes(b, otlpTestTrace)
+	b.ReportAllocs()
+	i := uint64(0)
+	for b.Loop() {
+		i++
+		binary.BigEndian.PutUint64(traceID[8:], i)
+		resp := env.do(fasthttp.MethodPost, "/tracing/otel/v1/traces", headers, benchOTLPExport(b, traceID))
+		if resp.Response.StatusCode() != fasthttp.StatusOK {
+			b.Fatal(string(resp.Response.Body()))
+		}
+	}
+}
+
+// TestOTLPDecodeAllocationBudget fails when decoding an export starts to allocate more per span.
+// Most of the count is the generated protobuf structs (three objects per attribute), not this code.
+func TestOTLPDecodeAllocationBudget(t *testing.T) {
+	body := benchOTLPExport(t, hexBytes(t, otlpTestTrace))
+	got := testing.AllocsPerRun(100, func() { _, _ = decodeOTLP(body, false) })
+	assert.LessOrEqual(t, got, 940.0, "decoding a 10-span export allocates %.0f times", got)
 }

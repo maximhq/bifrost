@@ -356,3 +356,16 @@ function collectAttachments(projectId: string, fill: (collector: AttachmentColle
 	fill({ walk: (value, field) => walk(value, field, 0) });
 	return found;
 }
+/** How long after its last change a finished trace is still polled: gateway links and prices land late. */
+const TRACE_SETTLE_MS = 120_000;
+
+/**
+ * Whether an open trace sheet should keep refetching. A trace is polled while it loads, while it is
+ * still arriving, and for two minutes after its last change. After that it has settled, and
+ * refetching it (every span, images included) on a timer only costs the server and the browser.
+ */
+export function shouldPollTrace(trace: { in_progress: boolean; updated_at?: string } | undefined, nowMs: number): boolean {
+	if (!trace || trace.in_progress) return true;
+	if (!trace.updated_at) return false;
+	return nowMs - new Date(trace.updated_at).getTime() < TRACE_SETTLE_MS;
+}

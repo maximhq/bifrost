@@ -52,7 +52,9 @@ func linksLLM(kind string) bool {
 //  3. One gateway row, and only one, has the same model and last user message inside the span's
 //     time window, limited to the tracing key's virtual keys when it is bound to any.
 func (s *Service) enrichTrace(ctx context.Context, key logstore.TraceKey) (retry bool, err error) {
-	spans, err := s.store.ListTraceSpans(ctx, key.ProjectID, key.TraceID)
+	// Linking and pricing read ids, kinds, times, tokens and the input (for the fingerprint), so the
+	// spans are loaded without their output, metadata and attributes.
+	spans, err := s.store.ListTraceSpanSummaries(ctx, key.ProjectID, key.TraceID, true)
 	if err != nil {
 		return false, err
 	}

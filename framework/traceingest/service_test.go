@@ -3,7 +3,11 @@ package traceingest
 import (
 	"context"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,7 +85,7 @@ type testEnv struct {
 	key     *Principal
 }
 
-func newTestEnv(t *testing.T, cfg Config) *testEnv {
+func newTestEnv(t testing.TB, cfg Config) *testEnv {
 	t.Helper()
 	ctx := context.Background()
 	store, err := logstore.NewLogStore(ctx, &logstore.Config{Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")}}, testLogger{})
@@ -369,4 +373,180 @@ func TestEvaluatorRulesScoreACompletedTraceOnce(t *testing.T) {
 		}
 	}
 	assert.InDelta(t, 500, in, 120, "the sample is close to its rate")
+}
+
+// benchTrace builds one OTLP-shaped trace of n spans under a fresh trace id.
+func benchTrace(traceID string, n int) []*SpanPart {
+	start := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	spans := make([]*SpanPart, n)
+	for i := range spans {
+		spans[i] = &SpanPart{
+			TraceID: traceID, SpanID: "s" + strconv.Itoa(i), Name: "chat", Kind: logstore.TraceSpanKindLLM,
+			StartTime: &start, EndTime: new(start.Add(time.Second)), Model: "gpt-4o", PromptTokens: 18, CompletionTokens: 4,
+			Input:      []any{map[string]any{"role": "user", "content": "Who wrote Dune?"}},
+			Output:     "Frank Herbert.",
+			Attributes: map[string]any{"llm.provider": "openai", "otel.scope.name": "bench", "resource": map[string]any{"service.name": "bench"}},
+		}
+		if i > 0 {
+			spans[i].ParentSpanIDs = []string{"s0"}
+		}
+	}
+	return spans
+}
+
+// BenchmarkIngest measures the whole ingest path on SQLite, acknowledged write included: encode the
+// parts, group commit, fold, store the spans and mark the trace dirty.
+func BenchmarkIngest(b *testing.B) {
+	for _, size := range []int{1, 10} {
+		b.Run(strconv.Itoa(size)+"_spans", func(b *testing.B) {
+			env := newTestEnv(b, Config{CommitWindow: time.Microsecond, RollupInterval: time.Hour})
+			ctx := context.Background()
+			b.ReportAllocs()
+			i := 0
+			for b.Loop() {
+				i++
+				if err := env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, benchTrace("trace-"+strconv.Itoa(i), size)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestStoredSpanEqualsARefoldFromItsStoredParts pins that the write path, which folds the parts it
+// holds in memory, stores the same span a fold of the parts read back from the store gives. The two
+// must agree for every value shape an SDK sends: integers, nested maps, lists, plain text.
+func TestStoredSpanEqualsARefoldFromItsStoredParts(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, Config{})
+	cost := 0.0012
+	parts := []*SpanPart{
+		{TraceID: "t1", SpanID: "s1", Name: "chat", Kind: logstore.TraceSpanKindLLM, StartTime: at(0), EndTime: at(900),
+			Input:    []any{map[string]any{"role": "user", "content": "hi", "n": int64(3)}},
+			Output:   map[string]any{"text": "hello", "choices": []any{int64(1), 2.5, "x"}},
+			Metadata: map[string]any{"count": int64(7), "nested": map[string]any{"ratio": 0.5}}, Tags: []string{"b", "a"},
+			Attributes: map[string]any{"http.response.status_code": int64(200), "flags": []any{true, "y"}},
+			Model:      "gpt-4o", PromptTokens: 18, CompletionTokens: 4, Cost: &cost, Scores: map[string]float64{"ok": 1}},
+		{TraceID: "t1", SpanID: "s2", ParentSpanIDs: []string{"s1"}, Name: "tool", Kind: logstore.TraceSpanKindTool, StartTime: at(100), EndTime: at(200), Output: "done"},
+	}
+	require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, parts))
+	// A merge row in a later request is laid over the stored span.
+	require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{
+		{TraceID: "t1", SpanID: "s1", IsMerge: true, Metadata: map[string]any{"late": int64(1)}, Tags: []string{"c"}},
+	}))
+
+	stored, err := env.store.ListTraceSpans(ctx, env.project.ID, "t1")
+	require.NoError(t, err)
+	require.Len(t, stored, 2)
+	for _, span := range stored {
+		rows, err := env.store.ListTraceSpanParts(ctx, env.project.ID, "t1", span.SpanID)
+		require.NoError(t, err)
+		decoded := make([]*SpanPart, len(rows))
+		for i, row := range rows {
+			decoded[i], err = partFromStored(row)
+			require.NoError(t, err)
+		}
+		refolded := Fold(nil, decoded).Span(env.project.ID, logstore.TraceSourceOTel, nil)
+		require.NoError(t, refolded.SerializeFields())
+		assert.Equal(t, refolded.Input, span.Input, span.SpanID)
+		assert.Equal(t, refolded.Output, span.Output, span.SpanID)
+		assert.Equal(t, refolded.Metadata, span.Metadata, span.SpanID)
+		assert.Equal(t, refolded.Attributes, span.Attributes, span.SpanID)
+		assert.Equal(t, refolded.Tags, span.Tags, span.SpanID)
+		assert.Equal(t, refolded.ParentSpanID, span.ParentSpanID, span.SpanID)
+		assert.Equal(t, refolded.TotalTokens, span.TotalTokens, span.SpanID)
+		require.NotNil(t, span.DurationMs)
+		assert.InDelta(t, *refolded.DurationMs, *span.DurationMs, 1e-9, span.SpanID)
+	}
+	assert.Equal(t, `["a","b","c"]`, *stored[0].Tags)
+	assert.Equal(t, `{"count":7,"late":1,"nested":{"ratio":0.5}}`, *stored[0].Metadata)
+}
+
+// countingStore counts the part writes of a slow store, to show how requests share commits.
+type countingStore struct {
+	logstore.LogStore
+	commits atomic.Int64
+	delay   time.Duration
+}
+
+func (c *countingStore) BatchCreateTraceSpanParts(ctx context.Context, parts []*logstore.TraceSpanPart) (int, error) {
+	c.commits.Add(1)
+	time.Sleep(c.delay)
+	return c.LogStore.BatchCreateTraceSpanParts(ctx, parts)
+}
+
+// TestCommitWritesALoneRequestAtOnceAndBatchesUnderLoad pins the group commit policy. A request that
+// arrives alone is written at once: SDKs that export inline (Phoenix by default) wait for the ack on
+// the application's own thread, so a fixed wait per request is latency in the user's app. Requests
+// that arrive while a write is in flight queue behind it and share the next write.
+func TestCommitWritesALoneRequestAtOnceAndBatchesUnderLoad(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, Config{})
+	one := func(i int) []*SpanPart {
+		return []*SpanPart{{TraceID: "lone", SpanID: "s" + strconv.Itoa(i), Name: "work", StartTime: at(i)}}
+	}
+	const sequential = 50
+	began := time.Now()
+	for i := range sequential {
+		require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, one(i)))
+	}
+	// A 5ms wait per request would take 250ms here on any machine.
+	assert.Less(t, time.Since(began), 200*time.Millisecond, "a lone request must not wait for a commit window")
+
+	slow := &countingStore{LogStore: env.store, delay: 5 * time.Millisecond}
+	service := NewService(slow, env.config, Config{DefaultProjectName: env.project.Name}, testLogger{})
+	defer service.Close()
+	const concurrent = 60
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrent)
+	for i := range concurrent {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{
+				{TraceID: "busy", SpanID: "s" + strconv.Itoa(i), Name: "work", StartTime: at(i)},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	spans, err := env.store.ListTraceSpans(ctx, "p1", "busy")
+	require.NoError(t, err)
+	assert.Len(t, spans, concurrent)
+	assert.LessOrEqual(t, slow.commits.Load(), int64(concurrent/3), "requests in flight during a write share the next one")
+}
+
+// TestIngest_AllocationScaling pins how much memory storing a span costs relative to what it carries.
+// A span with an inline image is megabytes. The write path encodes it for the part and for the span
+// row and hands both to the driver; it must not also read the part back and decode it again, which
+// is what it once did.
+func TestIngest_AllocationScaling(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, Config{RollupInterval: time.Hour})
+	const size = 1 << 20
+	image := strings.Repeat("A", size)
+	i := 0
+	ingest := func() {
+		i++
+		require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{{
+			TraceID: "big-" + strconv.Itoa(i), SpanID: "s1", Name: "vision", Kind: logstore.TraceSpanKindLLM, StartTime: at(0), EndTime: at(10),
+			Input: []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + image}}}}},
+		}}))
+	}
+	ingest()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	const runs = 4
+	for range runs {
+		ingest()
+	}
+	runtime.ReadMemStats(&after)
+	perSpan := (after.TotalAlloc - before.TotalAlloc) / runs
+	t.Logf("storing a %d byte span allocated %d bytes (%.1fx)", size, perSpan, float64(perSpan)/size)
+	// Two JSON encodes with buffer growth, two driver binds and the test's own input come to about 8x.
+	assert.Less(t, perSpan, uint64(10*size), "storing a span allocated %.1f times its size", float64(perSpan)/size)
 }

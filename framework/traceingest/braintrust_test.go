@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func btRow(t *testing.T, raw string) map[string]any {
+func btRow(t testing.TB, raw string) map[string]any {
 	t.Helper()
 	var row map[string]any
 	require.NoError(t, sonic.Unmarshal([]byte(raw), &row))
@@ -91,4 +91,23 @@ func TestBraintrustObjectIDCarriesItsProject(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = BraintrustObjectProject("dataset", id)
 	assert.False(t, ok)
+}
+
+// BenchmarkMapBraintrustRow measures mapping one logs3 row: an LLM span row with messages and usage.
+func BenchmarkMapBraintrustRow(b *testing.B) {
+	row := btRow(b, `{
+		"id":"row-1","span_id":"s1","root_span_id":"t1","span_parents":["s0"],"project_id":"p1",
+		"span_attributes":{"name":"Chat Completion","type":"llm"},
+		"input":[{"role":"system","content":"You are a support agent."},{"role":"user","content":"My card was charged twice"}],
+		"output":[{"message":{"role":"assistant","content":"I have refunded the duplicate charge."}}],
+		"metadata":{"model":"gpt-4o-mini","provider":"openai","temperature":0.2,"session_id":"s-1","user_id":"u-1"},
+		"metrics":{"start":1794477600.0,"end":1794477601.5,"prompt_tokens":42,"completion_tokens":11,"tokens":53,"prompt_cached_tokens":16},
+		"scores":{"correct":1.0},"tags":["support"],"created":"2026-11-12T10:00:00Z"
+	}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := MapBraintrustRow(row); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

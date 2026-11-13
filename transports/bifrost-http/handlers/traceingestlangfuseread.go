@@ -86,7 +86,7 @@ func langfuseContent(stored string) any {
 	}
 	if trimmed := strings.TrimSpace(stored); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		var value any
-		if sonic.Unmarshal([]byte(stored), &value) == nil {
+		if sonic.UnmarshalString(stored, &value) == nil {
 			return value
 		}
 	}
