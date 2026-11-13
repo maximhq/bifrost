@@ -407,6 +407,9 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 
 	inactive := &configtables.TableVirtualKey{ID: "vk-off", Name: "vk-off", Value: *schemas.NewSecretVar("sk-bf-off"), IsActive: new(false)}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), inactive))
+	past := time.Now().Add(-time.Hour)
+	expired := &configtables.TableVirtualKey{ID: "vk-expired", Name: "vk-expired", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
+	require.NoError(t, store.CreateVirtualKey(context.Background(), expired))
 
 	mint := func(mutate func(jwt.MapClaims)) string {
 		return mintTestToken(t, gatewayPriv, signingKey.KID, func(c jwt.MapClaims) {
@@ -423,6 +426,7 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 		"mcp audience":            mint(func(c jwt.MapClaims) { c["aud"] = jwt.ClaimStrings{testMCPResource} }),
 		"expired":                 mint(func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Minute).Unix() }),
 		"inactive virtual key":    mint(func(c jwt.MapClaims) { c["sub"] = "vk-off" }),
+		"expired virtual key":     mint(func(c jwt.MapClaims) { c["sub"] = "vk-expired" }),
 		"deleted virtual key":     mint(func(c jwt.MapClaims) { c["sub"] = "vk-gone" }),
 		"session while enforcing": mint(func(c jwt.MapClaims) { c["bf_mode"] = string(schemas.MCPAuthModeSession); c["sub"] = "sess-1" }),
 	}
