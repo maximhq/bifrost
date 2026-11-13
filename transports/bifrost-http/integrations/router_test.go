@@ -150,6 +150,51 @@ func TestChatGPTPassthroughRouterRegistersOnlyCodexRoutes(t *testing.T) {
 	}
 }
 
+// A restricted passthrough prefix answers its own unmatched GETs. The dashboard registers
+// GET /{filepath:*}, so without a route of its own an unlisted path under the prefix is served
+// the dashboard shell with a 200.
+func TestChatGPTPassthroughRouterKeepsUnmatchedGetsFromTheDashboard(t *testing.T) {
+	r := router.New()
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) {
+		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetBodyString("<html>dashboard</html>")
+	})
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	for _, uri := range []string{
+		"/chatgpt_passthrough/backend-api/codex/responses",
+		"/chatgpt_passthrough/backend-api/conversations",
+		"/chatgpt_passthrough/backend-api/codex/models/gpt-5.5",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI(uri)
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			require.Contains(t, string(ctx.Response.Body()), "no passthrough route matches the request path")
+		})
+	}
+
+	// The listed route and the dashboard itself are untouched.
+	var listed fasthttp.RequestCtx
+	listed.Request.Header.SetMethod(fasthttp.MethodGet)
+	listed.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/models")
+	r.Handler(&listed)
+	require.Equal(t, fasthttp.StatusNoContent, listed.Response.StatusCode())
+
+	var dashboard fasthttp.RequestCtx
+	dashboard.Request.Header.SetMethod(fasthttp.MethodGet)
+	dashboard.Request.SetRequestURI("/workspace/logs")
+	r.Handler(&dashboard)
+	require.Equal(t, fasthttp.StatusOK, dashboard.Response.StatusCode())
+}
+
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
