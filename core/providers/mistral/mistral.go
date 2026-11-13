@@ -4,6 +4,7 @@ package mistral
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -447,9 +448,88 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	)
 }
 
-// Speech is not supported by the Mistral provider.
+// Speech performs a text-to-speech request to Mistral's POST /v1/audio/speech
+// (Voxtral TTS). Mistral returns the audio base64-encoded in audio_data.
 func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+	if request == nil || request.Input == nil || request.Input.Input == "" {
+		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (*MistralSpeechRequest, error) {
+			return ToMistralSpeechRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, ParseMistralError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	var mistralResp MistralSpeechResponse
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(body, &mistralResp)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Mistral speech response", umErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	if mistralResp.AudioData == "" {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Mistral speech response contained no audio", nil), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	audio, err := base64.StdEncoding.DecodeString(mistralResp.AudioData)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to decode Mistral base64 audio", err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	bifrostResponse := &schemas.BifrostSpeechResponse{
+		Audio: audio,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerResponseHeaders,
+		},
+	}
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
+	return bifrostResponse, nil
 }
 
 // SpeechStream is not supported by the Mistral provider.

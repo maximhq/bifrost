@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Mistral Speech** - `/v1/audio/speech` works on Mistral Voxtral TTS models such as `mistral/voxtral-mini-tts-latest`
 
 ## 🐞 Fixed
 

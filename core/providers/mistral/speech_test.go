@@ -1,0 +1,97 @@
+package mistral
+
+import (
+	"context"
+	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestToMistralSpeechRequest(t *testing.T) {
+	t.Parallel()
+
+	got := ToMistralSpeechRequest(&schemas.BifrostSpeechRequest{
+		Model: "voxtral-mini-tts-latest",
+		Input: &schemas.SpeechInput{Input: "Hello."},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig:    &schemas.SpeechVoiceInput{Voice: schemas.Ptr("gb_jane_neutral")},
+			ResponseFormat: "wav",
+		},
+	})
+	body, err := sonic.Marshal(got)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model":"voxtral-mini-tts-latest","input":"Hello.","voice_id":"gb_jane_neutral","response_format":"wav"}`, string(body))
+
+	bare := ToMistralSpeechRequest(&schemas.BifrostSpeechRequest{Model: "voxtral-mini-tts-latest", Input: &schemas.SpeechInput{Input: "Hi"}})
+	body, err = sonic.Marshal(bare)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model":"voxtral-mini-tts-latest","input":"Hi"}`, string(body))
+}
+
+func TestSpeechWithMockServer(t *testing.T) {
+	t.Parallel()
+
+	audio := []byte("ID3\x04\x00fake-mp3-bytes")
+	var gotPath, gotAuth string
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		_ = sonic.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audio_data":"` + base64.StdEncoding.EncodeToString(audio) + `"}`))
+	}))
+	defer server.Close()
+
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, &testLogger{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
+		Model:  "voxtral-mini-tts-latest",
+		Input:  &schemas.SpeechInput{Input: "Hello from the gateway test."},
+		Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr("gb_jane_neutral")}, ResponseFormat: "mp3"},
+	})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "/v1/audio/speech", gotPath)
+	assert.Equal(t, "Bearer test-api-key", gotAuth)
+	assert.Equal(t, map[string]interface{}{
+		"model":           "voxtral-mini-tts-latest",
+		"input":           "Hello from the gateway test.",
+		"voice_id":        "gb_jane_neutral",
+		"response_format": "mp3",
+	}, gotBody)
+	assert.Equal(t, audio, resp.Audio)
+}
+
+func TestSpeechInvalidVoice(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"object":"error","message":"Voice 'nope' not found.","type":"invalid_voice","param":null,"code":"1902","raw_status_code":404}`))
+	}))
+	defer server.Close()
+
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, &testLogger{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
+		Model:  "voxtral-mini-tts-latest",
+		Input:  &schemas.SpeechInput{Input: "Hi"},
+		Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr("nope")}},
+	})
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "Voice 'nope' not found.")
+}
