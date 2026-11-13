@@ -319300,7 +319300,633 @@
       ]
     },
     {
-      "name": "343. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway)",
+      "name": "343. Gemini Decisions API (gemini decisions)",
+      "description": "Gemini Decision 1 (gemini-decision-1) is served natively on the Gemini API's POST /v1beta/decisions, a sibling of the Interactions API that shares its content blocks. Bifrost reaches it from /v1/decisions only. The provider converts the neutral request: predicate, choice and score questions become noul, choice and score questions keyed by name when Gemini takes it as a key (1 to 64 of A-Z, a-z, 0-9, _ and -) and by question_<position> otherwise, each answered under its question's own name, and the input becomes Interactions content blocks. Text and images map directly; the input_file part maps by its mime_type (application/pdf a document, audio/* audio, video/* video) from base64 data, a multipart file part, or a url, and detail original becomes the highest resolution the block takes (ultra_high for images, high for video). Gemini's input has no messages, so messages from more than one role carry a role label each. Only gemini-decision-* models are served natively; chat models such as gemini/gemini-3.6-flash stay on Responses emulation under convert_decision_to_responses, pinned in folder 108. A box question, and input_file on /openai/v1/decisions, are rejected by Bifrost before any call. The audio and video urls are Google's own Decisions API samples.",
+      "item": [
+        {
+          "name": "/v1/decisions - typed answers for every question type - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every question comes back typed, in order, from the native decisions endpoint', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[0].name).to.eql('is_frustrated');",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'a customer threatening to cancel is frustrated: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].type).to.eql('choice');",
+                  "  pm.expect(a[1].choice, 'a double charge is a billing ticket: ' + pm.response.text()).to.eql('billing');",
+                  "  pm.expect(a[1].probabilities, 'every option gets a probability').to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a[2].type).to.eql('score');",
+                  "  pm.expect(a[2].score, 'score is a level index between 0 and 2: ' + pm.response.text()).to.be.within(0, 2);",
+                  "  pm.expect(a[2].probabilities, 'every level gets a probability').to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(body.usage && body.usage.prompt_tokens, 'input tokens are reported: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\",\n      \"criteria\": {\n        \"true\": \"The customer is upset or impatient.\",\n        \"false\": \"The customer is calm.\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category.\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"Charges and refunds.\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"Product defects.\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"Anything else.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"Can wait a week.\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"Should be answered soon.\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"Needs a reply today.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_image reaches the decision model - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_image part is sent as an image block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file pdf sent as base64 data - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file pdf in data is sent as a document block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the PDF reads as the Bifrost harness sample document: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2MyA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoQmlmcm9zdCBoYXJuZXNzIHNhbXBsZSBkb2N1bWVudC4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU0IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI0CiUlRU9GCg==\",\n          \"mime_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_sample\",\n      \"instructions\": \"Does the document call itself a Bifrost harness sample document?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file pdf sent as a multipart file part - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file naming a multipart file part takes its bytes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the PDF reads as the Bifrost harness sample document: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "request",
+                  "value": "{\"model\":\"gemini/gemini-decision-1\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"name\":\"doc\",\"mime_type\":\"application/pdf\"}]}],\"questions\":[{\"type\":\"predicate\",\"name\":\"is_sample\",\"instructions\":\"Does the document call itself a Bifrost harness sample document?\"}]}",
+                  "type": "text"
+                },
+                {
+                  "key": "doc",
+                  "src": "tests/e2e/api/fixtures/sample.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file audio by url - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file audio url is sent as an audio block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the Apollo 11 clip is about the launch: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/Apollo-11_Day-01-Highlights-10s.mp3\",\n          \"mime_type\": \"audio/mp3\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"mentions_launch\",\n      \"instructions\": \"Is the speaker talking about spaceflight or a rocket launch?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file video by url at low detail - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file video url is sent as a video block at low resolution', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the clip shows a fire: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/videos/ForBiggerBlazes.mp4\",\n          \"mime_type\": \"video/mp4\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"shows_fire\",\n      \"instructions\": \"Does the video show fire or flames?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - question names Gemini keys do not allow keep their names - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('questions named outside Gemini key characters are answered under their own names', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a[0].name, 'first name: ' + pm.response.text()).to.eql('Is the sky blue?');",
+                  "  pm.expect(a[1].name, 'second name: ' + pm.response.text()).to.eql('weather.is_raining');",
+                  "  pm.expect(a[0].probability, 'the sky is blue: ' + pm.response.text()).to.be.above(0.5);",
+                  "  pm.expect(a[1].probability, 'it is not raining: ' + pm.response.text()).to.be.below(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"The sky above the city is clear and blue this afternoon, with no clouds and no rain.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"Is the sky blue?\",\n      \"instructions\": \"Is the sky blue?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"weather.is_raining\",\n      \"instructions\": \"Is it raining?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_file video at original detail is sent at high resolution - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_file video at original detail is sent at the highest video resolution', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].type, 'answer type: ' + pm.response.text()).to.eql('predicate');",
+                  "  pm.expect(a[0].probability, 'the clip shows a fire: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://storage.googleapis.com/generativeai-downloads/videos/ForBiggerBlazes.mp4\",\n          \"mime_type\": \"video/mp4\",\n          \"detail\": \"original\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"shows_fire\",\n      \"instructions\": \"Does the video show fire or flames?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - two speakers keep their roles - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('each message keeps its speaker, so the user\\'s apology is not credited to the assistant', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'only the user apologized: ' + pm.response.text()).to.be.below(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Sorry for the late reply. The export button still crashes the app.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Thanks for the details. I will look into the export crash today.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"assistant_apologized\",\n      \"instructions\": \"Did the assistant apologize?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - box question rejected before the call - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a box question is refused by Bifrost, which Gemini does not serve', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('box question');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": \"A photo of a dented parcel.\",\n  \"questions\": [\n    {\n      \"type\": \"box\",\n      \"name\": \"dent\",\n      \"instructions\": \"Where is the dent?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - input_file is not part of the OpenAI route - gemini/gemini-decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI route stays OpenAI-shaped and rejects input_file', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('input_file parts are not part of OpenAI');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"url\": \"https://example.com/report.pdf\",\n          \"mime_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is this an invoice?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "344. Kimchi provider (kimchi provider)",
+      "description": "Kimchi is reached through its OpenAI-compatible API for chat completions and embeddings. Responses requests are served through chat completions, and Kimchi does not serve text completions, so there is no case for them. Reasoning models return thinking in reasoning_content, which Bifrost maps to reasoning. During long waits Kimchi sends SSE keep-alive comments, which Bifrost skips. These cases pin that a plain chat call, a chat stream and an embedding call come back in OpenAI shape from the kimchi provider.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - answer through the Kimchi chat API - kimchi/glm-5.3-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by kimchi with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].message.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('kimchi');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - kimchi/glm-5.3-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/embeddings - one input returns one vector - kimchi/bge-m3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one vector served by kimchi', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.length, 'wrong vector count: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(j.data[0].embedding, 'empty embedding').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('kimchi');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/bge-m3\",\n  \"input\": \"a small red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "345. Claude Code gateway sign-in and bearer inference (#7963) (claude-code-gateway)",
       "description": "Pins the Claude Code gateway protocol served under {{baseUrl}}/claude-code (#7963): what Claude Code's /login (Cloud gateway) calls, end to end over the wire. Flow: RFC 8414 discovery advertises the device grant; a bearer-less /v1/messages is refused with 401 + x-should-retry: false; device_authorization is called the way Claude Code calls it (only surface=claude_code, no client_id); the first poll is authorization_pending; the browser legs are replayed through /claude-code/device/verify and the existing OAuth consent API with the harness virtual key sk-bf-test-key; the next poll returns an access token and refresh token; the bearer then runs a real Messages call (claude-haiku-4-5, max_tokens 16) and count_tokens, which only succeed if the gateway resolved the token to the virtual key for governance. Also pins managed settings (200 with the sha256 checksum, then 304 on If-None-Match), the OTLP sink (200), the refresh grant without client_id, and sign-out: the folder revokes its own grant at the end, restoring state, and asserts the revoked refresh token is refused. Requires the harness profile in tests/integrations/python/config.json (oauth2_server_config.claude_code_gateway.enabled with an issuer_url). Run the folder in order with FEATURE=claude-code-gateway and PARALLEL=0; the token step waits one poll interval (5s) so it is not answered slow_down. Before this change every /claude-code route is unrouted, so each case fails.",
       "item": [
         {
