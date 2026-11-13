@@ -283,6 +283,7 @@ export interface TracingKey {
 	virtual_key_ids?: string[];
 	log_content: boolean;
 	can_create_projects: boolean;
+	can_read_prompts?: boolean;
 	enabled: boolean;
 	last_used_at?: string;
 	created_at: string;
@@ -295,6 +296,7 @@ export interface TracingKeyInput {
 	virtual_key_ids?: string[];
 	log_content?: boolean;
 	can_create_projects?: boolean;
+	can_read_prompts?: boolean;
 	enabled?: boolean;
 }
 
