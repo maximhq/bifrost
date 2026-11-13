@@ -19,7 +19,8 @@ import {
 	RouterConfigurationRestoreButton,
 	RouterConfigurationSheets,
 } from "./routerConfigurationEditor";
-import { RouterIdentityFields, routerIdentitySchema, type RouterIdentityValues } from "./routerIdentityFields";
+import { modelRouterIdentitySchema, type ModelRouterIdentityFormSchema } from "@/lib/types/schemas";
+import { RouterIdentityFields } from "./routerIdentityFields";
 import { ClassifierChoice } from "@/app/workspace/complexity-router/views/sections";
 import { useRouterConfigForm } from "./useRouterConfigForm";
 
@@ -44,8 +45,8 @@ export default function RouterWizard({ onCancel, onCreated }: RouterWizardProps)
 	const [createRouter] = useCreateModelRouterMutation();
 	const [stepIndex, setStepIndex] = useState(0);
 
-	const identity = useForm<RouterIdentityValues>({
-		resolver: zodResolver(routerIdentitySchema),
+	const identity = useForm<ModelRouterIdentityFormSchema>({
+		resolver: zodResolver(modelRouterIdentitySchema),
 		defaultValues: { name: "", description: "" },
 	});
 	const createDefaults = useMemo(

@@ -71,6 +71,9 @@ interface OverviewTabProps {
 	// The window those figures cover; the tier split reads the same one.
 	trafficWindow: TrafficWindow;
 	onNavigate: (tab: RouterTab) => void;
+	canUpdate: boolean;
+	// Opens the router sheet with its switch on, from the status line of a router that is off.
+	onTurnOn: () => void;
 }
 
 // OverviewTab answers, at a glance, what the router has taken lately, what it
@@ -78,8 +81,9 @@ interface OverviewTabProps {
 // figures that matter most on top (requests over the last week split by tier,
 // and their cost against the week before), a setup checklist while something
 // is missing, a strip of facts that each open their tab, and one line on
-// whether the router is serving, with the way into its requests.
-export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNavigate }: OverviewTabProps) {
+// whether the router is serving, with the way into its requests and, while it
+// is off, the way to turn it on.
+export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNavigate, canUpdate, onTurnOn }: OverviewTabProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters.overview" });
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: tmr } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
@@ -101,8 +105,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 	const costChange = traffic?.costTrend != null ? formatPctChange(100 + traffic.costTrend, 100, "lower-is-better") : undefined;
 
 	// What the router still needs configured, as a project's checklist lists
-	// only configuration; it is turned on from the routers list, which the
-	// "off" status line below points to.
+	// only configuration; turning it on is the "off" status line's button below.
 	const steps: SetupChecklistItem[] = [
 		{
 			key: "classifier",
@@ -132,6 +135,10 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 		noTraffic: { title: t("status.noTrafficTitle"), detail: t("status.noTrafficDetail") },
 		serving: { title: t("status.servingTitle"), detail: t("status.servingDetail") },
 	}[overviewStatus(routing.enabled, trafficState, requests)];
+	// Turning on opens the router sheet rather than flipping the router at
+	// once: a new router takes every request in its scope, so its routing is
+	// shown before the save that turns it on.
+	const showTurnOn = canUpdate && !routing.enabled;
 
 	return (
 		<div className="flex min-h-0 grow flex-col gap-4 overflow-y-auto" data-testid="model-router-overview">
@@ -239,6 +246,17 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 							{t("status.viewRequests")}
 						</Link>
 					</Button>
+					{showTurnOn && (
+						<Button
+							type="button"
+							size="sm"
+							className="h-7 shrink-0 text-xs"
+							onClick={onTurnOn}
+							data-testid="model-router-status-turn-on-button"
+						>
+							{t("status.turnOn")}
+						</Button>
+					)}
 				</div>
 			</Card>
 		</div>

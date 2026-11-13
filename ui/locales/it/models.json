@@ -2490,18 +2490,13 @@
 			"title": "Router",
 			"pageDescription": "Classifica le richieste per complessità e invia ogni livello al proprio modello.",
 			"newRouter": "Nuovo router",
-			"editDetails": "Modifica dettagli",
 			"viewLogs": "Visualizza i log",
-			"editDetailsTitle": "Modifica dettagli del router",
 			"actionsAria": "Azioni per il router {{name}}",
-			"editDetailsDescription": "Il nome e la descrizione mostrati ovunque compaia questo router.",
 			"namePlaceholder": "es. Assistente di ingegneria",
 			"descriptionLabel": "Descrizione",
 			"descriptionPlaceholder": "A cosa serve questo router",
 			"createRouter": "Crea router",
 			"created": "Router creato",
-			"detailsSaved": "Dettagli del router salvati",
-			"detailsSaveFailed": "Impossibile salvare i dettagli del router: {{error}}",
 			"columnName": "Nome",
 			"columnRequests": "Richieste · 7 gg",
 			"columnActive": "Attivo",
@@ -2563,13 +2558,14 @@
 				},
 				"status": {
 					"offTitle": "Questo router è disattivato",
-					"offDetail": "Attivalo dall'elenco dei router.",
+					"offDetail": "Attivalo per iniziare a prendere in carico le richieste che corrispondono al suo routing.",
 					"onTitle": "Questo router è attivato",
 					"noTrafficTitle": "Nessun traffico instradato qui",
 					"noTrafficDetail": "Negli ultimi 7 giorni nessuna richiesta ha corrisposto al routing di questo router.",
 					"servingTitle": "Sta prendendo richieste",
 					"servingDetail": "Le richieste che corrispondono al suo routing vengono classificate e inviate al modello del loro livello.",
-					"viewRequests": "Visualizza richieste"
+					"viewRequests": "Visualizza richieste",
+					"turnOn": "Attiva"
 				}
 			},
 			"models": {
@@ -2582,17 +2578,22 @@
 				"weightPositive": "Ogni peso deve essere maggiore di 0.",
 				"weightsMustSum": "I pesi di questo livello devono sommare a 1 (ora {{total}})."
 			},
+			"sheet": {
+				"title": "Modifica router",
+				"description": "Nome e descrizione, se è attivo e quali richieste prende in carico.",
+				"enabledLabel": "Attiva il router",
+				"enabledHelp": "Finché è disattivato, il router non prende in carico alcuna richiesta.",
+				"saved": "Router salvato",
+				"saveFailed": "Impossibile salvare il router: {{error}}"
+			},
 			"routing": {
 				"description": "Scegli quali richieste prende questo router.",
 				"orderNote": "Le regole di routing vengono eseguite per prime, quindi i router vedono ogni richiesta così come l'hanno lasciata le regole. La prende il primo router che corrisponde: prima l'ambito più ristretto, poi la priorità più bassa.",
-				"sheetTitle": "Modifica routing",
 				"everyRequest": "Ogni richiesta dell'ambito",
 				"priorityHelp": "Il valore più basso viene provato per primo all'interno di un ambito. I router hanno priorità proprie, separate da quelle delle regole di routing.",
 				"priorityInvalid": "Inserisci un numero intero da 0 a 1000.",
 				"conditionLabel": "Condizione",
-				"conditionHelp": "Lasciala vuota per prendere ogni richiesta dell'ambito. Confronta il campo modello per permettere alle app di richiedere questo router per nome. Il livello non può essere usato qui: il router lo decide dopo aver preso la richiesta.",
-				"saved": "Routing salvato",
-				"saveFailed": "Impossibile salvare il routing: {{error}}"
+				"conditionHelp": "Lasciala vuota per prendere ogni richiesta dell'ambito. Confronta il campo modello per permettere alle app di richiedere questo router per nome. Il livello non può essere usato qui: il router lo decide dopo aver preso la richiesta."
 			}
 		}
 	},

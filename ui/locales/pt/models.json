@@ -2490,18 +2490,13 @@
 			"title": "Roteadores",
 			"pageDescription": "Classifique as solicitações por complexidade e envie cada nível para o seu próprio modelo.",
 			"newRouter": "Novo encaminhador",
-			"editDetails": "Editar detalhes",
 			"viewLogs": "Ver registos",
-			"editDetailsTitle": "Editar detalhes do encaminhador",
 			"actionsAria": "Ações para o encaminhador {{name}}",
-			"editDetailsDescription": "O nome e a descrição apresentados em todos os locais onde este encaminhador é listado.",
 			"namePlaceholder": "p. ex., Assistente de engenharia",
 			"descriptionLabel": "Descrição",
 			"descriptionPlaceholder": "Para que serve este encaminhador",
 			"createRouter": "Criar encaminhador",
 			"created": "Encaminhador criado",
-			"detailsSaved": "Detalhes do encaminhador guardados",
-			"detailsSaveFailed": "Não foi possível guardar os detalhes do encaminhador: {{error}}",
 			"columnName": "Nome",
 			"columnRequests": "Pedidos · 7 d",
 			"columnActive": "Ativo",
@@ -2563,13 +2558,14 @@
 				},
 				"status": {
 					"offTitle": "Este roteador está desativado",
-					"offDetail": "Ative-o na lista de roteadores.",
+					"offDetail": "Ative-o para que comece a aceitar as solicitações que correspondem ao seu roteamento.",
 					"onTitle": "Este roteador está ativado",
 					"noTrafficTitle": "Nenhum tráfego roteado para cá",
 					"noTrafficDetail": "Nenhuma solicitação correspondeu ao roteamento deste roteador nos últimos 7 dias.",
 					"servingTitle": "Assumindo solicitações",
 					"servingDetail": "As solicitações que correspondem ao seu roteamento são classificadas e enviadas ao modelo do seu nível.",
-					"viewRequests": "Ver solicitações"
+					"viewRequests": "Ver solicitações",
+					"turnOn": "Ativar"
 				}
 			},
 			"models": {
@@ -2582,17 +2578,22 @@
 				"weightPositive": "Cada peso tem de ser maior que 0.",
 				"weightsMustSum": "Os pesos deste nível têm de somar 1 (atualmente {{total}})."
 			},
+			"sheet": {
+				"title": "Editar roteador",
+				"description": "O nome e a descrição, se está ativado e quais solicitações ele aceita.",
+				"enabledLabel": "Ativar o roteador",
+				"enabledHelp": "Enquanto estiver desativado, o roteador não aceita solicitações.",
+				"saved": "Roteador salvo",
+				"saveFailed": "Não foi possível salvar o roteador: {{error}}"
+			},
 			"routing": {
 				"description": "Escolha quais solicitações este roteador assume.",
 				"orderNote": "As regras de roteamento são executadas primeiro, então os roteadores veem cada solicitação como as regras a deixaram. O primeiro roteador correspondente a assume: escopo mais restrito primeiro, depois a prioridade mais baixa.",
-				"sheetTitle": "Editar roteamento",
 				"everyRequest": "Todas as solicitações do escopo",
 				"priorityHelp": "O valor mais baixo é testado primeiro dentro de um escopo. Os roteadores têm prioridades próprias, separadas das regras de roteamento.",
 				"priorityInvalid": "Insira um número inteiro de 0 a 1000.",
 				"conditionLabel": "Condição",
-				"conditionHelp": "Deixe vazio para assumir todas as solicitações do escopo. Compare o campo de modelo para que os apps peçam este roteador pelo nome. O nível não pode ser usado aqui: o roteador o decide depois de assumir a solicitação.",
-				"saved": "Roteamento salvo",
-				"saveFailed": "Falha ao salvar o roteamento: {{error}}"
+				"conditionHelp": "Deixe vazio para assumir todas as solicitações do escopo. Compare o campo de modelo para que os apps peçam este roteador pelo nome. O nível não pode ser usado aqui: o roteador o decide depois de assumir a solicitação."
 			}
 		}
 	},

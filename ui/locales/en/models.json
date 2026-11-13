@@ -2490,18 +2490,13 @@
 			"title": "Routers",
 			"pageDescription": "Classify requests by complexity and send each tier to its own model.",
 			"newRouter": "New router",
-			"editDetails": "Edit details",
 			"viewLogs": "View logs",
-			"editDetailsTitle": "Edit router details",
 			"actionsAria": "Actions for router {{name}}",
-			"editDetailsDescription": "The name and description shown wherever this router is listed.",
 			"namePlaceholder": "e.g. Engineering assistant",
 			"descriptionLabel": "Description",
 			"descriptionPlaceholder": "What this router is for",
 			"createRouter": "Create router",
 			"created": "Router created",
-			"detailsSaved": "Router details saved",
-			"detailsSaveFailed": "Failed to save the router details: {{error}}",
 			"columnName": "Name",
 			"columnRequests": "Requests · 7d",
 			"columnActive": "Active",
@@ -2563,13 +2558,14 @@
 				},
 				"status": {
 					"offTitle": "This router is off",
-					"offDetail": "Turn it on from the routers list.",
+					"offDetail": "Turn it on to start taking the requests its routing matches.",
 					"onTitle": "This router is on",
 					"noTrafficTitle": "No traffic routed here",
 					"noTrafficDetail": "No request matched this router's routing in the last 7 days.",
 					"servingTitle": "Taking requests",
 					"servingDetail": "Requests that match its routing are classified and sent to their tier's model.",
-					"viewRequests": "View requests"
+					"viewRequests": "View requests",
+					"turnOn": "Turn on"
 				}
 			},
 			"models": {
@@ -2582,17 +2578,22 @@
 				"weightPositive": "Every weight must be greater than 0.",
 				"weightsMustSum": "Weights in this tier must add up to 1 (now {{total}})."
 			},
+			"sheet": {
+				"title": "Edit router",
+				"description": "Its name and description, whether it is on, and which requests it takes.",
+				"enabledLabel": "Turn on the router",
+				"enabledHelp": "While it is off, the router takes no requests.",
+				"saved": "Router saved",
+				"saveFailed": "Failed to save the router: {{error}}"
+			},
 			"routing": {
 				"description": "Choose which requests this router takes.",
 				"orderNote": "Routing rules run first, so routers see each request as the rules left it. The first matching router takes it: narrowest scope first, then lowest priority.",
-				"sheetTitle": "Edit routing",
 				"everyRequest": "Every request in scope",
 				"priorityHelp": "Lower is tried first within a scope. Routers have their own priorities, separate from routing rules.",
 				"priorityInvalid": "Enter a whole number from 0 to 1000.",
 				"conditionLabel": "Condition",
-				"conditionHelp": "Leave it empty to take every request in the scope. Match the model field to let apps ask for this router by name. The tier can't be used here: the router decides it after it takes the request.",
-				"saved": "Routing saved",
-				"saveFailed": "Failed to save routing: {{error}}"
+				"conditionHelp": "Leave it empty to take every request in the scope. Match the model field to let apps ask for this router by name. The tier can't be used here: the router decides it after it takes the request."
 			}
 		}
 	},

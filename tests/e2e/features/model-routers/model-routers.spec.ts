@@ -42,6 +42,7 @@ test.describe('Routers', () => {
   let createdBodies: Record<string, unknown>[] = []
   let targetBodies: Record<string, unknown>[] = []
   let routingBodies: Record<string, unknown>[] = []
+  let updateBodies: Record<string, unknown>[] = []
   let deleted: string[] = []
 
   test.beforeEach(async ({ page }) => {
@@ -49,6 +50,7 @@ test.describe('Routers', () => {
     createdBodies = []
     targetBodies = []
     routingBodies = []
+    updateBodies = []
     deleted = []
     await page.route(
       (url) => url.pathname === '/api/routing/model-routers',
@@ -106,6 +108,12 @@ test.describe('Routers', () => {
           deleted.push(id)
           routers = routers.filter((candidate) => candidate.id !== id)
           return route.fulfill({ json: { message: 'Model router deleted successfully' } })
+        }
+        if (route.request().method() === 'PUT') {
+          const body = route.request().postDataJSON() as Record<string, unknown>
+          updateBodies.push(body)
+          // The gateway keeps a name or description the body leaves out.
+          Object.assign(router, body)
         }
         return route.fulfill({ json: router })
       },
@@ -182,8 +190,8 @@ test.describe('Routers', () => {
     await page.goto('/workspace/model-routers')
     await page.getByTestId('model-router-actions-general-btn').click()
     await page.getByTestId('model-router-edit-general-btn').click()
-    await expect(page.getByTestId('model-router-details-dialog')).toBeVisible()
-    await page.getByTestId('model-router-details-cancel-button').click()
+    await expect(page.getByTestId('model-router-sheet')).toBeVisible()
+    await page.getByTestId('model-router-sheet-cancel-button').click()
 
     await page.getByTestId('model-router-actions-general-btn').click()
     await page.getByTestId('model-router-delete-general-btn').click()
@@ -297,12 +305,24 @@ test.describe('Routers', () => {
     await page.goto('/workspace/model-routers?router=billing&tab=routing')
     await expect(page.getByTestId('model-router-routing-row')).toContainText('Every request in scope')
     await page.getByTestId('model-router-routing-row').click()
-    await expect(page.getByTestId('model-router-routing-sheet')).toBeVisible()
+    await expect(page.getByTestId('model-router-sheet')).toBeVisible()
     await page.getByTestId('model-router-routing-priority-input').fill('5')
-    await page.getByTestId('model-router-routing-save-button').click()
+    await page.getByTestId('model-router-sheet-save-button').click()
     await expect.poll(() => routingBodies.length).toBe(1)
-    expect(routingBodies[0]).toMatchObject({ scope: 'global', priority: 5 })
-    expect(routingBodies[0]).not.toHaveProperty('enabled')
+    // Only the field that changed: the gateway keeps the scope, condition and switch.
+    expect(routingBodies[0]).toEqual({ priority: 5 })
+  })
+
+  test('should send only the name when a router is renamed from its sheet', async ({ page }) => {
+    await page.goto('/workspace/model-routers')
+    await page.getByTestId('model-router-actions-support-btn').click()
+    await page.getByTestId('model-router-edit-support-btn').click()
+    await expect(page.getByTestId('model-router-sheet')).toBeVisible()
+    await page.getByTestId('model-router-name-input').fill('Support desk')
+    await page.getByTestId('model-router-sheet-save-button').click()
+    await assertToast(page, 'Router saved', 'success')
+    expect(updateBodies).toEqual([{ name: 'Support desk' }])
+    expect(routingBodies).toHaveLength(0)
   })
 
   test('should point the Complexity Router page at Routers', async ({ page }) => {
