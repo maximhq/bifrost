@@ -85,6 +85,9 @@ func TestSpeech_FlushedSegmentsAreSpokenInOrderAndBilledByCharacters(t *testing.
 			assert.Equal(t, "success", row.Status)
 			assert.Equal(t, provider, row.Provider)
 			assert.Equal(t, c.vk.ID, row.VirtualKeyID)
+			assert.Equal(t, "speech.session", row.raw.Get("object").Str, "a session is not an HTTP speech stream")
+			assert.Equal(t, first+second, row.raw.Get("speech_input.input").Str, "the row keeps the text the client sent as its input")
+			assert.False(t, row.raw.Get("speech_output").Exists(), "the session streams its audio and keeps none: %s", row.raw.Get("speech_output").Raw)
 		})
 	}
 }

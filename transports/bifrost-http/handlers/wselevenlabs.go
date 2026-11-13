@@ -289,7 +289,7 @@ func (h *WSSpeechSessionHandler) serveElevenlabsDialogue(clientConn *realtimeCli
 	}
 	defer upstream.Close()
 
-	run = &elevenlabsDialogueRun{clientConn: clientConn, upstream: upstream}
+	run = &elevenlabsDialogueRun{clientConn: clientConn, upstream: upstream, text: unit.text}
 	logErr := runRealtimeRelays(clientConn.conn, run.relayClient, run.relayUpstream, func() {
 		// The client side closes first, it marks the teardown, so the read this close ends is not reported as a provider failure.
 		_ = clientConn.Close()
@@ -316,20 +316,24 @@ type elevenlabsDialogueRun struct {
 	clientConn *realtimeClientConn
 	upstream   schemas.RealtimeUpstream
 	chars      atomic.Int64                         // characters of text the client sent, which ElevenLabs bills
+	text       *speechSessionText                   // the text the client sent, for the session's log row
 	failure    atomic.Pointer[schemas.BifrostError] // the session's first failure, which either relay may meet
 }
 
 // elevenlabsFrameChars counts the characters of text a client frame sends: the text of each input, or the text of a
-// single-voice frame. The frame is read in place and not kept.
-func elevenlabsFrameChars(frame []byte) int {
+// single-voice frame, and keeps that text in text, which may be nil. The frame is read in place and not kept.
+func elevenlabsFrameChars(frame []byte, text *speechSessionText) int {
 	chars := 0
 	gjson.Parse(unsafe.String(unsafe.SliceData(frame), len(frame))).ForEach(func(name, value gjson.Result) bool {
 		switch name.Str {
 		case "text":
 			chars += utf8.RuneCountInString(value.Str)
+			text.add(value.Str)
 		case "inputs":
 			value.ForEach(func(_, input gjson.Result) bool {
-				chars += utf8.RuneCountInString(input.Get("text").Str)
+				inputText := input.Get("text").Str
+				chars += utf8.RuneCountInString(inputText)
+				text.add(inputText)
 				return true
 			})
 		}
@@ -338,8 +342,8 @@ func elevenlabsFrameChars(frame []byte) int {
 	return chars
 }
 
-// relayClient forwards the client's frames to ElevenLabs as they are, counting the text of those it accepted: only
-// that is billed.
+// relayClient forwards the client's frames to ElevenLabs as they are, counting and keeping the text of those it
+// accepted: only that is billed.
 func (r *elevenlabsDialogueRun) relayClient() error {
 	for {
 		messageType, message, err := r.clientConn.ReadMessage()
@@ -353,14 +357,13 @@ func (r *elevenlabsDialogueRun) relayClient() error {
 			writeElevenlabsDialogueError(r.clientConn, newRealtimeWireBifrostError(400, "invalid_request", "the text-to-dialogue socket only accepts text messages"))
 			return nil
 		}
-		chars := elevenlabsFrameChars(message)
 		if err := r.upstream.WriteMessage(messageType, message); err != nil {
 			failure := newRealtimeWireBifrostError(502, "server_error", "failed to write the frame to the provider")
 			r.failure.CompareAndSwap(nil, failure)
 			writeElevenlabsDialogueError(r.clientConn, failure)
 			return err
 		}
-		r.chars.Add(int64(chars))
+		r.chars.Add(int64(elevenlabsFrameChars(message, r.text)))
 	}
 }
 

@@ -185,7 +185,7 @@ func (h *WSSpeechSessionHandler) serve(clientConn *realtimeClientConn, preReqCtx
 	defer speech.Close()
 
 	format, sampleRate := speech.AudioFormat()
-	run = &speechSessionRun{clientConn: clientConn, speech: speech, idleTimeout: speechSessionIdleTimeout}
+	run = &speechSessionRun{clientConn: clientConn, speech: speech, idleTimeout: speechSessionIdleTimeout, text: unit.text}
 	created := &schemas.BifrostSpeechSessionEvent{
 		Type:    schemas.SpeechSessionEventCreated,
 		Session: &schemas.SpeechSessionInfo{ID: session.ID(), Model: string(req.Provider) + "/" + req.Model, ResponseFormat: format, SampleRate: sampleRate},
@@ -300,6 +300,7 @@ type speechSessionRun struct {
 	speech      schemas.SpeechSession
 	idleTimeout time.Duration         // how long the client may stay silent
 	chars       atomic.Int64          // characters of text the client sent
+	text        *speechSessionText    // the text the client sent, for the session's log row
 	failure     *schemas.BifrostError // set by relayEvents when the provider ended the session abnormally
 	payload     []byte                // the encoded event being sent
 }
@@ -379,6 +380,7 @@ func (r *speechSessionRun) relayClient() error {
 			// Only text the session accepted is counted, since only that is billed.
 			if err = r.speech.SendText(event.Text); err == nil {
 				r.chars.Add(int64(utf8.RuneCountInString(event.Text)))
+				r.text.add(event.Text)
 			}
 		case schemas.SpeechSessionEventFlush:
 			err = r.speech.Flush()
@@ -416,6 +418,46 @@ func (r *speechSessionRun) relayEvents() error {
 	return nil
 }
 
+// speechSessionTextBytes bounds the text a session's log row keeps, since a session stays open as long as its client likes.
+const speechSessionTextBytes = 1 << 20
+
+// speechSessionText is the text the client sent in a session, which its log row keeps as its input. The client's relay
+// is the only writer, and settling reads it after the relays have ended. A nil one keeps nothing.
+type speechSessionText struct {
+	text  []byte
+	limit int
+}
+
+func newSpeechSessionText() *speechSessionText {
+	return &speechSessionText{limit: speechSessionTextBytes}
+}
+
+// add keeps the text of one of the client's events, up to the bound and never part of a character.
+func (t *speechSessionText) add(text string) {
+	if t == nil {
+		return
+	}
+	room := t.limit - len(t.text)
+	if len(text) > room {
+		text = text[:max(room, 0)]
+		for len(text) > 0 {
+			if r, size := utf8.DecodeLastRuneInString(text); r != utf8.RuneError || size != 1 {
+				break
+			}
+			text = text[:len(text)-1]
+		}
+	}
+	t.text = append(t.text, text...)
+}
+
+// String is the text kept.
+func (t *speechSessionText) String() string {
+	if t == nil {
+		return ""
+	}
+	return string(t.text)
+}
+
 // speechSessionUnit is the session admitted as one request through the plugin pipeline: its
 // pre-hooks have run, and settling runs the post-hooks that bill and log it.
 type speechSessionUnit struct {
@@ -427,12 +469,13 @@ type speechSessionUnit struct {
 	traceID   string
 	startedAt time.Time
 	preValues map[any]any
+	text      *speechSessionText
 }
 
 // openSpeechSessionUnit runs the plugin pre-hooks for the session. Governance admits it here: provider and
 // model access, budgets and rate limits are checked once, when the session opens.
 func openSpeechSessionUnit(client *bifrost.Bifrost, baseCtx *schemas.BifrostContext, sessionID string, req *schemas.BifrostSpeechRequest) (*speechSessionUnit, *schemas.BifrostError) {
-	unit := &speechSessionUnit{baseCtx: baseCtx, sessionID: sessionID, requestID: sessionID, startedAt: time.Now()}
+	unit := &speechSessionUnit{baseCtx: baseCtx, sessionID: sessionID, requestID: sessionID, startedAt: time.Now(), text: newSpeechSessionText()}
 	unit.ctx = unit.newContext()
 	setRealtimeTurnStreamContext(unit.ctx, unit.startedAt, false)
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(unit.ctx, &schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: req})
@@ -460,6 +503,7 @@ func (u *speechSessionUnit) newContext() *schemas.BifrostContext {
 		ctx.SetGrant(g)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.SpeechStreamRequest)
+	ctx.SetValue(schemas.BifrostContextKeySpeechSession, true)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, u.requestID)
 	parentID := u.sessionID
 	if external, ok := u.baseCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && strings.TrimSpace(external) != "" {
@@ -480,9 +524,10 @@ func (u *speechSessionUnit) settle(req *schemas.BifrostSpeechRequest, key schema
 	var resp *schemas.BifrostResponse
 	if bifrostErr == nil || chars > 0 {
 		resp = &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
-			Type:        schemas.SpeechStreamResponseTypeDone,
-			Usage:       &schemas.SpeechUsage{InputChars: chars},
-			ExtraFields: schemas.BifrostResponseExtraFields{Latency: time.Since(u.startedAt).Milliseconds()},
+			Type:         schemas.SpeechStreamResponseTypeDone,
+			Usage:        &schemas.SpeechUsage{InputChars: chars},
+			SessionInput: u.text.String(),
+			ExtraFields:  schemas.BifrostResponseExtraFields{Latency: time.Since(u.startedAt).Milliseconds()},
 		}}
 	}
 	if bifrostErr != nil {
