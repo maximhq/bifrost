@@ -87,6 +87,25 @@ func TestAgentRealtimePathIsUnchanged(t *testing.T) {
 	other, err := provider.ToProviderRealtimeEvent(&schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCancel})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"type":"response.cancel"}`, string(other))
+
+	for _, frame := range []string{
+		`{"type":"user_message","text":"Say hello."}`,
+		`{"type":"contextual_update","text":"The user is on the pricing page."}`,
+		`{"type":"client_tool_result","tool_call_id":"c1","result":"sunny","is_error":false}`,
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(frame))
+		require.NoError(t, err)
+		forwarded, err := provider.ToProviderRealtimeEvent(event)
+		require.NoError(t, err)
+		require.JSONEq(t, frame, string(forwarded), "the fields of a client's event reach the agent with it")
+	}
+
+	// JSONEq compares numbers as floats, so the bytes are checked for a value a float cannot hold.
+	large, err := schemas.ParseRealtimeEvent([]byte(`{"type":"client_tool_result","tool_call_id":"c1","result":9007199254740993}`))
+	require.NoError(t, err)
+	forwarded, err := provider.ToProviderRealtimeEvent(large)
+	require.NoError(t, err)
+	require.Contains(t, string(forwarded), `"result":9007199254740993`, "a number reaches the agent as the client sent it")
 }
 
 // TestRealtimeWebSocketURLSendsScribeToItsOwnEndpoint pins where a Scribe model goes, and that one opened

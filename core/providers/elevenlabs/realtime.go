@@ -327,6 +327,12 @@ func (provider *ElevenlabsProvider) ToProviderRealtimeEvent(bifrostEvent *schema
 		out := map[string]interface{}{
 			"type": string(bifrostEvent.Type),
 		}
+		// The rest of the client's event, such as a user_message's text, goes to the agent with its type.
+		for key, raw := range bifrostEvent.ExtraParams {
+			if len(raw) > 0 && json.Valid(raw) {
+				out[key] = raw
+			}
+		}
 		return schemas.MarshalSorted(out)
 	}
 }
