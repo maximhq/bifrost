@@ -1,0 +1,18 @@
+# export RUNPOD_API_KEY=...
+
+# models       = ["gpt-oss-20b", "qwen3.8-27b"]
+# data_center  = "US-KS-2"        # volume + workers; must stock AMPERE_24/ADA_24 and ADA_48_PRO
+# volume_gb    = 50
+
+# --- Scaling (billing) ---
+# workers_min  = 0                # 1 = no cold starts, but bills 24/7 per endpoint
+# workers_max  = 1
+# idle_timeout = 60               # seconds a worker stays up (billed) after the last request
+# flashboot    = "FLASHBOOT"
+
+# --- Image / model ---
+# worker_image = "runpod/worker-v1-vllm:v2.30.1"
+# extra_env    = { "qwen3.8-27b" = { MAX_MODEL_LEN = "32768" } }
+# hf_token     = "hf_..."
+
+# warm_up      = true             # fill the volume during apply instead of on the first harness request
