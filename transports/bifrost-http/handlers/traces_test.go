@@ -319,3 +319,103 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, parts, "the received parts go with the trace")
 }
+
+// TestSDKPromptFetchesAreServedFromThePromptRepository pins prompt fetches: a key reads prompts only
+// when it was given that permission, Langfuse's get_prompt and Braintrust's load_prompt both get
+// the prompt repository's messages and model settings, a version can be pinned, and a tracing key
+// never creates a prompt.
+func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	env.ingest.SetPromptStore(env.config)
+
+	prompt := &tables.TablePrompt{ID: "prompt-1", Name: "Support Reply"}
+	require.NoError(t, env.config.CreatePrompt(ctx, prompt))
+	message := func(role, content string) tables.TablePromptVersionMessage {
+		raw, err := schemas.MarshalSorted(map[string]any{"id": role, "index": 0, "originalType": "completion_request", "currentType": "completion_request", "payload": map[string]any{"role": role, "content": content}})
+		require.NoError(t, err)
+		return tables.TablePromptVersionMessage{Message: raw}
+	}
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: prompt.ID, CommitMessage: "first", Model: "gpt-4o", Provider: "openai",
+		Messages: []tables.TablePromptVersionMessage{message("system", "Be brief."), message("user", "{{question}}")}}))
+	require.NoError(t, env.config.CreatePromptVersion(ctx, &tables.TablePromptVersion{PromptID: prompt.ID, CommitMessage: "second", Model: "gpt-4o-mini", Provider: "openai",
+		ModelParams: tables.ModelParams{"temperature": 0.2}, Messages: []tables.TablePromptVersionMessage{message("system", "Be kind."), message("user", "{{question}}")}}))
+
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
+	newKey := func(canRead bool) map[string]string {
+		var key struct {
+			Value string `json:"value"`
+		}
+		require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "can_read_prompts": canRead}, &key))
+		return map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	get := func(uri string, headers map[string]string) (int, map[string]any) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(fasthttp.MethodGet)
+		reqCtx.Request.SetRequestURI(uri)
+		for name, value := range headers {
+			reqCtx.Request.Header.Set(name, value)
+		}
+		env.router.Handler(reqCtx)
+		var body map[string]any
+		_ = sonic.Unmarshal(reqCtx.Response.Body(), &body)
+		return reqCtx.Response.StatusCode(), body
+	}
+
+	status, _ := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", newKey(false))
+	assert.Equal(t, fasthttp.StatusForbidden, status, "a tracing key reads prompts only when given that permission")
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", nil)
+	assert.Equal(t, fasthttp.StatusUnauthorized, status)
+
+	reader := newKey(true)
+	status, latest := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, "chat", latest["type"])
+	assert.EqualValues(t, 2, latest["version"])
+	assert.Equal(t, []any{"production", "latest"}, latest["labels"], "the newest version is what a fetch with no label gets")
+	assert.Equal(t, []any{
+		map[string]any{"type": "chatmessage", "role": "system", "content": "Be kind."},
+		map[string]any{"type": "chatmessage", "role": "user", "content": "{{question}}"},
+	}, latest["prompt"])
+	assert.Equal(t, map[string]any{"model": "gpt-4o-mini", "provider": "openai", "temperature": 0.2}, latest["config"])
+	for _, required := range []string{"name", "version", "config", "labels", "tags", "prompt", "type"} {
+		assert.Contains(t, latest, required)
+	}
+	status, pinned := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply?version=1", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []any{}, pinned["labels"])
+	assert.Equal(t, "Be brief.", pinned["prompt"].([]any)[0].(map[string]any)["content"])
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply?version=9", reader)
+	assert.Equal(t, fasthttp.StatusNotFound, status)
+	status, _ = get("/tracing/langfuse/api/public/v2/prompts/absent", reader)
+	assert.Equal(t, fasthttp.StatusNotFound, status)
+	status, list := get("/tracing/langfuse/api/public/v2/prompts", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Len(t, list["data"].([]any), 1)
+	assert.Equal(t, []any{2.0, 1.0}, list["data"].([]any)[0].(map[string]any)["versions"])
+
+	status, loaded := get("/tracing/braintrust/v1/prompt?project_name=agent&slug=support-reply", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	objects := loaded["objects"].([]any)
+	require.Len(t, objects, 1)
+	object := objects[0].(map[string]any)
+	assert.Equal(t, "support-reply", object["slug"])
+	assert.Equal(t, "2", object["_xact_id"])
+	data := object["prompt_data"].(map[string]any)
+	assert.Equal(t, "gpt-4o-mini", data["options"].(map[string]any)["model"])
+	assert.Equal(t, map[string]any{"role": "system", "content": "Be kind."}, data["prompt"].(map[string]any)["messages"].([]any)[0])
+	status, none := get("/tracing/braintrust/v1/prompt?project_name=agent&slug=absent", reader)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Empty(t, none["objects"], "an unknown slug is an empty list, which the SDK reports as not found")
+
+	write := &fasthttp.RequestCtx{}
+	write.Request.Header.SetMethod(fasthttp.MethodPost)
+	write.Request.SetRequestURI("/tracing/langfuse/api/public/v2/prompts")
+	write.Request.Header.Set("Authorization", reader["Authorization"])
+	write.Request.SetBody([]byte(`{"name":"x","prompt":"y"}`))
+	env.router.Handler(write)
+	assert.Equal(t, fasthttp.StatusForbidden, write.Response.StatusCode(), "a tracing key never writes a prompt, even one that may read them")
+}

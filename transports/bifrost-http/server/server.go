@@ -2925,6 +2925,8 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	// Replays received requests to a project's upstream vendor, after Bifrost has stored them.
 	s.TraceForwarder = traceingest.NewForwarder(nil, logger)
 	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
+	// SDK prompt fetches are served from the prompt repository.
+	s.TraceIngestHandler.SetPromptStore(s.Config.ConfigStore)
 	s.wireTraceEvaluator()
 	return true
 }

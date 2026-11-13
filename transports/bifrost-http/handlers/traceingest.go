@@ -43,6 +43,7 @@ type TraceIngestHandler struct {
 	logger        schemas.Logger
 	authenticator TraceIngestAuthenticator
 	forwarder     *traceingest.Forwarder
+	prompts       TracePromptStore
 }
 
 // NewTraceIngestHandler builds the handler over the shared ingest service.

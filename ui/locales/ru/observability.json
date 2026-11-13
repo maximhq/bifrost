@@ -2177,6 +2177,7 @@
 			"newProject": "Project",
 			"allProjects": "All existing projects",
 			"canCreateProjects": "May create projects",
+			"canReadPrompts": "May read prompts from the prompt repository (get_prompt, load_prompt)",
 			"logContent": "Store input and output",
 			"createKey": "Create tracing key",
 			"pointSDK": "Point your SDK at Bifrost",
