@@ -321231,11 +321231,11 @@
       ]
     },
     {
-      "name": "349. Total request timeout: x-bf-request-timeout caps retries and fallbacks (request timeout)",
+      "name": "349. Total request timeout: x-bf-request-timeout caps retries and fallbacks (request timeout) (PR #10010)",
       "description": "x-bf-request-timeout sets the deadline of the whole request: every retry, the backoff between retries and every fallback run under it. Without it a request can run for the provider timeout (300 s by default) multiplied by its retries and fallbacks. The first case sends a 50ms cap with a fallback configured: no provider can answer that fast, so the request must end with a 504 request_timed_out and the fallback must not rescue it. The second case sends a generous cap and pins that the header does not break a normal request.",
       "item": [
         {
-          "name": "[EXPECT-504] openai/gpt-4o-mini with a fallback ends in 504 request_timed_out when x-bf-request-timeout passes via POST /v1/chat/completions - request timeout",
+          "name": "[EXPECT-504] openai/gpt-4o-mini with a fallback ends in 504 request_timed_out when x-bf-request-timeout passes via POST /v1/chat/completions - request timeout - #10010",
           "request": {
             "method": "POST",
             "header": [
@@ -321289,7 +321289,7 @@
           ]
         },
         {
-          "name": "openai/gpt-4o-mini answers under a generous x-bf-request-timeout via POST /v1/chat/completions - request timeout",
+          "name": "openai/gpt-4o-mini answers under a generous x-bf-request-timeout via POST /v1/chat/completions - request timeout - #10010",
           "request": {
             "method": "POST",
             "header": [
