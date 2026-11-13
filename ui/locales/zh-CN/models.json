@@ -2004,19 +2004,22 @@
 					"uncovered": "无匹配（{{n}}）",
 					"weak": "弱匹配（{{n}}）",
 					"misrouted": "不同层级（{{n}}）",
-					"mixed": "混合层级（{{n}}）"
+					"mixed": "混合层级（{{n}}）",
+					"template": "提示词模板 ({{n}})"
 				},
 				"category": {
 					"uncovered": "无匹配",
 					"weak": "弱匹配",
 					"misrouted": "不同层级",
-					"mixed": "混合层级"
+					"mixed": "混合层级",
+					"template": "提示词模板"
 				},
 				"categoryDescription": {
 					"uncovered": "这些请求大多没有足够接近的短语，因此采用默认层级。",
 					"weak": "这些请求会到达建议的层级，但仅通过弱匹配。",
 					"misrouted": "这些请求以较高置信度匹配到与建议层级不同的层级的短语。",
-					"mixed": "目前相似的请求被分到了不同层级。"
+					"mixed": "目前相似的请求被分到了不同层级。",
+					"template": "这些请求是同一个提示词模板，只是填入的内容不同，因此短语取自模板中固定的措辞。"
 				},
 				"lastDays_one": "最近 {{count}} 天",
 				"lastDays_other": "最近 {{count}} 天",

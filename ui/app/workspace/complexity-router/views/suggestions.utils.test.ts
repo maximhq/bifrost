@@ -67,12 +67,14 @@ describe("filtering suggestions", () => {
 		suggestion("a", "weak", ["where is my refund"], "refund questions"),
 		suggestion("b", "uncovered", ["plan a database migration"]),
 		suggestion("c", "weak", ["reset my password"]),
+		suggestion("d", "template", ["write an image prompt for a scene"], "one image-prompt scaffold"),
 	];
 
 	test("searches phrases and reasons, filters by category, and leaves out staged ones", () => {
 		expect(filterSuggestions(list, { query: "REFUND", category: "all" }, new Set()).map((s) => s.id)).toEqual(["a"]);
 		expect(filterSuggestions(list, { query: "", category: "weak" }, new Set(["c"])).map((s) => s.id)).toEqual(["a"]);
-		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 2, uncovered: 1, weak: 1, misrouted: 0, mixed: 0 });
+		expect(filterSuggestions(list, { query: "", category: "template" }, new Set()).map((s) => s.id)).toEqual(["d"]);
+		expect(categoryCounts(list, new Set(["c"]))).toEqual({ all: 3, uncovered: 1, weak: 1, misrouted: 0, mixed: 0, template: 1 });
 	});
 });
 

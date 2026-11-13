@@ -44,7 +44,13 @@ type ClusterOptions struct {
 	MaxMembers      int     // members kept per cluster, closest to the centre
 	MaxClusters     int     // clusters held between batches before compacting
 	Iterations      int     // k-means iterations per batch
-	Seed            int64
+	// SplitSimilarity splits a finished cluster in two when its members form
+	// two groups whose centres are less similar than this; negative disables.
+	SplitSimilarity float64
+	// RescueSimilarity merges clusters too small to keep with each other at
+	// this lower bar before they are dropped; negative disables.
+	RescueSimilarity float64
+	Seed             int64
 }
 
 func (o ClusterOptions) withDefaults() ClusterOptions {
@@ -75,6 +81,12 @@ func (o ClusterOptions) withDefaults() ClusterOptions {
 	}
 	if o.Iterations <= 0 {
 		o.Iterations = 25
+	}
+	if o.SplitSimilarity == 0 {
+		o.SplitSimilarity = o.JoinSimilarity
+	}
+	if o.RescueSimilarity == 0 {
+		o.RescueSimilarity = 0.75
 	}
 	if o.Seed == 0 {
 		o.Seed = 7
@@ -295,6 +307,8 @@ func (c *Clusterer) Assign(reqs []Request) (unmatched int) {
 func (c *Clusterer) Clusters() []*Cluster {
 	c.clusterPool()
 	c.groups = mergeClusters(c.groups, c.opts.MergeSimilarity, c.opts.MaxMembers)
+	c.groups = c.splitClusters(c.groups)
+	c.groups = c.rescueSmall(c.groups)
 	var out []*Cluster
 	for _, cl := range c.groups {
 		if cl.Weight >= c.opts.MinRequests && cl.Size >= 2 {
@@ -303,6 +317,118 @@ func (c *Clusterer) Clusters() []*Cluster {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Weight > out[j].Weight })
 	return out
+}
+
+// rescueSmall gives small request types a cluster. K-means over-clusters on
+// purpose, so a type with a dozen requests can come out as three fragments of
+// four, each under MinRequests and each dropped, although together they are a
+// pattern worth a phrase. Fragments too small to keep are merged with one
+// another at a lower bar than whole clusters are, and never into a cluster
+// already big enough: that would hand the fragment a neighbour's phrase.
+func (c *Clusterer) rescueSmall(groups []*Cluster) []*Cluster {
+	if c.opts.RescueSimilarity < 0 {
+		return groups
+	}
+	var kept, small []*Cluster
+	for _, cl := range groups {
+		if cl.Weight >= c.opts.MinRequests {
+			kept = append(kept, cl)
+		} else {
+			small = append(small, cl)
+		}
+	}
+	if len(small) < 2 {
+		return groups
+	}
+	return append(kept, mergeClusters(small, c.opts.RescueSimilarity, c.opts.MaxMembers)...)
+}
+
+// splitClusters undoes absorption: k-means over-clusters, but a small
+// request type next to a large one can still have no centroid of its own and
+// land in its neighbour's cluster, where it is suggested the neighbour's
+// phrase and tier. Each cluster whose members are all kept is tried as two:
+// the split stands when both halves are big enough to suggest for and their
+// centres are further apart than a request may be from a cluster it joins.
+// Halves are split again, so a cluster holding three types comes apart too.
+func (c *Clusterer) splitClusters(groups []*Cluster) []*Cluster {
+	if c.opts.SplitSimilarity < 0 {
+		return groups
+	}
+	var out []*Cluster
+	queue := append([]*Cluster(nil), groups...)
+	for len(queue) > 0 {
+		cl := queue[0]
+		queue = queue[1:]
+		if a, b, ok := c.split(cl); ok {
+			queue = append(queue, a, b)
+			continue
+		}
+		out = append(out, cl)
+	}
+	return out
+}
+
+// split tries one cluster as two, by spherical 2-means seeded with the member
+// furthest from the centre and the member furthest from that one.
+func (c *Clusterer) split(cl *Cluster) (*Cluster, *Cluster, bool) {
+	// Only a cluster that kept every member can be split exactly; a larger
+	// one's sums include requests whose vectors are gone.
+	if cl.Size != len(cl.Members) || cl.Weight < 2*c.opts.MinRequests || len(cl.Members) < 4 {
+		return nil, nil, false
+	}
+	ms := cl.Members
+	seedA := 0
+	for i := range ms {
+		if dot(ms[i].Vector, cl.Centroid) < dot(ms[seedA].Vector, cl.Centroid) {
+			seedA = i
+		}
+	}
+	seedB := seedA
+	for i := range ms {
+		if dot(ms[i].Vector, ms[seedA].Vector) < dot(ms[seedB].Vector, ms[seedA].Vector) {
+			seedB = i
+		}
+	}
+	if seedB == seedA {
+		return nil, nil, false
+	}
+	centres := [][]float32{ms[seedA].Vector, ms[seedB].Vector}
+	assign := make([]int, len(ms))
+	for range c.opts.Iterations {
+		changed := false
+		for i, m := range ms {
+			side := 0
+			if dot(m.Vector, centres[1]) > dot(m.Vector, centres[0]) {
+				side = 1
+			}
+			if side != assign[i] {
+				assign[i], changed = side, true
+			}
+		}
+		next := [][]float32{make([]float32, len(cl.Centroid)), make([]float32, len(cl.Centroid))}
+		for i, m := range ms {
+			for d, x := range m.Vector {
+				next[assign[i]][d] += x
+			}
+		}
+		centres = [][]float32{normalize(next[0]), normalize(next[1])}
+		if !changed {
+			break
+		}
+	}
+	if float64(dot(centres[0], centres[1])) >= c.opts.SplitSimilarity {
+		return nil, nil, false
+	}
+	var halves [2][]Member
+	var weights [2]int
+	for i, m := range ms {
+		halves[assign[i]] = append(halves[assign[i]], m)
+		weights[assign[i]] += m.Count
+	}
+	if weights[0] < c.opts.MinRequests || weights[1] < c.opts.MinRequests || len(halves[0]) < 2 || len(halves[1]) < 2 {
+		return nil, nil, false
+	}
+	return c.newCluster(halves[0]), c.newCluster(halves[1]), true
 }
 
 // kmeans runs spherical k-means with k-means++ seeding and returns each

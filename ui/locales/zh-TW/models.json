@@ -2004,19 +2004,22 @@
 					"uncovered": "無相符（{{n}}）",
 					"weak": "弱相符（{{n}}）",
 					"misrouted": "不同層級（{{n}}）",
-					"mixed": "混合層級（{{n}}）"
+					"mixed": "混合層級（{{n}}）",
+					"template": "提示詞範本 ({{n}})"
 				},
 				"category": {
 					"uncovered": "無相符",
 					"weak": "弱相符",
 					"misrouted": "不同層級",
-					"mixed": "混合層級"
+					"mixed": "混合層級",
+					"template": "提示詞範本"
 				},
 				"categoryDescription": {
 					"uncovered": "這些請求大多沒有足夠接近的短語，因此採用預設層級。",
 					"weak": "這些請求會到達建議的層級，但僅透過弱相符。",
 					"misrouted": "這些請求以較高置信度相符到與建議層級不同的層級的短語。",
-					"mixed": "目前相似的請求被分到了不同層級。"
+					"mixed": "目前相似的請求被分到了不同層級。",
+					"template": "這些請求是同一個提示詞範本，只是填入的內容不同，因此短語取自範本中固定的措辭。"
 				},
 				"lastDays_one": "最近 {{count}} 天",
 				"lastDays_other": "最近 {{count}} 天",
