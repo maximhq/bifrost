@@ -145,6 +145,14 @@ func TestToGeminiDecisionMedia(t *testing.T) {
 			part: schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("https://example.com/box.png"), Detail: schemas.Ptr("auto")},
 			want: `{"type":"image","uri":"https://example.com/box.png","mime_type":"image/png"}`,
 		},
+		"detail read case-insensitively": {
+			part: schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("https://example.com/box.png"), Detail: schemas.Ptr("Original")},
+			want: `{"type":"image","uri":"https://example.com/box.png","mime_type":"image/png","resolution":"ultra_high"}`,
+		},
+		"uppercase detail sent lowercased": {
+			part: schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,iVBOR"), Detail: schemas.Ptr("HIGH")},
+			want: `{"type":"image","data":"iVBOR","mime_type":"image/png","resolution":"high"}`,
+		},
 		"pdf bytes": {
 			part: decisionFile("application/pdf", func(p *schemas.DecisionInputPart) { p.Data.File = []byte("%PDF-1.7") }),
 			want: `{"type":"document","data":"JVBERi0xLjc=","mime_type":"application/pdf"}`,
@@ -272,6 +280,38 @@ func TestToGeminiDecisionRequestRejects(t *testing.T) {
 				map[string]interface{}{"type": "input_file", "url": "https://example.com/a.pdf", "mime_type": "application/pdf"},
 			}}}},
 			want: `"input_file" part`,
+		},
+		// Gemini requires an input, so one that converts to nothing is refused
+		// rather than spent on an upstream call.
+		"blank text": {input: schemas.DecisionInput{Text: schemas.Ptr("  ")}, want: "carries no content"},
+		"messages without content": {input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+			{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("")}},
+			{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{{Type: schemas.DecisionInputPartTypeText}}}},
+		}}, want: "carries no content"},
+		"non-image data URL": {input: inMessage(decisionImage("data:application/pdf;base64,JVBERi0=")), want: "not an image type"},
+		"image in instructions after an unrecognized element": {
+			input: schemas.DecisionInput{Text: schemas.Ptr("x")},
+			questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: &schemas.DecisionText{Structured: []interface{}{
+				map[string]interface{}{"note": "not a part"},
+				map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64,iVBO"},
+			}}}},
+			want: "text only",
+		},
+		// Instructions decode an object into Structured too, so a single media
+		// part must not go out as JSON text.
+		"image as single instruction object": {
+			input: schemas.DecisionInput{Text: schemas.Ptr("x")},
+			questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: &schemas.DecisionText{
+				Structured: map[string]interface{}{"type": "input_image", "image_url": "https://example.com/a.png"},
+			}}},
+			want: `"input_image" part`,
+		},
+		"image as a typed instruction part": {
+			input: schemas.DecisionInput{Text: schemas.Ptr("x")},
+			questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: &schemas.DecisionText{
+				Structured: decisionImage("https://example.com/a.png"),
+			}}},
+			want: "text only",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -444,6 +484,18 @@ func TestToBifrostGeminiDecisionResponse(t *testing.T) {
 	_, bifrostErr = ToBifrostDecisionResponse(&resp, request)
 	require.NotNil(t, bifrostErr)
 	assert.Contains(t, bifrostErr.Error.Message, `no answer for question "refund"`)
+
+	resp.Answers["refund"] = GeminiDecisionAnswer{Type: "noul", Noul: schemas.Ptr(0.9)}
+	_, bifrostErr = ToBifrostDecisionResponse(&resp, request)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, `answered question "refund" as "noul"; expected "choice"`)
+
+	delete(resp.Answers, "refund")
+	request.Questions = request.Questions[2:]
+	resp.Answers["is_damaged"] = GeminiDecisionAnswer{Type: "noul", Noul: schemas.Ptr(1.2)}
+	_, bifrostErr = ToBifrostDecisionResponse(&resp, request)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, `is outside [0,1]`)
 }
 
 // TestGeminiDecisionServesDecisionModelsOnly pins the gate that keeps a chat

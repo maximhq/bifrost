@@ -105,25 +105,35 @@ func isGeminiDecisionKey(key string) bool {
 
 // toGeminiDecisionInput writes the input as Gemini reads it: text as it is, a
 // structured input as its sorted JSON text (Google asks for JSON data as text),
-// and messages as geminiDecisionMessages lays them out. An empty input is
-// rejected, since Gemini requires one.
+// and messages as geminiDecisionMessages lays them out. An input that comes out
+// empty, such as blank text or messages with no content, is rejected before the
+// call, since Gemini requires one.
 func toGeminiDecisionInput(input schemas.DecisionInput) (GeminiDecisionInput, error) {
 	if err := input.Validate(); err != nil {
 		return GeminiDecisionInput{}, providerUtils.InvalidRequestErrorf("%s", err.Error())
 	}
+	var converted GeminiDecisionInput
 	switch {
 	case input.Text != nil:
-		return GeminiDecisionInput{Text: input.Text}, nil
+		converted = GeminiDecisionInput{Text: input.Text}
 	case input.Messages != nil:
-		return geminiDecisionMessages(input.Messages)
+		var err error
+		if converted, err = geminiDecisionMessages(input.Messages); err != nil {
+			return GeminiDecisionInput{}, err
+		}
 	case input.Structured != nil:
 		text, err := geminiDecisionJSONText(input.Structured)
 		if err != nil {
 			return GeminiDecisionInput{}, err
 		}
-		return GeminiDecisionInput{Text: &text}, nil
+		converted = GeminiDecisionInput{Text: &text}
+	default:
+		return GeminiDecisionInput{}, providerUtils.InvalidRequestErrorf("decision input is required")
 	}
-	return GeminiDecisionInput{}, providerUtils.InvalidRequestErrorf("decision input is required")
+	if len(converted.Blocks) == 0 && (converted.Text == nil || strings.TrimSpace(*converted.Text) == "") {
+		return GeminiDecisionInput{}, providerUtils.InvalidRequestErrorf("gemini decisions require an input, and this request's input carries no content")
+	}
+	return converted, nil
 }
 
 // geminiDecisionMessages lays a message list out as Gemini's input, which has
@@ -316,6 +326,9 @@ func geminiDecisionImage(part schemas.DecisionInputPart) (GeminiInteractionsCont
 		if !ok {
 			return GeminiInteractionsContent{}, providerUtils.InvalidRequestErrorf("input_image data URL must be base64 and state its media type, such as data:image/png;base64,...")
 		}
+		if !strings.HasPrefix(mediaType, "image/") {
+			return GeminiInteractionsContent{}, providerUtils.InvalidRequestErrorf("input_image data URL has media type %q, not an image type; send other media as input_file", mediaType)
+		}
 		block.Data, block.MimeType = &payload, &mediaType
 		return block, nil
 	}
@@ -379,19 +392,22 @@ func geminiDecisionFile(part schemas.DecisionInputPart) (GeminiInteractionsConte
 }
 
 // geminiDecisionResolution maps a part's detail onto Gemini's media
-// resolution for a block of blockType. "auto", or no detail, leaves it to
-// Gemini; "original", the full resolution, is the highest the block takes:
-// ultra_high for an image (Gemini serves it for images only) and high for
-// anything else; any other value, such as "low", "high", or Gemini's own
-// "medium", is sent as it is. Gemini checks which blocks take a resolution
-// (audio and documents take none), so a detail it does not take gets Gemini's
-// own error rather than being dropped.
+// resolution for a block of blockType. The detail is read case-insensitively.
+// "auto", or no detail, leaves it to Gemini; "original", the full resolution,
+// is the highest the block takes: ultra_high for an image (Gemini serves it for
+// images only) and high for anything else; any other value, such as "low",
+// "high", or Gemini's own "medium", is sent lowercased. Gemini checks which
+// blocks take a resolution (audio and documents take none), so a detail it
+// does not take gets Gemini's own error rather than being dropped.
 func geminiDecisionResolution(detail *string, blockType string) *string {
-	if detail == nil || *detail == "" || *detail == "auto" {
+	if detail == nil {
 		return nil
 	}
-	resolution := *detail
-	if resolution == "original" {
+	resolution := strings.ToLower(strings.TrimSpace(*detail))
+	switch resolution {
+	case "", "auto":
+		return nil
+	case "original":
 		resolution = "high"
 		if blockType == GeminiContentTypeImage {
 			resolution = "ultra_high"
@@ -509,17 +525,22 @@ var geminiDecisionInstructionMediaTypes = map[string]bool{
 
 // geminiDecisionInstructions writes a question's instructions as the text
 // Gemini's questions take. Instructions written as a list of parts (input_text
-// and input_json, as OpenAI's questions take them) are joined line by line. A
-// list carrying an image, file, or audio part is rejected whatever else it
-// holds, since Gemini's instructions are text only and the media would
-// otherwise go out as JSON text the model reads instead of seeing. Any other
-// structured value is sent as its JSON text.
+// and input_json, as OpenAI's questions take them) are joined line by line.
+// Instructions carrying an image, file, or audio part, as a list holding one
+// or as a single part, are rejected, since Gemini's instructions are text only
+// and the media would otherwise go out as JSON text the model reads instead of
+// seeing. Any other structured value is sent as its JSON text.
 func geminiDecisionInstructions(name string, instructions *schemas.DecisionText) (string, error) {
 	if instructions == nil {
 		return "", nil
 	}
 	parts, ok := geminiDecisionInstructionList(instructions.Structured)
 	if !ok {
+		if part, isObject := geminiDecisionInstructionObject(instructions.Structured); isObject {
+			if media := geminiDecisionInstructionMedia([]interface{}{part}); media != "" {
+				return "", providerUtils.InvalidRequestErrorf("question %q instructions carry an %q part; gemini's question instructions are text only", name, media)
+			}
+		}
 		return providerUtils.DecisionTextString(instructions), nil
 	}
 	if media := geminiDecisionInstructionMedia(parts); media != "" {
@@ -576,6 +597,36 @@ func geminiDecisionInstructionList(value interface{}) ([]interface{}, bool) {
 		return nil, false
 	}
 	return list, true
+}
+
+// geminiDecisionInstructionObject returns structured instructions as the
+// map[string]interface{} shape a JSON object decodes into, or false when they
+// are not an object. A Go caller's struct, such as a schemas.DecisionInputPart,
+// is encoded and decoded into that shape, so a single part is read the way the
+// same part sent over HTTP is.
+func geminiDecisionInstructionObject(value interface{}) (map[string]interface{}, bool) {
+	if object, ok := value.(map[string]interface{}); ok {
+		return object, true
+	}
+	if value == nil {
+		return nil, false
+	}
+	kind := reflect.TypeOf(value).Kind()
+	if kind == reflect.Pointer {
+		kind = reflect.TypeOf(value).Elem().Kind()
+	}
+	if kind != reflect.Struct && kind != reflect.Map {
+		return nil, false
+	}
+	raw, err := providerUtils.MarshalSorted(value)
+	if err != nil {
+		return nil, false
+	}
+	var object map[string]interface{}
+	if err := schemas.Unmarshal(raw, &object); err != nil {
+		return nil, false
+	}
+	return object, true
 }
 
 // isDecisionInstructionPartList reports whether instructions are a non-empty
