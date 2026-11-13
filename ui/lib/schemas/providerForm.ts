@@ -7,6 +7,7 @@ import {
 	anthropicWorkloadIdentityComplete,
 	oauthKeyConfigComplete,
 	oauthKeyConfigSchema,
+	remoteFileSizeLimitSchema,
 	secretVarSchema,
 } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
@@ -52,6 +53,7 @@ const NetworkConfigSchema = z
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
 		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
+		max_remote_file_size_bytes: remoteFileSizeLimitSchema,
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),
 	})
