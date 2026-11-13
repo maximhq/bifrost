@@ -1,19 +1,42 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { LogDetailView } from "@/app/workspace/logs/sheets/logDetailView";
+import { CopyInlineButton } from "@/app/workspace/logs/views/logHeroStat";
+import { MCPLogDetailView } from "@/app/workspace/mcp-logs/views/mcpLogDetailsSheet";
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { getErrorMessage, useDeleteTraceMutation, useGetTraceQuery } from "@/lib/store";
+import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
+import { useGetMCPLogByIdQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { TraceDetail, TraceSpan } from "@/lib/types/traces";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { AlertCircle, ChevronDown, ChevronRight, Copy, EyeOff, Link2, Loader2, Maximize2, Minimize2, Trash2 } from "lucide-react";
+import {
+	ChartNoAxesGantt,
+	ChevronDown,
+	ChevronRight,
+	Copy,
+	ExternalLink,
+	EyeOff,
+	Link2,
+	Link as LinkIcon,
+	ListTree,
+	Loader2,
+	MessagesSquare,
+	Search,
+	Sparkles,
+	Trash2,
+	X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { buildThread, buildTraceTree, spanUsage, type TraceTreeNode } from "../traceTree";
+import { buildThread, buildTraceTree, messagesOf, spanUsage, type TraceTreeNode } from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
 
 interface TraceViewerProps {
@@ -21,15 +44,93 @@ interface TraceViewerProps {
 	traceId: string | null;
 	initialSpanId?: string | null;
 	onClose: () => void;
+	/** Prev and next trace of the list behind the sheet, as the log sheets step through their rows. */
+	hasPrev?: boolean;
+	hasNext?: boolean;
+	onNavigate?: (direction: "prev" | "next") => void;
 	/** Extra tabs of the span detail pane (review, activity), added by the page. */
 	renderSpanExtras?: (detail: TraceDetail, span: TraceSpan) => { tabs: { id: string; label: string; content: React.ReactNode }[] };
 }
 
+function shortId(id: string): string {
+	return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
+}
+
+function Summary({ label, value }: { label: string; value: React.ReactNode }) {
+	return (
+		<span className="text-muted-foreground inline-flex items-baseline gap-1.5">
+			{label}
+			<b className="text-foreground font-semibold tabular-nums">{value}</b>
+		</span>
+	);
+}
+
+function OpenInLogsLink({ to, id, label }: { to: "/workspace/logs" | "/workspace/mcp-logs"; id: string; label: string }) {
+	return (
+		<Link
+			to={to}
+			search={{ selected_log: id }}
+			className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 rounded-sm border px-2 py-1 text-xs whitespace-nowrap"
+			data-testid="trace-open-in-logs"
+		>
+			{label}
+			<ExternalLink className="size-3" />
+		</Link>
+	);
+}
+
+/** A span this gateway served opens the gateway's own log, exactly as Agent Logs embeds it. */
+function EmbeddedGatewayLLMLog({ logId }: { logId: string }) {
+	const { t } = useTranslation("observability");
+	const { data, isLoading, isError } = useGetLogByIdQuery({ id: logId });
+	if (isLoading) return <DetailLoader />;
+	if (isError || !data) return null;
+	return (
+		<LogDetailView
+			log={data}
+			variant="embedded"
+			headerAction={<OpenInLogsLink to="/workspace/logs" id={logId} label={t("agentLogs.trace.openInLLMLogs")} />}
+		/>
+	);
+}
+
+function EmbeddedGatewayMCPLog({ logId }: { logId: string }) {
+	const { t } = useTranslation("observability");
+	const { data, isLoading, isError } = useGetMCPLogByIdQuery(logId);
+	if (isLoading) return <DetailLoader />;
+	if (isError || !data) return null;
+	return (
+		<MCPLogDetailView
+			log={data}
+			variant="embedded"
+			headerEnd={<OpenInLogsLink to="/workspace/mcp-logs" id={logId} label={t("agentLogs.trace.openInMCPLogs")} />}
+		/>
+	);
+}
+
+function DetailLoader() {
+	return (
+		<div className="flex h-full items-center justify-center p-8">
+			<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
+		</div>
+	);
+}
+
 /**
- * The trace view: a header with the trace's rollups, the span tree (or its timeline, or the
- * conversation it holds) on the left, and the selected span on the right.
+ * The trace view, laid out as the Agent Logs trace sheet is: a top bar with the trace id and its
+ * totals, Spans, Timeline and Thread tabs, the span tree on the left and the selected span on the
+ * right. A model or tool call this gateway served opens the gateway's own log view.
  */
-export function TraceViewer({ projectId, traceId, initialSpanId, onClose, renderSpanExtras }: TraceViewerProps) {
+export function TraceViewer({
+	projectId,
+	traceId,
+	initialSpanId,
+	onClose,
+	hasPrev = false,
+	hasNext = false,
+	onNavigate,
+	renderSpanExtras,
+}: TraceViewerProps) {
 	const { t } = useTranslation("observability");
 	const open = Boolean(projectId && traceId);
 	const { data, isLoading, error } = useGetTraceQuery(
@@ -38,11 +139,18 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 		{ skip: !open, pollingInterval: open ? 5000 : 0, skipPollingIfUnfocused: true },
 	);
 	const [deleteTrace] = useDeleteTraceMutation();
+	const { copy: copyLink } = useCopyToClipboard({ successMessage: t("agentLogs.trace.linkCopied") });
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
+	});
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 	const [showHTTP, setShowHTTP] = useState(false);
-	const [fullscreen, setFullscreen] = useState(false);
-	const [leftTab, setLeftTab] = useState("spans");
+	const [view, setView] = useState<"spans" | "timeline" | "thread">("spans");
+	const [query, setQuery] = useState("");
 
 	const tree = useMemo(() => buildTraceTree(data?.spans ?? [], showHTTP), [data?.spans, showHTTP]);
 	const thread = useMemo(() => buildThread(data?.spans ?? []), [data?.spans]);
@@ -51,22 +159,36 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 	useEffect(() => {
 		setSelectedId(initialSpanId ?? null);
 		setCollapsed(new Set());
+		setQuery("");
 	}, [traceId, initialSpanId]);
 
-	const selected = useMemo(() => {
-		const spans = data?.spans ?? [];
-		return spans.find((span) => span.span_id === selectedId) ?? tree.rows[0]?.span ?? null;
-	}, [data?.spans, selectedId, tree.rows]);
+	const selected = useMemo(
+		() => (data?.spans ?? []).find((span) => span.span_id === selectedId) ?? tree.rows[0]?.span ?? null,
+		[data?.spans, selectedId, tree.rows],
+	);
 
+	// Rows in tree order. A search shows each matching span with the ancestors that lead to it.
 	const visibleRows = useMemo(() => {
+		const needle = query.trim().toLowerCase();
+		const keep = new Set<string>();
+		if (needle) {
+			const parentOf = new Map(tree.rows.map((node) => [node.span.span_id, node]));
+			const byChild = new Map<string, string>();
+			for (const node of tree.rows) for (const child of node.children) byChild.set(child.span.span_id, node.span.span_id);
+			for (const node of tree.rows) {
+				if (!(node.span.name || "").toLowerCase().includes(needle)) continue;
+				for (let id: string | undefined = node.span.span_id; id && parentOf.has(id); id = byChild.get(id)) keep.add(id);
+			}
+		}
 		const rows: TraceTreeNode[] = [];
 		const walk = (node: TraceTreeNode) => {
+			if (needle && !keep.has(node.span.span_id)) return;
 			rows.push(node);
-			if (!collapsed.has(node.span.span_id)) node.children.forEach(walk);
+			if (needle || !collapsed.has(node.span.span_id)) node.children.forEach(walk);
 		};
 		tree.roots.forEach(walk);
 		return rows;
-	}, [tree.roots, collapsed]);
+	}, [tree, collapsed, query]);
 
 	const toggle = (id: string) =>
 		setCollapsed((current) => {
@@ -77,26 +199,134 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 		});
 
 	const trace = data?.trace;
+	const counts = { agent: 0, llm: 0, tool: 0 };
+	for (const span of data?.spans ?? []) {
+		if (span.kind === "agent") counts.agent++;
+		else if (span.kind === "llm" || span.kind === "embedding") counts.llm++;
+		else if (span.kind === "tool") counts.tool++;
+	}
+	const links = data?.links ?? [];
+	const linkOf = (span: TraceSpan) => (span.linked_log_expired ? undefined : links.find((link) => link.span_id === span.span_id));
+
+	// A model call is named by its model, as Agent Logs names it; its span name moves to the meta line.
+	const label = (span: TraceSpan) =>
+		((span.kind === "llm" || span.kind === "embedding") && (span.link_snapshot?.model || span.model)) || span.name || span.span_id;
+	const meta = (node: TraceTreeNode) => {
+		const { span } = node;
+		const named = label(span) !== span.name ? span.name : "";
+		const parts = [
+			named || (span.kind === "unknown" ? "" : span.kind),
+			span.partial && !span.end_time ? t("tracing.inProgress") : formatDuration(span.duration_ms),
+		];
+		if (node.subtreeTokens) parts.push(t("agentLogs.trace.tokensShort", { value: formatTokens(node.subtreeTokens) }));
+		if (node.subtreeCost) parts.push(`${spanUsage(span).estimated ? "~" : ""}${formatCost(node.subtreeCost)}`);
+		return parts.filter(Boolean).join(", ");
+	};
+
+	const detail = (() => {
+		if (!data) return null;
+		if (view === "thread")
+			return (
+				<div className="mx-auto flex max-w-3xl flex-col gap-6 py-2" data-testid="trace-viewer-thread">
+					{thread.length === 0 && <p className="text-muted-foreground text-sm">{t("tracing.viewer.noThread")}</p>}
+					{thread.map((message, index) =>
+						message.role === "user" ? (
+							<div
+								key={`${message.spanId}-${index}`}
+								className="flex flex-col items-end gap-1"
+								data-testid={`trace-viewer-thread-message-${index}`}
+							>
+								<div className="bg-muted max-w-[80%] rounded-sm px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">
+									{message.text}
+								</div>
+							</div>
+						) : (
+							<div
+								key={`${message.spanId}-${index}`}
+								className="flex flex-col gap-1.5"
+								data-testid={`trace-viewer-thread-message-${index}`}
+							>
+								<button
+									type="button"
+									onClick={() => {
+										setSelectedId(message.spanId);
+										setView("spans");
+									}}
+									className="text-muted-foreground hover:text-foreground flex items-center gap-2 text-[12px]"
+								>
+									<span className={cn("flex size-5 shrink-0 items-center justify-center rounded-sm", spanKindMeta("llm").tile)}>
+										<Sparkles className="size-3" />
+									</span>
+									<span className="font-medium capitalize">{message.role}</span>
+									<ChevronRight className="size-3.5" />
+								</button>
+								<div className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</div>
+							</div>
+						),
+					)}
+				</div>
+			);
+		if (!selected) return <div className="text-muted-foreground p-6 text-sm">{t("tracing.viewer.noSpans")}</div>;
+		const link = linkOf(selected);
+		if (link?.log_kind === "llm") return <EmbeddedGatewayLLMLog key={link.log_id} logId={link.log_id} />;
+		if (link?.log_kind === "mcp") return <EmbeddedGatewayMCPLog key={link.log_id} logId={link.log_id} />;
+		return <SpanDetail span={selected} detail={data} extras={renderSpanExtras?.(data, selected)} />;
+	})();
+
 	return (
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
 			<SheetContent
-				side="right"
+				className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]"
 				data-testid="trace-viewer"
-				className={cn("flex flex-col gap-0 p-0 sm:max-w-none", fullscreen ? "w-screen" : "w-[92vw] lg:w-[80vw]")}
 			>
-				<SheetHeader className="border-b px-4 py-3">
-					<div className="flex items-center gap-2 pr-8">
-						<SheetTitle className="truncate text-base">{trace?.name || t("tracing.viewer.untitled")}</SheetTitle>
-						{trace?.in_progress && (
-							<Badge variant="secondary" className="gap-1">
-								<Loader2 className="h-3 w-3 animate-spin" />
-								{t("tracing.inProgress")}
-							</Badge>
+				<div className="border-b" data-testid="trace-viewer-topbar">
+					<div className="flex items-center gap-3 px-4 pt-3 pb-2">
+						<div className="flex min-w-0 items-center gap-2">
+							<SheetNavigationButtons
+								hasPrev={hasPrev}
+								hasNext={hasNext}
+								onNavigate={(direction) => onNavigate?.(direction)}
+								prevKeys={prevKeys}
+								nextKeys={nextKeys}
+								entityLabel="trace"
+							/>
+							<SheetTitle className="text-foreground truncate text-sm font-medium">{t("tracing.viewer.title")}</SheetTitle>
+							<SheetDescription className="sr-only">{trace?.name || t("tracing.viewer.untitled")}</SheetDescription>
+						</div>
+						{traceId && (
+							<div
+								className="bg-muted/50 flex min-w-0 items-center gap-1.5 rounded-sm py-0.5 pr-0.5 pl-2 text-xs"
+								data-testid="trace-viewer-id"
+							>
+								<span className="text-muted-foreground shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+									{t("tracing.viewer.traceId")}
+								</span>
+								<code className="truncate font-mono text-[12px]" title={traceId}>
+									{shortId(traceId)}
+								</code>
+								<CopyInlineButton text={traceId} testId="trace-viewer-copy-id" />
+							</div>
 						)}
-						<div className="ml-auto flex items-center gap-1">
+						{trace?.in_progress && (
+							<span className="text-muted-foreground inline-flex items-center gap-1.5 text-xs">
+								<Loader2 className="size-3 animate-spin" />
+								{t("tracing.inProgress")}
+							</span>
+						)}
+						<div className="ml-auto flex shrink-0 items-center gap-1">
+							<button
+								type="button"
+								onClick={() => copyLink(window.location.href)}
+								className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs"
+								data-testid="trace-viewer-copy-link"
+							>
+								<LinkIcon className="size-3.5" />
+								{t("agentLogs.trace.copyLink")}
+							</button>
 							<Button
 								variant="ghost"
-								size="icon"
+								className="size-7"
+								type="button"
 								aria-label={t("tracing.settings.deleteTrace")}
 								data-testid="trace-viewer-delete-button"
 								disabled={!trace}
@@ -110,232 +340,203 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 									}
 								}}
 							>
-								<Trash2 className="h-4 w-4" />
+								<Trash2 className="h-3.5 w-3.5" />
 							</Button>
-							<Button
-								variant="ghost"
-								size="icon"
-								aria-label={fullscreen ? t("tracing.viewer.exitFullscreen") : t("tracing.viewer.fullscreen")}
-								data-testid="trace-viewer-fullscreen-button"
-								onClick={() => setFullscreen((value) => !value)}
-							>
-								{fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-							</Button>
+							<SheetClose asChild>
+								<Button variant="ghost" className="size-7" type="button" aria-label={t("labels.close")} data-testid="trace-viewer-close">
+									<X className="h-3.5 w-3.5" />
+								</Button>
+							</SheetClose>
 						</div>
 					</div>
-					<SheetDescription asChild>
-						<div className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-							{trace && (
-								<>
-									<span>{new Date(trace.start_time).toLocaleString()}</span>
-									<span>{formatDuration(trace.duration_ms)}</span>
-									<span>{t("tracing.viewer.spans", { count: trace.span_count })}</span>
-									<span>{t("tracing.viewer.tokens", { tokens: formatTokens(trace.total_tokens) })}</span>
-									<span>
-										{formatCost(trace.cost)}
-										{trace.estimated_cost ? ` (${t("tracing.estimatedShare", { cost: formatCost(trace.estimated_cost) })})` : ""}
-									</span>
-									{trace.unpriced_span_count > 0 && <span>{t("tracing.unpricedCalls", { count: trace.unpriced_span_count })}</span>}
-									{trace.llm_span_count > 0 && (
-										<span>{t("tracing.viewer.linked", { linked: trace.linked_span_count, total: trace.llm_span_count })}</span>
-									)}
-									{trace.error_count > 0 && (
-										<span className="text-destructive">{t("tracing.viewer.errors", { count: trace.error_count })}</span>
-									)}
-								</>
+					{trace && (
+						<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 pb-3 text-xs" data-testid="trace-viewer-summary">
+							<Summary label={t("agentLogs.trace.latency")} value={formatDuration(trace.duration_ms)} />
+							<Summary label={t("agentLogs.trace.tokens")} value={formatTokens(trace.total_tokens)} />
+							<Summary label={t("agentLogs.trace.cost")} value={`${trace.estimated_cost ? "~" : ""}${formatCost(trace.cost)}`} />
+							<span className="bg-border h-3.5 w-px" aria-hidden="true" />
+							<Summary label={t("tracing.viewer.spansLabel")} value={trace.span_count} />
+							{counts.agent > 0 && <Summary label={t("agentLogs.trace.agents")} value={counts.agent} />}
+							<Summary label={t("agentLogs.trace.llmCalls")} value={counts.llm} />
+							{counts.tool > 0 && <Summary label={t("tracing.viewer.toolCalls")} value={counts.tool} />}
+							{trace.llm_span_count > 0 && (
+								<Summary label={t("tracing.viewer.viaGateway")} value={`${trace.linked_span_count}/${trace.llm_span_count}`} />
+							)}
+							{trace.unpriced_span_count > 0 && (
+								<span className="text-muted-foreground">{t("tracing.unpricedCalls", { count: trace.unpriced_span_count })}</span>
+							)}
+							{trace.error_count > 0 && (
+								<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-medium">
+									<span className="bg-chart-error size-1.5 rounded-sm" aria-hidden="true" />
+									{t("agentLogs.trace.errors")} {trace.error_count}
+								</span>
 							)}
 						</div>
-					</SheetDescription>
-				</SheetHeader>
-
-				{isLoading && (
-					<div className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-sm">
-						<Loader2 className="h-4 w-4 animate-spin" />
-						{t("tracing.viewer.loading")}
-					</div>
-				)}
+					)}
+				</div>
+				<div className="flex h-11 shrink-0 items-center gap-1 border-b px-3" role="tablist" data-testid="trace-viewer-views">
+					{(
+						[
+							["spans", ListTree, t("agentLogs.trace.spansTab")],
+							["timeline", ChartNoAxesGantt, t("agentLogs.trace.timeline")],
+							["thread", MessagesSquare, t("agentLogs.trace.threadTab")],
+						] as const
+					).map(([value, Icon, label]) => (
+						<button
+							key={value}
+							type="button"
+							role="tab"
+							aria-selected={view === value}
+							onClick={() => setView(value)}
+							data-testid={`trace-viewer-${value}-tab`}
+							className={cn(
+								"inline-flex h-8 items-center gap-1.5 rounded-sm px-2.5 text-[13px] font-medium",
+								view === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+							)}
+						>
+							<Icon className="size-3.5" />
+							{label}
+						</button>
+					))}
+					{hiddenHTTP > 0 && (
+						<label className="text-muted-foreground ml-auto flex items-center gap-2 text-xs">
+							<Switch checked={showHTTP} onCheckedChange={setShowHTTP} data-testid="trace-viewer-show-http-switch" />
+							{t("tracing.viewer.showHTTP", { count: hiddenHTTP })}
+						</label>
+					)}
+				</div>
+				{isLoading && <DetailLoader />}
 				{Boolean(error) && !data && (
 					<div className="text-destructive flex flex-1 items-center justify-center text-sm">{t("tracing.viewer.loadFailed")}</div>
 				)}
-
 				{data && (
-					<div className="flex min-h-0 flex-1">
-						<div className="flex w-[44%] min-w-[320px] flex-col border-r">
-							<Tabs value={leftTab} onValueChange={setLeftTab} className="flex min-h-0 flex-1 flex-col gap-0">
-								<div className="flex items-center justify-between border-b px-3 py-2">
-									<TabsList>
-										<TabsTrigger value="spans" data-testid="trace-viewer-spans-tab">
-											{t("tracing.viewer.spansTab")}
-										</TabsTrigger>
-										<TabsTrigger value="timeline" data-testid="trace-viewer-timeline-tab">
-											{t("tracing.viewer.timelineTab")}
-										</TabsTrigger>
-										<TabsTrigger value="thread" data-testid="trace-viewer-thread-tab">
-											{t("tracing.viewer.threadTab")}
-										</TabsTrigger>
-									</TabsList>
-									{hiddenHTTP > 0 && (
-										<label className="text-muted-foreground flex items-center gap-2 text-xs">
-											<Switch checked={showHTTP} onCheckedChange={setShowHTTP} data-testid="trace-viewer-show-http-switch" />
-											{t("tracing.viewer.showHTTP", { count: hiddenHTTP })}
-										</label>
-									)}
-								</div>
-								<TabsContent value="spans" className="mt-0 min-h-0 flex-1 overflow-auto">
-									{visibleRows.map((node) => (
-										<SpanRow
-											key={node.span.span_id}
-											node={node}
-											mode="tree"
-											selected={selected?.span_id === node.span.span_id}
-											collapsed={collapsed.has(node.span.span_id)}
-											onToggle={() => toggle(node.span.span_id)}
-											onSelect={() => setSelectedId(node.span.span_id)}
-										/>
-									))}
-								</TabsContent>
-								<TabsContent value="timeline" className="mt-0 min-h-0 flex-1 overflow-auto">
-									<div className="text-muted-foreground flex justify-between border-b px-3 py-1 text-[11px]">
+					<div className="flex min-h-0 flex-1 flex-col md:flex-row">
+						<div className="flex max-h-[45vh] min-h-0 w-full shrink-0 flex-col border-b md:max-h-none md:w-[380px] md:border-r md:border-b-0">
+							<div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
+								<label className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 rounded-sm border px-2 py-1">
+									<Search className="size-3.5 shrink-0" />
+									<span className="sr-only">{t("agentLogs.trace.findSpan")}</span>
+									<input
+										type="search"
+										value={query}
+										onChange={(event) => setQuery(event.target.value)}
+										placeholder={t("agentLogs.trace.findSpan")}
+										className="text-foreground min-w-0 flex-1 bg-transparent text-xs outline-none"
+										data-testid="trace-viewer-find"
+									/>
+								</label>
+							</div>
+							<div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="tree" aria-label={t("agentLogs.trace.treeLabel")}>
+								{view === "timeline" && tree.durationMs > 0 && (
+									<div className="text-muted-foreground flex justify-end gap-12 px-2 pb-1 text-[10.5px] tabular-nums">
 										<span>0</span>
-										<span>{formatDuration(tree.durationMs / 2)}</span>
 										<span>{formatDuration(tree.durationMs)}</span>
 									</div>
-									{visibleRows.map((node) => (
-										<SpanRow
-											key={node.span.span_id}
-											node={node}
-											mode="timeline"
-											selected={selected?.span_id === node.span.span_id}
-											collapsed={collapsed.has(node.span.span_id)}
-											onToggle={() => toggle(node.span.span_id)}
-											onSelect={() => setSelectedId(node.span.span_id)}
-										/>
-									))}
-								</TabsContent>
-								<TabsContent value="thread" className="mt-0 min-h-0 flex-1 space-y-3 overflow-auto p-3">
-									{thread.length === 0 && <p className="text-muted-foreground text-sm">{t("tracing.viewer.noThread")}</p>}
-									{thread.map((message, index) => (
-										<button
-											key={`${message.spanId}-${index}`}
-											type="button"
-											data-testid={`trace-viewer-thread-message-${index}`}
-											onClick={() => setSelectedId(message.spanId)}
-											className={cn(
-												"block w-full rounded-md border p-3 text-left text-sm",
-												message.role === "user" ? "bg-muted/60" : "bg-background",
-												selected?.span_id === message.spanId && "border-primary",
-											)}
+								)}
+								{visibleRows.map((node) => {
+									const { span } = node;
+									const style = spanKindMeta(span.kind);
+									const Icon = style.icon;
+									const isSelected = selected?.span_id === span.span_id && view !== "thread";
+									const isOpen = !collapsed.has(span.span_id);
+									const usage = spanUsage(span);
+									return (
+										<div
+											key={span.span_id}
+											className="relative [contain-intrinsic-size:auto_40px] [content-visibility:auto]"
+											style={{ paddingLeft: node.depth * 16 }}
+											role="treeitem"
+											aria-selected={isSelected}
+											aria-expanded={node.children.length > 0 ? isOpen : undefined}
 										>
-											<div className="text-muted-foreground mb-1 text-[11px] font-medium tracking-wide uppercase">{message.role}</div>
-											<div className="break-words whitespace-pre-wrap">{message.text}</div>
-										</button>
-									))}
-								</TabsContent>
-							</Tabs>
+											{node.depth > 0 && (
+												<span className="bg-border absolute top-0 bottom-0 w-px" style={{ left: node.depth * 16 - 4 }} aria-hidden="true" />
+											)}
+											<div className={cn("flex items-center rounded-sm pr-1", isSelected ? "bg-muted" : "hover:bg-muted/60")}>
+												<button
+													type="button"
+													onClick={() => {
+														setSelectedId(span.span_id);
+														if (view === "thread") setView("spans");
+													}}
+													className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left"
+													data-testid={`trace-span-row-${span.span_id}`}
+												>
+													<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", style.tile)}>
+														<Icon className="size-3.5" />
+													</span>
+													<span className="flex min-w-0 flex-1 flex-col">
+														<span className="flex min-w-0 items-center gap-1.5">
+															<span className="truncate text-[13px] font-medium">{label(span)}</span>
+															{usage.linked && (
+																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																	{t("tracing.viewer.gatewayBadge")}
+																</span>
+															)}
+															{node.orphan && (
+																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																	{t("tracing.viewer.partial")}
+																</span>
+															)}
+															{span.status === "error" && (
+																<span className="bg-chart-error/10 text-chart-error-ink shrink-0 rounded-sm px-1 text-[10px] font-semibold uppercase">
+																	{t("agentLogs.trace.error")}
+																</span>
+															)}
+														</span>
+														<span className="text-muted-foreground truncate text-[11.5px] tabular-nums">{meta(node)}</span>
+													</span>
+													{view === "timeline" && (
+														<span className="relative h-1.5 w-20 shrink-0" aria-hidden="true">
+															<span
+																className={cn(
+																	"absolute inset-y-0 overflow-hidden rounded-r-[1.5px]",
+																	span.status === "error" ? "bg-chart-error" : style.bar,
+																)}
+																style={{ left: `${node.offset * 100}%`, width: `${Math.max(node.width * 100, 2)}%` }}
+															>
+																{/* The hatched share is the part of the prompt read from cache. */}
+																{usage.cachedShare > 0 && (
+																	<span
+																		className="block h-full opacity-60"
+																		style={{
+																			width: `${usage.cachedShare * 100}%`,
+																			backgroundImage:
+																				"repeating-linear-gradient(135deg, rgba(255,255,255,.75) 0 2px, transparent 2px 4px)",
+																		}}
+																	/>
+																)}
+															</span>
+														</span>
+													)}
+												</button>
+												{node.children.length > 0 && (
+													<button
+														type="button"
+														onClick={() => toggle(span.span_id)}
+														className="text-muted-foreground hover:text-foreground hover:bg-background flex size-7 shrink-0 items-center justify-center rounded-sm"
+														aria-label={t(isOpen ? "agentLogs.trace.collapse" : "agentLogs.trace.expand", { name: span.name })}
+														data-testid={`trace-span-toggle-${span.span_id}`}
+													>
+														{isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+													</button>
+												)}
+											</div>
+										</div>
+									);
+								})}
+								{query.trim() && visibleRows.length === 0 && (
+									<div className="text-muted-foreground px-2 py-1.5 text-xs">{t("agentLogs.trace.noMatches")}</div>
+								)}
+							</div>
 						</div>
-						<div className="min-w-0 flex-1 overflow-auto">
-							{selected ? (
-								<SpanDetail span={selected} detail={data} extras={renderSpanExtras?.(data, selected)} />
-							) : (
-								<div className="text-muted-foreground p-6 text-sm">{t("tracing.viewer.noSpans")}</div>
-							)}
+						<div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 md:p-5" data-testid="trace-viewer-detail">
+							{detail}
 						</div>
 					</div>
 				)}
 			</SheetContent>
 		</Sheet>
-	);
-}
-
-function SpanRow({
-	node,
-	mode,
-	selected,
-	collapsed,
-	onToggle,
-	onSelect,
-}: {
-	node: TraceTreeNode;
-	mode: "tree" | "timeline";
-	selected: boolean;
-	collapsed: boolean;
-	onToggle: () => void;
-	onSelect: () => void;
-}) {
-	const { span } = node;
-	const meta = spanKindMeta(span.kind);
-	const Icon = meta.icon;
-	const usage = spanUsage(span);
-	return (
-		<div
-			role="button"
-			tabIndex={0}
-			data-testid={`trace-span-row-${span.span_id}`}
-			onClick={onSelect}
-			onKeyDown={(event) => {
-				if (event.key === "Enter" || event.key === " ") {
-					event.preventDefault();
-					onSelect();
-				}
-			}}
-			className={cn("hover:bg-muted/60 flex cursor-pointer items-center gap-2 border-b px-2 py-1.5 text-sm", selected && "bg-muted")}
-		>
-			<div
-				className={cn("flex min-w-0 items-center gap-1", mode === "timeline" ? "w-[42%] shrink-0" : "flex-1")}
-				style={{ paddingLeft: node.depth * 14 }}
-			>
-				{node.children.length > 0 ? (
-					<button
-						type="button"
-						aria-label={collapsed ? "Expand" : "Collapse"}
-						data-testid={`trace-span-toggle-${span.span_id}`}
-						onClick={(event) => {
-							event.stopPropagation();
-							onToggle();
-						}}
-						className="text-muted-foreground hover:text-foreground shrink-0"
-					>
-						{collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-					</button>
-				) : (
-					<span className="w-3.5 shrink-0" />
-				)}
-				<Icon className={cn("h-3.5 w-3.5 shrink-0", meta.text)} />
-				<span className="truncate">{span.name || span.span_id}</span>
-				{span.status === "error" && <AlertCircle className="text-destructive h-3.5 w-3.5 shrink-0" />}
-				{usage.linked && <Link2 className="text-muted-foreground h-3 w-3 shrink-0" />}
-			</div>
-			{mode === "tree" ? (
-				<div className="text-muted-foreground flex shrink-0 items-center gap-3 text-xs tabular-nums">
-					{usage.tokens > 0 && <span>{formatTokens(usage.tokens)}</span>}
-					{usage.cost !== undefined && usage.cost !== null && (
-						<span>
-							{usage.estimated ? "~" : ""}
-							{formatCost(usage.cost)}
-						</span>
-					)}
-					<span className="w-14 text-right">{span.partial && !span.end_time ? "…" : formatDuration(span.duration_ms)}</span>
-				</div>
-			) : (
-				<div className="relative h-4 min-w-0 flex-1">
-					<div
-						className={cn("absolute top-0.5 h-3 min-w-[2px] rounded-[2px]", meta.bar, span.status === "error" && "bg-destructive")}
-						style={{ left: `${node.offset * 100}%`, width: `${Math.max(node.width * 100, 0.4)}%` }}
-					>
-						{/* The hatched share is the part of the prompt read from cache. */}
-						{usage.cachedShare > 0 && (
-							<div
-								className="h-full rounded-l-[2px] opacity-60"
-								style={{
-									width: `${usage.cachedShare * 100}%`,
-									backgroundImage: "repeating-linear-gradient(135deg, rgba(255,255,255,.75) 0 2px, transparent 2px 4px)",
-								}}
-							/>
-						)}
-					</div>
-				</div>
-			)}
-		</div>
 	);
 }
 
@@ -363,9 +564,46 @@ function ValueBlock({ label, value, testId }: { label: string; value?: string; t
 
 function Metric({ label, value }: { label: string; value: React.ReactNode }) {
 	return (
-		<div>
-			<div className="text-muted-foreground text-[11px]">{label}</div>
-			<div className="text-sm tabular-nums">{value}</div>
+		<div className="min-w-0">
+			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
+			<div className="mt-0.5 truncate font-mono text-[13px] tabular-nums">{value}</div>
+		</div>
+	);
+}
+
+/**
+ * A span's input and output. A message list reads as the conversation it is, as Agent Logs shows an
+ * operation: each message under its role, the reply last. Anything else is shown as JSON or text.
+ */
+function Conversation({ span }: { span: TraceSpan }) {
+	const { t } = useTranslation("observability");
+	const input = messagesOf(span.input);
+	const output = messagesOf(span.output);
+	if (input.length === 0 && output.length === 0) {
+		return (
+			<>
+				<ValueBlock label={t("tracing.columns.input")} value={span.input} testId="trace-span-input" />
+				<ValueBlock label={t("tracing.columns.output")} value={span.output} testId="trace-span-output" />
+			</>
+		);
+	}
+	const reply = output.length > 0 ? output : span.output ? [{ role: "assistant", text: span.output }] : [];
+	return (
+		<div className="flex flex-col gap-3" data-testid="trace-span-conversation">
+			{input.length === 0 && <ValueBlock label={t("tracing.columns.input")} value={span.input} testId="trace-span-input" />}
+			{[...input, ...reply].map((message, index) => (
+				<div key={index} className="flex flex-col gap-1">
+					<span className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{message.role}</span>
+					<div
+						className={cn(
+							"rounded-sm px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
+							message.role === "user" ? "bg-muted" : message.role === "system" ? "border border-dashed" : "border",
+						)}
+					>
+						{message.text}
+					</div>
+				</div>
+			))}
 		</div>
 	);
 }
@@ -387,17 +625,43 @@ function SpanDetail({
 	const scores = (detail.scores ?? []).filter((score) => (score.span_id || detail.trace.root_span_id) === span.span_id);
 	const model = span.link_snapshot?.model || span.model;
 	return (
-		<div className="space-y-4 p-4" data-testid="trace-span-detail">
-			<div className="flex flex-wrap items-center gap-2">
-				<Icon className={cn("h-4 w-4", meta.text)} />
-				<h3 className="font-medium">{span.name || span.span_id}</h3>
-				<Badge variant="outline">{span.kind}</Badge>
-				{model && <Badge variant="secondary">{model}</Badge>}
-				{span.status === "error" && <Badge variant="destructive">{t("tracing.viewer.error")}</Badge>}
-				{span.partial && <Badge variant="secondary">{t("tracing.viewer.partial")}</Badge>}
+		<div className="space-y-4" data-testid="trace-span-detail">
+			<div className="flex items-center justify-between gap-2">
+				<span className="text-sm font-medium first-letter:uppercase">
+					{t("tracing.viewer.spanHeading", { kind: span.kind === "llm" ? "LLM" : span.kind })}
+				</span>
+			</div>
+			{span.status === "error" && (
+				<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-xs font-medium">
+					<span className="bg-chart-error size-1.5 rounded-sm" aria-hidden="true" />
+					{t("tracing.viewer.error")}
+				</span>
+			)}
+			<div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-sm border p-4 sm:grid-cols-2" data-testid="trace-span-identity">
+				<div className="flex min-w-0 items-center gap-2 sm:col-span-2">
+					<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", meta.tile)}>
+						<Icon className="size-3.5" />
+					</span>
+					<span className="truncate font-medium">{span.name || span.span_id}</span>
+					{span.partial && <Badge variant="secondary">{t("tracing.viewer.partial")}</Badge>}
+				</div>
+				{(
+					[
+						[t("tracing.filters.spanKind"), span.kind],
+						[t("tracing.columns.model"), model],
+						[t("tracing.viewer.spanId"), span.span_id],
+						[t("tracing.viewer.parentSpan"), span.parent_span_id],
+						[t("filters.sessionID"), span.session_id],
+						[t("tracing.sessions.user"), span.user_id],
+					] as [string, string | undefined][]
+				)
+					.filter(([, value]) => value)
+					.map(([fieldLabel, value]) => (
+						<Metric key={fieldLabel} label={fieldLabel} value={value} />
+					))}
 			</div>
 
-			<div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-sm border p-4 md:grid-cols-4">
 				<Metric label={t("tracing.columns.duration")} value={formatDuration(span.duration_ms)} />
 				<Metric label={t("tracing.columns.tokens")} value={formatTokens(usage.tokens)} />
 				<Metric
@@ -468,8 +732,7 @@ function SpanDetail({
 				</TabsList>
 				<TabsContent value="details" className="space-y-4">
 					{span.error && <ValueBlock label={t("tracing.viewer.error")} value={span.error} testId="trace-span-error" />}
-					<ValueBlock label={t("tracing.columns.input")} value={span.input} testId="trace-span-input" />
-					<ValueBlock label={t("tracing.columns.output")} value={span.output} testId="trace-span-output" />
+					<Conversation span={span} />
 					<ValueBlock label={t("tracing.viewer.expected")} value={span.expected} testId="trace-span-expected" />
 					{scores.length > 0 && (
 						<section className="space-y-1">
