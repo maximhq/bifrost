@@ -1,4 +1,5 @@
 import { type MetricsState, metricsState } from "@/app/workspace/logs/views/metricStrip.utils";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { useGetDimensionRankingsQuery } from "@/lib/store/apis/logsApi";
 import { COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 import { dateUtils, type DimensionRankingEntry } from "@/lib/types/logs";
@@ -44,9 +45,14 @@ export function trafficLogsSearch(selection: TrafficSelection): { period?: strin
 	return { start_time: selection.start, end_time: selection.end };
 }
 
-// customRangeLabel names a custom range by its two dates, in the UI language.
-export function customRangeLabel(start: number, end: number, locale: string): string {
-	return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).formatRange(new Date(start * 1000), new Date(end * 1000));
+// customRangeLabel names a custom range by its two dates, in the UI language
+// and in the timezone the picker shows the range in, so the two never name
+// different days for a range that ends near midnight.
+export function customRangeLabel(start: number, end: number, locale: string, timezone: string): string {
+	return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: timezone }).formatRange(
+		new Date(start * 1000),
+		new Date(end * 1000),
+	);
 }
 
 // TrafficFilter is the period the Routers pages show traffic for, with what
@@ -58,6 +64,9 @@ export interface TrafficFilter {
 	dateRange: { from: Date; to: Date };
 	setPeriod: (period: string | undefined) => void;
 	setDateRange: (range: { from?: Date; to?: Date }) => void;
+	// The timezone the picker shows dates in, held here so a label of the same range reads them the same way.
+	timezone: string;
+	setTimezone: (timezone: string) => void;
 }
 
 // useTrafficFilter keeps the period in the URL, as the dashboard and logs
@@ -67,6 +76,7 @@ export interface TrafficFilter {
 // stays the same across renders with no date minted here.
 export function useTrafficFilter(): TrafficFilter {
 	const [url, setUrl] = useQueryStates({ period: parseAsString, start_time: parseAsInteger, end_time: parseAsInteger });
+	const [timezone, setTimezone] = useTimezonePreference();
 	const selection = useMemo(() => trafficSelection(url.period, url.start_time, url.end_time), [url.period, url.start_time, url.end_time]);
 	const window = useMemo(() => trafficWindow(selection), [selection]);
 	const dateRange = useMemo(
@@ -95,8 +105,8 @@ export function useTrafficFilter(): TrafficFilter {
 		[setUrl],
 	);
 	return useMemo(
-		() => ({ selection, window, dateRange, setPeriod, setDateRange }),
-		[selection, window, dateRange, setPeriod, setDateRange],
+		() => ({ selection, window, dateRange, setPeriod, setDateRange, timezone, setTimezone }),
+		[selection, window, dateRange, setPeriod, setDateRange, timezone, setTimezone],
 	);
 }
 

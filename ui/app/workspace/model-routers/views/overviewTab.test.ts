@@ -91,14 +91,15 @@ describe("trafficPeriodLabel", () => {
 	const t = (key: string) => `t(${key})`;
 
 	it("names a preset as the picker names it", () => {
-		expect(trafficPeriodLabel({ period: "7d" }, t)).toBe("t(timePeriods.7d)");
-		expect(trafficPeriodLabel({ period: "this_month" }, t)).toBe("t(timePeriods.this_month)");
+		expect(trafficPeriodLabel({ period: "7d" }, t, "UTC")).toBe("t(timePeriods.7d)");
+		expect(trafficPeriodLabel({ period: "this_month" }, t, "UTC")).toBe("t(timePeriods.this_month)");
 	});
 
-	it("names a custom range by its dates", () => {
-		const label = trafficPeriodLabel({ start: Date.UTC(2026, 2, 3, 12) / 1000, end: Date.UTC(2026, 2, 10, 12) / 1000 }, t);
-		expect(label).toContain("2026");
-		expect(label).not.toContain("t(");
+	it("names a custom range by its dates, in the picker's timezone", () => {
+		// 23:30 on March 3 to 00:30 on March 4 in Los Angeles, which is all March 4 in UTC.
+		const range = { start: Date.UTC(2026, 2, 4, 7, 30) / 1000, end: Date.UTC(2026, 2, 4, 8, 30) / 1000 };
+		expect(trafficPeriodLabel(range, t, "America/Los_Angeles")).toContain("Mar 3");
+		expect(trafficPeriodLabel(range, t, "UTC")).not.toContain("Mar 3");
 	});
 });
 

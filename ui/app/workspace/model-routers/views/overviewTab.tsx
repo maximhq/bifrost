@@ -77,9 +77,9 @@ export function overviewStatus(enabled: boolean, trafficState: MetricsState, req
 }
 
 // trafficPeriodLabel names the period the figures cover: a preset by the name
-// the picker gives it, a custom range by its two dates.
-export function trafficPeriodLabel(selection: TrafficSelection, t: (key: ParseKeys<"common">) => string): string {
-	if (selection.period === undefined) return customRangeLabel(selection.start, selection.end, getLocale());
+// the picker gives it, a custom range by its two dates in the picker's timezone.
+export function trafficPeriodLabel(selection: TrafficSelection, t: (key: ParseKeys<"common">) => string, timezone: string): string {
+	if (selection.period === undefined) return customRangeLabel(selection.start, selection.end, getLocale(), timezone);
 	const preset = TIME_PERIODS.find((period) => period.value === selection.period);
 	return preset ? t(preset.labelKey) : selection.period;
 }
@@ -124,7 +124,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficFilter, onNa
 	const cost = traffic?.cost ?? 0;
 	const metricState = trafficState;
 	const tiers = useRouterTierSplit(router.id, trafficFilter.window);
-	const periodLabel = trafficPeriodLabel(trafficFilter.selection, tc);
+	const periodLabel = trafficPeriodLabel(trafficFilter.selection, tc, trafficFilter.timezone);
 	const tierLine = tiers
 		?.map((entry) => t("metrics.tierCount", { tier: tcpx(TIER_LABEL_KEYS[entry.tier]), requests: formatCompactNumber(entry.requests) }))
 		.join(" · ");

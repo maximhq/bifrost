@@ -1,5 +1,4 @@
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
-import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { TIME_PERIODS } from "@/lib/utils/timeRange";
 import type { TrafficFilter } from "./useRouterTraffic";
 
@@ -12,7 +11,6 @@ interface TrafficPeriodPickerProps {
 // It is the date picker the dashboard and logs pages use, with their presets
 // and their timezone choice, so a period reads the same everywhere.
 export function TrafficPeriodPicker({ filter, testId }: TrafficPeriodPickerProps) {
-	const [timezone, setTimezone] = useTimezonePreference();
 	return (
 		<DateTimePickerWithRange
 			dateTime={filter.dateRange}
@@ -24,8 +22,8 @@ export function TrafficPeriodPicker({ filter, testId }: TrafficPeriodPickerProps
 			buttonClassName="h-9"
 			popupAlignment="end"
 			showTimezone
-			timezone={timezone}
-			onTimezoneChange={setTimezone}
+			timezone={filter.timezone}
+			onTimezoneChange={filter.setTimezone}
 		/>
 	);
 }

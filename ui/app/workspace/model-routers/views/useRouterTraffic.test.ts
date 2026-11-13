@@ -188,11 +188,20 @@ describe("trafficLogsSearch", () => {
 });
 
 describe("customRangeLabel", () => {
+	// The formatter sets its dash between thin spaces; the label is compared with plain ones.
+	const plain = (label: string) => label.replace(/\s+/g, " ");
+
 	test("names a range by its two dates", () => {
-		// Midday UTC on both ends, so the dates read the same in any test timezone.
-		const label = customRangeLabel(Date.UTC(2026, 2, 3, 12) / 1000, Date.UTC(2026, 2, 10, 12) / 1000, "en");
-		expect(label).toContain("Mar 3");
-		expect(label).toContain("10, 2026");
+		const label = customRangeLabel(Date.UTC(2026, 2, 3, 12) / 1000, Date.UTC(2026, 2, 10, 12) / 1000, "en", "UTC");
+		expect(plain(label)).toBe("Mar 3 – 10, 2026");
+	});
+
+	test("reads the dates in the picker's timezone, so a range across its midnight names both days", () => {
+		// 23:30 on March 3 to 00:30 on March 4 in Los Angeles, which is all March 4 in UTC.
+		const start = Date.UTC(2026, 2, 4, 7, 30) / 1000;
+		const end = Date.UTC(2026, 2, 4, 8, 30) / 1000;
+		expect(plain(customRangeLabel(start, end, "en", "America/Los_Angeles"))).toBe("Mar 3 – 4, 2026");
+		expect(plain(customRangeLabel(start, end, "en", "UTC"))).toBe("Mar 4, 2026");
 	});
 });
 
