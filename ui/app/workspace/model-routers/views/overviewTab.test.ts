@@ -25,6 +25,34 @@ describe("tiersWithModels", () => {
 	it("counts nothing for a router without targets", () => {
 		expect(tiersWithModels(router([]))).toBe(0);
 	});
+
+	it("counts nothing for a router the gateway sent no targets for", () => {
+		expect(tiersWithModels({} as unknown as ModelRouter)).toBe(0);
+	});
+
+	it("does not count a tier whose model is only spaces", () => {
+		expect(tiersWithModels(router([{ tier: "SIMPLE", provider: "openai", model: "  ", weight: 1 }]))).toBe(0);
+	});
+
+	it("counts a tier once any of its targets sets a model, and all three when each does", () => {
+		expect(
+			tiersWithModels(
+				router([
+					{ tier: "MEDIUM", provider: "anthropic", weight: 0.5 },
+					{ tier: "MEDIUM", model: "gpt-4o", weight: 0.5 },
+				]),
+			),
+		).toBe(1);
+		expect(
+			tiersWithModels(
+				router([
+					{ tier: "COMPLEX", model: "claude-opus", weight: 1 },
+					{ tier: "SIMPLE", model: "gpt-4o-mini", weight: 1 },
+					{ tier: "MEDIUM", model: "gpt-4o", weight: 1 },
+				]),
+			),
+		).toBe(3);
+	});
 });
 
 describe("overviewStatus", () => {
@@ -55,5 +83,44 @@ describe("classifierSummary", () => {
 
 	it("shows the decision model the router saves", () => {
 		expect(classifierSummary(decisionRouter({ provider: "openrouter", model: "jev-1.14.0" }), t).model).toBe("jev-1.14.0");
+	});
+
+	it("shows the gateway's default decision model for a block saved with only a model or only a provider", () => {
+		expect(classifierSummary(decisionRouter({ model: "jev-1.14.0" }), t).model).toBe(DEFAULT_DECISION_CONFIG.model);
+		expect(classifierSummary(decisionRouter({ provider: "openrouter" }), t).model).toBe(DEFAULT_DECISION_CONFIG.model);
+	});
+
+	it("names each classifier, with the model behind it", () => {
+		const semantic = { classifier: "semantic", semantic: { provider: "openai", embedding_model: "text-embedding-3-small" } };
+		const llm = { classifier: "llm", llm: { provider: "openai", model: "gpt-4o-mini" } };
+		expect(classifierSummary(semantic as unknown as ModelRouter, t)).toEqual({
+			name: "classifierNameSemantic",
+			model: "text-embedding-3-small",
+		});
+		expect(classifierSummary(llm as unknown as ModelRouter, t)).toEqual({ name: "classifierNameLlm", model: "gpt-4o-mini" });
+		expect(classifierSummary(decisionRouter(undefined), t).name).toBe("classifierNameDecision");
+	});
+
+	it("has no model to show for a semantic or llm classifier that is not set up yet", () => {
+		// The routers list shows "Not configured" in its place.
+		expect(classifierSummary({ classifier: "semantic" } as unknown as ModelRouter, t).model).toBeUndefined();
+		expect(classifierSummary({ classifier: "llm" } as unknown as ModelRouter, t).model).toBeUndefined();
+	});
+
+	it("does not show the llm fallback's model as a semantic router's classifier", () => {
+		const router = {
+			classifier: "semantic",
+			semantic: { provider: "openai", embedding_model: "text-embedding-3-small", fallback: "llm" },
+			llm: { provider: "openai", model: "gpt-4o-mini" },
+		};
+		expect(classifierSummary(router as unknown as ModelRouter, t)).toEqual({
+			name: "classifierNameSemantic",
+			model: "text-embedding-3-small",
+		});
+	});
+
+	it("reads a router saved before classifiers had a name as semantic", () => {
+		const legacy = { semantic: { provider: "openai", embedding_model: "text-embedding-3-small" } };
+		expect(classifierSummary(legacy as unknown as ModelRouter, t).name).toBe("classifierNameSemantic");
 	});
 });

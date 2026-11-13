@@ -306,6 +306,23 @@ test.describe('Routers', () => {
   })
 
   test('should point the Complexity Router page at Routers', async ({ page }) => {
+    // The Complexity Router page reads its own saved config and classifier
+    // status, which are mocked like the routers so the notice does not depend
+    // on what the gateway holds.
+    await page.route(
+      (url) => url.pathname === '/api/routing/complexity-analyzer-config',
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        await route.fulfill({ json: { classifier: 'semantic', keywords: KEYWORDS } })
+      },
+    )
+    await page.route(
+      (url) => url.pathname === '/api/routing/complexity-analyzer-status',
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        await route.fulfill({ json: { state: 'ready', loaded: 3, total: 3, cached_phrases: 3 } })
+      },
+    )
     await page.goto('/workspace/complexity-router')
     await expect(page.getByTestId('complexity-router-routers-notice')).toBeVisible()
     await page.getByTestId('complexity-router-routers-notice-link').click()
