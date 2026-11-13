@@ -8,6 +8,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -646,6 +647,27 @@ func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	// Revoking an already-revoked grant reports not-found.
 	assert.ErrorIs(t, s.RevokeOAuth2Session(ctx, "rt-dead"), ErrNotFound)
+}
+
+// TestGetOAuth2SessionByID_HonorsSessionScope pins that the per-id session lookup (used to
+// gate revoke) accepts the same row scope as the list, which filters on the "rt" alias.
+func TestGetOAuth2SessionByID_HonorsSessionScope(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	mine := makeRefreshToken("rt-mine", "f1", "client-1", "h-mine")
+	mine.BfMode, mine.BfSub = "user", "user-a"
+	theirs := makeRefreshToken("rt-theirs", "f2", "client-1", "h-theirs")
+	theirs.BfMode, theirs.BfSub = "user", "user-b"
+	require.NoError(t, s.DB().Create(mine).Error)
+	require.NoError(t, s.DB().Create(theirs).Error)
+
+	ctx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("rt.bf_mode = ? AND rt.bf_sub = ?", "user", "user-a")
+	})
+	got, err := s.GetOAuth2SessionByID(ctx, "rt-mine")
+	require.NoError(t, err)
+	assert.Equal(t, "user-a", got.BfSub)
+	_, err = s.GetOAuth2SessionByID(ctx, "rt-theirs")
+	assert.ErrorIs(t, err, ErrNotFound, "another user's session is out of scope")
 }
 
 // A Client ID Metadata Document client has no oauth2_clients row: its grant lists, and is found by, the

@@ -10953,7 +10953,8 @@ func (s *RDBConfigStore) RevokeOAuth2Session(ctx context.Context, id string) err
 // Returns ErrNotFound when the ID does not exist or is already revoked.
 func (s *RDBConfigStore) GetOAuth2SessionByID(ctx context.Context, id string) (*tables.TableOAuth2RefreshToken, error) {
 	var rt tables.TableOAuth2RefreshToken
-	err := s.ScopedDB(ctx).Where("id = ? AND revoked_at IS NULL", id).First(&rt).Error
+	// Aliased like ListOAuth2Sessions: an enterprise row scope filters on rt.*.
+	err := s.ScopedDB(ctx).Table("oauth2_refresh_tokens rt").Where("rt.id = ? AND rt.revoked_at IS NULL", id).First(&rt).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
