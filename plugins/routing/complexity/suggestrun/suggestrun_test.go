@@ -390,11 +390,10 @@ func TestRunFailures(t *testing.T) {
 	assert.Equal(t, logstore.ComplexitySuggestionRunFailed, runs[0].Status)
 }
 
-// cancellingLLM cancels the run's context on its first call, as a user's
-// cancel reaching the run mid-way would.
-// cancellingLLM ends the run's context from inside a model call. With plain
-// set it answers as the gateway's model adapters do, with an error formatted
-// from the cancellation that no longer wraps it.
+// cancellingLLM ends the run's context on its first model call, as a user's
+// cancel reaching the run mid-way would. With plain set it answers as the
+// gateway's model adapters do, with an error formatted from the cancellation
+// that no longer wraps it.
 type cancellingLLM struct {
 	cancel context.CancelFunc
 	plain  bool
@@ -409,17 +408,22 @@ func (l cancellingLLM) CompleteJSON(ctx context.Context, _ []suggest.Message) (s
 }
 
 // A run whose context ends is recorded as cancelled when a user cancelled it,
-// and as failed otherwise, whatever error the model call it ended returned.
+// and as failed otherwise, whatever error the stage it ended returned: a
+// model call's, or a backfill's from the Weaviate client, neither of which
+// wraps context.Canceled.
 func TestRunStoppedByItsContext(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		cancelled bool
 		plain     bool
+		opaque    bool
 		status    string
 	}{
-		{"cancelled by a user", true, false, logstore.ComplexitySuggestionRunCancelled},
-		{"cancelled by a user while a model call fails with its own error", true, true, logstore.ComplexitySuggestionRunCancelled},
-		{"stopped for another reason", false, false, logstore.ComplexitySuggestionRunFailed},
+		{"cancelled by a user", true, false, false, logstore.ComplexitySuggestionRunCancelled},
+		{"cancelled by a user while a model call fails with its own error", true, true, false, logstore.ComplexitySuggestionRunCancelled},
+		{"stopped for another reason", false, false, false, logstore.ComplexitySuggestionRunFailed},
+		{"cancelled by a user while backfilling, behind an opaque error", true, false, true, logstore.ComplexitySuggestionRunCancelled},
+		{"stopped while backfilling for another reason, behind an opaque error", false, false, true, logstore.ComplexitySuggestionRunFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
@@ -430,12 +434,21 @@ func TestRunStoppedByItsContext(t *testing.T) {
 			defer cancel()
 			s := settings("stopped", now)
 			s.Cancelled = func(context.Context) bool { return tc.cancelled }
+			if tc.opaque {
+				s.Backfill = func(ctx context.Context, _, _ time.Time) (int, error) {
+					cancel()
+					return 0, fmt.Errorf("read captured requests: status code: -1: %s", ctx.Err())
+				}
+			}
 
 			result, err := Run(ctx, space, store, texts, cancellingLLM{cancel: cancel, plain: tc.plain}, s)
-			if tc.cancelled {
+			switch {
+			case tc.cancelled:
 				require.NoError(t, err, "a cancel is not a failure")
 				assert.Empty(t, result.Run.Error)
-			} else {
+			case tc.opaque:
+				require.Error(t, err)
+			default:
 				require.ErrorIs(t, err, context.Canceled)
 			}
 			runs, err := store.ListComplexitySuggestionRuns(context.Background(), logstore.ComplexitySuggestionRunFilter{IDs: []string{"stopped"}}, 1)

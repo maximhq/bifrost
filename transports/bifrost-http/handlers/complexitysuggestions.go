@@ -343,7 +343,7 @@ func (h *RoutingHandler) updateComplexitySuggestionStatus(ctx *fasthttp.RequestC
 		return
 	}
 	if !complexitySuggestionTransitionAllowed(row.Status, req.Status) {
-		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("a %s suggestion cannot be marked %q", row.Status, req.Status))
+		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%s %s suggestion cannot be marked %q", suggestionStatusArticle(row.Status), row.Status, req.Status))
 		return
 	}
 	before := row.Status
@@ -885,6 +885,15 @@ func validComplexitySuggestionStatus(status string) bool {
 		return true
 	}
 	return false
+}
+
+// suggestionStatusArticle is the article a status takes in a sentence: "an"
+// before a vowel (open, accepted), "a" otherwise.
+func suggestionStatusArticle(status string) string {
+	if status != "" && strings.ContainsRune("aeiou", rune(status[0])) {
+		return "an"
+	}
+	return "a"
 }
 
 // complexitySuggestionTransitionAllowed is the user's part of a suggestion's
