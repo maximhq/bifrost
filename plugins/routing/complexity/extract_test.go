@@ -853,3 +853,26 @@ func complexityResponsesTextBlock(text string) schemas.ResponsesMessageContentBl
 func complexityResponsesOutputTextBlock(text string) schemas.ResponsesMessageContentBlock {
 	return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: &text}
 }
+
+// A logged request reads back as the text classification embedded: the same
+// history window, and the harness clean-up its user agent selected.
+func TestLoggedInputTextMatchesWhatClassificationEmbedded(t *testing.T) {
+	chat := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: complexityChatString("You are helpful")},
+		{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+		{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("<system-reminder>Use the repository instructions</system-reminder>")},
+	}
+	assert.Equal(t, "Explain vector clocks", LoggedInputText(chat, nil, schemas.ClaudeCLI.String(), 1),
+		"Claude Code's context block is stripped, as classification strips it")
+	assert.Equal(t, "<system-reminder>Use the repository instructions</system-reminder>", LoggedInputText(chat, nil, "curl/8.0", 1),
+		"without the harness user agent the block is the human turn, as it was when classified")
+
+	userRole := schemas.ResponsesInputMessageRoleUser
+	responses := []schemas.ResponsesMessage{
+		{Role: &userRole, Content: complexityResponsesString("Explain vector clocks")},
+		{Role: &userRole, Content: complexityResponsesString("Compare them to Lamport clocks")},
+	}
+	assert.Equal(t, "Explain vector clocks\nCompare them to Lamport clocks", LoggedInputText(nil, responses, "", 2))
+	assert.Equal(t, "Compare them to Lamport clocks", LoggedInputText(nil, responses, "", 1))
+	assert.Empty(t, LoggedInputText(nil, nil, "", 1), "a log with no history has no text")
+}
