@@ -158,6 +158,28 @@ func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.Bifrost
 	}
 }
 
+// LoggedInputText rebuilds the text the semantic classifier embedded for a
+// request from what its log kept: the input history in either the chat or the
+// Responses shape, and the caller's user agent, which selects the same harness
+// clean-up classification applied. It is what phrase suggestions show the
+// suggestion model for a captured request, whose vector was stored without
+// its text. Empty when the history holds no human turn.
+func LoggedInputText(chat []schemas.ChatMessage, responses []schemas.ResponsesMessage, userAgent string, messageHistoryCount int) string {
+	harness := complexityHarnessForUserAgent(userAgent)
+	var input ComplexityInput
+	var ok bool
+	switch {
+	case len(chat) > 0:
+		input, ok = extractFromChatMessages(chat, harness)
+	case len(responses) > 0:
+		input, ok = extractFromResponsesRequest(&schemas.BifrostResponsesRequest{Input: responses}, harness)
+	}
+	if !ok {
+		return ""
+	}
+	return SemanticInputText(input, messageHistoryCount)
+}
+
 // chatHasTrailingContinuation distinguishes a fresh human turn from a tool or
 // assistant continuation that merely replays an older human message in the
 // request history. Context-only harness fragments and system instructions do
@@ -516,7 +538,12 @@ func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 		headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 		userAgent = headers["user-agent"]
 	}
+	return complexityHarnessForUserAgent(userAgent)
+}
 
+// complexityHarnessForUserAgent names the coding harness a user agent belongs
+// to.
+func complexityHarnessForUserAgent(userAgent string) complexityHarness {
 	switch {
 	case schemas.ClaudeCLI.Matches(userAgent):
 		return complexityHarnessClaudeCode

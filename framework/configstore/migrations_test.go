@@ -5876,3 +5876,12 @@ func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
 
 	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
 }
+
+// TestMigrationAddModelRoutersTable pins that the migration creates the
+// model_routers table and is safe to run again.
+func TestMigrationAddModelRoutersTable(t *testing.T) {
+	db := setupComplexityExemplarMigrationDB(t)
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger))
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
+	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
+}
