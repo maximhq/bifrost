@@ -53,6 +53,7 @@ The following table summarizes which operations are supported by each provider v
 | TypeSafe (`typesafe/<model>`)       | ✅     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     | ✅        | ❌     | ❌     | ❌     | ❌     | ❌     | ❌     |
 | Vertex AI (`vertex/<model>`)         | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ✅         | ❌                  | ❌              | ✅         | ✅  | ✅           | ❌  | ❌           | ❌    | ❌    | ✅           | ✅     | ❌     | ❌  | ✅    | ❌          | ❌         | ✅          | ✅                   |
 | vLLM (`vllm/<model>`)                | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ✅  | ✅           | ❌    | ❌    | ❌           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| Voyage AI (`voyage/<model>`)         | ❌     | ❌   | ❌            | ❌   | ❌            | ❌        | ❌                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Wafer (`wafer/<model>`)              | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ✅    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | xAI (`xai/<model>`)                  | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 
@@ -108,6 +109,9 @@ The "Embeddings" column above covers text. The `/v1/embeddings` endpoint also ac
 | Bedrock `amazon.nova-2-multimodal-embeddings-v1:0` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | inline, `s3://` |
 | OpenAI, Azure, Mistral, Parasail and other OpenAI-compatible | ✅ (+ tokens) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
 | Hugging Face | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| Voyage `voyage-multimodal-3.5` | ✅ | ✅ | ❌ | ✅ (MP4) | ❌ | ✅ | ❌ | inline (data URL), `https://` |
+| Voyage `voyage-multimodal-3` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline (data URL), `https://` |
+| Voyage text and contextualized models | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
 | BytePlus `skylark-embedding-vision-251215` | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ (one call per entry) | ✅ | inline, `https://` |
 
 Notes:

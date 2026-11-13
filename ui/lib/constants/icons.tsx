@@ -1026,6 +1026,24 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	voyage: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 104 104"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Voyage AI</title>
+				<circle cx="52" cy="52" r="52" fill="#001E2B" />
+				<path d="M26 32h13l13 34 13-34h13L58 76H46L26 32Z" fill="white" />
+			</svg>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

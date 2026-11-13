@@ -1,0 +1,206 @@
+---
+title: "Voyage AI"
+description: "Voyage AI conversion guide - text, contextualized and multimodal embeddings, reranking, explicit model names, and usage-based billing"
+icon: "v"
+---
+
+## Overview
+
+[Voyage AI](https://www.voyageai.com) serves retrieval models: text embeddings, contextualized chunk embeddings, multimodal embeddings and rerankers. Bifrost talks to the Voyage REST API directly. Key characteristics:
+
+- **Embeddings** - `/v1/embeddings` for text models, `/v1/contextualizedembeddings` for `voyage-context-*`, `/v1/multimodalembeddings` for `voyage-multimodal-*`. Bifrost picks the endpoint from the model name; clients always call `/v1/embeddings`.
+- **Rerank** - `/v1/rerank` for `rerank-*` models, called through Bifrost's `/v1/rerank`.
+- **No default model** - every request must name its model. A missing model, an unknown model, another provider's model, or a model of the wrong kind (for example a reranker sent to `/v1/embeddings`) is rejected with a 400 before anything reaches Voyage.
+- **Fail-closed billing** - a Voyage response without a usage block is turned into an error instead of being priced at zero.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Rerank | ✅ | - | `/v1/rerank` |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| List Models | ❌ | - | - |
+| Text Completions, Images, Speech, Transcriptions, Files, Batch | ❌ | ❌ | - |
+
+<Note>
+Everything else returns `UnsupportedOperationError`. Voyage has no model listing endpoint, so **List Models** is not available; the model catalog supplies the models.
+</Note>
+
+## Setup & Configuration
+
+Bifrost calls `https://api.voyageai.com` by default and sends the key as a bearer token. Create a key in the [Voyage dashboard](https://dashboard.voyageai.com).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Voyage AI** under **Configured Providers**. If it is missing, click **Add New Provider** and select **Voyage AI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.VOYAGE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "voyage": {
+      "keys": [
+        {
+          "name": "voyage-key-1",
+          "value": "env.VOYAGE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Voyage:
+    return []schemas.Key{{
+        Name:   "voyage-key-1",
+        Value:  *schemas.NewSecretVar("env.VOYAGE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Models
+
+Model names are matched exactly; Bifrost serves these and nothing else. Prices are Voyage's list prices per 1M tokens (as of 2026-11-12), shown for reference: Bifrost takes costs from the model catalog.
+
+| Model | Kind | Dimensions | Context | Quantized output | Price |
+|-------|------|-----------|---------|------------------|-------|
+| `voyage-4-large` | text | 1024 (default), 2048, 512, 256 | 32K | ✅ | $0.12 |
+| `voyage-4` | text | same | 32K | ✅ | $0.06 |
+| `voyage-4-lite` | text | same | 32K | ✅ | $0.02 |
+| `voyage-code-4` | text (code) | same | 32K | ✅ | $0.12 |
+| `voyage-3-large` | text | same | 32K | ✅ | $0.18 |
+| `voyage-3.5` | text | same | 32K | ✅ | $0.06 |
+| `voyage-3.5-lite` | text | same | 32K | ✅ | $0.02 |
+| `voyage-code-3` | text (code) | same | 32K | ✅ | $0.18 |
+| `voyage-finance-2` | text (finance) | 1024 | 32K | ❌ | $0.12 |
+| `voyage-law-2` | text (legal) | 1024 | 16K | ❌ | $0.12 |
+| `voyage-context-4` | contextualized | 1024 (default), 2048, 512, 256 | 32K | ❌ | $0.12 |
+| `voyage-context-3` | contextualized | same | 32K | ❌ | $0.18 |
+| `voyage-multimodal-3.5` | multimodal (text, image, video) | 1024 (default), 2048, 512, 256 | 32K | ❌ | $0.12 text, $0.60 per 1B pixels |
+| `voyage-multimodal-3` | multimodal (text, image) | 1024 | 32K | ❌ | $0.12 text, $0.60 per 1B pixels |
+| `rerank-3` | rerank | - | - | - | $0.05 |
+| `rerank-3-lite` | rerank | - | - | - | $0.02 |
+| `rerank-2.5` | rerank | - | - | - | $0.05 |
+| `rerank-2.5-lite` | rerank | - | - | - | $0.02 |
+
+A request carries at most 1,000 inputs. The total tokens per request are capped by Voyage: 1M for `*-lite` models, 320K for `voyage-4` and `voyage-3.5`, 120K for the other text models. `voyage-code-4` has no documented cap.
+
+---
+
+# 2. Text Embeddings
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voyage/voyage-4",
+    "input": ["First passage", "Second passage"],
+    "input_type": "document",
+    "dimensions": 512
+  }'
+```
+
+| Bifrost parameter | Voyage field | Notes |
+|-------------------|--------------|-------|
+| `dimensions` | `output_dimension` | Sent only when set. Must be one of the model's dimensions. |
+| `input_type` (extra param) | `input_type` | `query` or `document`; omitted when not given. |
+| `auto_truncate` or `truncation` (extra param) | `truncation` | Voyage truncates by default. |
+| `encoding_format` | `output_dtype` / `encoding_format` | `float`, `int8`, `uint8`, `binary`, `ubinary` select the dtype; `base64` selects base64 transport. `output_dtype` (extra param) sets the dtype next to `base64`. |
+
+Every input item must be a single text part, and items cannot carry their own params. Quantized dtypes are returned as integer arrays labelled with `encoding_format`.
+
+---
+
+# 3. Contextualized Embeddings
+
+`voyage-context-4` and `voyage-context-3` embed each chunk of a document in the context of the whole document. `input_type` is required.
+
+- **`document`**: each input item is one whole document as a single text part. Bifrost sends a flat list of strings with `enable_auto_chunking: true` and `chunk_size: 32000`, and Voyage splits the documents. Auto-chunking only works on a flat list of strings and only for `document`, so a pre-chunked document (several parts in one item) is rejected. Each entry of `data` is one document with a 2D `embedding` (one vector per chunk) and `chunks`, the chunk texts in the same order.
+- **`query`**: each item is one query, sent as its own single-query list with no chunking. Each entry carries one flat vector and no `chunks`.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voyage/voyage-context-4",
+    "input": ["A long document ..."],
+    "input_type": "document"
+  }'
+```
+
+Only float vectors are returned, and `truncation` is not a parameter of this endpoint.
+
+---
+
+# 4. Multimodal Embeddings
+
+`voyage-multimodal-3.5` and `voyage-multimodal-3` take text, image and (3.5 only) video parts; an input item is one ordered mix of parts and yields one vector.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voyage/voyage-multimodal-3.5",
+    "input": [[
+      {"type": "text", "text": "A yellow banana"},
+      {"type": "image", "image": {"url": "https://example.com/banana.jpg"}}
+    ]],
+    "input_type": "document"
+  }'
+```
+
+- Images are PNG, JPEG, WebP or GIF; videos are MP4. Base64 media is sent as a data URL; give `mime_type` or a `data:` URL, since a bare base64 string cannot be typed.
+- One request takes media by URL or by base64, not both.
+- Audio, file and token parts are rejected, and so is `video_config`.
+- `encoding_format: "base64"` maps to `output_encoding`. Quantized dtypes are not available.
+
+Usage: `prompt_tokens` is Voyage's `text_tokens`, `prompt_tokens_details.image_tokens` is the token equivalent of image and video pixels (560 image pixels or 1,120 video pixels per token), and `total_tokens` is Voyage's total. Voyage prices media per pixel, while Bifrost's embedding cost covers `prompt_tokens` only. The text part of a multimodal request is costed; the media part is not, so a request with only images or video is logged without a cost. Per-pixel costing is not implemented.
+
+---
+
+# 5. Rerank
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "voyage/rerank-3",
+    "query": "Which animal barks?",
+    "documents": ["A cat", "A dog", "A bird"],
+    "top_n": 2,
+    "return_documents": true
+  }'
+```
+
+`top_n` maps to `top_k`. `return_documents` is forwarded, and the returned documents are rebuilt from the request by index, so `id` and `meta` come back intact. Voyage ranks text only: a document with no `text` is rejected. Results are sorted by `relevance_score`. At most 1,000 documents per request. Billed tokens are reported as `usage.prompt_tokens`.
+
+---
+
+# 6. Errors
+
+Voyage returns `{"detail": "<message>"}` on failure; Bifrost surfaces the text as the error message with Voyage's status code. Requests that can never succeed are rejected with a 400 before they are sent.
