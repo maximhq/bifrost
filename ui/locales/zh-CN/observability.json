@@ -1924,6 +1924,10 @@
 		"overCounted": "测量的耗时总和（{{measured}}）超过计算的额外开销（{{overhead}}），上游累加器可能重复计数。"
 	},
 	"tracing": {
+		"experiments": {
+			"hint": "Braintrust experiments and Langfuse dataset runs. Scores are the mean across each experiment's traces.",
+			"filtered": "Showing experiment {{experiment}}"
+		},
 		"evals": {
 			"addToDataset": "Add to dataset",
 			"chooseDataset": "Choose a dataset",
@@ -2013,7 +2017,8 @@
 			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
-			"sessions": "Trace sessions"
+			"sessions": "Trace sessions",
+			"experiments": "Experiments"
 		},
 		"columns": {
 			"timestamp": "Time",

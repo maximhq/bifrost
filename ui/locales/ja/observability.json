@@ -1923,6 +1923,10 @@
 		"overCounted": "計測されたスパン（{{measured}}）が算出されたオーバーヘッド（{{overhead}}）を超えています。アップストリームのアキュムレーターが過剰にカウントしている可能性があります。"
 	},
 	"tracing": {
+		"experiments": {
+			"hint": "Braintrust experiments and Langfuse dataset runs. Scores are the mean across each experiment's traces.",
+			"filtered": "Showing experiment {{experiment}}"
+		},
 		"evals": {
 			"addToDataset": "Add to dataset",
 			"chooseDataset": "Choose a dataset",
@@ -2012,7 +2016,8 @@
 			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
-			"sessions": "Trace sessions"
+			"sessions": "Trace sessions",
+			"experiments": "Experiments"
 		},
 		"columns": {
 			"timestamp": "Time",

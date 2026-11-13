@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -503,4 +504,83 @@ func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
 	status, all := send("GET", "/tracing/langfuse/api/public/v2/datasets", lf, "")
 	require.Equal(t, fasthttp.StatusOK, status)
 	assert.Len(t, all["data"].([]any), 2)
+}
+
+// TestExperimentsAreListedWithTheirSummaries pins experiments end to end: a Langfuse dataset run
+// tags its traces and is recorded by name, a repeat run item does not duplicate it, and the
+// dashboard lists each experiment with the scores, tokens and cost of its own traces.
+func TestExperimentsAreListedWithTheirSummaries(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	env.ingest.SetDatasetService(datasets.NewService(env.config, nil))
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
+	projectID := project.Project.ID
+	var key struct {
+		Value string `json:"value"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{projectID}, "default_project_id": projectID, "can_use_datasets": true}, &key))
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+key.Value))
+	send := func(method, uri, body string) (int, map[string]any) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(method)
+		reqCtx.Request.SetRequestURI(uri)
+		reqCtx.Request.Header.Set("Authorization", auth)
+		reqCtx.Request.SetBody([]byte(body))
+		env.router.Handler(reqCtx)
+		var decoded map[string]any
+		_ = sonic.Unmarshal(reqCtx.Response.Body(), &decoded)
+		return reqCtx.Response.StatusCode(), decoded
+	}
+
+	for i, score := range []string{"1", "0.5"} {
+		trace := "tr-" + strconv.Itoa(i)
+		batch := `{"batch":[
+			{"id":"a` + trace + `","type":"trace-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"` + trace + `","name":"case","input":"q","output":"a"}},
+			{"id":"b` + trace + `","type":"generation-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"g-` + trace + `","traceId":"` + trace + `","startTime":"2026-11-12T10:00:00Z","endTime":"2026-11-12T10:00:02Z","usage":{"input":8,"output":2,"total":10},"costDetails":{"total":0.001}}},
+			{"id":"c` + trace + `","type":"score-create","timestamp":"2026-11-12T10:00:03Z","body":{"traceId":"` + trace + `","name":"exact","value":` + score + `}}
+		]}`
+		status, _ := send("POST", "/tracing/langfuse/api/public/ingestion", batch)
+		require.Equal(t, fasthttp.StatusMultiStatus, status)
+		status, item := send("POST", "/tracing/langfuse/api/public/dataset-run-items", `{"runName":"nightly","datasetItemId":"item-`+trace+`","traceId":"`+trace+`","datasetName":"golden"}`)
+		require.Equal(t, fasthttp.StatusOK, status)
+		assert.Equal(t, "nightly", item["datasetRunName"])
+		for _, required := range []string{"id", "datasetRunId", "datasetItemId", "traceId", "createdAt", "updatedAt"} {
+			assert.Contains(t, item, required)
+		}
+	}
+	status, _ := send("POST", "/tracing/langfuse/api/public/dataset-run-items", `{"datasetItemId":"x"}`)
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+	require.NoError(t, env.service.FlushRollups(ctx))
+
+	tagged, err := env.store.SearchTraces(ctx, logstore.TraceFilters{ProjectIDs: []string{projectID}}, logstore.PaginationOptions{})
+	require.NoError(t, err)
+	require.Len(t, tagged.Traces, 2)
+	assert.NotEmpty(t, tagged.Traces[0].ExperimentID, "the run item tagged its trace with the run")
+	spans, err := env.store.ListTraceSpans(ctx, projectID, "tr-0")
+	require.NoError(t, err)
+	assert.Len(t, spans, 2, "tagging a trace adds no span to it")
+
+	var listed struct {
+		Experiments []struct {
+			ID          string                 `json:"id"`
+			Name        string                 `json:"name"`
+			Source      string                 `json:"source"`
+			DatasetName string                 `json:"dataset_name"`
+			Summary     TraceExperimentSummary `json:"summary"`
+		} `json:"experiments"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "GET", "/api/traces/experiments?project_ids="+projectID, nil, &listed))
+	require.Len(t, listed.Experiments, 1, "two run items of one run are one experiment")
+	experiment := listed.Experiments[0]
+	assert.Equal(t, "nightly", experiment.Name)
+	assert.Equal(t, logstore.TraceSourceLangfuse, experiment.Source)
+	assert.Equal(t, "golden", experiment.DatasetName)
+	assert.Equal(t, 2, experiment.Summary.TraceCount)
+	assert.InDelta(t, 0.75, experiment.Summary.Scores["exact"], 1e-9)
+	assert.Equal(t, 20, experiment.Summary.TotalTokens)
+	assert.InDelta(t, 0.002, experiment.Summary.TotalCost, 1e-9)
+	assert.Equal(t, tagged.Traces[0].ExperimentID, experiment.ID)
 }

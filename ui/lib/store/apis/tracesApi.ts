@@ -2,6 +2,7 @@ import type {
 	TraceComment,
 	TraceConnectInfo,
 	TraceDetail,
+	TraceExperiment,
 	TraceFilters,
 	TraceHistogramResponse,
 	TracePagination,
@@ -95,6 +96,12 @@ export const tracesApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Traces"],
 		}),
+		getTraceExperiments: builder.query<{ experiments: TraceExperiment[] | null }, { projectIds?: string[] }>({
+			query: ({ projectIds }) => ({
+				url: `/traces/experiments${projectIds && projectIds.length > 0 ? `?project_ids=${projectIds.map(encodeURIComponent).join(",")}` : ""}`,
+			}),
+			providesTags: ["Traces"],
+		}),
 		getTraceConnectInfo: builder.query<TraceConnectInfo, void>({
 			query: () => ({ url: "/traces/connect" }),
 		}),
@@ -143,6 +150,7 @@ export const {
 	useGetTraceHistogramQuery,
 	useGetTraceQuery,
 	useGetTraceConnectInfoQuery,
+	useGetTraceExperimentsQuery,
 	useDeleteTraceMutation,
 	useSaveTraceScoreMutation,
 	useDeleteTraceScoreMutation,

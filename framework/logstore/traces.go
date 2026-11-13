@@ -431,6 +431,21 @@ type TraceDirtyMark struct {
 
 func (TraceDirtyMark) TableName() string { return "trace_dirty_marks" }
 
+// TraceExperiment is an experiment an SDK registered: a Braintrust experiment or a Langfuse dataset
+// run. Its traces are the spans that carry its id. The row keeps what the id alone cannot: the name.
+type TraceExperiment struct {
+	ProjectID   string     `gorm:"primaryKey;type:varchar(128)" json:"project_id"`
+	ID          string     `gorm:"primaryKey;type:varchar(128)" json:"id"`
+	Name        string     `gorm:"type:varchar(255);not null" json:"name"`
+	Source      string     `gorm:"type:varchar(32);not null" json:"source"`
+	DatasetName string     `gorm:"type:varchar(255)" json:"dataset_name,omitempty"`
+	Description string     `gorm:"type:text" json:"description,omitempty"`
+	CreatedAt   time.Time  `gorm:"not null" json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+}
+
+func (TraceExperiment) TableName() string { return "trace_experiments" }
+
 // traceModels lists every trace table, in creation order.
 func traceModels() []any {
 	return []any{&TraceSpanPart{}, &TraceSpan{}, &TraceSpanLink{}, &Trace{}, &TraceScore{}, &TraceComment{}, &TraceUpload{}, &TraceDirtyMark{}}
@@ -482,6 +497,10 @@ type TraceStore interface {
 	CompleteTraceUploadRow(ctx context.Context, upload *TraceUpload) error
 	ReadTraceUploadBytes(ctx context.Context, id string) (*TraceUpload, []byte, error)
 	DeleteTraces(ctx context.Context, keys []TraceKey) error
+	// Experiments registered by SDKs.
+	RegisterTraceExperiment(ctx context.Context, experiment *TraceExperiment) error
+	FindTraceExperiment(ctx context.Context, projectID, id string) (*TraceExperiment, error)
+	ListTraceExperiments(ctx context.Context, projectIDs []string, limit int) ([]*TraceExperiment, error)
 	// UpdateTraceSpanEnrichment writes what the matcher and the cost resolver add to a span.
 	UpdateTraceSpanEnrichment(ctx context.Context, projectID, traceID, spanID string, enrichment TraceSpanEnrichment) error
 	// Gateway rows a span can be linked to.
@@ -1291,4 +1310,43 @@ func (s *RDBLogStore) FindGatewayCallChain(ctx context.Context, logKind string, 
 	err := s.db.WithContext(ctx).Table("logs").Select(gatewayLLMCallColumns).
 		Where("id IN ? OR parent_request_id IN ?", ids, ids).Order("timestamp ASC").Limit(gatewayCallLimit).Scan(&calls).Error
 	return calls, err
+}
+
+// RegisterTraceExperiment records an experiment. Registering one that exists keeps the stored row:
+// an SDK registers its experiment on every run of a script.
+func (s *RDBLogStore) RegisterTraceExperiment(ctx context.Context, experiment *TraceExperiment) error {
+	if experiment.CreatedAt.IsZero() {
+		experiment.CreatedAt = time.Now().UTC()
+	}
+	if s.replacesOnInsert() {
+		if _, err := s.FindTraceExperiment(ctx, experiment.ProjectID, experiment.ID); err == nil {
+			return nil
+		} else if err != ErrNotFound {
+			return err
+		}
+	}
+	return s.traceUpsert(s.db.WithContext(ctx), &TraceExperiment{}, []string{"project_id", "id"}).Create(experiment).Error
+}
+
+// FindTraceExperiment loads one experiment, ErrNotFound when it does not exist.
+func (s *RDBLogStore) FindTraceExperiment(ctx context.Context, projectID, id string) (*TraceExperiment, error) {
+	var experiments []TraceExperiment
+	if err := s.db.WithContext(ctx).Where("project_id = ? AND id = ?", projectID, id).Limit(1).Find(&experiments).Error; err != nil {
+		return nil, err
+	}
+	if len(experiments) == 0 {
+		return nil, ErrNotFound
+	}
+	return &experiments[0], nil
+}
+
+// ListTraceExperiments lists experiments, newest first. An empty project list means every project.
+func (s *RDBLogStore) ListTraceExperiments(ctx context.Context, projectIDs []string, limit int) ([]*TraceExperiment, error) {
+	query := s.db.WithContext(ctx)
+	if len(projectIDs) > 0 {
+		query = query.Where("project_id IN ?", projectIDs)
+	}
+	var experiments []*TraceExperiment
+	err := query.Order("created_at DESC, id DESC").Limit(limit).Find(&experiments).Error
+	return experiments, err
 }

@@ -2222,6 +2222,15 @@ func TestClickHouseTraceStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{TraceSourceBraintrust}, filterData.Sources)
 
+	// An experiment registered again keeps its first row, here too.
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE trace_experiments").Error)
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "baseline", Source: TraceSourceBraintrust}))
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "renamed", Source: TraceSourceBraintrust}))
+	registered, err := store.ListTraceExperiments(ctx, []string{"p1"}, 10)
+	require.NoError(t, err)
+	require.Len(t, registered, 1)
+	assert.Equal(t, "baseline", registered[0].Name)
+
 	require.NoError(t, store.DeleteTraceScore(ctx, "p1", "sc1"))
 	scores, err := store.ListTraceScores(ctx, "p1", "t1")
 	require.NoError(t, err)

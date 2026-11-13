@@ -1924,6 +1924,10 @@
 		"overCounted": "측정된 스팬({{measured}})이 계산된 오버헤드({{overhead}})를 초과해요. 업스트림 누적기가 과다 집계하고 있을 수 있어요."
 	},
 	"tracing": {
+		"experiments": {
+			"hint": "Braintrust experiments and Langfuse dataset runs. Scores are the mean across each experiment's traces.",
+			"filtered": "Showing experiment {{experiment}}"
+		},
 		"evals": {
 			"addToDataset": "Add to dataset",
 			"chooseDataset": "Choose a dataset",
@@ -2013,7 +2017,8 @@
 			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
-			"sessions": "Trace sessions"
+			"sessions": "Trace sessions",
+			"experiments": "Experiments"
 		},
 		"columns": {
 			"timestamp": "Time",
