@@ -321235,7 +321235,7 @@
       "description": "Mistral serves Voxtral text to speech on POST /v1/audio/speech with an OpenAI-like body (model, input, voice_id, response_format) and answers with JSON whose audio_data is base64. Before this change speech returned UnsupportedOperationError for mistral. Bifrost now maps voice to voice_id and decodes audio_data, so the cases assert real MP3 bytes (not base64 text) on the native and OpenAI drop-in routes, and that an unknown voice surfaces Mistral's invalid_voice error. Streaming speech stays unsupported.",
       "item": [
         {
-          "name": "349.1 mistral/voxtral-mini-tts-latest native /v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech)",
+          "name": "349.1 mistral/voxtral-mini-tts-latest native /v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech) - #10019",
           "event": [
             {
               "listen": "test",
@@ -321282,7 +321282,7 @@
           }
         },
         {
-          "name": "349.2 mistral/voxtral-mini-tts-latest OpenAI drop-in /openai/v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech)",
+          "name": "349.2 mistral/voxtral-mini-tts-latest OpenAI drop-in /openai/v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech) - #10019",
           "event": [
             {
               "listen": "test",
@@ -321330,7 +321330,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 349.3 mistral/voxtral-mini-tts-latest native /v1/audio/speech with an unknown voice surfaces Mistral's invalid_voice error (mistral speech)",
+          "name": "[EXPECT-404] 349.3 mistral/voxtral-mini-tts-latest native /v1/audio/speech with an unknown voice surfaces Mistral's invalid_voice error (mistral speech) - #10019",
           "event": [
             {
               "listen": "test",
