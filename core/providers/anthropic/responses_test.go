@@ -4584,6 +4584,38 @@ func TestTerminalToolArgumentsPreservesWebSearchSanitization(t *testing.T) {
 	}
 }
 
+func TestTerminalToolArgumentsWebSearchWithoutItemID(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	added := terminalArgumentsItem("fc_search", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	added.Item.ID = nil
+	added.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
+	ToAnthropicResponsesStreamResponse(ctx, added)
+	for _, eventType := range []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+	} {
+		event := terminalArgumentsEvent("", 0, eventType, `{"query":"test"}`)
+		event.ItemID = nil
+		if events := ToAnthropicResponsesStreamResponse(ctx, event); len(events) != 0 {
+			t.Fatalf("%s for a WebSearch call without an item ID bypassed its output_item.done sanitizer: %+v", eventType, events)
+		}
+	}
+}
+
+func TestTerminalToolArgumentsAfterArgumentsOnItemAdded(t *testing.T) {
+	const arguments = `{"file_path":"/etc/hostname"}`
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	added := terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded)
+	added.Item.ResponsesToolMessage.Arguments = schemas.Ptr(arguments)
+	if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, added)); got != arguments {
+		t.Fatalf("output_item.added arguments = %q, want %q", got, arguments)
+	}
+	done := terminalArgumentsEvent("fc_1", 0, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, arguments)
+	if got := terminalArgumentsJSON(ToAnthropicResponsesStreamResponse(ctx, done)); got != "" {
+		t.Fatalf("terminal event repeated the arguments sent with output_item.added: %q", got)
+	}
+}
+
 func TestTerminalToolArgumentsDeltaField(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
 	ToAnthropicResponsesStreamResponse(ctx, terminalArgumentsItem("fc_1", 0, schemas.ResponsesStreamResponseTypeOutputItemAdded))

@@ -3396,8 +3396,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	// output_item.added sends any arguments the item already has as synthetic
+	// deltas, so they count as emitted as well.
 	if bifrostResp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta ||
-		bifrostResp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+		bifrostResp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone ||
+		(bifrostResp.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded &&
+			bifrostResp.Item != nil && bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall) {
 		state.recordEmittedArgumentsEvents(events)
 	}
 	// The terminal frame is the last one that can carry usage worth reshaping, so
@@ -3787,14 +3792,17 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 								// Track WebSearch tools so we can skip their argument deltas
 								// and regenerate them synthetically (with sanitization) at output_item.done
+								// A call without an item ID is tracked by its output index, the
+								// same stream key that its later events resolve to.
 								if bifrostResp.Item.ResponsesToolMessage.Name != nil &&
-									*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
-									bifrostResp.Item.ID != nil {
-									streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-									if streamState.webSearchItemIDs == nil {
-										streamState.webSearchItemIDs = make(map[string]bool)
+									*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" {
+									if key := reverseStreamItemKey(bifrostResp); key != "" {
+										streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+										if streamState.webSearchItemIDs == nil {
+											streamState.webSearchItemIDs = make(map[string]bool)
+										}
+										streamState.webSearchItemIDs[key] = true
 									}
-									streamState.webSearchItemIDs[*bifrostResp.Item.ID] = true
 								}
 							}
 						}
@@ -3898,11 +3906,8 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
-		if bifrostResp.ItemID != nil {
-			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-			if streamState.webSearchItemIDs[*bifrostResp.ItemID] {
-				return nil
-			}
+		if getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs[reverseStreamItemKey(bifrostResp)] {
+			return nil
 		}
 
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
@@ -4031,10 +4036,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			events = append(events, stopEvent)
 
 			// Clean up the tracking for this WebSearch item
-			if bifrostResp.Item.ID != nil {
-				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-				delete(streamState.webSearchItemIDs, *bifrostResp.Item.ID)
-			}
+			delete(getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs, reverseStreamItemKey(bifrostResp))
 
 			return events
 		}
