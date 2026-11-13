@@ -598,6 +598,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
 	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
 	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
+	{IDs: []string{"add_mcp_client_server_type_on_slug_column"}, run: migrationAddMCPClientServerTypeOnSlugColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17375,6 +17376,38 @@ func migrationAddComplexitySuggestionSchedulesTable(ctx context.Context, db *gor
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientServerTypeOnSlugColumn adds the server_type_on_slug column to config_mcp_clients.
+// Existing rows take the empty default, which inherits is_code_mode_client: today's behavior.
+func migrationAddMCPClientServerTypeOnSlugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_server_type_on_slug_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("add server_type_on_slug column to config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("drop server_type_on_slug column from config_mcp_clients: %w", err)
+			}
+			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {

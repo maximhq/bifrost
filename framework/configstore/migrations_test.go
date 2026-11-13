@@ -2532,6 +2532,41 @@ func TestMigrationAddMCPClientPendingVerificationColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPClientPendingVerificationColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddMCPClientServerTypeOnSlugColumn adds the column with the empty default, so every existing
+// client inherits is_code_mode_client on its slug exactly as before, and re-runs cleanly.
+func TestMigrationAddMCPClientServerTypeOnSlugColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	now := time.Now()
+	for _, name := range []string{"code_mode", "direct"} {
+		require.NoError(t, db.Exec(
+			`INSERT INTO config_mcp_clients (client_id, name, endpoint_slug, connection_type, auth_type, is_code_mode_client, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, name, name, "http", "headers", name == "code_mode", now, now).Error)
+	}
+
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
+
+	require.True(t, mg.HasColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	var rows []tables.TableMCPClient
+	require.NoError(t, db.Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, row.ServerTypeOnSlug, "%s: existing rows must inherit", row.Name)
+	}
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_server_type_on_slug_column").Error)
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
+}
+
 // TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait pins that on postgres the
 // pending_verification column's ALTER on config_mcp_clients gives up on a held lock instead of
 // queueing every later query on the table behind it.

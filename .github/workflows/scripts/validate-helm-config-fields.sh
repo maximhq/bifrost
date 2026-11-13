@@ -791,6 +791,7 @@ bifrost:
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
+        serverTypeOnSlug: "disabled"
         toolSyncInterval: "5m"
         maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
@@ -879,6 +880,7 @@ assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
+assert_field_value 'mcp client[0] server_type_on_slug' '.mcp.client_configs.[0].server_type_on_slug' '"disabled"'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
 assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'

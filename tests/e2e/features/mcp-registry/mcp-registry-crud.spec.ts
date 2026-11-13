@@ -280,6 +280,45 @@ test.describe("MCP Registry", () => {
     });
   });
 
+  test.describe("Slug Code Mode", () => {
+    test("should store a code mode override for the slug endpoint and clear it back to inherit", async ({
+      mcpRegistryPage,
+      request,
+    }) => {
+      const clientData = createCodeModeClientData({
+        name: `server_type_on_slug_${Date.now()}`,
+        serverTypeOnSlug: "disabled",
+      });
+      const stored = () => mcpRegistryPage.storedServerTypeOnSlug(request, clientData.name);
+
+      const created = await mcpRegistryPage.createClient(clientData);
+      expect(created).toBe(true);
+      createdClients.push(clientData.name);
+      expect(await stored()).toBe("disabled");
+
+      await mcpRegistryPage.openClientEditor(clientData.name);
+      await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-client-server-type-on-slug-select")).toContainText("Direct tools");
+      // The Code Mode switch keeps its label in the edit sheet.
+      await expect(mcpRegistryPage.detailSheet.getByRole("switch", { name: "Code Mode Server" })).toBeChecked();
+      await mcpRegistryPage.closeDetailSheet();
+
+      await mcpRegistryPage.editClient(clientData.name, { serverTypeOnSlug: "inherit" });
+      expect(await stored()).toBe("inherit");
+    });
+
+    test("should default a new client to inherit", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await expect(mcpRegistryPage.sheet.getByTestId("mcp-client-server-type-on-slug-select")).toContainText("Inherit (Disabled)");
+      // The override's help opens from the keyboard.
+      const help = mcpRegistryPage.sheet.getByTestId("mcp-client-server-type-on-slug-help");
+      await expect(help).toHaveAccessibleName(/^About Code Mode behaviour on /);
+      await help.focus();
+      await expect(mcpRegistryPage.page.getByRole("tooltip")).toContainText("Overrides Code Mode only when this server is used through its own endpoint.");
+      await mcpRegistryPage.closeSheet();
+    });
+  });
+
   test.describe("Max Protocol Version", () => {
     test("should create a client with a max protocol version and switch it to the global setting", async ({
       mcpRegistryPage,
