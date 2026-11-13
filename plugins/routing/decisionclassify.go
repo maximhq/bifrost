@@ -44,13 +44,18 @@ func (p *RoutingPlugin) decisionExecutor() DecisionRequestExecutor {
 	return nil
 }
 
-// classifyDecisionComplexity requests one choice answer from the configured decision model for the user turn.
+// classifyDecisionComplexity asks the Complexity Router page's decision model.
 func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
+	return p.classifyRouterDecision(ctx, input, p.complexityRuntime())
+}
+
+// classifyRouterDecision requests one choice answer from the router's configured decision model for the user turn.
+func (p *RoutingPlugin) classifyRouterDecision(ctx *schemas.BifrostContext, input complexity.ComplexityInput, rt *modelRouterRuntime) complexityProposal {
 	executor := p.decisionExecutor()
 	if executor == nil {
 		return complexityProposal{Mechanism: complexity.MechanismSkipped, LogLevel: schemas.LogLevelWarn, LogMessage: "decision-model executor is not configured, so no complexity tier is published"}
 	}
-	config := p.complexityConfig.Load()
+	config := rt.config.Load()
 	decisionConfig := (*complexity.DecisionConfig)(nil)
 	if config != nil {
 		decisionConfig = config.Decision

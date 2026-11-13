@@ -39,6 +39,8 @@ const (
 	ClassifierSemantic = configstore.ComplexityClassifierSemantic
 	// ClassifierDecision selects the decision-model classifier.
 	ClassifierDecision = configstore.ComplexityClassifierDecision
+	// ClassifierLLM selects the llm classifier: a chat model the operator configures.
+	ClassifierLLM = configstore.ComplexityClassifierLLM
 	// SemanticFallbackDecision uses the decision model when semantic matching has no tier.
 	SemanticFallbackDecision = configstore.ComplexitySemanticFallbackDecision
 	TierSimple               = "SIMPLE"

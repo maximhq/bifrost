@@ -1959,6 +1959,45 @@ bifrost:
   #         path: "/"
   #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
 
+  # Model routers: named complexity classifiers that each take the requests their routing matches,
+  # after governance.routingRules. Each entry takes id, name and description, the settings of
+  # governance.complexityAnalyzerConfig (keywords, classifier, semantic, decision, llm, session,
+  # tier_boundaries, suggestions), targets: the model each tier gets, and routing:
+  # which requests it takes. Routers are tried narrowest scope first (virtual key, user, team, customer,
+  # then global), by priority within a scope; the first enabled router whose condition holds classifies the
+  # request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model.
+  # Rendered as top-level `model_routers` in config.json when non-empty. Routers are separate from
+  # governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.
+  # modelRouters:
+  #   - id: "support"                    # letters, digits, _ and - (max 64)
+  #     name: "Support"                  # unique across routers
+  #     description: "Classifies support traffic"
+  #     classifier: "decision"           # semantic (default) | decision | llm (needs an llm block)
+  #     decision:
+  #       provider: "typesafe"
+  #       model: "jev-latest"
+  #     keywords:                        # required, as in governance.complexityAnalyzerConfig
+  #       simple_keywords: ["how do I reset my password?"]
+  #       medium_keywords: ["why is my invoice higher than last month?"]
+  #       complex_keywords: ["plan a zero-downtime migration of our SSO setup."]
+  #     targets:                         # Optional; omit to keep the dashboard's. A tier with no target keeps the request's model; weights within a tier sum to 1
+  #       - tier: "SIMPLE"
+  #         provider: "openai"
+  #         model: "gpt-4o-mini"
+  #         weight: 1
+  #       - tier: "COMPLEX"
+  #         provider: "anthropic"
+  #         model: "claude-sonnet-4-5"
+  #         weight: 1
+  #         # key_id: "<key-id>"         # Optional key pin; requires provider
+  #         # fallbacks: ["openai/gpt-4o"]  # Replaces the request's fallback chain when this target is chosen
+  #     routing:                         # Optional; omit to keep the dashboard's. A new router without it starts off, global, after the other global routers
+  #       enabled: true                  # Default false
+  #       cel_expression: "model == 'support-assistant'"  # Optional; empty takes every request in scope. Cannot use complexity_tier
+  #       scope: "global"                # global, team, customer, virtual_key (user-scoped routing is API/UI only)
+  #       # scope_id: "team-1"           # Required for non-global scopes: the entity's ID, not its name
+  #       priority: 0                    # Lower = tried first; unique within the scope among model routers
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
