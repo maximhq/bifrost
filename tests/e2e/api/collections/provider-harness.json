@@ -321229,6 +321229,149 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Mistral Voxtral speech through /v1/audio/speech (mistral speech) (PR #10019)",
+      "description": "Mistral serves Voxtral text to speech on POST /v1/audio/speech with an OpenAI-like body (model, input, voice_id, response_format) and answers with JSON whose audio_data is base64. Before this change speech returned UnsupportedOperationError for mistral. Bifrost now maps voice to voice_id and decodes audio_data, so the cases assert real MP3 bytes (not base64 text) on the native and OpenAI drop-in routes, and that an unknown voice surfaces Mistral's invalid_voice error. Streaming speech stays unsupported.",
+      "item": [
+        {
+          "name": "349.1 mistral/voxtral-mini-tts-latest native /v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native: 200 with mp3 audio bytes', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3 (base64 not decoded?): ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/voxtral-mini-tts-latest\",\n  \"input\": \"Hello from Mistral through Bifrost.\",\n  \"voice\": \"gb_jane_neutral\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.2 mistral/voxtral-mini-tts-latest OpenAI drop-in /openai/v1/audio/speech with voice gb_jane_neutral returns decoded mp3 audio (mistral speech)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in: 200 with mp3 audio bytes', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3 (base64 not decoded?): ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/voxtral-mini-tts-latest\",\n  \"input\": \"Hello from Mistral through Bifrost.\",\n  \"voice\": \"gb_jane_neutral\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] 349.3 mistral/voxtral-mini-tts-latest native /v1/audio/speech with an unknown voice surfaces Mistral's invalid_voice error (mistral speech)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('unknown voice: 404 with the provider message', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + body.slice(0, 500)).to.equal(404);",
+                  "  pm.expect(body, 'provider message missing').to.match(/voice/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/voxtral-mini-tts-latest\",\n  \"input\": \"Hello from Mistral through Bifrost.\",\n  \"voice\": \"no_such_voice\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

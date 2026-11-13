@@ -477,7 +477,10 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	req.SetBody(jsonData)
+	// Large-payload mode stages the client body as a stream; jsonData is nil then.
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, provider.GetProviderKey()) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -497,18 +500,11 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	var mistralResp MistralSpeechResponse
-	pt, ph := providerUtils.StartResponseParseSpan(ctx)
-	umErr := sonic.Unmarshal(body, &mistralResp)
-	if pt != nil {
-		if umErr != nil {
-			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
-		} else {
-			pt.EndSpan(ph, schemas.SpanStatusOk, "")
-		}
-	}
-	if umErr != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse Mistral speech response", umErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	_, rawResponse, parseErr := providerUtils.HandleProviderResponseCtx(ctx, body, &mistralResp, nil, false, sendBackRawResponse)
+	if parseErr != nil {
+		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if mistralResp.AudioData == "" {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Mistral speech response contained no audio", nil), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -527,6 +523,9 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	}
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+	if sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
 
 	return bifrostResponse, nil
