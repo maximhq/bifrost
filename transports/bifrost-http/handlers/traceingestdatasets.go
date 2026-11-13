@@ -398,7 +398,7 @@ func (h *TraceIngestHandler) langfuseListDatasetItems(ctx *fasthttp.RequestCtx) 
 	for i := range rows.Rows {
 		row := &rows.Rows[i]
 		var byID map[string]string
-		_ = sonic.Unmarshal([]byte(row.CellsJSON), &byID)
+		_ = sonic.UnmarshalString(row.CellsJSON, &byID)
 		for id, value := range row.Cells {
 			if byID == nil {
 				byID = map[string]string{}

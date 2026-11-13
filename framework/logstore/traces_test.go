@@ -3,6 +3,9 @@ package logstore
 import (
 	"context"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTraceTestStore(t *testing.T) *RDBLogStore {
+func newTraceTestStore(t testing.TB) *RDBLogStore {
 	t.Helper()
 	store, err := newSqliteLogStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "traces.db")}, testLogger{})
 	require.NoError(t, err)
@@ -569,4 +572,206 @@ func TestTraceExperimentsAreRegisteredOnce(t *testing.T) {
 	everywhere, err := store.ListTraceExperiments(ctx, nil, 10)
 	require.NoError(t, err)
 	assert.Len(t, everywhere, 3)
+}
+
+// seedBenchTrace stores one trace of n spans whose payloads are sized like real model calls: a few
+// kilobytes of messages, plus metadata and attributes. The first span is the root.
+func seedBenchTrace(b testing.TB, store *RDBLogStore, traceID string, n int) {
+	b.Helper()
+	seedTraceWithPayload(b, store, traceID, n, `[{"role":"user","content":"`+strings.Repeat("context ", 500)+`"}]`)
+}
+
+// seedTraceWithPayload stores one trace of n spans that each carry payload as input and output.
+func seedTraceWithPayload(b testing.TB, store *RDBLogStore, traceID string, n int, payload string) {
+	b.Helper()
+	start := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	spans := make([]*TraceSpan, n)
+	for i := range spans {
+		spans[i] = &TraceSpan{
+			ProjectID: "p1", TraceID: traceID, SpanID: "s" + strconv.Itoa(i), Source: TraceSourceOTel, Name: "chat", Kind: TraceSpanKindLLM,
+			StartTime: start.Add(time.Duration(i) * time.Millisecond), EndTime: new(start.Add(time.Second)),
+			Input: payload, Output: payload, Model: "gpt-4o", PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200, Cost: new(0.01),
+			MetadataParsed:   map[string]any{"tenant": "acme", "release": "v1.4.0"},
+			TagsParsed:       []string{"rag", "sample"},
+			AttributesParsed: map[string]any{"llm.provider": "openai", "otel.scope.name": "bench", "resource": map[string]any{"service.name": "bench", "telemetry.sdk.language": "python"}},
+		}
+		if i > 0 {
+			spans[i].ParentSpanIDsParsed = []string{"s0"}
+		}
+	}
+	require.NoError(b, store.UpsertTraceSpans(context.Background(), spans))
+}
+
+// BenchmarkRecomputeTraceRollup measures rebuilding one trace's rollup row, which runs every time a
+// part of the trace arrives. Its cost must not grow with the size of the span payloads.
+func BenchmarkRecomputeTraceRollup(b *testing.B) {
+	store := newTraceTestStore(b)
+	seedBenchTrace(b, store, "t1", 50)
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := store.RecomputeTraceRollup(ctx, "p1", "t1"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkTraceReads measures the dashboard's reads: one trace's spans for the trace sheet, and a
+// page of the traces list.
+func BenchmarkTraceReads(b *testing.B) {
+	store := newTraceTestStore(b)
+	ctx := context.Background()
+	for i := range 60 {
+		traceID := "t" + strconv.Itoa(i)
+		seedBenchTrace(b, store, traceID, 5)
+		_, err := store.RecomputeTraceRollup(ctx, "p1", traceID)
+		require.NoError(b, err)
+	}
+	seedBenchTrace(b, store, "big", 50)
+	b.Run("ListTraceSpans_50", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := store.ListTraceSpans(ctx, "p1", "big"); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("SearchTraces_page_50", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := store.SearchTraces(ctx, TraceFilters{ProjectIDs: []string{"p1"}}, PaginationOptions{Limit: 50}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("SearchTraceSpans_page_50", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := store.SearchTraceSpans(ctx, TraceFilters{ProjectIDs: []string{"p1"}}, PaginationOptions{Limit: 50}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// TestRollupReadsSpanSummariesNotPayloads pins what the rollup and the gateway matcher load: every
+// column they compute from, and none of the payload columns. A trace is rolled up each time a part
+// of it arrives, so loading every span's input and output there costs memory in step with payload
+// size. The rollup still shows the root span's input, output and tags.
+func TestRollupReadsSpanSummariesNotPayloads(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	seedBenchTrace(t, store, "t1", 3)
+
+	summaries, err := store.ListTraceSpanSummaries(ctx, "p1", "t1", false)
+	require.NoError(t, err)
+	require.Len(t, summaries, 3)
+	for _, span := range summaries {
+		assert.Empty(t, span.Input)
+		assert.Empty(t, span.Output)
+		assert.Nil(t, span.MetadataParsed)
+		assert.Nil(t, span.AttributesParsed)
+		assert.Equal(t, 1200, span.TotalTokens)
+		assert.Equal(t, []string{"rag", "sample"}, span.TagsParsed)
+		require.NotNil(t, span.DurationMs)
+	}
+	assert.Equal(t, "s0", summaries[1].ParentSpanID)
+
+	withInput, err := store.ListTraceSpanSummaries(ctx, "p1", "t1", true)
+	require.NoError(t, err)
+	assert.NotEmpty(t, withInput[0].Input, "the matcher fingerprints the input")
+	assert.Empty(t, withInput[0].Output)
+
+	full, err := store.ListTraceSpans(ctx, "p1", "t1")
+	require.NoError(t, err)
+	trace, err := store.RecomputeTraceRollup(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, full[0].Input, trace.Input)
+	assert.Equal(t, full[0].Output, trace.Output)
+	assert.Equal(t, []string{"rag", "sample"}, trace.TagsParsed)
+	assert.Equal(t, 3600, trace.TotalTokens)
+	first := trace.CreatedAt
+
+	// A second rollup keeps the first-seen time and still reads the root's payload.
+	again, err := store.RecomputeTraceRollup(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.True(t, first.Equal(again.CreatedAt))
+	assert.Equal(t, full[0].Input, again.Input)
+}
+
+// TestTraceSpanPartContentIDIsStable pins the id of a stored part. It is the dedupe key of every part
+// already in a store, so an optimization of the hash must produce the same bytes.
+func TestTraceSpanPartContentIDIsStable(t *testing.T) {
+	part := &TraceSpanPart{ProjectID: "p1", TraceID: "t1", SpanID: "s1", RowID: "row-1", IsMerge: true, Payload: `{"span_id":"s1","trace_id":"t1"}`}
+	assert.Equal(t, "d8e58ab16667d9f61eede6d6e97527399bd501aad522e436545f0ec5e862f0a2", part.ContentID())
+	assert.LessOrEqual(t, testing.AllocsPerRun(100, func() { _ = part.ContentID() }), 3.0)
+}
+
+// TestTraceSpanPartHeadersCarryNoPayload pins the two-step part read of the ingest path: headers
+// first, in receive order and without payloads, then the payloads of only the parts it asks for.
+func TestTraceSpanPartHeadersCarryNoPayload(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	parts := []*TraceSpanPart{
+		{ProjectID: "p1", TraceID: "t1", SpanID: "s1", Source: TraceSourceOTel, ReceivedAt: at, Payload: `{"name":"base"}`},
+		{ProjectID: "p1", TraceID: "t1", SpanID: "s1", Source: TraceSourceOTel, ReceivedAt: at.Add(time.Second), IsMerge: true, Payload: `{"name":"merge"}`},
+		{ProjectID: "p1", TraceID: "t1", SpanID: "s2", Source: TraceSourceOTel, ReceivedAt: at, Payload: `{"name":"other"}`},
+	}
+	_, err := store.BatchCreateTraceSpanParts(ctx, parts)
+	require.NoError(t, err)
+
+	headers, err := store.ListTraceSpanPartHeadersForSpans(ctx, "p1", "t1", []string{"s1"})
+	require.NoError(t, err)
+	require.Len(t, headers, 2)
+	assert.Equal(t, []string{parts[0].ID, parts[1].ID}, []string{headers[0].ID, headers[1].ID}, "receive order")
+	assert.Empty(t, headers[0].Payload)
+	assert.True(t, headers[1].IsMerge)
+	assert.True(t, at.Equal(headers[0].ReceivedAt))
+
+	loaded, err := store.FindTraceSpanParts(ctx, []string{parts[1].ID, "missing"})
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	assert.Equal(t, `{"name":"merge"}`, loaded[0].Payload)
+	none, err := store.FindTraceSpanParts(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
+
+// allocatedBytes is the heap a run of fn allocates, averaged over a few runs.
+func allocatedBytes(fn func()) uint64 {
+	const runs = 5
+	fn() // warm caches and pools
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for range runs {
+		fn()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / runs
+}
+
+// TestRecomputeTraceRollup_AllocationScaling pins that rolling a trace up costs memory in step with
+// its span count, not with the size of what the spans carry. The rollup runs each time a part of a
+// trace arrives, so a trace of large model calls must not be re-read in full every time. Only the
+// root's input and output, which the trace row shows, are loaded.
+func TestRecomputeTraceRollup_AllocationScaling(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	const spans = 40
+	small, large := strings.Repeat("x", 200), strings.Repeat("x", 200_000)
+	seedTraceWithPayload(t, store, "small", spans, small)
+	seedTraceWithPayload(t, store, "large", spans, large)
+	measure := func(traceID string) uint64 {
+		return allocatedBytes(func() {
+			_, err := store.RecomputeTraceRollup(ctx, "p1", traceID)
+			require.NoError(t, err)
+		})
+	}
+	smallBytes, largeBytes := measure("small"), measure("large")
+	// The large trace holds 1000x the payload: 16MB in all. Loading only the root's two payloads,
+	// with the copies a driver and an upsert make, stays under a quarter of that. A full load takes twice it.
+	extra := int64(largeBytes) - int64(smallBytes)
+	assert.Less(t, extra, int64(spans*2*len(large)/4), "rollup of large payloads allocated %d bytes, of small ones %d", largeBytes, smallBytes)
 }

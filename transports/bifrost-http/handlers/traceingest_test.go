@@ -81,7 +81,7 @@ type traceIngestTestEnv struct {
 
 // newTraceIngestTestEnv builds the ingest handler over a real SQLite trace store, with one project
 // "agent" (id p1) as the default, and dashboard auth on.
-func newTraceIngestTestEnv(t *testing.T) *traceIngestTestEnv {
+func newTraceIngestTestEnv(t testing.TB) *traceIngestTestEnv {
 	t.Helper()
 	ctx := context.Background()
 	store, err := logstore.NewLogStore(ctx, &logstore.Config{Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")}}, logger)

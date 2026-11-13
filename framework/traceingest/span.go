@@ -84,7 +84,7 @@ func (p *SpanPart) toStoredPart(projectID, source string, receivedAt time.Time, 
 	}
 	stored := &logstore.TraceSpanPart{
 		ProjectID: projectID, TraceID: p.TraceID, SpanID: p.SpanID, RowID: p.RowID, Source: source,
-		ReceivedAt: receivedAt, IsMerge: p.IsMerge, Payload: string(payload), ExpiresAt: expiresAt,
+		ReceivedAt: receivedAt, IsMerge: p.IsMerge, Payload: ownedString(payload), ExpiresAt: expiresAt,
 	}
 	stored.ID = stored.ContentID()
 	return stored, nil
@@ -93,7 +93,7 @@ func (p *SpanPart) toStoredPart(projectID, source string, receivedAt time.Time, 
 // partFromStored reads a part back from its stored row.
 func partFromStored(stored *logstore.TraceSpanPart) (*SpanPart, error) {
 	var part SpanPart
-	if err := sonic.Unmarshal([]byte(stored.Payload), &part); err != nil {
+	if err := sonic.UnmarshalString(stored.Payload, &part); err != nil {
 		return nil, fmt.Errorf("failed to decode span part %s: %w", stored.ID, err)
 	}
 	part.TraceID, part.SpanID, part.IsMerge = stored.TraceID, stored.SpanID, stored.IsMerge

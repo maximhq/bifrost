@@ -5,9 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -91,10 +95,12 @@ func (TraceSpanPart) TableName() string { return "trace_span_parts" }
 // out on purpose, so a retried request maps onto the row already stored.
 func (p *TraceSpanPart) ContentID() string {
 	h := sha256.New()
+	var length [20]byte
 	for _, field := range []string{p.ProjectID, p.TraceID, p.SpanID, p.RowID, strconv.FormatBool(p.IsMerge), p.Payload} {
-		h.Write([]byte(strconv.Itoa(len(field))))
+		h.Write(strconv.AppendInt(length[:0], int64(len(field)), 10))
 		h.Write([]byte{':'})
-		h.Write([]byte(field))
+		// The payload can be megabytes. It is hashed in place: the hash only reads the bytes.
+		h.Write(unsafe.Slice(unsafe.StringData(field), len(field)))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -202,15 +208,22 @@ func (s *TraceSpan) AfterFind(_ *gorm.DB) error {
 	return s.DeserializeFields()
 }
 
-// SerializeFields writes the parsed fields into their stored columns and derives the columns that
-// follow from others: the tree parent and the duration.
-func (s *TraceSpan) SerializeFields() error {
+// DeriveFields sets the columns that follow from others: the tree parent and the duration. It
+// allocates nothing but the duration, so a span can be made readable before it is stored without
+// encoding its JSON columns twice.
+func (s *TraceSpan) DeriveFields() {
 	if len(s.ParentSpanIDsParsed) > 0 {
 		s.ParentSpanID = s.ParentSpanIDsParsed[0]
 	}
 	if s.EndTime != nil && !s.StartTime.IsZero() {
 		s.DurationMs = new(float64(s.EndTime.Sub(s.StartTime)) / float64(time.Millisecond))
 	}
+}
+
+// SerializeFields writes the parsed fields into their stored columns and derives the columns that
+// follow from others: the tree parent and the duration.
+func (s *TraceSpan) SerializeFields() error {
+	s.DeriveFields()
 	for _, column := range []struct {
 		name   string
 		empty  bool
@@ -240,7 +253,7 @@ func (s *TraceSpan) SerializeFields() error {
 func (s *TraceSpan) DeserializeFields() error {
 	unmarshal := func(stored *string, v any) {
 		if stored != nil && *stored != "" {
-			_ = sonic.Unmarshal([]byte(*stored), v)
+			_ = sonic.UnmarshalString(*stored, v)
 		}
 	}
 	unmarshal(s.ParentSpanIDs, &s.ParentSpanIDsParsed)
@@ -250,7 +263,7 @@ func (s *TraceSpan) DeserializeFields() error {
 	s.LinkSnapshotParsed = nil
 	if s.LinkSnapshot != nil && *s.LinkSnapshot != "" {
 		var snapshot TraceLinkSnapshot
-		if err := sonic.Unmarshal([]byte(*s.LinkSnapshot), &snapshot); err == nil {
+		if err := sonic.UnmarshalString(*s.LinkSnapshot, &snapshot); err == nil {
 			s.LinkSnapshotParsed = &snapshot
 		}
 	}
@@ -355,10 +368,10 @@ func (t *Trace) SerializeFields() error {
 // DeserializeFields reads the stored columns back into their parsed fields.
 func (t *Trace) DeserializeFields() error {
 	if t.Tags != nil && *t.Tags != "" {
-		_ = sonic.Unmarshal([]byte(*t.Tags), &t.TagsParsed)
+		_ = sonic.UnmarshalString(*t.Tags, &t.TagsParsed)
 	}
 	if t.Scores != nil && *t.Scores != "" {
-		_ = sonic.Unmarshal([]byte(*t.Scores), &t.ScoresParsed)
+		_ = sonic.UnmarshalString(*t.Scores, &t.ScoresParsed)
 	}
 	return nil
 }
@@ -467,9 +480,11 @@ type TraceStore interface {
 	TraceReadStore
 	BatchCreateTraceSpanParts(ctx context.Context, parts []*TraceSpanPart) (int, error)
 	ListTraceSpanParts(ctx context.Context, projectID, traceID, spanID string) ([]*TraceSpanPart, error)
-	ListTraceSpanPartsForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error)
+	ListTraceSpanPartHeadersForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error)
+	FindTraceSpanParts(ctx context.Context, ids []string) ([]*TraceSpanPart, error)
 	UpsertTraceSpans(ctx context.Context, spans []*TraceSpan) error
 	ListTraceSpans(ctx context.Context, projectID, traceID string) ([]*TraceSpan, error)
+	ListTraceSpanSummaries(ctx context.Context, projectID, traceID string, withInput bool) ([]*TraceSpan, error)
 	FindTraceSpans(ctx context.Context, projectID string, keys []TraceSpanKey) ([]*TraceSpan, error)
 	FindTraceSpansByRowIDs(ctx context.Context, projectID string, rowIDs []string) ([]*TraceSpan, error)
 	FindTrace(ctx context.Context, projectID, traceID string) (*Trace, error)
@@ -535,7 +550,24 @@ func (s *RDBLogStore) traceUpsert(tx *gorm.DB, model any, key []string, keep ...
 	if keep == nil {
 		return tx.Clauses(clause.OnConflict{Columns: columns, DoNothing: true})
 	}
-	return tx.Clauses(clause.OnConflict{Columns: columns, DoUpdates: clause.AssignmentColumns(replaceColumns(tx, model, append(key, keep...)...))})
+	return tx.Clauses(clause.OnConflict{Columns: columns, DoUpdates: s.traceReplaceSet(tx, model, key, keep)})
+}
+
+// traceReplaceSets caches traceReplaceSet by model and kept columns.
+var traceReplaceSets sync.Map
+
+// traceReplaceSet is the SET list of a trace table's upsert. It depends only on the model and the
+// kept columns, so it is built once per table: parsing the schema and naming forty-odd columns on
+// every write was a measurable share of ingest allocation. The cached value is only read.
+func (s *RDBLogStore) traceReplaceSet(tx *gorm.DB, model any, key, keep []string) clause.Set {
+	cacheKey := reflect.TypeOf(model).String() + "|" + strings.Join(key, ",") + "|" + strings.Join(keep, ",")
+	if cached, ok := traceReplaceSets.Load(cacheKey); ok {
+		return cached.(clause.Set)
+	}
+	skip := append(slices.Clone(key), keep...)
+	set := clause.AssignmentColumns(replaceColumns(tx, model, skip...))
+	traceReplaceSets.Store(cacheKey, set)
+	return set
 }
 
 // traceDelete removes rows from a trace table and reports how many. It runs as plain SQL because
@@ -585,17 +617,33 @@ func (s *RDBLogStore) ListTraceSpanParts(ctx context.Context, projectID, traceID
 	return parts, nil
 }
 
-// ListTraceSpanPartsForSpans returns the parts of several spans of one trace in receive order.
-func (s *RDBLogStore) ListTraceSpanPartsForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error) {
+// ListTraceSpanPartHeadersForSpans returns the parts of the named spans in receive order without
+// their payloads. The ingest path holds the payloads of the parts it just wrote, so it reads the
+// headers to learn what else exists and fetches only the payloads it lacks. A payload can be
+// megabytes (an inline image), and reading it back on every write doubled the cost of storing it.
+func (s *RDBLogStore) ListTraceSpanPartHeadersForSpans(ctx context.Context, projectID, traceID string, spanIDs []string) ([]*TraceSpanPart, error) {
 	if len(spanIDs) == 0 {
 		return nil, nil
 	}
 	var parts []*TraceSpanPart
 	err := s.db.WithContext(ctx).
+		Omit("payload").
 		Where("project_id = ? AND trace_id = ? AND span_id IN ?", projectID, traceID, spanIDs).
 		Order("received_at ASC, id ASC").
 		Find(&parts).Error
 	if err != nil {
+		return nil, err
+	}
+	return parts, nil
+}
+
+// FindTraceSpanParts loads parts by id, payload included. An id that is not stored is left out.
+func (s *RDBLogStore) FindTraceSpanParts(ctx context.Context, ids []string) ([]*TraceSpanPart, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var parts []*TraceSpanPart
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&parts).Error; err != nil {
 		return nil, err
 	}
 	return parts, nil
@@ -632,6 +680,30 @@ func replaceColumns(tx *gorm.DB, model any, keep ...string) []string {
 func (s *RDBLogStore) ListTraceSpans(ctx context.Context, projectID, traceID string) ([]*TraceSpan, error) {
 	var spans []*TraceSpan
 	err := s.db.WithContext(ctx).
+		Where("project_id = ? AND trace_id = ?", projectID, traceID).
+		Order("start_time ASC, span_id ASC").
+		Find(&spans).Error
+	if err != nil {
+		return nil, err
+	}
+	return spans, nil
+}
+
+// traceSpanPayloadColumns are the columns that hold what a span carried, not what it measured. They
+// are the bulk of a row: a model call's messages run to kilobytes, an inline image to megabytes.
+var traceSpanPayloadColumns = []string{"output", "expected", "metadata", "attributes", "parent_span_ids"}
+
+// ListTraceSpanSummaries returns every span of one trace in start order without its payload columns:
+// ids, kind, times, status, tokens, cost, tags and the gateway link, which is all the rollup and the
+// gateway matcher compute from. withInput keeps the input, which the matcher fingerprints.
+func (s *RDBLogStore) ListTraceSpanSummaries(ctx context.Context, projectID, traceID string, withInput bool) ([]*TraceSpan, error) {
+	omit := traceSpanPayloadColumns
+	if !withInput {
+		omit = append([]string{"input"}, omit...)
+	}
+	var spans []*TraceSpan
+	err := s.db.WithContext(ctx).
+		Omit(omit...).
 		Where("project_id = ? AND trace_id = ?", projectID, traceID).
 		Order("start_time ASC, span_id ASC").
 		Find(&spans).Error
@@ -703,19 +775,39 @@ func (s *RDBLogStore) FindTrace(ctx context.Context, projectID, traceID string) 
 // The root is the span that names no parent. Until it arrives the trace is in progress and takes
 // its name from its earliest span.
 func (s *RDBLogStore) RecomputeTraceRollup(ctx context.Context, projectID, traceID string) (*Trace, error) {
-	spans, err := s.ListTraceSpans(ctx, projectID, traceID)
+	// The rollup sums numbers, so it loads the spans without their payloads. Only the root's input
+	// and output are shown on the trace row, and they are read on their own.
+	spans, err := s.ListTraceSpanSummaries(ctx, projectID, traceID, false)
 	if err != nil {
 		return nil, err
+	}
+	for _, span := range spans {
+		if span.ParentSpanID != "" {
+			continue
+		}
+		var payload []TraceSpan
+		err := s.db.WithContext(ctx).Model(&TraceSpan{}).Select("input", "output").
+			Where("project_id = ? AND trace_id = ? AND span_id = ?", projectID, traceID, span.SpanID).Limit(1).Scan(&payload).Error
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) > 0 {
+			span.Input, span.Output = payload[0].Input, payload[0].Output
+		}
+		break // buildTraceRollup takes the first parentless span as the root
 	}
 	scores, err := s.ListTraceScores(ctx, projectID, traceID)
 	if err != nil {
 		return nil, err
 	}
 	trace := buildTraceRollup(projectID, traceID, spans, scores)
-	if existing, err := s.FindTrace(ctx, projectID, traceID); err == nil {
-		trace.CreatedAt = existing.CreatedAt
-	} else if err != ErrNotFound {
+	// The upsert keeps the stored created_at. It is read here only so the returned row carries it.
+	var created []time.Time
+	if err := s.db.WithContext(ctx).Model(&Trace{}).Where("project_id = ? AND trace_id = ?", projectID, traceID).Limit(1).Pluck("created_at", &created).Error; err != nil {
 		return nil, err
+	}
+	if len(created) > 0 {
+		trace.CreatedAt = created[0]
 	}
 	if err := s.traceUpsert(s.db.WithContext(ctx), &Trace{}, []string{"project_id", "trace_id"}, "created_at").Create(trace).Error; err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,19 +26,23 @@ import (
 // stored is the span as last folded, nil when there is none. Fields the fold does not own (the
 // gateway link, the cost estimate, the first-seen time) are carried over from it.
 func Fold(stored *logstore.TraceSpan, parts []*SpanPart) *SpanPart {
-	ordered := slices.Clone(parts)
-	slices.SortStableFunc(ordered, func(a, b *SpanPart) int {
-		if a.IsMerge != b.IsMerge {
-			if a.IsMerge {
-				return 1
+	// One part needs no ordering. That is every OTLP span, which arrives whole.
+	ordered := parts
+	if len(parts) > 1 {
+		ordered = slices.Clone(parts)
+		slices.SortStableFunc(ordered, func(a, b *SpanPart) int {
+			if a.IsMerge != b.IsMerge {
+				if a.IsMerge {
+					return 1
+				}
+				return -1
 			}
-			return -1
-		}
-		if c := a.ReceivedAt.Compare(b.ReceivedAt); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.ID, b.ID)
-	})
+			if c := a.ReceivedAt.Compare(b.ReceivedAt); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.ID, b.ID)
+		})
+	}
 	hasBase := len(ordered) > 0 && !ordered[0].IsMerge
 	acc := &SpanPart{IsMerge: true}
 	if !hasBase && stored != nil {
@@ -63,26 +68,25 @@ func overlay(dst, src *SpanPart) {
 	if len(src.ParentSpanIDs) > 0 {
 		dst.ParentSpanIDs = src.ParentSpanIDs
 	}
-	for _, field := range []struct{ dst, src *string }{
-		{&dst.RowID, &src.RowID}, {&dst.Name, &src.Name}, {&dst.Kind, &src.Kind}, {&dst.Status, &src.Status},
-		{&dst.Error, &src.Error}, {&dst.Model, &src.Model}, {&dst.Provider, &src.Provider},
-		{&dst.SessionID, &src.SessionID}, {&dst.UserID, &src.UserID}, {&dst.Environment, &src.Environment},
-		{&dst.ExperimentID, &src.ExperimentID}, {&dst.DatasetID, &src.DatasetID},
-		{&dst.ProviderResponseID, &src.ProviderResponseID},
-	} {
-		if *field.src != "" {
-			*field.dst = *field.src
-		}
-	}
-	for _, field := range []struct{ dst, src *int }{
-		{&dst.PromptTokens, &src.PromptTokens}, {&dst.CompletionTokens, &src.CompletionTokens},
-		{&dst.TotalTokens, &src.TotalTokens}, {&dst.CachedReadTokens, &src.CachedReadTokens},
-		{&dst.CachedWriteTokens, &src.CachedWriteTokens}, {&dst.ReasoningTokens, &src.ReasoningTokens},
-	} {
-		if *field.src != 0 {
-			*field.dst = *field.src
-		}
-	}
+	setString(&dst.RowID, src.RowID)
+	setString(&dst.Name, src.Name)
+	setString(&dst.Kind, src.Kind)
+	setString(&dst.Status, src.Status)
+	setString(&dst.Error, src.Error)
+	setString(&dst.Model, src.Model)
+	setString(&dst.Provider, src.Provider)
+	setString(&dst.SessionID, src.SessionID)
+	setString(&dst.UserID, src.UserID)
+	setString(&dst.Environment, src.Environment)
+	setString(&dst.ExperimentID, src.ExperimentID)
+	setString(&dst.DatasetID, src.DatasetID)
+	setString(&dst.ProviderResponseID, src.ProviderResponseID)
+	setInt(&dst.PromptTokens, src.PromptTokens)
+	setInt(&dst.CompletionTokens, src.CompletionTokens)
+	setInt(&dst.TotalTokens, src.TotalTokens)
+	setInt(&dst.CachedReadTokens, src.CachedReadTokens)
+	setInt(&dst.CachedWriteTokens, src.CachedWriteTokens)
+	setInt(&dst.ReasoningTokens, src.ReasoningTokens)
 	if src.StartTime != nil {
 		dst.StartTime = src.StartTime
 	}
@@ -100,12 +104,17 @@ func overlay(dst, src *SpanPart) {
 	dst.Expected = mergeValue(dst.Expected, src.Expected)
 	dst.Metadata = mergeMap(dst.Metadata, src.Metadata)
 	dst.Attributes = mergeMap(dst.Attributes, src.Attributes)
-	for _, tag := range src.Tags {
-		if !slices.Contains(dst.Tags, tag) {
-			dst.Tags = append(dst.Tags, tag)
+	if len(src.Tags) > 0 {
+		if dst.Tags == nil {
+			dst.Tags = make([]string, 0, len(src.Tags))
 		}
+		for _, tag := range src.Tags {
+			if !slices.Contains(dst.Tags, tag) {
+				dst.Tags = append(dst.Tags, tag)
+			}
+		}
+		slices.Sort(dst.Tags)
 	}
-	slices.Sort(dst.Tags)
 	for name, value := range src.Scores {
 		if dst.Scores == nil {
 			dst.Scores = make(map[string]float64, len(src.Scores))
@@ -133,9 +142,27 @@ func mergeValue(dst, src any) any {
 	return src
 }
 
+// setString and setInt are overlay's rule for scalars: a value the newer part sets wins.
+func setString(dst *string, src string) {
+	if src != "" {
+		*dst = src
+	}
+}
+
+func setInt(dst *int, src int) {
+	if src != 0 {
+		*dst = src
+	}
+}
+
+// mergeMap lays src over dst key by key and never writes to either: the result is a new map, or one
+// of the two when the other is empty. Callers therefore share maps freely and must not mutate them.
 func mergeMap(dst, src map[string]any) map[string]any {
 	if len(src) == 0 {
 		return dst
+	}
+	if len(dst) == 0 {
+		return src
 	}
 	merged := make(map[string]any, len(dst)+len(src))
 	for key, value := range dst {
@@ -220,7 +247,8 @@ func (p *SpanPart) Span(projectID, source string, stored *logstore.TraceSpan) *l
 		}
 	}
 	// Derive the tree parent and the duration now, so the span reads the same before it is stored.
-	_ = span.SerializeFields()
+	// The JSON columns are encoded once, when the store writes the row.
+	span.DeriveFields()
 	return span
 }
 
@@ -236,7 +264,20 @@ func encodeValue(value any) string {
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	return ownedString(data)
+}
+
+// ownedString views freshly encoded JSON as a string without copying it. A span's content can be
+// megabytes, and string(data) would hold it twice. The caller must own data and never write to it
+// again: the encoder returns a new slice per call, which is what makes this safe here.
+func ownedString(data []byte) string {
+	return unsafe.String(unsafe.SliceData(data), len(data))
+}
+
+// looksLikeJSON reports whether text starts, after any space, like a JSON object or array.
+func looksLikeJSON(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
 
 // decodeValue reads a stored span value back. Text that is not a JSON object or array is a string.
@@ -244,9 +285,9 @@ func decodeValue(stored string) any {
 	if stored == "" {
 		return nil
 	}
-	if trimmed := strings.TrimSpace(stored); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+	if looksLikeJSON(stored) {
 		var value any
-		if err := sonic.Unmarshal([]byte(stored), &value); err == nil {
+		if err := sonic.UnmarshalString(stored, &value); err == nil {
 			return value
 		}
 	}
