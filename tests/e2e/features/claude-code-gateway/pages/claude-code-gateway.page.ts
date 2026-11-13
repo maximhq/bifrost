@@ -7,6 +7,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly saveBtn: Locator
   readonly enabledSwitch: Locator
   readonly issuerURLInput: Locator
+  readonly accessTokenTTLInput: Locator
   readonly gatewayURL: Locator
   readonly connectInstructions: Locator
   readonly managedSettingsInput: Locator
@@ -27,6 +28,7 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.saveBtn = page.getByTestId('claude-code-save-btn')
     this.enabledSwitch = page.getByTestId('claude-code-gateway-switch')
     this.issuerURLInput = page.getByTestId('gateways-issuer-url-input')
+    this.accessTokenTTLInput = page.getByTestId('gateways-access-token-ttl-input')
     this.gatewayURL = page.getByTestId('claude-code-gateway-url')
     this.connectInstructions = page.getByTestId('claude-code-connect-instructions')
     this.managedSettingsInput = page.getByTestId('claude-code-managed-settings-input')
