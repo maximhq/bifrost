@@ -1298,7 +1298,7 @@ func TestBudgetResolver_EvaluateAnswersFromTheAccessOnTheContext(t *testing.T) {
 // key: the state a store that grants access to something other than a key leaves behind.
 func keylessAccessCtx(base schemas.Permit) *schemas.BifrostContext {
 	ctx := emptyCtx()
-	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{base}, nil, "", nil))
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{base}, "", nil, "", nil))
 	return ctx
 }
 
