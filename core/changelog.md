@@ -7,6 +7,7 @@
   `sarvam-30b` is no longer served. Use `sarvam-105b`.
   </Warning>
 - feat: gemini - native decisions for `gemini-decision-*` models and an `input_file` part for PDFs, audio and video; empty or mistyped input is rejected before the call (thanks [@Xytronix](https://github.com/Xytronix)!)
+- feat: xai - speech through `POST /v1/tts` (voice `voice_id`, default `eve`; `language_code` or `auto`; `response_format` as `output_format.codec`; raw audio returned) and transcription through `POST /v1/stt` (OpenAI-shaped multipart with the file last; words, language, duration and duration usage mapped) (thanks [@Xytronix](https://github.com/Xytronix)!)
 - feat: realtime - Gemini Live on the Gemini API and Vertex, Vertex Live through the GenAI native protocol, ElevenLabs Scribe and Soniox real-time transcription
 - feat: speech sessions - `SpeechSessionProvider` interface for incremental text-to-speech over a WebSocket, implemented by ElevenLabs and Soniox
 - feat: elevenlabs - passthrough and native WebSocket dialing for Scribe and text-to-dialogue, raw response kept for `with-timestamps`
