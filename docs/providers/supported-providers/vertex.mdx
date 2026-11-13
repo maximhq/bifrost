@@ -1544,7 +1544,7 @@ The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech
 | Bifrost                              | Cloud Text-to-Speech           | Notes                                                                                              |
 | ------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------- |
 | `input`                              | `input.text`                   | Input that starts with `<speak` is sent as `input.ssml`                                            |
-| `voice`                              | `voice.name`                   | Required unless `language_code` is set                                                             |
+| `voice`                              | `voice.name`                   | Required. `/v1/audio/speech` returns a 400 without it                                              |
 | `language_code`                      | `voice.languageCode`           | Defaults to the locale at the start of the voice name. It must match the voice's locale            |
 | `response_format`                    | `audioConfig.audioEncoding`    | `mp3` (default) is `MP3`, `wav` is `LINEAR16`, `opus` is `OGG_OPUS`. Any other value returns a 400 |
 | `speed`                              | `audioConfig.speakingRate`     | -                                                                                                  |

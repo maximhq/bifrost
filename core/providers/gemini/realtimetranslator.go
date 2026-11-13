@@ -69,6 +69,10 @@ type liveTranslator struct {
 	userItem *liveUserItem
 	response *liveResponseState
 	usage    *liveUsage
+	// afterToolCall is set when a response ended with its function calls. A turnComplete that follows at once belongs to it.
+	afterToolCall bool
+	// cancelledToolTurn is set when Live interrupted a tool call; the turnComplete that follows ends it as a cancelled response.
+	cancelledToolTurn bool
 }
 
 // liveUserItem is the conversation item for one utterance the client spoke.
@@ -575,6 +579,13 @@ func (t *liveTranslator) serverContent(out *liveOutput, content *GeminiLiveServe
 		t.response.interrupted = true
 		t.closeMessage(out, "incomplete")
 	}
+	if content.Interrupted && t.response == nil {
+		// An interrupted tool call is not answered; its turnComplete reports the cancelled turn's own usage.
+		if t.afterToolCall {
+			t.cancelledToolTurn = true
+		}
+		t.afterToolCall = false
+	}
 	if content.InputTranscription != nil {
 		t.inputTranscript(out, content.InputTranscription.Text)
 	}
@@ -598,7 +609,16 @@ func (t *liveTranslator) serverContent(out *liveOutput, content *GeminiLiveServe
 	// An extended-thinking model ends a turn with IN_PROGRESS when it will keep talking, and with IDLE
 	// when it is done. The response stays open across the first.
 	if content.TurnComplete && content.InteractionStatus != "IN_PROGRESS" {
-		t.finishResponse(out)
+		if t.afterToolCall && t.response == nil {
+			// The function-call response ended with its calls. This turnComplete only reports its usage, which
+			// stays in t.usage and is counted with the answer's.
+			t.afterToolCall = false
+		} else {
+			if t.cancelledToolTurn && t.response == nil {
+				t.ensureResponse(out).interrupted = true
+			}
+			t.finishResponse(out)
+		}
 	}
 }
 
@@ -613,7 +633,7 @@ func (t *liveTranslator) ensureResponse(out *liveOutput) *liveResponseState {
 		textOnly, t.nextTextOnly = *t.nextTextOnly, nil
 	}
 	t.response = &liveResponseState{id: t.id("resp_"), textOnly: textOnly, items: []liveItem{}}
-	t.audioPending = false
+	t.audioPending, t.afterToolCall, t.cancelledToolTurn = false, false, false
 	event := t.newEvent("response.created")
 	event.Response = &liveResponse{ID: t.response.id, Object: "realtime.response", Status: "in_progress", Output: []liveItem{}}
 	out.client(event)
@@ -770,6 +790,10 @@ func (t *liveTranslator) toolCall(out *liveOutput, call *GeminiLiveToolCall) {
 		conversationDone.Item = &item
 		out.client(conversationDone)
 	}
+	// Live waits for the outputs, and some models send no turnComplete until they arrive, so the response ends with
+	// its calls: a client answers a function call after response.done.
+	t.finishResponse(out)
+	t.afterToolCall = true
 }
 
 // voiceActivity reports the speech Live heard as the events a server-side detector would send.

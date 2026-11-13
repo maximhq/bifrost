@@ -94,10 +94,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrostReq is nil")
 	}
-	// Here we confirm if the response_format is wav or empty string
-	// If its anything else, we will return an error
+	// Gemini TTS returns raw PCM; only wav (wrapped here) or empty (raw PCM) can be produced.
 	if bifrostReq.Params != nil && bifrostReq.Params.ResponseFormat != "" && bifrostReq.Params.ResponseFormat != "wav" {
-		return nil, fmt.Errorf("gemini does not support response_format: %s. Only wav or empty string is supported which defaults to wav", bifrostReq.Params.ResponseFormat)
+		return nil, utils.InvalidRequestErrorf("gemini speech does not support response_format %q; use wav, or leave it empty for raw 24 kHz PCM", bifrostReq.Params.ResponseFormat)
 	}
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
@@ -107,11 +106,18 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
 	// Convert speech input to Gemini format
 	if bifrostReq.Input != nil && bifrostReq.Input.Input != "" {
+		text := bifrostReq.Input.Input
+		// Gemini TTS has no instructions field; a style direction ahead of the text steers the voice.
+		if bifrostReq.Params != nil {
+			if instructions := strings.TrimSpace(bifrostReq.Params.Instructions); instructions != "" {
+				text = instructions + ": " + text
+			}
+		}
 		geminiReq.Contents = []Content{
 			{
 				Parts: []*Part{
 					{
-						Text: bifrostReq.Input.Input,
+						Text: text,
 					},
 				},
 			},

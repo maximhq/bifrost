@@ -817,6 +817,96 @@ func TestLiveTranslatorToolCalls(t *testing.T) {
 	require.Equal(t, "12:00", responses.Get("1.response.output").String(), "Live needs an object, so other outputs are wrapped")
 }
 
+// TestLiveTranslatorEndsAToolCallResponseWithoutATurnComplete pins the tool-call turn of the models that wait for the
+// tool response before they end the turn (gemini-3.1-flash-live-preview, the 2.5 native-audio model): Live sends the
+// toolCall and then nothing. The response ends with the function calls, so a client that answers after response.done
+// can, and the single usage Live reports with the answer's turnComplete lands on the answer.
+func TestLiveTranslatorEndsAToolCallResponseWithoutATurnComplete(t *testing.T) {
+	t.Parallel()
+	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+
+	calls := liveReceiveAll(t, tr, liveToolCallFrame)
+	types := liveEventTypes(calls)
+	require.Equal(t, "response.created", types[0])
+	require.Equal(t, "response.done", types[len(types)-1], "the response ends with its function calls")
+	first := liveFind(t, calls, "response.done").Get("response")
+	require.Equal(t, "completed", first.Get("status").String())
+	require.Equal(t, 2, len(first.Get("output").Array()))
+	require.False(t, first.Get("usage").Exists(), "Live has reported no usage yet")
+
+	liveSend(t, tr, `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call_960817","output":"{\"temp_c\":18}"}}`)
+	liveSend(t, tr, `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call_960821","output":"12:00"}}`)
+	out := liveSend(t, tr, `{"type":"response.create"}`)
+	require.Len(t, out.Provider, 1, "the tool response reaches Live")
+
+	answer := liveReceiveAll(t, tr, liveAudioFrame, liveGenerationDone, liveTurnDoneUsage)
+	require.Equal(t, 1, strings.Count(strings.Join(liveEventTypes(answer), " "), "response.done"), "one response for the answer")
+	done := liveFind(t, answer, "response.done").Get("response")
+	require.Equal(t, "completed", done.Get("status").String())
+	require.Equal(t, int64(548), done.Get("usage.input_tokens").Int(), "the usage Live sent with the answer's turnComplete")
+	require.Equal(t, "message", done.Get("output.0.type").String())
+}
+
+// TestLiveTranslatorCarriesAToolTurnsUsageToTheAnswer pins the same turn on gemini-3.8-live, which does send a
+// turnComplete with usage right after the toolCall: the response has already ended, so that frame adds no
+// response of its own and its usage is counted with the answer's.
+func TestLiveTranslatorCarriesAToolTurnsUsageToTheAnswer(t *testing.T) {
+	t.Parallel()
+	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+
+	calls := liveReceiveAll(t, tr, liveToolCallFrame, liveGenerationDone, `{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":612,"responseTokenCount":12,"totalTokenCount":624}}`)
+	require.Equal(t, 1, strings.Count(strings.Join(liveEventTypes(calls), " "), "response.done"), "the turnComplete after the toolCall adds no second response")
+	require.Equal(t, 1, strings.Count(strings.Join(liveEventTypes(calls), " "), "response.created"))
+
+	liveSend(t, tr, `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call_960817","output":"{\"temp_c\":18}"}}`)
+	liveSend(t, tr, `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call_960821","output":"12:00"}}`)
+	liveSend(t, tr, `{"type":"response.create"}`)
+
+	answer := liveReceiveAll(t, tr, liveAudioFrame, liveGenerationDone, liveTurnDoneUsage)
+	done := liveFind(t, answer, "response.done").Get("response")
+	require.Equal(t, int64(612+548), done.Get("usage.input_tokens").Int(), "both generations are billed, on the answer")
+	require.Equal(t, int64(12+70), done.Get("usage.output_tokens").Int())
+}
+
+// Live (gemini-3.1-flash-live-preview, probed) ends an interrupted tool call with toolCallCancellation, interrupted and a
+// turnComplete that carries the cancelled turn's usage. That usage belongs on the cancelled turn, not on the next answer.
+func TestLiveTranslatorKeepsAnInterruptedToolTurnsUsageOffTheNextResponse(t *testing.T) {
+	t.Parallel()
+	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+
+	calls := liveReceiveAll(t, tr, liveToolCallFrame)
+	require.Equal(t, 1, strings.Count(strings.Join(liveEventTypes(calls), " "), "response.done"), "the function calls end their response")
+
+	cancelled := liveReceiveAll(t, tr,
+		`{"toolCallCancellation":{"ids":["call_960817","call_960821"]}}`,
+		`{"serverContent":{"interrupted":true}}`,
+		`{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":213,"responseTokenCount":0,"totalTokenCount":213}}`)
+	done := liveFind(t, cancelled, "response.done").Get("response")
+	require.Equal(t, int64(213), done.Get("usage.input_tokens").Int(), "the cancelled turn is reported with its own tokens")
+	require.Equal(t, "cancelled", done.Get("status").String(), "an interrupted turn is reported cancelled, like an interrupted answer")
+	require.Equal(t, "cancelled", done.Get("status_details.type").String())
+	require.Equal(t, "turn_detected", done.Get("status_details.reason").String())
+
+	answer := liveReceiveAll(t, tr, liveAudioFrame, liveGenerationDone, liveTurnDoneUsage)
+	reply := liveFind(t, answer, "response.done").Get("response")
+	require.Equal(t, int64(548), reply.Get("usage.input_tokens").Int(), "the answer carries only its own tokens")
+	require.Equal(t, "completed", reply.Get("status").String(), "the answer after the cancelled turn is not cancelled")
+}
+
+// An interrupt that is not followed by the cancelled turn's own turnComplete must not mark the next answer cancelled.
+func TestLiveTranslatorAnAnswerAfterAnInterruptedToolCallIsNotCancelled(t *testing.T) {
+	t.Parallel()
+	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
+
+	liveReceiveAll(t, tr, liveToolCallFrame)
+	liveReceiveAll(t, tr, `{"serverContent":{"interrupted":true}}`)
+
+	answer := liveReceiveAll(t, tr, liveAudioFrame, liveGenerationDone, liveTurnDoneUsage)
+	reply := liveFind(t, answer, "response.done").Get("response")
+	require.Equal(t, "completed", reply.Get("status").String())
+	require.Equal(t, int64(548), reply.Get("usage.input_tokens").Int())
+}
+
 func TestLiveTranslatorInterruption(t *testing.T) {
 	t.Parallel()
 	tr := readyLiveTranslator(t, `{"type":"realtime"}`)
