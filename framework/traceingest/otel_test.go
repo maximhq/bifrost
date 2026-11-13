@@ -89,10 +89,14 @@ func TestMapOTelSpanReadsEveryConvention(t *testing.T) {
 			"langfuse.observation.usage_details":   `{"input":7,"output":2,"total":9}`,
 			"langfuse.observation.cost_details":    `{"total":0.0003}`,
 			"langfuse.observation.metadata.source": "cron",
-			"langfuse.session.id":                  "s-9",
-			"langfuse.user.id":                     "u-9",
-			"langfuse.trace.tags":                  []any{"nightly"},
-			"langfuse.environment":                 "staging",
+			// v5 SDKs JSON-encode every metadata value, strings included. A bare number stays a string.
+			"langfuse.observation.metadata.team":  `"growth"`,
+			"langfuse.observation.metadata.count": "123",
+			"langfuse.trace.metadata.limits":      `{"max":3}`,
+			"langfuse.session.id":                 "s-9",
+			"langfuse.user.id":                    "u-9",
+			"langfuse.trace.tags":                 []any{"nightly"},
+			"langfuse.environment":                "staging",
 		}))
 		assert.Equal(t, logstore.TraceSpanKindLLM, part.Kind)
 		assert.Equal(t, "hello", part.Output)
@@ -101,7 +105,7 @@ func TestMapOTelSpanReadsEveryConvention(t *testing.T) {
 		assert.Equal(t, 9, part.TotalTokens)
 		require.NotNil(t, part.Cost)
 		assert.InDelta(t, 0.0003, *part.Cost, 1e-12, "a cost the SDK sent is kept")
-		assert.Equal(t, map[string]any{"source": "cron"}, part.Metadata)
+		assert.Equal(t, map[string]any{"source": "cron", "team": "growth", "count": "123", "limits": map[string]any{"max": float64(3)}}, part.Metadata)
 		assert.Equal(t, "s-9", part.SessionID)
 		assert.Equal(t, "staging", part.Environment)
 		assert.Equal(t, []string{"nightly"}, part.Tags)
@@ -166,4 +170,38 @@ func TestMapOTelSpanNeverDropsASpan(t *testing.T) {
 
 	http := MapOTelSpan(otelSpan(map[string]any{"http.request.method": "POST", "url.full": "https://api.openai.com/v1/chat/completions"}))
 	assert.Equal(t, logstore.TraceSpanKindHTTP, http.Kind)
+}
+
+// TestKindForCoversEverySDKSpanType pins a kind for every span type the pinned SDK releases can send:
+// Braintrust 0.49.2 SpanTypeAttribute, OpenInference 0.1.43 span kinds, Langfuse 5 observation types.
+// A type with no mapping would land as "unknown" and lose its icon and filter in the Traces view.
+func TestKindForCoversEverySDKSpanType(t *testing.T) {
+	sdkTypes := map[string][]string{
+		"braintrust":    {"llm", "score", "function", "eval", "task", "tool", "automation", "facet", "preprocessor", "classifier", "review", "decision", "question", "log"},
+		"openinference": {"TOOL", "CHAIN", "LLM", "RETRIEVER", "EMBEDDING", "AGENT", "RERANKER", "GUARDRAIL", "EVALUATOR", "PROMPT", "DECISION"},
+		"langfuse":      {"span", "generation", "event", "agent", "tool", "chain", "retriever", "evaluator", "embedding", "guardrail"},
+	}
+	for sdk, types := range sdkTypes {
+		for _, name := range types {
+			assert.NotEmpty(t, KindFor(name), "%s span type %q has no Bifrost kind", sdk, name)
+		}
+	}
+	assert.Equal(t, logstore.TraceSpanKindFunction, KindFor("decision"))
+	assert.Equal(t, logstore.TraceSpanKindTask, KindFor("question"))
+	assert.Equal(t, logstore.TraceSpanKindEvent, KindFor("log"))
+}
+
+// TestMapOTelSpanNamesToolSpansAfterTheirTool pins that a tool span named only after its operation
+// ("execute_tool", Vercel's "ai.toolCall") takes the tool's name, so the tree does not read the same
+// word on every tool. A name the instrumentation chose is kept.
+func TestMapOTelSpanNamesToolSpansAfterTheirTool(t *testing.T) {
+	named := func(name string, attrs map[string]any) string {
+		span := otelSpan(attrs)
+		span.Name = name
+		return MapOTelSpan(span).Name
+	}
+	assert.Equal(t, "get_weather", named("execute_tool", map[string]any{"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_weather"}))
+	assert.Equal(t, "lookup", named("ai.toolCall", map[string]any{"ai.operationId": "ai.toolCall", "ai.toolCall.name": "lookup"}))
+	assert.Equal(t, "execute_tool get_weather", named("execute_tool get_weather", map[string]any{"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "get_weather"}))
+	assert.Equal(t, "my step", named("my step", map[string]any{"ai.operationId": "ai.toolCall", "ai.toolCall.name": "lookup"}))
 }

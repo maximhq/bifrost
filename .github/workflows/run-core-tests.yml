@@ -99,6 +99,7 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             127.0.0.1:8080
+            127.0.0.1:4317
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
@@ -238,6 +239,15 @@ jobs:
 
       - name: test-integration
         run: ./.github/workflows/scripts/test-integrations.sh
+
+      # Braintrust, Langfuse, Phoenix, Arize and OpenTelemetry SDKs -> Tracing. No provider and no
+      # vendor is called. Reuses the binary test-integration built; runs even when that step's live
+      # provider calls failed, since this suite does not depend on them.
+      - name: test-tracing-sdks
+        if: ${{ !cancelled() }}
+        env:
+          TRACING_PREBUILT: "1"
+        run: ./.github/workflows/scripts/test-tracing-sdks.sh
 
       - name: test-core-unit
         working-directory: core

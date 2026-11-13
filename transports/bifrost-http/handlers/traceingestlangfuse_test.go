@@ -92,7 +92,8 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 
 	projects := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/projects", auth, nil)
 	require.Equal(t, fasthttp.StatusOK, projects.Response.StatusCode())
-	assert.JSONEq(t, `{"data":[{"id":"p1","name":"agent","metadata":{}}]}`, string(projects.Response.Body()))
+	// Langfuse 5 validates organization as a required field: without it auth_check() and get_trace_url() raise.
+	assert.JSONEq(t, `{"data":[{"id":"p1","name":"agent","metadata":{},"organization":{"id":"bifrost","name":"Bifrost"}}]}`, string(projects.Response.Body()))
 	assert.Equal(t, fasthttp.StatusUnauthorized, env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/projects", nil, nil).Response.StatusCode())
 	assert.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/health", nil, nil).Response.StatusCode())
 
