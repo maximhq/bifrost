@@ -2140,22 +2140,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 			// Extract text from Gemini response for regular chunks
 			var deltaText string
-			if len(geminiResponse.Candidates) > 0 && geminiResponse.Candidates[0].Content != nil {
-				if len(geminiResponse.Candidates[0].Content.Parts) > 0 {
-					var sb strings.Builder
-					for _, p := range geminiResponse.Candidates[0].Content.Parts {
-						if p == nil {
-							continue
-						}
-						if p.Text != "" {
-							sb.WriteString(p.Text)
-						}
-					}
-					if sb.Len() > 0 {
-						deltaText = sb.String()
-						fullTranscriptionText += deltaText
-					}
-				}
+			if deltaText = geminiResponse.transcriptText(); deltaText != "" {
+				fullTranscriptionText += deltaText
 			}
 
 			// Check if this is the final chunk (has finishReason)
