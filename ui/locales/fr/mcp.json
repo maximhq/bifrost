@@ -482,6 +482,8 @@
 			"showErrorDetails": "Afficher les détails",
 			"hideErrorDetails": "Masquer les détails",
 			"codeMode": "Mode code",
+			"serverTypeOnSlugEnabled": "Mode code sur /mcp/{{slug}}",
+			"serverTypeOnSlugDisabled": "Outils directs sur /mcp/{{slug}}",
 			"spec": "Spécification",
 			"calls": "Appelle",
 			"copyBaseUrl": "Copier l'URL de base",

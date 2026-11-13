@@ -496,6 +496,8 @@
 			"showErrorDetails": "顯示詳細資料",
 			"hideErrorDetails": "隱藏詳細資料",
 			"codeMode": "程式碼模式",
+			"serverTypeOnSlugEnabled": "/mcp/{{slug}} 上的 Code Mode",
+			"serverTypeOnSlugDisabled": "/mcp/{{slug}} 上直接提供工具",
 			"spec": "規格",
 			"calls": "呼叫目標",
 			"copyBaseUrl": "複製基礎 URL",

@@ -496,6 +496,8 @@
 			"showErrorDetails": "显示详情",
 			"hideErrorDetails": "隐藏详情",
 			"codeMode": "代码模式",
+			"serverTypeOnSlugEnabled": "/mcp/{{slug}} 上的 Code Mode",
+			"serverTypeOnSlugDisabled": "/mcp/{{slug}} 上直接提供工具",
 			"spec": "规范",
 			"calls": "调用目标",
 			"copyBaseUrl": "复制基础 URL",
