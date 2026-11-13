@@ -51,6 +51,16 @@ type providerState struct {
 	allowed     schemas.WhiteList
 	blacklisted schemas.BlackList
 	aliasIndex  map[string]AliasOwner
+	// aliasPatterns holds regex: aliases in match order, tried after an aliasIndex miss.
+	aliasPatterns []patternAlias
+}
+
+// patternAlias is one regex: alias with the lists of the key that owns it.
+type patternAlias struct {
+	pattern     string
+	owner       AliasOwner
+	allowed     schemas.WhiteList
+	blacklisted schemas.BlackList
 }
 
 type Store struct {
@@ -238,8 +248,22 @@ func (s *Store) ResolveAlias(provider schemas.ModelProvider, model string) (Alia
 	}
 	// aliasIndex is keyed lowercase; match the case-insensitive contract
 	// of schemas.KeyAliases.ResolveConfig.
-	owner, ok := st.aliasIndex[strings.ToLower(model)]
-	return owner, ok
+	if owner, ok := st.aliasIndex[strings.ToLower(model)]; ok {
+		return owner, true
+	}
+	if schemas.IsRegexEntry(model) {
+		return AliasOwner{}, false
+	}
+	for _, pa := range st.aliasPatterns {
+		// A pattern counts only when its own key can serve the model.
+		if !pa.allowed.IsAllowed(model) || pa.blacklisted.IsBlocked(model) {
+			continue
+		}
+		if cfg, ok := schemas.ExpandPatternAlias(pa.pattern, pa.owner.Config, model); ok {
+			return AliasOwner{KeyID: pa.owner.KeyID, Config: cfg}, true
+		}
+	}
+	return AliasOwner{}, false
 }
 
 // Providers returns every provider with cached state. Used by callers
@@ -315,8 +339,9 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key, k
 			count int
 			name  string
 		})
-		aliasIndex = make(map[string]AliasOwner)
-		entries    = make([]KeyEntry, 0, len(keys))
+		aliasIndex    = make(map[string]AliasOwner)
+		aliasPatterns []patternAlias
+		entries       = make([]KeyEntry, 0, len(keys))
 	)
 
 	// Keyless custom providers with no keys are unrestricted — there's no
@@ -364,7 +389,18 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key, k
 			}
 		}
 
+		for _, pattern := range key.Aliases.PatternKeys() {
+			aliasPatterns = append(aliasPatterns, patternAlias{
+				pattern:     pattern,
+				owner:       AliasOwner{KeyID: key.ID, Config: key.Aliases[pattern]},
+				allowed:     key.Models,
+				blacklisted: key.BlacklistedModels,
+			})
+		}
 		for aliasName, cfg := range key.Aliases {
+			if schemas.IsRegexEntry(aliasName) {
+				continue
+			}
 			// Normalize to lowercase so the cross-key alias index matches the
 			// case-insensitive semantic of schemas.KeyAliases.ResolveConfig
 			// and schemas.KeyAliases.Validate's intra-key uniqueness check.
@@ -396,9 +432,10 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key, k
 	}
 
 	return &providerState{
-		entries:     entries,
-		allowed:     allowed,
-		blacklisted: blacklisted,
-		aliasIndex:  aliasIndex,
+		entries:       entries,
+		allowed:       allowed,
+		blacklisted:   blacklisted,
+		aliasIndex:    aliasIndex,
+		aliasPatterns: aliasPatterns,
 	}
 }

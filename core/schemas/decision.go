@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // BifrostDecisionRequest asks a list of questions about some evidence (Input).
@@ -59,7 +60,7 @@ func (t DecisionType) IsQuestionType() bool {
 }
 
 // DecisionInput is the evidence a decision is judged on. At most one member is
-// set: Text, Messages carrying text and inline image parts, or Structured (a
+// set: Text, Messages carrying text, image, and file parts, or Structured (a
 // JSON object or array, such as a Typesafe state). None set is an explicit
 // null, which providers that accept one forward as such.
 //
@@ -100,6 +101,23 @@ func (in DecisionInput) HasAssetParts() bool {
 	for _, message := range in.Messages {
 		for _, part := range message.Content.Parts {
 			if part.IsAsset() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// HasFileParts reports whether any message or tool output part is an
+// input_file.
+func (in DecisionInput) HasFileParts() bool {
+	for _, message := range in.Messages {
+		parts := message.Content.Parts
+		if message.Output != nil {
+			parts = message.Output.Parts
+		}
+		for _, part := range parts {
+			if part.Type == DecisionInputPartTypeFile {
 				return true
 			}
 		}
@@ -248,12 +266,27 @@ func (c *DecisionInputContent) UnmarshalJSON(data []byte) error {
 		}
 	} else if trimmed[0] == '[' {
 		var parts []DecisionInputPart
-		if err := Unmarshal(trimmed, &parts); err == nil {
+		err := Unmarshal(trimmed, &parts)
+		if err == nil {
+			scopeFileFields(parts)
 			c.Parts = parts
 			return nil
 		}
+		return fmt.Errorf("decision message content must be a string or an array of parts: %w", err)
 	}
 	return fmt.Errorf("decision message content must be a string or an array of parts")
+}
+
+// scopeFileFields clears url and mime_type on every part that is not an
+// input_file. Before input_file existed a part dropped those keys on decode, and
+// providers that forward parts as they are (OpenAI's input, Typesafe's state)
+// must keep receiving them without the keys.
+func scopeFileFields(parts []DecisionInputPart) {
+	for i := range parts {
+		if parts[i].Type != DecisionInputPartTypeFile {
+			parts[i].URL, parts[i].MimeType = nil, nil
+		}
+	}
 }
 
 // Decision input part types.
@@ -270,37 +303,48 @@ const (
 	// DecisionInputPartTypeRefusal is an assistant message's refusal, in
 	// Refusal.
 	DecisionInputPartTypeRefusal = "refusal"
+	// DecisionInputPartTypeFile is a file part: a PDF, audio, or video file
+	// whose media type is in MimeType. Its bytes are in Data, or in the
+	// multipart file part Name names, or it is fetched from URL.
+	DecisionInputPartTypeFile = "input_file"
 )
 
 // DecisionInputPart is one content part of a decision input message or tool
-// output: text, output text, a refusal, JSON, or an image. A part of another
-// type keeps only its type, by which providers reject it. Text is a string, or
-// a structured value that Typesafe-family models read as given.
+// output: text, output text, a refusal, JSON, an image, or a file. A part of
+// another type keeps only its type, by which providers reject it. Text is a
+// string, or a structured value that Typesafe-family models read as given.
 //
-// ID, Data, and Name are read only by Typesafe; every other provider rejects a
-// part with an ID. An image part with an ID is an asset: it is not evidence
-// itself, but Typesafe places it wherever the ID is written in the input,
-// instructions, or criteria. The asset's file is in Data (base64 on the wire),
-// and its format is read from the bytes. Name is set only for an asset that
-// arrived as a file part of a multipart request on the Typesafe route, so it
-// is sent to Typesafe as a file part again under the same name. Data holds the
-// asset's file, or an input_json part's object or array (see DecisionData).
+// ID is read only by Typesafe; every other provider rejects a part with an ID.
+// An image part with an ID is an asset: it is not evidence itself, but
+// Typesafe places it wherever the ID is written in the input, instructions, or
+// criteria. The asset's file is in Data (base64 on the wire), and its format
+// is read from the bytes.
+//
+// Data and Name carry a file's bytes for an asset or an input_file: in Data,
+// base64 on the wire, or in a multipart request's file part named by Name,
+// whose bytes the route moves into Data. An asset with a Name is sent to
+// Typesafe as a file part again under the same name. Data holds an input_json
+// part's object or array instead (see DecisionData). URL and MimeType belong to
+// input_file only and are cleared on any other part as it is decoded.
 type DecisionInputPart struct {
 	Type     string        `json:"type"`
 	Text     *DecisionText `json:"text,omitempty"`
 	ImageURL *string       `json:"image_url,omitempty"` // inline image: base64 data URL or HTTP(S) URL
-	Detail   *string       `json:"detail,omitempty"`    // image detail level: "low", "high", "auto", or "original"
+	Detail   *string       `json:"detail,omitempty"`    // "low", "high", "auto", or "original": an image's detail, or a video file's resolution
 	ID       *string       `json:"id,omitempty"`        // Typesafe asset reference
-	Data     DecisionData  `json:"data,omitzero"`       // Typesafe asset file, or input_json's object or array
-	Name     *string       `json:"name,omitempty"`      // Typesafe multipart file part name
+	Data     DecisionData  `json:"data,omitzero"`       // an asset's or input_file's bytes, or input_json's object or array
+	Name     *string       `json:"name,omitempty"`      // multipart file part holding the bytes
+	URL      *string       `json:"url,omitempty"`       // input_file: HTTPS URL or provider file URI to fetch it from
+	MimeType *string       `json:"mime_type,omitempty"` // input_file: the file's media type, such as "application/pdf"
 
 	Refusal               *string                `json:"refusal,omitempty"`                 // refusal part
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"` // text or image part ending a cacheable prefix
 }
 
-// DecisionData is a part's "data", which two part types send under the same
-// key: a Typesafe asset's file (File, base64 on the wire) or an input_json
-// part's object or array of objects (Structured). At most one member is set.
+// DecisionData is a part's "data", which part types send under the same key:
+// a file (File, base64 on the wire) for a Typesafe asset or an input_file, or
+// an input_json part's object or array of objects (Structured). At most one
+// member is set.
 type DecisionData struct {
 	File       []byte
 	Structured interface{}
@@ -319,7 +363,8 @@ func (d DecisionData) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads an object or array as a structured value, keeping every
-// number exactly, and a string as a base64 file.
+// number exactly, and a string as a base64 file. A data URL is rejected by
+// name: the file's media type has a field of its own, so data is plain base64.
 func (d *DecisionData) UnmarshalJSON(data []byte) error {
 	*d = DecisionData{}
 	trimmed := bytes.TrimSpace(data)
@@ -328,12 +373,41 @@ func (d *DecisionData) UnmarshalJSON(data []byte) error {
 		decoder.UseNumber()
 		return decoder.Decode(&d.Structured)
 	}
+	if bytes.HasPrefix(trimmed, []byte(`"data:`)) {
+		return fmt.Errorf("data must be the file base64-encoded, not a data URL")
+	}
 	return Unmarshal(trimmed, &d.File)
 }
 
 // IsAsset reports whether the part is an image sent by reference.
 func (p DecisionInputPart) IsAsset() bool {
 	return p.Type == DecisionInputPartTypeImage && p.ID != nil
+}
+
+// ValidateFile checks an input_file part: its media type is set and is not an
+// image, which is sent as an input_image, and its bytes come from exactly one
+// of data (or the multipart file part name names, already moved into data) and
+// url. Whether a provider reads that media type is the provider's check.
+func (p DecisionInputPart) ValidateFile() error {
+	if p.MimeType == nil || strings.TrimSpace(*p.MimeType) == "" {
+		return fmt.Errorf("input_file part requires mime_type, the file's media type")
+	}
+	if strings.HasPrefix(strings.ToLower(*p.MimeType), "image/") {
+		return fmt.Errorf("input_file part has image type %q; send images as input_image parts", *p.MimeType)
+	}
+	if p.Data.Structured != nil {
+		return fmt.Errorf("input_file data must be the file base64-encoded")
+	}
+	hasData, hasURL := len(p.Data.File) > 0, p.URL != nil && *p.URL != ""
+	switch {
+	case hasData && hasURL:
+		return fmt.Errorf("input_file part sends both data and url; send one")
+	case hasData || hasURL:
+		return nil
+	case p.Name != nil:
+		return fmt.Errorf("input_file part names file part %q, which needs a multipart request", *p.Name)
+	}
+	return fmt.Errorf("input_file part requires data, url, or a multipart file part named by name")
 }
 
 // IsTextual reports whether the part is read as text: input or output text, a

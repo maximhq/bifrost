@@ -121,7 +121,8 @@
 		"searching": "검색 중…",
 		"loadingMore": "더 불러오는 중…",
 		"useModel": "<name>{{name}}</name> 사용",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 차단됨"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 차단됨",
+		"templateUnknownGroup": "패턴에 정의되지 않은 캡처 그룹 {{group}}을(를) 참조합니다"
 	},
 	"providerSelect": {
 		"select": "프로바이더 선택",
@@ -581,7 +582,8 @@
 		"baseUrlIsRequiredForThisProvider": "이 프로바이더에는 기본 URL이 필요해요",
 		"baseUrlMustStartWithHttpOrHttps": "기본 URL은 http:// 또는 https://로 시작해야 해요",
 		"atLeastOneApiKeyIsRequired": "API 키가 하나 이상 필요해요",
-		"apiKeyValueCannotBeEmpty": "API 키 값은 비워 둘 수 없어요"
+		"apiKeyValueCannotBeEmpty": "API 키 값은 비워 둘 수 없어요",
+		"deploymentPatternInvalid": "배포 패턴이 잘못되었거나 모델 ID가 패턴에 없는 캡처 그룹을 사용합니다"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}을(를) 만들 권한이 없어요.",
