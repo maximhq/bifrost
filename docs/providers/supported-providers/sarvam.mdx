@@ -1,26 +1,28 @@
 ---
 title: "Sarvam AI"
-description: "Sarvam AI conversion guide - OpenAI-compatible chat plus Indic text-to-speech (Bulbul) and speech-to-text (Saaras/Saarika) with custom mapping"
+description: "Sarvam AI conversion guide - OpenAI-compatible Token Factory chat (v2) plus Indic text-to-speech (Bulbul) and speech-to-text (Saaras/Saarika) with custom mapping"
 icon: "s"
 ---
 
 ## Overview
 
 Sarvam AI is a voice and LLM provider focused on Indian languages (10 Indic languages + English). Bifrost supports both its text and voice workloads:
-- **OpenAI-compatible chat** - Chat completions delegate to the shared OpenAI implementation (base URL only differs)
+- **OpenAI-compatible chat (Token Factory v2)** - Chat completions delegate to the shared OpenAI implementation; Bifrost targets Sarvam's `/v2` API
 - **Text-to-Speech (Bulbul)** - Custom mapping; Sarvam returns base64-encoded audio in a JSON `audios[]` array rather than raw binary
 - **Speech-to-Text (Saaras/Saarika)** - Custom mapping; multipart upload with Sarvam-specific response fields (`transcript`, `timestamps`, `diarized_transcript`)
-- **Dual authentication** - Chat uses `Authorization: Bearer`; voice endpoints use the `api-subscription-key` header
+- **Decisions (Sarvam Prism)** - Custom mapping to Sarvam's System One API; returns calibrated probabilities for `noul`, `choice`, and `score` questions
+- **Dual authentication** - Chat and decisions use `Authorization: Bearer`; voice endpoints use the `api-subscription-key` header
 
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Chat Completions | ✅ | ✅ | `/v2/chat/completions` |
+| Responses API | ✅ | ✅ | `/v2/chat/completions` |
+| Decisions | ✅ | - | `/v2/systemone` |
 | Speech (TTS) | ✅ | ✅ | `/text-to-speech`, `/text-to-speech/stream` |
 | Transcription (STT) | ✅ | ❌ | `/speech-to-text` |
-| List Models | ✅ | - | `/v1/models` |
+| List Models | ✅ | - | `/v2/models` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
 
@@ -87,18 +89,35 @@ case schemas.Sarvam:
 
 # 1. Chat Completions
 
-Sarvam's chat completions endpoint is OpenAI-compatible, so Bifrost delegates to the shared OpenAI implementation. For full parameter reference, message handling, tool conversion, and streaming behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+Sarvam's Token Factory v2 chat completions endpoint is OpenAI-compatible, so Bifrost delegates to the shared OpenAI implementation. For full parameter reference, message handling, tool conversion, and streaming behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
 
-Available chat models include `sarvam-30b` and `sarvam-105b`.
+### Available Models
+
+| Model | Context Window | Notes |
+|-------|----------------|-------|
+| `sarvam-105b` | 128,000 | Sarvam's flagship Indic model; reasoning on by default |
+| `sarvam-105b-conversations` | 32,000 | Conversation-tuned variant of `sarvam-105b`; no reasoning |
+| `glm5.3` | 1,048,576 | Reasoning model |
+| `glm5.3-flash` | 1,048,576 | Faster, lower-cost reasoning model |
+| `gemma4` | 262,144 | Google Gemma 4; reasoning available, off by default |
+| `deepseekv4.1-flash-1017` | 1,048,576 | DeepSeek V4.1 Flash; reasoning model |
+
+<Note>
+**Breaking change.** `sarvam-30b` is not served by Token Factory v2; a request for it returns 404. Replace it with `sarvam-105b`.
+</Note>
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sarvam/sarvam-30b",
+    "model": "sarvam/glm5.3-flash",
     "messages": [{"role": "user", "content": "Namaste!"}]
   }'
 ```
+
+<Note>
+**Reasoning models.** `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017` reason by default; `gemma4` supports reasoning but leaves it off unless requested. Reasoning tokens count toward `max_tokens`; with a small budget the response can return empty `content` and `finish_reason: "length"`. Use at least 1024 output tokens for reasoning models. Set `reasoning_effort` to `low`, `high`, or `max`; GLM models reject `medium` and `xhigh`.
+</Note>
 
 ---
 
@@ -113,20 +132,50 @@ BifrostResponsesRequest
   → ToBifrostResponsesResponse()
 ```
 
-Same parameter support as Chat Completions with response format differences (output items instead of message content).
+Same parameter support as Chat Completions with response format differences (output items instead of message content). Bifrost does not forward `previous_response_id`, `conversation`, or `background: true` on this path: the request is converted to Chat Completions, which has no equivalent, so they are dropped. Set `reasoning.effort` to `low`, `high`, or `max`.
 
 ---
 
-# 3. Speech (Text-to-Speech, Bulbul)
+# 3. Decisions (Sarvam Prism)
 
-Sarvam's TTS endpoint is **not** OpenAI-compatible: it returns JSON with base64-encoded audio in an `audios[]` array, which Bifrost decodes into raw audio bytes.
+Sarvam Prism is a decision model served by `POST /v2/systemone`. It returns calibrated probabilities for typed questions instead of text, so it is reached through Bifrost's `/v1/decisions` route, not chat.
+
+| Bifrost question type | Sarvam question type | Answer |
+|---|---|---|
+| `predicate` | `noul` | `probability` in [0,1] |
+| `choice` | `choice` | the option with the highest probability |
+| `score` | `score` | probability-weighted level index |
+
+Limits: 32,768 tokens per question (state + question + options), 2-255 options per `choice`, and 2-10 levels per `score`. Images and box questions are refused locally. Streaming is not supported: `stream`, `temperature`, and `max_tokens` are dropped by Bifrost, and Sarvam returns 422 for them if they are forwarded as extra params. Each request must finish within 60 seconds.
+
+```bash
+curl -X POST http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sarvam/sarvam-prism",
+    "input": "Customer: I was double charged and nobody replied.",
+    "questions": [
+      {"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"}
+    ]
+  }'
+```
+
+<Note>
+`sarvam-prism` appears in the model list, but it is not a chat model: a chat request for it fails upstream with `model_call_failed`. Do not add it to `blacklisted_models` to hide it, because that list gates key selection and `/v1/decisions` would then fail with `no keys found that support model`.
+</Note>
+
+---
+
+# 4. Speech (Text-to-Speech, Bulbul)
+
+Sarvam's TTS endpoint is **not** OpenAI-compatible: it returns JSON with base64-encoded audio in an `audios[]` array, which Bifrost decodes into raw audio bytes. The streaming endpoint returns raw binary audio chunks, which Bifrost forwards as speech-audio deltas.
 
 ### Parameter Mapping
 
 | Bifrost field | Sarvam field | Notes |
 |---------------|--------------|-------|
 | `input` | `text` | Text to synthesize (required) |
-| `voice` | `speaker` | e.g. `anushka` (v2), `shubh` (v3) |
+| `voice` | `speaker` | e.g. `shubh` (v3), `anushka` (v2) |
 | `speed` | `pace` | Playback speed |
 | `language_code` | `target_language_code` | BCP-47 Indic code, e.g. `hi-IN` (**required**) |
 
@@ -136,20 +185,20 @@ Sarvam-specific fields are read from `ExtraParams`: `pitch`, `loudness`, `temper
 curl -X POST http://localhost:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "sarvam/bulbul:v2",
+    "model": "sarvam/bulbul:v3",
     "input": "Namaste, aap kaise hain?",
-    "voice": "anushka",
-    "target_language_code": "hi-IN"
+    "voice": "shubh",
+    "language_code": "hi-IN"
   }' --output speech.wav
 ```
 
 <Note>
-`target_language_code` is required by Sarvam. Pass it as `language_code` or as an extra field; without it the request is rejected.
+`target_language_code` is required by Sarvam. Pass it as `language_code` or as an extra field; without it the request is rejected. `bulbul:v2` is deprecated upstream; use `bulbul:v3`.
 </Note>
 
 ---
 
-# 4. Transcription (Speech-to-Text, Saaras/Saarika)
+# 5. Transcription (Speech-to-Text, Saaras/Saarika)
 
 Sarvam's STT endpoint accepts a multipart audio upload and returns a custom response shape that Bifrost maps onto its standard transcription format.
 
@@ -189,8 +238,10 @@ Bifrost applies the correct header per operation automatically.
 
 **HTTP Settings:**
 - **Base URL**: `https://api.sarvam.ai` (default)
-- **Chat endpoint**: `/v1/chat/completions`
-- **Voice endpoints**: `/text-to-speech`, `/speech-to-text`
+- **Chat endpoint**: `/v2/chat/completions`
+- **Decisions endpoint**: `/v2/systemone`
+- **Models endpoint**: `/v2/models`
+- **Voice endpoints**: `/text-to-speech`, `/text-to-speech/stream`, `/speech-to-text`
 
 ## Caveats
 
@@ -200,8 +251,20 @@ Bifrost applies the correct header per operation automatically.
 **Impact**: Handled by Bifrost's custom mapping; no action needed by callers beyond passing `target_language_code` for TTS.
 </Accordion>
 
-<Accordion title="No streaming for voice">
+<Accordion title="No streaming for transcription">
 **Severity**: Low
-**Behavior**: Speech and transcription streaming are not offered by Sarvam.
-**Impact**: `SpeechStream` / `TranscriptionStream` return `UnsupportedOperationError`.
+**Behavior**: Sarvam does not offer streaming speech-to-text.
+**Impact**: `TranscriptionStream` returns `UnsupportedOperationError`. TTS streaming is supported via `/text-to-speech/stream`.
+</Accordion>
+
+<Accordion title="Reasoning models need a larger output budget">
+**Severity**: Medium
+**Behavior**: Reasoning tokens count toward `max_tokens`. A small cap can leave `content` empty with `finish_reason: "length"`.
+**Impact**: Use at least 1024 output tokens for `sarvam-105b`, `glm5.3`, `glm5.3-flash`, and `deepseekv4.1-flash-1017`, or set `reasoning_effort` to `low`.
+</Accordion>
+
+<Accordion title="Model-specific parameter limits">
+**Severity**: Low
+**Behavior**: `n > 1` is not supported. `stop` accepts at most 4 sequences on `sarvam-105b` and `glm5.3`. `logprobs` is rejected on `glm5.3`. GLM models accept only `low`, `high`, and `max` for `reasoning_effort`.
+**Impact**: Requests outside these limits return an upstream 400 error.
 </Accordion>

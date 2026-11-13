@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 - **Ranked Code Mode Tool Discovery** - `listToolFiles` takes an optional `query` and `limit` (1-20, default 8) and returns a ranked shortlist of the caller's visible tool files instead of the complete listing, so a large MCP fleet can be searched by intent. Tools are ranked lexically by name and description; `mcp.tool_manager_config.code_mode_discovery_ranker` (or `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` / `BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE`) points it at an external HTTP ranker, with a fallback to the lexical shortlist on timeout or error. Without `query` the listing is unchanged
 
 ## 🐞 Fixed

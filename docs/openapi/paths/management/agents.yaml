@@ -551,6 +551,12 @@ agent-history:
       required: false
       schema:
         type: string
+    - name: caller_correlation_id
+      in: query
+      required: false
+      description: Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).
+      schema:
+        type: string
     - name: delivery_id
       in: query
       required: false
@@ -835,6 +841,12 @@ agent-history-stats:
       required: false
       schema:
         type: string
+    - name: caller_correlation_id
+      in: query
+      required: false
+      description: Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).
+      schema:
+        type: string
     - name: delivery_id
       in: query
       required: false
@@ -1014,6 +1026,12 @@ agent-history-histogram:
       required: false
       schema:
         type: string
+    - name: caller_correlation_id
+      in: query
+      required: false
+      description: Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).
+      schema:
+        type: string
     - name: delivery_id
       in: query
       required: false
@@ -1191,6 +1209,12 @@ agent-history-top-agents:
     - name: push_config_id
       in: query
       required: false
+      schema:
+        type: string
+    - name: caller_correlation_id
+      in: query
+      required: false
+      description: Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).
       schema:
         type: string
     - name: delivery_id

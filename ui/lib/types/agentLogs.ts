@@ -43,6 +43,8 @@ export interface AgentLogSummary {
 	response_message_id?: string;
 	artifact_id?: string;
 	push_config_id?: string;
+	// The delegating agent's A2A task (its x-bf-agent-correlation-id): links a subagent operation to its caller.
+	caller_correlation_id?: string;
 	delivery_id?: string;
 	attempt_id?: string;
 	event_sequence?: number;
@@ -99,6 +101,8 @@ export interface AgentLogFilters {
 	push_config_id?: string;
 	delivery_id?: string;
 	attempt_id?: string;
+	// Operations delegated under this caller task.
+	caller_correlation_id?: string;
 	record_kind?: string[];
 	status?: string[];
 	event_type?: string[];

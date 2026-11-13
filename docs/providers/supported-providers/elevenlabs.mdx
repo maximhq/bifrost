@@ -219,8 +219,8 @@ To get character-level timing alignment, enable `with_timestamps`:
 
 When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is used and the response includes:
 - `audio_base64` - Audio data as base64-encoded string
-- `alignment.char_start_times_ms` - Character start times in milliseconds
-- `alignment.char_end_times_ms` - Character end times in milliseconds
+- `alignment.character_start_times_seconds` - Character start times in seconds
+- `alignment.character_end_times_seconds` - Character end times in seconds
 - `alignment.characters` - Array of characters
 - `normalized_alignment` - Same as alignment but for normalized text
 
@@ -240,13 +240,13 @@ When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is us
 {
   "audio_base64": "<base64 encoded audio>",
   "alignment": {
-    "char_start_times_ms": [0, 150, 280, ...],
-    "char_end_times_ms": [150, 280, 420, ...],
+    "character_start_times_seconds": [0, 0.15, 0.28, ...],
+    "character_end_times_seconds": [0.15, 0.28, 0.42, ...],
     "characters": ["H", "e", "l", "l", "o", ...]
   },
   "normalized_alignment": {
-    "char_start_times_ms": [...],
-    "char_end_times_ms": [...],
+    "character_start_times_seconds": [...],
+    "character_end_times_seconds": [...],
     "characters": [...]
   }
 }
