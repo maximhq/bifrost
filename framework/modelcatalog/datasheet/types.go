@@ -456,6 +456,12 @@ type costInput struct {
 	// not the same as a billable call that reported nothing, so the per-request fallback needs
 	// this marker to tell them apart.
 	emptySearchResults bool
+	// emptyFetchContent marks a Fetch that returned no page content and no usage. DeepSeek
+	// bills a Fetch only when it produces page content, so such a response carries no usage on
+	// purpose and must not reach the per-request fallback. A Fetch that reported usage is never
+	// marked — repricing rebuilds the response without content, so only the recorded usage can
+	// tell a billed page from an unbilled one.
+	emptyFetchContent bool
 }
 
 // customPricingEntry is one flattened override ready for lookup.

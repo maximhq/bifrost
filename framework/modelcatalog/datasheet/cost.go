@@ -567,12 +567,13 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.imageUsage.Cost
 	}
 
-	// A Search that matched nothing is a successful answer DeepSeek does not bill, which is why
-	// its response carries no usage. That absence must not reach the per-request fallback below,
-	// where a catalog row's cost_per_request would price a call the provider charged nothing for.
-	// This sits after the provider-cost short-circuit on purpose: if a provider ever does report
-	// a fee on an empty result set, that report wins.
-	if input.emptySearchResults {
+	// A Search that matched nothing or a Fetch that returned no page content is a successful
+	// answer DeepSeek does not bill, which is why its response carries no usage. That absence
+	// must not reach the per-request fallback below, where a catalog row's cost_per_request
+	// would price a call the provider charged nothing for. This sits after the provider-cost
+	// short-circuit on purpose: if a provider ever does report a fee on an empty result, that
+	// report wins.
+	if input.emptySearchResults || input.emptyFetchContent {
 		return nil
 	}
 
@@ -985,6 +986,10 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.FetchResponse != nil:
 		input.usage = result.FetchResponse.Usage
+		// A Fetch with no usage and no content produced nothing billable, so it must not be
+		// priced by the per-request fallback. Usage is the discriminator because repricing
+		// rebuilds the response without the page text: a row that recorded a cost keeps it.
+		input.emptyFetchContent = result.FetchResponse.Usage == nil && strings.TrimSpace(result.FetchResponse.Content) == ""
 
 	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
 		input.usage = result.DecisionResponse.Usage

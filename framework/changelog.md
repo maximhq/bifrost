@@ -1,3 +1,4 @@
+- [fix]: a Fetch that returns no page content stays free through the `cost_per_request` fallback [@jimaldon](https://github.com/jimaldon)
 - [fix]: record a Search row's result count so a reprice bills a matched call and leaves an empty one free [@jimaldon](https://github.com/jimaldon)
 - [feat]: price model-less Search and Fetch calls from a provider-reported per-request cost, with a `cost_per_request` fallback [@jimaldon](https://github.com/jimaldon)
 - chore: upgraded core to v1.15.2

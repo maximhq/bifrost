@@ -7778,6 +7778,42 @@ func TestCalculateCost_EmptySearchStaysFreeWithCostPerRequestRow(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(resp, nil), "an empty Search is not billed, so no row may price it")
 }
 
+// A Fetch is billed only when it returns page content, so a response with no content and no
+// provider-reported usage is free even when a cost_per_request row resolves. A Fetch that did
+// return content still prices from the row when the provider reports no cost of its own.
+func TestCalculateCost_EmptyFetchStaysFreeWithCostPerRequestRow(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:          "deepseek-fetch",
+		Provider:       "deepseek",
+		Mode:           "fetch",
+		CostPerRequest: bifrost.Ptr(0.00075),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	billed := &schemas.BifrostResponse{
+		FetchResponse: &schemas.BifrostFetchResponse{
+			Content: "# Page",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FetchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, "deepseek-fetch"),
+			},
+		},
+	}
+	assert.InDelta(t, 0.00075, s.CalculateCost(billed, nil), 1e-12,
+		"a Fetch that returned content still prices from the row")
+
+	free := &schemas.BifrostResponse{
+		FetchResponse: &schemas.BifrostFetchResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FetchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, "deepseek-fetch"),
+			},
+		},
+	}
+	assert.Zero(t, s.CalculateCost(free, nil), "a Fetch with no page content is not billed, so no row may price it")
+}
+
 // TestCalculateCost_VoiceLiveRates pins Azure Voice Live pricing: a turn marked with the voice_live
 // pricing surface uses the model's _voice_live rates, splitting audio into the parts Azure Speech
 // handled (standard and custom speech rates) and the rest (audio rate). An unset _voice_live rate falls
