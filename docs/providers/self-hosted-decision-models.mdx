@@ -198,7 +198,7 @@ Before the first request, accept the Data Processing Agreement in the Decision M
 |---|---|
 | **Models** | `s1-fast`, `s1-pro` (rotating aliases), `reax-1.3` (EU tier only), `reax-1` (retires 5 December 2026; successor `reax-1.3`) |
 | **Questions per request** | `s1-fast` and `reax-1.3`: 1. `s1-pro` and `reax-1`: up to 3 |
-| **Input** | Text; `s1-fast`: up to 16,192 tokens; `s1-pro` and `reax-1`: up to 8,192 tokens per question; `reax-1.3`: up to 28,672 billed tokens (its two parts both read the text, so text counts about twice) |
+| **Input** | Text; `s1-fast`: up to 16,192 tokens; `s1-pro` and `reax-1`: up to 8,192 tokens per question; `reax-1.3`: up to 28,672 billed tokens (its two parts both read the text, and the first reads inputs up to about 3,000 tokens twice: short text counts about three times, longer text about twice; `usage.input_tokens` shows the exact figure) |
 | **Auth** | Bearer API key (`DECISIONMODELS_API_KEY`) |
 
 <Tabs group="config-method">
