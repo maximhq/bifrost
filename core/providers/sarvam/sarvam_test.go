@@ -24,20 +24,25 @@ func TestSarvam(t *testing.T) {
 	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:  schemas.Sarvam,
-		ChatModel: "sarvam-30b",
+		Provider:      schemas.Sarvam,
+		ChatModel:     "glm5.3-flash",
+		DecisionModel: "sarvam-prism",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Sarvam, Model: "sarvam-30b"},
 			{Provider: schemas.Sarvam, Model: "sarvam-105b"},
+			{Provider: schemas.Sarvam, Model: "gemma4"},
 		},
 		EmbeddingModel: "", // Sarvam doesn't support embedding
 		Scenarios: llmtests.TestScenarios{
 			SimpleChat:            true,
 			MultiTurnConversation: true,
+			ToolCalls:             true,
+			StructuredOutputs:     true,
 			ListModels:            true,
-			// CompletionStream is left off: Sarvam's chat models are reasoning models that
-			// emit 500+ reasoning chunks, tripping the harness's 500-chunk safety cap.
-			// Streaming is delegated to the shared OpenAI handler and verified manually.
+			Decision:              true,
+			// CompletionStream is left off: Sarvam's reasoning models can emit
+			// 500+ reasoning chunks, tripping the harness's 500-chunk safety cap.
+			// Streaming is delegated to the shared OpenAI handler and verified
+			// in the integration suite.
 		},
 	}
 

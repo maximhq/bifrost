@@ -77,7 +77,8 @@
 		"modelLimits": "limites de modelos",
 		"agent": "agente",
 		"relay": "relay",
-		"relays": "relays"
+		"relays": "relays",
+		"modelRouters": "roteadores"
 	},
 	"aboutField": "Sobre {{field}}",
 	"thisField": "este campo",
@@ -121,7 +122,8 @@
 		"searching": "A pesquisar…",
 		"loadingMore": "A carregar mais…",
 		"useModel": "Usar <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados",
+		"templateUnknownGroup": "Referencia o grupo de captura {{group}}, que o padrão não define"
 	},
 	"providerSelect": {
 		"select": "Selecionar fornecedor",
@@ -581,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "O URL base é obrigatório para este fornecedor",
 		"baseUrlMustStartWithHttpOrHttps": "O URL base tem de começar por http:// ou https://",
 		"atLeastOneApiKeyIsRequired": "É necessária pelo menos uma chave de API",
-		"apiKeyValueCannotBeEmpty": "O valor da chave de API não pode estar vazio"
+		"apiKeyValueCannotBeEmpty": "O valor da chave de API não pode estar vazio",
+		"deploymentPatternInvalid": "Um padrão de implantação é inválido ou o ID do modelo usa um grupo de captura que o padrão não define"
 	},
 	"permissionDenied": {
 		"create": "Não tem permissão para criar {{entity}}.",

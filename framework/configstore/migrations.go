@@ -591,6 +591,14 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
+	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
+	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
+	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
+	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
+	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
+	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
+	{IDs: []string{"add_mcp_client_server_type_on_slug_column"}, run: migrationAddMCPClientServerTypeOnSlugColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13723,6 +13731,86 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 	return nil
 }
 
+// migrationAddModelRoutersTable creates model_routers; nothing is copied into it.
+func migrationAddModelRoutersTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routers_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_routers would delete every model router", migrationName)
+		},
+	})
+}
+
+// migrationAddModelRouterTargetsAndRouting creates the model routers'
+// per-tier targets and adds the routing columns, which decide the requests a
+// router takes, to model_routers. Routers start without targets and off: a
+// routing rule's complexity_tier condition is untouched, so nothing that
+// routes today changes.
+func migrationAddModelRouterTargetsAndRouting(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_targets_and_routing"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{}, &tables.TableModelRouterTarget{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_router_targets would delete every router's models", migrationName)
+		},
+	})
+}
+
+// modelRouterSuggestionTierColumns hold a router's suggestions tier block: the
+// classifier that decides suggested tiers, its model, and the text it reads.
+var modelRouterSuggestionTierColumns = []string{
+	"SuggestionsTierClassifier", "SuggestionsTierProvider", "SuggestionsTierModel",
+	"SuggestionsTierPrompt", "SuggestionsTierInstructions", "SuggestionsTierCriteriaJSON",
+}
+
+// migrationAddModelRouterSuggestionTierColumns adds the suggestions tier
+// block's columns. A router without them reads as having no tier block, which
+// decides tiers with its phrase model, as before tiers were configurable.
+func migrationAddModelRouterSuggestionTierColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_suggestions_tier_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("add %s column to model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
 	type tierPhrases struct {
 		values   *[]string
@@ -17151,6 +17239,173 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "usage_estimation_tokenizers_json"); err != nil {
 				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDColumn adds the business_unit_id owner column to
+// governance_budgets, so a business unit can hold one budget per reset window the
+// way a team or customer does (TableBudget.TeamID / CustomerID). Adding a nullable
+// column is a catalog change and does not rewrite the table. Its index is built by
+// the migration after this one, migrationAddBudgetBusinessUnitIDIndex.
+//
+// Index only, no foreign key: the config loader may write a budget naming a business
+// unit before any row for that unit exists, so no database constraint ties the two.
+func migrationAddBudgetBusinessUnitIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("add business_unit_id column to governance_budgets: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("drop business_unit_id column from governance_budgets: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDIndex indexes governance_budgets.business_unit_id, which a
+// business unit's budget preload, its deletion and the config.json prune guard all filter on.
+// Upgraded databases get the column from addColumnIfNotExists, which does not build the tag
+// index. Built concurrently so the upgrade never blocks writes: budget usage is written to this
+// table on every dump.
+func migrationAddBudgetBusinessUnitIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, budgetBusinessUnitIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// budgetBusinessUnitIDIndexMigration builds the migration applied by
+// migrationAddBudgetBusinessUnitIDIndex, so tests exercise the same Migrate and Rollback
+// callbacks the upgrade runs.
+func budgetBusinessUnitIDIndexMigration(ctx context.Context, id string) *migrator.Migration {
+	const name = "idx_governance_budgets_business_unit_id"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_budgets", name, "business_unit_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_budgets", name)
+		},
+	}
+}
+
+// migrationAddDatabricksScopesColumn adds the databricks_scopes column to config_keys. There is
+// nothing to backfill: a NULL column keeps the key on the all-apis default it already requested.
+func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_databricks_scopes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				// Bound the ACCESS EXCLUSIVE wait on config_keys, as add_oauth_key_config_columns
+				// does, so a long transaction fails this boot's migration instead of queueing
+				// every key read behind it. The next boot retries.
+				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+					return fmt.Errorf("failed to bound the config_keys lock wait: %w", err)
+				}
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
+				return fmt.Errorf("failed to add databricks_scopes column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
+				return fmt.Errorf("failed to drop databricks_scopes column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddComplexitySuggestionSchedulesTable adds the per-router state of
+// phrase-suggestion schedules: when the next run is due, and the version
+// nodes claim a due run with. A router without a row gets one at its first
+// schedule check, so nothing is moved here.
+func migrationAddComplexitySuggestionSchedulesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routing_suggestion_schedules_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasTable(&tables.TableComplexitySuggestionSchedule{}) {
+				return nil
+			}
+			return tx.Migrator().CreateTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientServerTypeOnSlugColumn adds the server_type_on_slug column to config_mcp_clients.
+// Existing rows take the empty default, which inherits is_code_mode_client: today's behavior.
+func migrationAddMCPClientServerTypeOnSlugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_server_type_on_slug_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("add server_type_on_slug column to config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("drop server_type_on_slug column from config_mcp_clients: %w", err)
 			}
 			return nil
 		},

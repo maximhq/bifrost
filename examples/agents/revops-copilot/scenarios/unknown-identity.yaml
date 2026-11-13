@@ -1,0 +1,7 @@
+description: A caller Bifrost does not know (a virtual key that does not exist). unknown-entra-identity covers the Entra case.
+surface: 1-ingress-identity
+kind: llm
+caller_vk: sk-bf-not-a-real-key
+prompt: ping
+expect:
+  surface: 1-ingress-identity

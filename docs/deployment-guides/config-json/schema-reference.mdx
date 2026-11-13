@@ -164,7 +164,7 @@ Origin approval applies even without configured runtime credentials. It does not
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`, `baseten`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`, `baseten`, `kimchi`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -470,6 +470,7 @@ Common fields on each `client_configs` entry:
 | `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
 | `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
 | `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+| `server_type_on_slug` | string | Code Mode on this client's own `/mcp/<slug>` endpoint only: `"inherit"` (default) follows `is_code_mode_client`, `"enabled"` turns Code Mode on there, `"disabled"` serves the client's tools directly there. `/mcp`, Virtual MCP endpoints and LLM requests always follow `is_code_mode_client`. See [Code Mode on a server's own endpoint](/mcp/code-mode#code-mode-on-a-servers-own-endpoint). |
 | `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `require_public_target` | boolean | Server-managed, default `false`. Set to `true` when the client was registered over the management API without an admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as `true` it is never cleared by the API or by config.json reconciliation; declaring it `true` here is honored. |

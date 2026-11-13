@@ -327,6 +327,8 @@ type ConfigStore interface {
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
+	// UpdateMCPClientConfigHash writes only config_hash, and only while it still equals oldHash.
+	UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error)
 	// UpdateMCPClientDiscovery writes only the discovery columns; safe from a background refresh.
 	UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
@@ -369,6 +371,24 @@ type ConfigStore interface {
 	// was persisted. Read and save share one transaction so a concurrent edit to a preserved
 	// section cannot be overwritten.
 	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
+
+	// Model routers CRUD.
+	GetModelRouters(ctx context.Context) ([]ModelRouter, error)
+	GetModelRouter(ctx context.Context, id string) (*ModelRouter, error)
+	CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	// EditModelRouter applies edit to the stored router under its row lock and
+	// saves what edit changed; see RDBConfigStore.EditModelRouter.
+	EditModelRouter(ctx context.Context, id string, edit func(*ModelRouter) (bool, error)) (*ModelRouter, error)
+	DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error
+	ResetModelRouter(ctx context.Context, id string, defaults *ComplexityAnalyzerConfig) (*ModelRouter, error)
+	// SetModelRouterTargets replaces the model each tier of a saved router gets.
+	SetModelRouterTargets(ctx context.Context, routerID string, targets []tables.TableModelRouterTarget, tx ...*gorm.DB) error
+	// SetModelRouterRouting replaces which requests a saved router takes.
+	SetModelRouterRouting(ctx context.Context, routerID string, routing ModelRouterRouting, tx ...*gorm.DB) error
+	// SetModelRouterRoutings replaces several routers' routing in one
+	// transaction, checking priorities on the final state.
+	SetModelRouterRoutings(ctx context.Context, changes []ModelRouterRoutingChange, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -1099,6 +1119,13 @@ type ConfigStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+
+	// Phrase-suggestion schedule state: the next run of a router's schedule,
+	// claimed by one node when due. On the interface rather than read off the
+	// concrete store, so a store that wraps it keeps the shared schedule.
+	GetComplexitySuggestionSchedule(ctx context.Context, routerID string) (*tables.TableComplexitySuggestionSchedule, error)
+	SetComplexitySuggestionSchedule(ctx context.Context, routerID, scheduleHash string, nextRunAt time.Time, readVersion *int64) (bool, error)
+	ClaimComplexitySuggestionRun(ctx context.Context, routerID string, version int64, dueAt, nextRunAt time.Time, runID string) (bool, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
