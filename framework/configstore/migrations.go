@@ -595,6 +595,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
 	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17273,45 +17274,79 @@ func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
-// migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns adds the device_code_hash
-// and user_code_hash columns, each with a unique index, to
-// oauth2_authorize_requests. They let a row carry an RFC 8628 device
-// authorization (the Claude Code gateway sign-in) through the same consent and
-// single-use consume path as an authorization-code request. Both are nullable:
-// existing and authorization-code rows keep NULL, which the unique indexes
-// treat as distinct. The indexes are built concurrently on postgres so the
-// upgrade never blocks writes, which needs a migration without a transaction;
-// each step is idempotent, so an interrupted run is safe to repeat.
+// oauth2AuthorizeRequestsDeviceCodeColumns are the device-grant columns and their tag index names.
+var oauth2AuthorizeRequestsDeviceCodeColumns = []struct{ column, index string }{
+	{"device_code_hash", "idx_oauth2_authorize_requests_device_code_hash"},
+	{"user_code_hash", "idx_oauth2_authorize_requests_user_code_hash"},
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns adds the nullable device-grant columns to
+// oauth2_authorize_requests, with a bounded lock wait. Indexes come from the next migration.
 func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_oauth2_authorize_requests_device_code_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	noTxOpts := *migrator.DefaultOptions
-	noTxOpts.UseTransaction = false
-	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, migrationName, logger)); err != nil {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }
 
-// oauth2AuthorizeRequestsDeviceCodeColumnsMigration builds the migration applied
-// by migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns, so tests exercise the
-// same Migrate and Rollback callbacks the upgrade runs. The index names are the
-// ones the struct tags give a fresh install.
+// oauth2AuthorizeRequestsDeviceCodeColumnsMigration is the column migration, shared with tests.
 func oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx context.Context, id string, logger schemas.Logger) *migrator.Migration {
-	const table = "oauth2_authorize_requests"
-	columns := []struct{ column, index string }{
-		{"device_code_hash", "idx_oauth2_authorize_requests_device_code_hash"},
-		{"user_code_hash", "idx_oauth2_authorize_requests_user_code_hash"},
-	}
 	return &migrator.Migration{
 		ID: id,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			for _, c := range columns {
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
 				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
 					return fmt.Errorf("failed to add column %s: %w", c.column, err)
 				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Only short-lived sign-in state; nothing durable is lost.
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes builds the device-grant unique indexes
+// concurrently (no transaction), so upgrades never block writes.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeIndexesMigration is the index migration, shared with tests.
+func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id string) *migrator.Migration {
+	const table = "oauth2_authorize_requests"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
 				if err := ensureIndexConcurrently(tx, table, c.index, c.column, true); err != nil {
 					return fmt.Errorf("failed to create index on %s: %w", c.column, err)
 				}
@@ -17319,15 +17354,10 @@ func oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx context.Context, id s
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
-			// The columns only hold short-lived sign-in state (rows expire within
-			// minutes and are swept), so dropping them loses nothing durable.
 			tx = tx.WithContext(ctx)
-			for _, c := range columns {
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
 				if err := dropIndexConcurrently(tx, table, c.index); err != nil {
 					return fmt.Errorf("failed to drop index on %s: %w", c.column, err)
-				}
-				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
-					return fmt.Errorf("failed to drop column %s: %w", c.column, err)
 				}
 			}
 			return nil

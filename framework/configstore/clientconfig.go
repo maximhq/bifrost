@@ -606,8 +606,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if cc := oc.ClaudeCodeGateway; cc != nil {
 			hash.Write([]byte("claudeCodeGatewayEnabled:" + strconv.FormatBool(cc.Enabled)))
 			if cc.ManagedSettings != nil {
-				// encoding/json sorts map keys at every level, so the bytes are stable.
-				settings, err := json.Marshal(cc.ManagedSettings)
+				// MarshalSorted sorts map keys at every level, so the bytes are stable.
+				settings, err := providerUtils.MarshalSorted(cc.ManagedSettings)
 				if err != nil {
 					return "", fmt.Errorf("failed to marshal claude_code_gateway.managed_settings: %w", err)
 				}
