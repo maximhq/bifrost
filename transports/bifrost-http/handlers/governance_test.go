@@ -3494,9 +3494,9 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 }
 
 // A deprecated single-budget update merges into the budget already stored, so every field it does not
-// name has to survive - the window settings included. Before, coerceLegacyBudget dropped them, which
+// name has to survive - the window settings included. Before, BudgetsFromSingleBudgetUpdate dropped them, which
 // moved a quarterly budget's fiscal start back to the default on any unrelated edit.
-func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
+func TestBudgetsFromSingleBudgetUpdateKeepsResetConfig(t *testing.T) {
 	existing := &configstoreTables.TableBudget{
 		ID:            "budget-1",
 		MaxLimit:      100,
@@ -3505,7 +3505,7 @@ func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
 	}
 
 	t.Run("an edit that does not name it keeps the stored value", func(t *testing.T) {
-		got := coerceLegacyBudget(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
 		if got == nil || len(*got) != 1 {
 			t.Fatalf("expected one budget, got %v", got)
 		}
@@ -3518,8 +3518,22 @@ func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("moving off the quarterly window drops the stored quarter start", func(t *testing.T) {
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetDuration: schemas.Ptr("1M")}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetDuration != "1M" || budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum on the new window, got %+v", budget)
+		}
+		if budget.ResetConfig != nil {
+			t.Fatalf("expected no quarter start on a monthly window, got %+v", budget.ResetConfig)
+		}
+	})
+
 	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
-		got := coerceLegacyBudget(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
 		if got == nil || len(*got) != 1 {
 			t.Fatalf("expected one budget, got %v", got)
 		}
@@ -3641,7 +3655,7 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
-func TestCoerceLegacyBudget(t *testing.T) {
+func TestBudgetsFromSingleBudgetUpdate(t *testing.T) {
 	existing := &configstoreTables.TableBudget{ID: "bud-1", MaxLimit: 50, ResetDuration: "1d"}
 
 	tests := []struct {
@@ -3700,7 +3714,7 @@ func TestCoerceLegacyBudget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := coerceLegacyBudget(tt.req, tt.existing)
+			got := BudgetsFromSingleBudgetUpdate(tt.req, tt.existing)
 			if tt.wantNil {
 				if got != nil {
 					t.Fatalf("expected nil, got %+v", got)
@@ -3945,8 +3959,10 @@ func newMockCustomerStore() *mockCustomerStore {
 	return &mockCustomerStore{customers: make(map[string]*configstoreTables.TableCustomer)}
 }
 
+// ExecuteTransaction runs fn with a placeholder transaction. The mock's methods ignore it, but a real
+// store never hands fn a nil one, and code that requires a transaction refuses nil.
 func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
-	return fn(nil)
+	return fn(&gorm.DB{})
 }
 func (m *mockCustomerStore) GetCustomer(_ context.Context, id string, _ ...*gorm.DB) (*configstoreTables.TableCustomer, error) {
 	c, ok := m.customers[id]
@@ -4169,6 +4185,44 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	}
 	if len(governanceManager.adoptedBudgetIDs) != 1 || governanceManager.adoptedBudgetIDs[0] != budgetID {
 		t.Errorf("expected budget %s to be adopted onto its calendar boundary, got %v", budgetID, governanceManager.adoptedBudgetIDs)
+	}
+}
+
+// TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind pins the deprecated single-budget update that
+// moves a quarterly budget to another window: the stored quarter start does not travel onto a window it
+// is invalid for, so the request succeeds instead of failing validation with a 500.
+func TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	store.customers["cust-q"] = &configstoreTables.TableCustomer{
+		ID:   "cust-q",
+		Name: "Quarterly",
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "bud-q",
+			MaxLimit:      500,
+			ResetDuration: "1Q",
+			ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4},
+			LastReset:     time.Now(),
+		}},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"budget": map[string]any{"reset_duration": "1M"}})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-q")
+
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	budgets := store.customers["cust-q"].Budgets
+	if len(budgets) != 1 || budgets[0].ResetDuration != "1M" || budgets[0].MaxLimit != 500 {
+		t.Fatalf("expected the budget moved to 1M with its maximum, got %+v", budgets)
+	}
+	if budgets[0].ResetConfig != nil {
+		t.Fatalf("expected no quarter start on a monthly budget, got %+v", budgets[0].ResetConfig)
 	}
 }
 
@@ -5772,4 +5826,237 @@ func TestVirtualKeyMCPConfigCallerErrorsAre400(t *testing.T) {
 	require.Len(t, unchanged.MCPConfigs, 1)
 	assert.Equal(t, a.MCPConfigs[0].ID, unchanged.MCPConfigs[0].ID)
 	assert.Equal(t, []string{"echo"}, []string(unchanged.MCPConfigs[0].ToolsToExecute))
+}
+
+// newOwnedBudgetsStore opens a sqlite store holding one team for the budgets to belong to.
+
+func newOwnedBudgetsStore(t *testing.T) configstore.ConfigStore {
+	t.Helper()
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "owned-budgets.db")},
+	}, &mockLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Team"}))
+	return store
+}
+func ownedByTeam(b *configstoreTables.TableBudget) {
+	teamID := "team-1"
+	b.TeamID = &teamID
+}
+func reconcileOwned(t *testing.T, store configstore.ConfigStore, existing []configstoreTables.TableBudget, requests []CreateBudgetRequest, usageReset *BudgetUsageReset) ([]configstoreTables.TableBudget, error) {
+	t.Helper()
+	var out []configstoreTables.TableBudget
+	err := store.ExecuteTransaction(context.Background(), func(tx *gorm.DB) error {
+		var err error
+		out, err = ReconcileOwnedBudgets(context.Background(), store, tx, existing, requests, false, ownedByTeam, usageReset, NewBudgetInheritsShorterWindow)
+		return err
+	})
+	return out, err
+}
+func TestReconcileOwnedBudgets(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	ctx := context.Background()
+
+	first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 100, ResetDuration: "1M"}, {MaxLimit: 1000, ResetDuration: "1Y"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, first, 2)
+	for _, b := range first {
+		require.NotNil(t, b.TeamID, "a new row carries the owner setOwner stamped")
+		assert.Equal(t, "team-1", *b.TeamID)
+	}
+	var monthly, yearly configstoreTables.TableBudget
+	for _, b := range first {
+		if b.ResetDuration == "1M" {
+			monthly = b
+		} else {
+			yearly = b
+		}
+	}
+	require.NoError(t, store.UpdateBudgetUsage(ctx, monthly.ID, 42))
+	stored, err := store.GetBudget(ctx, monthly.ID)
+	require.NoError(t, err)
+	first = []configstoreTables.TableBudget{*stored, yearly}
+
+	// Matched by window: the same row, a new limit, the spend it had.
+	second, err := reconcileOwned(t, store, first, []CreateBudgetRequest{{MaxLimit: 200, ResetDuration: "1M"}, {ID: yearly.ID, MaxLimit: 1000, ResetDuration: "2Y"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, second, 2)
+	assert.Equal(t, monthly.ID, second[0].ID, "matched by window")
+	assert.Equal(t, 200.0, second[0].MaxLimit)
+	assert.Equal(t, 42.0, second[0].CurrentUsage, "usage survives an edit")
+	assert.Equal(t, yearly.ID, second[1].ID, "matched by id")
+	assert.Equal(t, "2Y", second[1].ResetDuration, "and moved onto the window the request names")
+
+	// Left out: deleted. Reset: zeroed and reported.
+	reset := NewBudgetUsageReset(true)
+	third, err := reconcileOwned(t, store, second, []CreateBudgetRequest{{ID: monthly.ID, MaxLimit: 300, ResetDuration: "1M"}}, reset)
+	require.NoError(t, err)
+	require.Len(t, third, 1)
+	assert.Zero(t, third[0].CurrentUsage)
+	assert.Equal(t, []string{monthly.ID}, reset.BudgetIDs(), "the in-memory pass is told which rows were zeroed")
+	persisted, err := store.GetBudget(ctx, monthly.ID)
+	require.NoError(t, err)
+	assert.Zero(t, persisted.CurrentUsage, "the reset reached the column the store owns")
+	_, err = store.GetBudget(ctx, yearly.ID)
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "a row the request leaves out is deleted")
+
+	// Nothing reset when nothing was asked for.
+	quiet := NewBudgetUsageReset(false)
+	_, err = reconcileOwned(t, store, third, []CreateBudgetRequest{{ID: monthly.ID, MaxLimit: 300, ResetDuration: "1M"}}, quiet)
+	require.NoError(t, err)
+	assert.Empty(t, quiet.BudgetIDs())
+}
+func TestReconcileOwnedBudgetsRefusesBadDeclarations(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	for name, requests := range map[string][]CreateBudgetRequest{
+		"shared window":  {{MaxLimit: 1, ResetDuration: "1M"}, {MaxLimit: 2, ResetDuration: "1M"}},
+		"negative limit": {{MaxLimit: -1, ResetDuration: "1M"}},
+		"zero limit":     {{MaxLimit: 0, ResetDuration: "1M"}},
+		"bad window":     {{MaxLimit: 1, ResetDuration: "fortnight"}},
+		"foreign id":     {{ID: "someone-elses", MaxLimit: 1, ResetDuration: "1M"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := reconcileOwned(t, store, nil, requests, nil)
+			require.Error(t, err)
+			assert.True(t, IsBadRequestError(err), "%v should answer 400", err)
+		})
+	}
+}
+func TestReconcileOwnedBudgetsRefusesANilTransaction(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	_, err := ReconcileOwnedBudgets(context.Background(), store, nil, nil, []CreateBudgetRequest{{MaxLimit: 1, ResetDuration: "1M"}}, false, nil, nil, NewBudgetStartsAtZero)
+	require.Error(t, err)
+	assert.False(t, IsBadRequestError(err), "a missing transaction is the caller's bug, not a bad request")
+}
+func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  NewBudgetUsage
+		usage float64
+	}{
+		{"starts at zero", NewBudgetStartsAtZero, 0},
+		{"inherits the shorter window", NewBudgetInheritsShorterWindow, 40},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			teamID := "team-1"
+			weekly := configstoreTables.TableBudget{ID: "weekly", MaxLimit: 100, ResetDuration: "1w", CurrentUsage: 40, TeamID: &teamID}
+			require.NoError(t, store.CreateBudget(ctx, &weekly))
+			var out []configstoreTables.TableBudget
+			require.NoError(t, store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				var err error
+				out, err = ReconcileOwnedBudgets(ctx, store, tx, []configstoreTables.TableBudget{weekly},
+					[]CreateBudgetRequest{{ID: "weekly", MaxLimit: 100, ResetDuration: "1w"}, {MaxLimit: 500, ResetDuration: "1M"}},
+					false, ownedByTeam, nil, tc.mode)
+				return err
+			}))
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.usage, b.CurrentUsage)
+					return
+				}
+			}
+			t.Fatal("the monthly budget was not created")
+		})
+	}
+}
+func TestApplyRateLimitUpdate(t *testing.T) {
+	hour, day := "1h", "1d"
+	tokens, requests := int64(100), int64(10)
+	stored := func() *configstoreTables.TableRateLimit {
+		return &configstoreTables.TableRateLimit{TokenMaxLimit: &tokens, TokenResetDuration: &hour, RequestMaxLimit: &requests, RequestResetDuration: &hour}
+	}
+
+	keepWindow := stored()
+	newTokens := int64(200)
+	applyRateLimitUpdate(keepWindow, &UpdateRateLimitRequest{TokenMaxLimit: &newTokens, RequestMaxLimit: &requests})
+	assert.Equal(t, int64(200), *keepWindow.TokenMaxLimit)
+	require.NotNil(t, keepWindow.TokenResetDuration)
+	assert.Equal(t, "1h", *keepWindow.TokenResetDuration, "a maximum sent alone keeps the stored window")
+	require.NoError(t, validateRateLimit(keepWindow))
+
+	newWindow := stored()
+	applyRateLimitUpdate(newWindow, &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &day})
+	assert.Equal(t, "1d", *newWindow.TokenResetDuration)
+	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
+	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
+}
+func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset bool
+		want  float64
+	}{
+		{name: "keep carries the spend over", reset: false, want: 5},
+		{name: "reset starts it at zero", reset: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 10, ResetDuration: "1d"}}, nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateBudgetUsage(ctx, first[0].ID, 5))
+			daily, err := store.GetBudget(ctx, first[0].ID)
+			require.NoError(t, err)
+
+			out, err := reconcileOwned(t, store, []configstoreTables.TableBudget{*daily},
+				[]CreateBudgetRequest{{ID: daily.ID, MaxLimit: 10, ResetDuration: "1d"}, {MaxLimit: 100, ResetDuration: "1M"}},
+				NewBudgetUsageReset(tc.reset))
+			require.NoError(t, err)
+			require.Len(t, out, 2)
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.want, b.CurrentUsage)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateTeamNewBudgetStartsAtZero pins that a team's budgets go through the shared reconciler and
+// keep the team behaviour: a window added on an edit starts at zero whether usage is preserved or
+// reset, never with the spend counted in the team's shorter window. The existing window keeps its
+// spend unless the operator resets it.
+func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reset     bool
+		wantDaily float64
+	}{
+		{name: "preserve keeps the existing spend", reset: false, wantDaily: 5},
+		{name: "reset zeroes the existing spend", reset: true, wantDaily: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+			ctx := context.Background()
+			teamID := "team-carry"
+			require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: teamID, Name: "Carry " + tc.name}))
+			require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "team-daily", MaxLimit: 10, ResetDuration: "1d", TeamID: &teamID, LastReset: time.Now()}))
+			require.NoError(t, store.UpdateBudgetUsage(ctx, "team-daily", 5))
+
+			body := fmt.Sprintf(`{"budgets":[{"id":"team-daily","max_limit":10,"reset_duration":"1d"},{"max_limit":100,"reset_duration":"1M"}],"reset_budget_usage":%t}`, tc.reset)
+			put := newGovernanceTeamIDCtx(teamID, body)
+			handler.updateTeam(put)
+			require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), "body: %s", put.Response.Body())
+
+			team, err := store.GetTeam(ctx, teamID)
+			require.NoError(t, err)
+			require.Len(t, team.Budgets, 2)
+			for _, b := range team.Budgets {
+				switch b.ResetDuration {
+				case "1M":
+					assert.Equal(t, 0.0, b.CurrentUsage, "the new monthly budget starts at zero")
+				case "1d":
+					assert.Equal(t, tc.wantDaily, b.CurrentUsage, "the existing daily budget")
+				}
+			}
+		})
+	}
 }

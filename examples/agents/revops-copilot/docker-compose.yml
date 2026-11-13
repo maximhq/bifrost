@@ -1,0 +1,44 @@
+# Runs the four agents. Bifrost runs separately (your enterprise deployment).
+# Bifrost must reach each agent at its advertised address, so <AGENT>_PUBLIC_URL
+# and the registration's agent_card_url have to agree.
+# The gateway URL comes from AGENT_BIFROST_URL, not BIFROST_URL: .env's BIFROST_URL is the
+# address on this machine (localhost), which inside a container is the container itself.
+x-agent: &agent
+  build: .
+  env_file: .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  revops-copilot:
+    <<: *agent
+    command: ["revops", "serve", "revops-copilot"]
+    environment:
+      BIFROST_URL: ${AGENT_BIFROST_URL:-http://host.docker.internal:8080}
+      REVOPS_COPILOT_HOST: 0.0.0.0
+      REVOPS_COPILOT_PUBLIC_URL: ${REVOPS_COPILOT_PUBLIC_URL:-http://host.docker.internal:9100}
+    ports: ["9100:9100"]
+  support-analyst:
+    <<: *agent
+    command: ["revops", "serve", "support-analyst"]
+    environment:
+      BIFROST_URL: ${AGENT_BIFROST_URL:-http://host.docker.internal:8080}
+      SUPPORT_ANALYST_HOST: 0.0.0.0
+      SUPPORT_ANALYST_PUBLIC_URL: ${SUPPORT_ANALYST_PUBLIC_URL:-http://host.docker.internal:9101}
+    ports: ["9101:9101"]
+  report-writer:
+    <<: *agent
+    command: ["revops", "serve", "report-writer"]
+    environment:
+      BIFROST_URL: ${AGENT_BIFROST_URL:-http://host.docker.internal:8080}
+      REPORT_WRITER_HOST: 0.0.0.0
+      REPORT_WRITER_PUBLIC_URL: ${REPORT_WRITER_PUBLIC_URL:-http://host.docker.internal:9102}
+    ports: ["9102:9102"]
+  publisher:
+    <<: *agent
+    command: ["revops", "serve", "publisher"]
+    environment:
+      BIFROST_URL: ${AGENT_BIFROST_URL:-http://host.docker.internal:8080}
+      PUBLISHER_HOST: 0.0.0.0
+      PUBLISHER_PUBLIC_URL: ${PUBLISHER_PUBLIC_URL:-http://host.docker.internal:9103}
+    ports: ["9103:9103"]

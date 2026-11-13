@@ -1,0 +1,10 @@
+description: The full job. Every surface evaluates and allows; the trace shows all of them.
+surface: all
+kind: ask
+prompt: Prepare the Q3 2026 customer health report and upload the PDF to the shared drive.
+expect:
+  allowed: true
+  # Not refused is not enough: the job must finish with a PDF that the publisher uploaded.
+  completed: true
+  pdf: true
+  published: true
