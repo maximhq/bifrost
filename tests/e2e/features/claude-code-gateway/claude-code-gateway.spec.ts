@@ -98,6 +98,28 @@ test.describe('Claude Code gateway settings', () => {
     })
   })
 
+  test('edits the shared access token lifetime in minutes and refuses one under a minute', async ({ page, claudeCodeGatewayPage }) => {
+    await mockConfig(page, 'https://bifrost.example.com')
+    await claudeCodeGatewayPage.goto()
+    await expect(claudeCodeGatewayPage.accessTokenTTLInput).toHaveValue('10')
+
+    let puts = 0
+    page.on('request', r => { if (new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT') puts++ })
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('0')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const invalidToast = page.getByText('The access token lifetime must be at least 1 minute.')
+    await expect(invalidToast).toBeVisible()
+    expect(puts).toBe(0)
+    await expect(invalidToast).toBeHidden({ timeout: 15000 })
+
+    await claudeCodeGatewayPage.accessTokenTTLInput.fill('5')
+    const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
+    await claudeCodeGatewayPage.saveBtn.click()
+    const clientConfig = (await submitted).postDataJSON().client_config
+    expect(clientConfig.oauth2_server_config.access_token_ttl).toBe(300)
+    expect(clientConfig.mcp_server_auth_mode).toBe('headers')
+  })
+
   test('requires an issuer URL before enabling', async ({ page, claudeCodeGatewayPage }) => {
     await mockConfig(page)
     await claudeCodeGatewayPage.goto()
