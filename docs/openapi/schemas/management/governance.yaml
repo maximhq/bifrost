@@ -3233,7 +3233,7 @@ ComplexityAnalyzerConfig:
           required: [classifier]
           properties:
             classifier:
-              const: decision
+              enum: [decision, llm]
         properties:
           session:
             properties:
@@ -3278,7 +3278,7 @@ ComplexityAnalyzerConfig:
           required: [classifier]
           properties:
             classifier:
-              const: decision
+              enum: [decision, llm]
     # Enabled suggestions need a model: their own provider and model, or the
     # llm block's.
     - if:
@@ -3296,6 +3296,16 @@ ComplexityAnalyzerConfig:
       then:
         required:
           - llm
+    # The llm classifier answers with the llm block's model.
+    - if:
+        properties:
+          classifier:
+            const: llm
+        required:
+          - classifier
+      then:
+        required:
+          - llm
   properties:
     tier_boundaries:
       $ref: '#/ComplexityTierBoundaries'
@@ -3303,9 +3313,9 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityKeywordConfig'
     classifier:
       type: string
-      enum: [semantic, decision]
+      enum: [semantic, decision, llm]
       default: semantic
-      description: Primary complexity classifier; omitted configuration keeps the semantic default.
+      description: Primary complexity classifier; omitted configuration keeps the semantic default. llm classifies with the model in the llm block.
     semantic:
       $ref: '#/ComplexitySemanticConfig'
     decision:
@@ -3385,10 +3395,19 @@ ComplexitySuggestionsSchedule:
 
 ComplexitySuggestion:
   type: object
-  description: One suggested set of phrases for a cluster of routed traffic.
+  description: One suggested set of phrases for a cluster of one model router's traffic.
   properties:
     id:
       type: string
+    router_id:
+      type: string
+      description: The model router whose traffic the suggestion came from.
+    router_version:
+      type: string
+      description: The router version (its phrase bank) the suggestion was computed against.
+    stale:
+      type: boolean
+      description: True when the router now serves a different version than the one the suggestion was computed against.
     status:
       type: string
       enum: [open, accepted, dismissed, superseded]
@@ -3449,6 +3468,14 @@ ComplexitySuggestionRun:
   properties:
     id:
       type: string
+    router_id:
+      type: string
+    router_version:
+      type: string
+    window_start:
+      type: string
+      format: date-time
+      description: Start of the window the run read; it ends at started_at.
     triggered_by:
       type: string
       enum: [schedule, manual]
@@ -3489,6 +3516,11 @@ ComplexitySuggestionRun:
 ComplexitySuggestionsList:
   type: object
   properties:
+    router_id:
+      type: string
+    router_version:
+      type: string
+      description: The version the router serves now.
     suggestions:
       type: array
       items:
@@ -3629,3 +3661,426 @@ ComplexitySessionConfig:
     enabled:
       type: boolean
       description: Enable monotonic session tier retention; default is false.
+
+ComplexitySuggestionRunEstimate:
+  type: object
+  properties:
+    requests:
+      type: integer
+      description: Captured requests in the window.
+    clustered:
+      type: integer
+      description: Size of the sample of the window the run would cluster, up to its clustering budget.
+    assigned:
+      type: integer
+      description: Requests outside the sample the run would try to assign to the clusters it finds. A request joins a cluster only if it is close enough to one, so fewer may end up counted.
+    skipped:
+      type: integer
+      description: Requests past the run's assignment bound, not counted.
+    max_model_calls:
+      type: integer
+      description: The most suggestion-model calls the run could make.
+
+ModelRouter:
+  type: object
+  description: A model router - an id, a name and a description beside the same settings as ComplexityAnalyzerConfig, phrase suggestions included, sent and returned at the top level; the model each tier gets; and the routing that decides which requests it takes. Routers are separate from the complexity analyzer config, which routing rules read complexity_tier from. The cross-field rules of ComplexityAnalyzerConfig apply.
+  additionalProperties: false
+  allOf:
+    - if:
+        not:
+          required: [classifier]
+          properties:
+            classifier:
+              enum: [decision, llm]
+        properties:
+          session:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - session
+      then:
+        required:
+          - semantic
+    - if:
+        properties:
+          semantic:
+            properties:
+              fallback:
+                const: llm
+            required:
+              - fallback
+        required:
+          - semantic
+      then:
+        required:
+          - llm
+    # Enabled suggestions capture the semantic classifier's vectors, so they
+    # need it as the primary classifier.
+    - if:
+        properties:
+          suggestions:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - suggestions
+      then:
+        required:
+          - semantic
+        not:
+          required: [classifier]
+          properties:
+            classifier:
+              enum: [decision, llm]
+    # Enabled suggestions need a model: their own provider and model, or the
+    # llm block's.
+    - if:
+        properties:
+          suggestions:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+            not:
+              required: [provider, model]
+        required:
+          - suggestions
+      then:
+        required:
+          - llm
+    # The llm classifier answers with the llm block's model.
+    - if:
+        properties:
+          classifier:
+            const: llm
+        required:
+          - classifier
+      then:
+        required:
+          - llm
+  required:
+    - name
+    - keywords
+  properties:
+    id:
+      type: string
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_-]+$'
+      not:
+        const: defaults
+      description: Stable router id; generated when omitted on create. `defaults` is reserved, since it names the endpoint that serves a new router's defaults.
+    name:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: Display name, unique across routers.
+    description:
+      type: string
+    tier_boundaries:
+      $ref: '#/ComplexityTierBoundaries'
+    keywords:
+      $ref: '#/ComplexityKeywordConfig'
+    classifier:
+      type: string
+      enum: [semantic, decision, llm]
+      default: semantic
+      description: Primary complexity classifier. llm classifies with the model in the llm block.
+    semantic:
+      $ref: '#/ComplexitySemanticConfig'
+    decision:
+      $ref: '#/ComplexityDecisionConfig'
+    llm:
+      $ref: '#/ComplexityLLMConfig'
+    session:
+      $ref: '#/ComplexitySessionConfig'
+    suggestions:
+      $ref: '#/ComplexitySuggestionsConfig'
+    targets:
+      type: array
+      readOnly: true
+      description: The model each tier gets. Returned with the router; set with PUT /api/routing/model-routers/{router_id}/targets. Ignored in a create or update body.
+      items:
+        $ref: '#/ModelRouterTarget'
+    routing:
+      allOf:
+        - $ref: '#/ModelRouterRouting'
+      description: Which requests the router takes. Always returned. Optional on create, where omitting it starts the router off, global, with the priority after the last global router. Ignored in an update body; set it with PUT /api/routing/model-routers/{router_id}/routing.
+
+ModelRouterUpdate:
+  type: object
+  description: A change to a model router. Only what the body sends changes - an omitted name or description keeps the stored one, and a body without any classifier setting keeps the stored config; a body with classifier settings replaces the whole config, under the same cross-field rules as ModelRouter. Targets and routing are ignored; each is set on its own endpoint.
+  additionalProperties: false
+  allOf:
+    - if:
+        not:
+          required: [classifier]
+          properties:
+            classifier:
+              enum: [decision, llm]
+        properties:
+          session:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - session
+      then:
+        required:
+          - semantic
+    - if:
+        properties:
+          semantic:
+            properties:
+              fallback:
+                const: llm
+            required:
+              - fallback
+        required:
+          - semantic
+      then:
+        required:
+          - llm
+    # Enabled suggestions capture the semantic classifier's vectors, so they
+    # need it as the primary classifier.
+    - if:
+        properties:
+          suggestions:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+        required:
+          - suggestions
+      then:
+        required:
+          - semantic
+        not:
+          required: [classifier]
+          properties:
+            classifier:
+              enum: [decision, llm]
+    # Enabled suggestions need a model: their own provider and model, or the
+    # llm block's.
+    - if:
+        properties:
+          suggestions:
+            properties:
+              enabled:
+                const: true
+            required:
+              - enabled
+            not:
+              required: [provider, model]
+        required:
+          - suggestions
+      then:
+        required:
+          - llm
+    # The llm classifier answers with the llm block's model.
+    - if:
+        properties:
+          classifier:
+            const: llm
+        required:
+          - classifier
+      then:
+        required:
+          - llm
+  properties:
+    id:
+      type: string
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_-]+$'
+      not:
+        const: defaults
+      description: Stable router id; generated when omitted on create. `defaults` is reserved, since it names the endpoint that serves a new router's defaults.
+    name:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: Display name, unique across routers.
+    description:
+      type: string
+    tier_boundaries:
+      $ref: '#/ComplexityTierBoundaries'
+    keywords:
+      $ref: '#/ComplexityKeywordConfig'
+    classifier:
+      type: string
+      enum: [semantic, decision, llm]
+      default: semantic
+      description: Primary complexity classifier. llm classifies with the model in the llm block.
+    semantic:
+      $ref: '#/ComplexitySemanticConfig'
+    decision:
+      $ref: '#/ComplexityDecisionConfig'
+    llm:
+      $ref: '#/ComplexityLLMConfig'
+    session:
+      $ref: '#/ComplexitySessionConfig'
+    suggestions:
+      $ref: '#/ComplexitySuggestionsConfig'
+    targets:
+      type: array
+      readOnly: true
+      description: The model each tier gets. Returned with the router; set with PUT /api/routing/model-routers/{router_id}/targets. Ignored in a create or update body.
+      items:
+        $ref: '#/ModelRouterTarget'
+    routing:
+      allOf:
+        - $ref: '#/ModelRouterRouting'
+      description: Which requests the router takes. Always returned. Optional on create, where omitting it starts the router off, global, with the priority after the last global router. Ignored in an update body; set it with PUT /api/routing/model-routers/{router_id}/routing.
+
+ModelRouterList:
+  type: object
+  properties:
+    routers:
+      type: array
+      items:
+        $ref: '#/ModelRouter'
+    count:
+      type: integer
+
+ModelRouterTarget:
+  type: object
+  description: One model for one tier of a model router. Omitting provider or model keeps the request's value, but a target sets at least one.
+  required:
+    - tier
+    - weight
+  anyOf:
+    - required: [provider]
+      properties:
+        provider:
+          type: string
+          minLength: 1
+    - required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+  dependentRequired:
+    key_id:
+      - provider
+  properties:
+    tier:
+      type: string
+      enum: [SIMPLE, MEDIUM, COMPLEX]
+    provider:
+      type: [string, 'null']
+      description: Target provider (omit to keep the request's provider). Moving to another provider clears a key the routing rules pinned.
+    model:
+      type: [string, 'null']
+      description: Target model (omit to keep the request's model)
+    key_id:
+      type: [string, 'null']
+      description: UUID of the API key to pin for this target
+    weight:
+      type: number
+      format: double
+      exclusiveMinimum: 0
+      description: Probability weight within the tier; the weights of a tier sum to 1.
+    fallbacks:
+      type: array
+      description: Fallback chain used when this target is chosen. A non-empty list replaces the request's chain; omit it or send [] to keep the chain the routing rules set.
+      items:
+        $ref: '#/RoutingFallback'
+
+ModelRouterTargetsRequest:
+  type: object
+  description: The targets that replace a model router's. Weights within a tier sum to 1; an empty list clears them.
+  required:
+    - targets
+  properties:
+    targets:
+      type: array
+      items:
+        $ref: '#/ModelRouterTarget'
+
+ModelRouterRouting:
+  type: object
+  description: Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it - narrowest scope first (virtual key, user, team, customer, global), by priority within a scope - and the first enabled router whose condition holds classifies the request. No other router is tried.
+  allOf:
+    - if:
+        required: [scope]
+        properties:
+          scope:
+            not:
+              const: global
+      then:
+        required: [scope_id]
+        properties:
+          scope_id:
+            type: string
+            minLength: 1
+  properties:
+    enabled:
+      type: boolean
+      default: false
+      description: Whether the router takes requests.
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key, user]
+      default: global
+      description: Scope level. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked.
+    scope_id:
+      type: [string, 'null']
+      description: ID of the scope's entity. Required when scope is not global; dropped for global.
+    cel_expression:
+      type: string
+      description: Optional CEL condition over the request as the routing rules left it. Empty takes every request in the scope. A condition of model == "<name>" lets apps ask for the router by that model name. Cannot use complexity_tier, which the router decides once it takes the request.
+    query:
+      type: [object, 'null']
+      description: Visual condition builder state (react-querybuilder combinator and rules). Not evaluated; cel_expression is.
+    priority:
+      type: integer
+      minimum: 0
+      default: 0
+      description: Order within the scope; lower is tried first. Unique within the same scope and scope_id among model routers, separate from routing rule priorities; a duplicate returns 409.
+
+ModelRouterRoutingUpdate:
+  type: object
+  description: A change to a model router's routing. Each field sent replaces the stored value; an omitted field keeps it. A non-global scope needs a scope_id, sent or already stored.
+  additionalProperties: false
+  properties:
+    enabled:
+      type: boolean
+      description: Whether the router takes requests.
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key, user]
+      description: Scope level. Changing to global drops scope_id.
+    scope_id:
+      type: [string, 'null']
+      description: ID of the scope's entity. The team, customer or virtual key must exist (400 otherwise); a user scope_id is not checked.
+    cel_expression:
+      type: string
+      description: CEL condition over the request as the routing rules left it; empty takes every request in the scope. Cannot use complexity_tier. Sent without query, it clears the stored builder state.
+    query:
+      type: [object, 'null']
+      description: Visual condition builder state for cel_expression. Not evaluated.
+    priority:
+      type: integer
+      minimum: 0
+      description: Order within the scope; lower is tried first. A priority another router in the same scope holds returns 409.
+
+ModelRouterDefaults:
+  type: object
+  description: What a new model router starts from.
+  properties:
+    config:
+      $ref: '#/ComplexityAnalyzerConfig'
+    decision_defaults:
+      type: object
+      description: The decision model's shipped per-tier guidance, as the router status endpoint serves it.
+    llm_default_prompt:
+      type: string
+      description: The llm classifier's shipped classification prompt.

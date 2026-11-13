@@ -53,6 +53,10 @@ type ClusterOptions struct {
 	Seed             int64
 }
 
+// DefaultMinClusterRequests is the smallest cluster kept when
+// ClusterOptions.MinRequests is not set.
+const DefaultMinClusterRequests = 6
+
 func (o ClusterOptions) withDefaults() ClusterOptions {
 	if o.AvgSize <= 0 {
 		o.AvgSize = 4
@@ -64,7 +68,7 @@ func (o ClusterOptions) withDefaults() ClusterOptions {
 		o.JoinSimilarity = 0.80
 	}
 	if o.MinRequests <= 0 {
-		o.MinRequests = 6
+		o.MinRequests = DefaultMinClusterRequests
 	}
 	if o.BatchSize <= 0 {
 		// Measured on 16k WildChat prompts: 2,000 left sparse request types

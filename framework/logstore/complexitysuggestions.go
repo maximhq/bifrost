@@ -266,6 +266,12 @@ type ComplexitySuggestionFilter struct {
 	Limit, Offset int
 }
 
+// ComplexitySuggestionRunFilter selects runs. A zero filter selects all.
+type ComplexitySuggestionRunFilter struct {
+	RouterID string
+	IDs      []string
+}
+
 // ComplexitySuggestionStore is the phrase-suggestion surface. It is embedded
 // in LogStore for the reason WarpTopicStore is: a store that forgot a method
 // should fail the build.
@@ -298,12 +304,19 @@ type ComplexitySuggestionStore interface {
 	// UpsertComplexitySuggestionRun writes a run whole, replacing any row with
 	// the same ID: once when it starts and again when it ends.
 	UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error
-	// ListComplexitySuggestionRuns returns up to limit runs, newest first; ids
-	// narrows the selection when non-empty.
-	ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]ComplexitySuggestionRun, error)
-	// PruneComplexitySuggestionRuns keeps the newest keep runs and drops the
-	// rest.
-	PruneComplexitySuggestionRuns(ctx context.Context, keep int) (deletedCount int64, err error)
+	// InsertComplexitySuggestionRun writes a run only when no run has its ID,
+	// and reports whether it did: recording a run as queued never replaces
+	// what a run with the same ID already recorded, such as its outcome.
+	InsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) (bool, error)
+	// ListComplexitySuggestionRuns returns up to limit of the selected runs,
+	// newest first.
+	ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error)
+	// PruneComplexitySuggestionRuns keeps one router's newest keep runs and
+	// drops the rest of its runs; other routers' are untouched.
+	PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (deletedCount int64, err error)
+	// DeleteComplexityRouterSuggestions removes everything a router's
+	// suggestions left: its suggestions and its runs, for a deleted router.
+	DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error
 
 	// AddComplexityVectorDeletes records deleted logs whose captured vector
 	// delete failed, replacing any row already there for the same log and
@@ -407,9 +420,10 @@ func prepareComplexityVectorDeletes(rows []ComplexityVectorDelete, now time.Time
 // (started_at, id) order the list uses. Empty when there is nothing to drop.
 // One predicate rather than a list of ids, for the reason
 // warpTopicUnmatchedPruneWhere gives.
-func complexitySuggestionRunPruneWhere(ctx context.Context, db *gorm.DB, keep int) (string, []any, error) {
+func complexitySuggestionRunPruneWhere(ctx context.Context, db *gorm.DB, routerID string, keep int) (string, []any, error) {
 	var surplus []ComplexitySuggestionRun
 	if err := db.WithContext(ctx).
+		Where("router_id = ?", routerID).
 		Select("id", "started_at").
 		Order("started_at DESC, id DESC").
 		Offset(keep).
@@ -421,8 +435,8 @@ func complexitySuggestionRunPruneWhere(ctx context.Context, db *gorm.DB, keep in
 		return "", nil, nil
 	}
 	placeholder, arg := warpTopicTimeArg(db, surplus[0].StartedAt)
-	return fmt.Sprintf("started_at < %s OR (started_at = %s AND id <= ?)", placeholder, placeholder),
-		[]any{arg, arg, surplus[0].ID}, nil
+	return fmt.Sprintf("router_id = ? AND (started_at < %s OR (started_at = %s AND id <= ?))", placeholder, placeholder),
+		[]any{routerID, arg, arg, surplus[0].ID}, nil
 }
 
 // UpsertComplexitySuggestions writes suggestions whole, replacing any row with
@@ -593,31 +607,62 @@ func (s *RDBLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *Co
 		Create(run).Error
 }
 
+// InsertComplexitySuggestionRun writes a run unless one with its ID exists,
+// in one statement that does nothing on a conflict.
+func (s *RDBLogStore) InsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) (bool, error) {
+	if err := prepareComplexitySuggestionRun(run, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	result := s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).
+		Create(run)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // ListComplexitySuggestionRuns returns up to limit runs, newest first.
-func (s *RDBLogStore) ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]ComplexitySuggestionRun, error) {
+func (s *RDBLogStore) ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be positive")
 	}
 	query := s.db.WithContext(ctx).Model(&ComplexitySuggestionRun{})
-	if len(ids) > 0 {
-		query = query.Where("id IN ?", ids)
+	if filter.RouterID != "" {
+		query = query.Where("router_id = ?", filter.RouterID)
+	}
+	if len(filter.IDs) > 0 {
+		query = query.Where("id IN ?", filter.IDs)
 	}
 	var runs []ComplexitySuggestionRun
 	err := query.Order("started_at DESC, id DESC").Limit(limit).Find(&runs).Error
 	return runs, err
 }
 
-// PruneComplexitySuggestionRuns keeps the newest keep runs.
-func (s *RDBLogStore) PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error) {
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs.
+func (s *RDBLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
 	if keep <= 0 {
 		return 0, fmt.Errorf("keep must be positive")
 	}
-	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, keep)
+	where, args, err := complexitySuggestionRunPruneWhere(ctx, s.db, routerID, keep)
 	if err != nil || where == "" {
 		return 0, err
 	}
 	result := s.db.WithContext(ctx).Where(where, args...).Delete(&ComplexitySuggestionRun{})
 	return result.RowsAffected, result.Error
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs.
+func (s *RDBLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	if routerID == "" {
+		return fmt.Errorf("router id is required")
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("router_id = ?", routerID).Delete(&ComplexitySuggestion{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("router_id = ?", routerID).Delete(&ComplexitySuggestionRun{}).Error
+	})
 }
 
 // AddComplexityVectorDeletes records deleted logs whose captured vector delete

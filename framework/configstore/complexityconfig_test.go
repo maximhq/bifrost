@@ -1104,9 +1104,30 @@ func TestComplexityAnalyzerConfigNormalizedDecision(t *testing.T) {
 
 	t.Run("unknown classifier is rejected", func(t *testing.T) {
 		cfg := testComplexityAnalyzerConfig()
-		cfg.Classifier = "llm"
+		cfg.Classifier = "lexical"
 		normalized := cfg.Normalized()
 		assert.ErrorContains(t, normalized.Validate(), "complexity classifier must be")
+	})
+
+	t.Run("llm classifier needs an llm block", func(t *testing.T) {
+		cfg := testComplexityAnalyzerConfig()
+		cfg.Classifier = ComplexityClassifierLLM
+		normalized := cfg.Normalized()
+		assert.ErrorContains(t, normalized.Validate(), `complexity classifier "llm" requires an llm config block`)
+
+		cfg.LLM = testLLMConfig()
+		normalized = cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+		assert.Equal(t, ComplexityClassifierLLM, normalized.Classifier)
+		assert.Nil(t, normalized.Decision, "an llm router gets no decision block")
+	})
+
+	t.Run("llm session needs no semantic block", func(t *testing.T) {
+		cfg := testComplexityAnalyzerConfig()
+		cfg.Classifier, cfg.LLM = ComplexityClassifierLLM, testLLMConfig()
+		cfg.Session = &ComplexitySessionConfig{Enabled: true}
+		normalized := cfg.Normalized()
+		require.NoError(t, normalized.Validate())
 	})
 
 	t.Run("decision session needs no semantic block", func(t *testing.T) {
@@ -1332,6 +1353,7 @@ func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true}`), &cfg))
 	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true}, cfg)
 	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = testLLMConfig() // the suggestion model when the block names none
 	analyzer.Suggestions = &cfg
 	normalized := analyzer.Normalized()
 	require.NoError(t, normalized.Validate())
@@ -1448,6 +1470,9 @@ func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
 	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
 		c.Classifier, c.Decision, c.Suggestions = ComplexityClassifierDecision, &ComplexityDecisionConfig{}, own()
 	}), "require the semantic classifier", "decision primary")
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Classifier, c.LLM, c.Suggestions = ComplexityClassifierLLM, testLLMConfig(), own()
+	}), "require the semantic classifier", "llm primary")
 
 	// Disabled suggestions keep their settings without either.
 	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {

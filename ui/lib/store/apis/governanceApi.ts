@@ -44,11 +44,19 @@ import {
 } from "@/lib/types/governance";
 import {
 	AnalyzerConfig,
+	ModelRouter,
+	ModelRouterDefaults,
+	ModelRouterList,
+	ModelRouterRouting,
+	ModelRouterTarget,
 	PhraseTestRequest,
 	PhraseTestResult,
 	SemanticStatusInfo,
+	DEFAULT_COMPLEXITY_ROUTER_ID,
 	SuggestionDetail,
 	SuggestionRun,
+	SuggestionRunEstimate,
+	SuggestionRunWindow,
 	Suggestion,
 	SUGGESTIONS_PAGE_SIZE,
 	SuggestionsList,
@@ -910,52 +918,134 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
-		// Phrase suggestions
-		// offset pages the list, SUGGESTIONS_PAGE_SIZE at a time; omitted is the
-		// first page.
-		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[]; offset?: number }>({
-			query: ({ statuses, offset }) => ({
+		// Model routers, apart from the Complexity Router page's config above.
+		// A router's classifier, targets and routing are saved on separate
+		// endpoints, so saving one never changes the others.
+		getModelRouters: builder.query<ModelRouterList, void>({
+			query: () => ({ url: "/routing/model-routers", method: "GET" }),
+			providesTags: ["ModelRouters"],
+		}),
+		getModelRouter: builder.query<ModelRouter, string>({
+			query: (id) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}`, method: "GET" }),
+			providesTags: ["ModelRouters"],
+		}),
+		// What a new router starts from; it never changes while the gateway runs.
+		getModelRouterDefaults: builder.query<ModelRouterDefaults, void>({
+			query: () => ({ url: "/routing/model-routers/defaults", method: "GET" }),
+		}),
+		// A router created without routing starts off, after the other global routers.
+		createModelRouter: builder.mutation<ModelRouter, Omit<ModelRouter, "id" | "routing"> & { id?: string }>({
+			query: (body) => ({ url: "/routing/model-routers", method: "POST", body }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+		// Changes the router's name, description and classifier. Only what the
+		// body sends changes, so a rename sends only the name and description
+		// and keeps the stored classifier; targets and routing are left as they
+		// are. Suggestions read the classifier's settings, so they refresh too,
+		// as after a Complexity Router page save.
+		updateModelRouter: builder.mutation<ModelRouter, Pick<ModelRouter, "id"> & Partial<Omit<ModelRouter, "id" | "routing" | "targets">>>({
+			query: ({ id, ...body }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}`, method: "PUT", body }),
+			invalidatesTags: ["ModelRouters", "ComplexityAnalyzerConfig"],
+		}),
+		// Replaces the model each tier gets.
+		setModelRouterTargets: builder.mutation<ModelRouter, { id: string; targets: ModelRouterTarget[] }>({
+			query: ({ id, targets }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/targets`, method: "PUT", body: { targets } }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+		// Replaces which requests the router takes, turning it on or off included.
+		// Sends only the routing fields that change; the gateway keeps the rest,
+		// so the switch never writes back a scope or priority it read earlier.
+		setModelRouterRouting: builder.mutation<ModelRouter, { id: string; routing: Partial<ModelRouterRouting> }>({
+			query: ({ id, routing }) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/routing`, method: "PUT", body: routing }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+		deleteModelRouter: builder.mutation<void, string>({
+			query: (id) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}`, method: "DELETE" }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+		resetModelRouter: builder.mutation<ModelRouter, string>({
+			query: (id) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/reset`, method: "POST" }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+		// Readiness is derived from the saved configuration — a save or a reset
+		// restarts warmup — so it has to be invalidated by the same tag, or the
+		// page keeps showing the state the classifier was in before the edit.
+		getModelRouterStatus: builder.query<SemanticStatusInfo, string>({
+			query: (id) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/status`, method: "GET" }),
+			providesTags: ["ModelRouters"],
+		}),
+		retryModelRouterWarmup: builder.mutation<SemanticStatusInfo, string>({
+			query: (id) => ({ url: `/routing/model-routers/${encodeURIComponent(id)}/status/retry`, method: "POST" }),
+			invalidatesTags: ["ModelRouters"],
+		}),
+
+		// Phrase suggestions. Every call is about one router, named by routerId;
+		// without one it is the complexity config's ("default"). offset pages
+		// the list, SUGGESTIONS_PAGE_SIZE at a time; omitted is the first page.
+		getComplexitySuggestions: builder.query<SuggestionsList, { statuses: SuggestionStatus[]; routerId?: string; offset?: number }>({
+			query: ({ statuses, routerId, offset }) => ({
 				url: "/routing/complexity-suggestions",
 				method: "GET",
-				params: { status: statuses.join(","), limit: SUGGESTIONS_PAGE_SIZE, ...(offset ? { offset } : {}) },
+				params: {
+					status: statuses.join(","),
+					router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID,
+					limit: SUGGESTIONS_PAGE_SIZE,
+					...(offset ? { offset } : {}),
+				},
 			}),
 			// A config save changes whether suggestions are on and when they run.
 			providesTags: ["ComplexitySuggestions", "ComplexityAnalyzerConfig"],
 		}),
-		getComplexitySuggestion: builder.query<SuggestionDetail, string>({
-			query: (id) => ({
+		getComplexitySuggestion: builder.query<SuggestionDetail, { id: string; routerId?: string }>({
+			query: ({ id, routerId }) => ({
 				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}`,
 				method: "GET",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 			}),
-			providesTags: (_result, _error, id) => [{ type: "ComplexitySuggestions", id }],
+			providesTags: (_result, _error, { id }) => [{ type: "ComplexitySuggestions", id }],
 		}),
-		updateComplexitySuggestionStatus: builder.mutation<Suggestion, { id: string; status: Exclude<SuggestionStatus, "superseded"> }>({
-			query: ({ id, status }) => ({
+		updateComplexitySuggestionStatus: builder.mutation<
+			Suggestion,
+			{ id: string; status: Exclude<SuggestionStatus, "superseded">; routerId?: string }
+		>({
+			query: ({ id, status, routerId }) => ({
 				url: `/routing/complexity-suggestions/${encodeURIComponent(id)}/status`,
 				method: "PUT",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 				body: { status },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
 		}),
-		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest>({
-			query: (body) => ({
+		testComplexitySuggestionPhrases: builder.mutation<PhraseTestResult, PhraseTestRequest & { routerId?: string }>({
+			query: ({ routerId, ...body }) => ({
 				url: "/routing/complexity-suggestions/test",
 				method: "POST",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID },
 				body,
 			}),
 		}),
-		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number }>({
-			query: ({ limit }) => ({
+		getComplexitySuggestionRuns: builder.query<{ runs: SuggestionRun[]; next_run_at?: string }, { limit?: number; routerId?: string }>({
+			query: ({ limit, routerId }) => ({
 				url: "/routing/complexity-suggestions/runs",
 				method: "GET",
-				params: limit ? { limit } : undefined,
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, ...(limit ? { limit } : {}) },
 			}),
 			providesTags: ["ComplexitySuggestions"],
 		}),
-		startComplexitySuggestionRun: builder.mutation<{ run_id: string }, void>({
-			query: () => ({
+		getComplexitySuggestionRunEstimate: builder.query<SuggestionRunEstimate, { window: SuggestionRunWindow; routerId?: string }>({
+			query: ({ window, routerId }) => ({
+				url: "/routing/complexity-suggestions/runs/estimate",
+				method: "GET",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, window },
+			}),
+			// Captured traffic grows by the minute; an estimate is read fresh.
+			keepUnusedDataFor: 0,
+		}),
+		startComplexitySuggestionRun: builder.mutation<{ run_id: string }, { window?: SuggestionRunWindow; routerId?: string }>({
+			query: ({ window, routerId }) => ({
 				url: "/routing/complexity-suggestions/runs",
 				method: "POST",
+				params: { router_id: routerId ?? DEFAULT_COMPLEXITY_ROUTER_ID, ...(window ? { window } : {}) },
 			}),
 			invalidatesTags: ["ComplexitySuggestions"],
 		}),
@@ -1030,11 +1120,25 @@ export const {
 	useResetComplexityAnalyzerConfigMutation,
 	useGetComplexitySemanticStatusQuery,
 	useRetryComplexitySemanticWarmupMutation,
+
+	// Model routers
+	useGetModelRoutersQuery,
+	useGetModelRouterQuery,
+	useGetModelRouterDefaultsQuery,
+	useCreateModelRouterMutation,
+	useUpdateModelRouterMutation,
+	useSetModelRouterTargetsMutation,
+	useSetModelRouterRoutingMutation,
+	useDeleteModelRouterMutation,
+	useResetModelRouterMutation,
+	useGetModelRouterStatusQuery,
+	useRetryModelRouterWarmupMutation,
 	useGetComplexitySuggestionsQuery,
 	useGetComplexitySuggestionQuery,
 	useUpdateComplexitySuggestionStatusMutation,
 	useTestComplexitySuggestionPhrasesMutation,
 	useGetComplexitySuggestionRunsQuery,
+	useGetComplexitySuggestionRunEstimateQuery,
 	useStartComplexitySuggestionRunMutation,
 
 	// Lazy queries

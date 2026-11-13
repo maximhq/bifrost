@@ -77,7 +77,8 @@
 		"modelLimits": "limites de modèle",
 		"agent": "agent",
 		"relay": "relais",
-		"relays": "relais"
+		"relays": "relais",
+		"modelRouters": "routeurs"
 	},
 	"aboutField": "À propos de {{field}}",
 	"thisField": "ce champ",

@@ -70,7 +70,8 @@
 			"decision": "决策模型",
 			"llm": "LLM",
 			"skipped": "已跳过"
-		}
+		},
+		"modelRouter": "路由器"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1228,7 +1229,10 @@
 		"exactRoundTripID": "精确往返 ID",
 		"nothingRecorded": "此时间范围内没有记录",
 		"topics": "主题",
-		"searchTopics": "搜索主题"
+		"searchTopics": "搜索主题",
+		"modelRouters": "路由器",
+		"searchModelRouters": "搜索路由器",
+		"loadFailed": "无法加载此列表。"
 	},
 	"requestTypes": {
 		"chat_completion": "对话",

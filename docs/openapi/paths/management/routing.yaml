@@ -593,6 +593,13 @@ complexity-suggestions:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: status
         in: query
         required: false
@@ -616,6 +623,12 @@ complexity-suggestions:
           type: integer
           minimum: 0
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '200':
         description: Suggestions retrieved
         content:
@@ -656,6 +669,13 @@ complexity-suggestion:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -702,6 +722,13 @@ complexity-suggestion-status:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -765,6 +792,14 @@ complexity-suggestion-test:
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
     requestBody:
       required: true
       content:
@@ -824,6 +859,13 @@ complexity-suggestion-runs:
       - ManagementBearerAuth: []
       - BasicAuth: []
     parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
       - name: limit
         in: query
         required: false
@@ -833,6 +875,12 @@ complexity-suggestion-runs:
           maximum: 200
           default: 20
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '200':
         description: Runs retrieved
         content:
@@ -878,7 +926,28 @@ complexity-suggestion-runs:
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
+    parameters:
+      - name: window
+        in: query
+        required: false
+        description: How much of the lookback the run reads, as hours or days (24h, 7d). Omitted reads the whole lookback; shorter than one second or longer than the lookback is 400.
+        schema:
+          type: string
+          example: 7d
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
     responses:
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '202':
         description: Run started
         content:
@@ -888,6 +957,12 @@ complexity-suggestion-runs:
               properties:
                 run_id:
                   type: string
+      '400':
+        description: The window is not a duration, is shorter than one second, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
         description: Suggestions are off, or a run is already queued or running
         content:
@@ -900,3 +975,482 @@ complexity-suggestion-runs:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-run-estimate:
+  get:
+    operationId: estimateComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Estimate a phrase suggestion run
+    description: |
+      Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: query
+        required: false
+        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        schema:
+          type: string
+          default: default
+      - name: window
+        in: query
+        required: false
+        description: Hours or days (24h, 7d); omitted is the whole lookback. Shorter than one second or longer than the lookback is 400.
+        schema:
+          type: string
+          example: 7d
+    responses:
+      '200':
+        description: Run estimated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRunEstimate'
+      '400':
+        description: The window is not a duration, is shorter than one second, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off for this router
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The router has no warmed phrase bank, or suggestions are not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-routers:
+  get:
+    operationId: listModelRouters
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List model routers
+    description: Returns every model router, oldest first. The list is empty until a router is created.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model routers retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a model router
+    description: |
+      Creates a named model router and starts serving it. An omitted id is generated. Targets in the body are ignored; set them with PUT /api/routing/model-routers/{router_id}/targets. Routing is optional and checked as on PUT /api/routing/model-routers/{router_id}/routing; without it the router starts off, global, with the priority after the last global router. A priority another router in the same scope has is 409.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-routers-by-id:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  get:
+    operationId: getModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a model router
+    description: Returns one model router.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a model router
+    description: Changes a router's name, description and classifier config, and hot-reloads it. The id in the path names the router. Only what the body sends changes - an omitted name or description keeps the stored one, and a body without any classifier setting keeps the stored config; a body with classifier settings replaces the whole config. Targets and routing in the body are ignored and stay as stored; each is set on its own endpoint.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterUpdate'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a model router
+    description: Deletes a router with its targets and routing.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router deleted successfully
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-reset:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: resetModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Reset a model router
+    description: Restores the router's reference phrases to the built-in defaults and hot-reloads it. Its name, classifier, targets, routing and other settings are kept.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router reset successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-defaults:
+  get:
+    operationId: getModelRouterDefaults
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get model router defaults
+    description: Returns what a new model router starts from, so a client can show it before saving anything - the built-in config with its reference phrases, the decision model's per-tier guidance, and the llm classifier's default prompt.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router defaults retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterDefaults'
+
+model-router-targets:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  put:
+    operationId: setModelRouterTargets
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Set a model router's targets
+    description: Replaces the model each tier of the router gets, and serves the new targets without restarting the router's classifiers. A tier with no target keeps the request's model; an empty list clears them.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterTargetsRequest'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router targets saved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-routing:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  put:
+    operationId: setModelRouterRouting
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a model router's routing
+    description: |
+      Changes which requests the router takes: whether it is on, its scope, its condition and its priority within the scope. Each field the body sends replaces the stored value and an omitted field keeps it, as in a routing rule update, so `{"enabled": false}` turns the router off and leaves the rest as it is. A `cel_expression` sent without `query` clears the stored builder state, which described the old condition. Unknown fields are refused with 400. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, global), by priority within a scope. The first enabled router whose condition holds classifies the request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model; no other router is tried. A condition of model == "<name>" lets apps ask for the router by that model name. The condition cannot use complexity_tier. Priorities are unique within a scope among model routers, separate from routing rule priorities. The router's classifier and targets are left as they are.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterRoutingUpdate'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router routing saved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-status:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  get:
+    operationId: getModelRouterStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a model router's classifier status
+    description: Returns the readiness of one router's semantic classifier and llm fallback, in the shape of the complexity analyzer status.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+model-router-status-retry:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: retryModelRouterWarmup
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Retry a model router's failed warmup
+    description: Restarts one router's semantic classifier warmup when its state is failed. The retry runs asynchronously.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '202':
+        description: Warmup retry started
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

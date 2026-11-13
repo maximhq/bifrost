@@ -1196,10 +1196,28 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion-test"
   /api/routing/complexity-suggestions/runs:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion-runs"
+  /api/routing/complexity-suggestions/runs/estimate:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-run-estimate"
   /api/routing/complexity-suggestions/{suggestion_id}:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion"
   /api/routing/complexity-suggestions/{suggestion_id}/status:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion-status"
+  /api/routing/model-routers:
+    $ref: "./paths/management/routing.yaml#/model-routers"
+  /api/routing/model-routers/defaults:
+    $ref: "./paths/management/routing.yaml#/model-router-defaults"
+  /api/routing/model-routers/{router_id}:
+    $ref: "./paths/management/routing.yaml#/model-routers-by-id"
+  /api/routing/model-routers/{router_id}/reset:
+    $ref: "./paths/management/routing.yaml#/model-router-reset"
+  /api/routing/model-routers/{router_id}/targets:
+    $ref: "./paths/management/routing.yaml#/model-router-targets"
+  /api/routing/model-routers/{router_id}/routing:
+    $ref: "./paths/management/routing.yaml#/model-router-routing"
+  /api/routing/model-routers/{router_id}/status:
+    $ref: "./paths/management/routing.yaml#/model-router-status"
+  /api/routing/model-routers/{router_id}/status/retry:
+    $ref: "./paths/management/routing.yaml#/model-router-status-retry"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:
@@ -2337,6 +2355,22 @@ components:
       $ref: "./schemas/management/governance.yaml#/CreateRoutingRuleRequest"
     UpdateRoutingRuleRequest:
       $ref: "./schemas/management/governance.yaml#/UpdateRoutingRuleRequest"
+
+    # Routing - Model Routers
+    ModelRouter:
+      $ref: "./schemas/management/governance.yaml#/ModelRouter"
+    ModelRouterUpdate:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterUpdate"
+    ModelRouterList:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterList"
+    ModelRouterTarget:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterTarget"
+    ModelRouterTargetsRequest:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterTargetsRequest"
+    ModelRouterRouting:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterRouting"
+    ModelRouterDefaults:
+      $ref: "./schemas/management/governance.yaml#/ModelRouterDefaults"
     TableKey:
       $ref: "./schemas/management/governance.yaml#/TableKey"
 

@@ -4,7 +4,9 @@
  */
 
 import i18n from "@/lib/i18n";
+import type { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import type { ParseKeys } from "i18next";
+import type { RuleGroupType } from "react-querybuilder";
 
 // Display text below resolves through i18n when read (getters), so these shared constants
 // follow the active locale for every consumer.
@@ -22,7 +24,7 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 // Mirrors ComplexitySemanticFallback* in framework/configstore: what answers
 // when semantic classification produces no tier. An absent field on the wire
 // means "none".
-export type ClassifierMode = "semantic" | "decision";
+export type ClassifierMode = "semantic" | "decision" | "llm";
 export type SemanticFallback = "none" | "llm" | "decision";
 
 export type DecisionTier = (typeof COMPLEXITY_TIER_VALUES)[number];
@@ -171,6 +173,31 @@ export interface AnalyzerConfig {
 	// client-tunable thresholds or downgrade controls.
 	session?: SessionConfig;
 	suggestions?: SuggestionsConfig;
+}
+
+// A named model router: its identity, the classifier configuration the
+// Complexity Router page edits (phrase suggestions included), the model each
+// tier gets, and the requests it takes.
+// Targets and routing are read-only on the router itself: each is replaced
+// through its own endpoint.
+export interface ModelRouter extends AnalyzerConfig {
+	id: string;
+	name: string;
+	description?: string;
+	targets?: ModelRouterTarget[];
+	routing: ModelRouterRouting;
+}
+
+// What a new router starts from, before anything is saved.
+export interface ModelRouterDefaults {
+	config: AnalyzerConfig;
+	decision_defaults: DecisionGuidanceDefaults;
+	llm_default_prompt: string;
+}
+
+export interface ModelRouterList {
+	routers: ModelRouter[];
+	count: number;
 }
 
 export type KeywordListKey = keyof EditableKeywordConfig;
@@ -521,8 +548,22 @@ export const DEFAULT_SUGGESTION_EVERY = "1d";
 // The gateway's default first run; runs repeat every interval from it.
 export const DEFAULT_SUGGESTION_START_AT = "1970-01-01T03:00:00Z";
 
+// The router suggestions belong to until a gateway can define several.
+export const DEFAULT_COMPLEXITY_ROUTER_ID = "default";
+
+// Run windows offered for "Run now"; the ones longer than the lookback are
+// left out, since the vectors they would read are gone.
+export const SUGGESTION_RUN_WINDOWS = ["24h", "7d", "14d", "30d"] as const;
+export type SuggestionRunWindow = (typeof SUGGESTION_RUN_WINDOWS)[number];
+export const SUGGESTION_RUN_WINDOW_DAYS: Record<SuggestionRunWindow, number> = { "24h": 1, "7d": 7, "14d": 14, "30d": 30 };
+
 export interface Suggestion {
 	id: string;
+	router_id: string;
+	// The router version it was computed against; stale when that is not the
+	// version served now.
+	router_version: string;
+	stale: boolean;
 	status: SuggestionStatus;
 	tier: DecisionTier;
 	phrases: string[];
@@ -545,6 +586,9 @@ export interface Suggestion {
 
 export interface SuggestionRun {
 	id: string;
+	router_id: string;
+	router_version: string;
+	window_start: string;
 	triggered_by: "schedule" | "manual";
 	// queued and running are in progress; the rest are where a run ends.
 	status: "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
@@ -565,6 +609,8 @@ export interface SuggestionRun {
 export const SUGGESTIONS_PAGE_SIZE = 100;
 
 export interface SuggestionsList {
+	router_id: string;
+	router_version?: string;
 	suggestions: Suggestion[];
 	// How many the status filter selects across every page, and the page served.
 	total: number;
@@ -612,4 +658,39 @@ export interface PhraseTestResult {
 	phrases: { tier: string; text: string; nearest_existing: PhraseRouting }[];
 	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
 	taken_over: number;
+}
+export interface SuggestionRunEstimate {
+	requests: number;
+	clustered: number;
+	assigned: number;
+	skipped: number;
+	max_model_calls: number;
+}
+
+/** One model for one tier of a model router. Omitting provider or model keeps the request's value. */
+export interface ModelRouterTarget {
+	tier: DecisionTier;
+	provider?: string;
+	model?: string;
+	key_id?: string;
+	weight: number;
+	/** Replaces the request's fallback chain when this target is chosen. */
+	fallbacks?: RoutingFallbackWire[];
+}
+
+/**
+ * Which requests a model router takes. Routers are tried after the routing
+ * rules, on the request as they left it: narrowest scope first, then lowest
+ * priority, and the first enabled router whose condition holds takes the
+ * request. Saved on its own endpoint, so a classifier save never changes it.
+ */
+export interface ModelRouterRouting {
+	enabled: boolean;
+	scope: RoutingRule["scope"];
+	scope_id?: string | null;
+	/** Empty takes every request in the scope. Cannot use complexity_tier. */
+	cel_expression?: string;
+	/** The condition builder's state, kept so an edit reopens in the builder. */
+	query?: RuleGroupType;
+	priority: number;
 }

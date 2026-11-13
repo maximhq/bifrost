@@ -345,6 +345,25 @@ func (c *SemanticClassifier) SweepCapturedRequests(ctx context.Context, cutoff t
 	return capture.Sweep(ctx, store, namespace, cutoff)
 }
 
+// ServingVersion names the phrase bank the classifier serves: its
+// generation's fingerprint, short form. It stands in for a router version
+// until routers carry their own, so a suggestion made against an earlier bank
+// can be told apart. Empty while nothing is serving.
+func (c *SemanticClassifier) ServingVersion() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == nil {
+		return ""
+	}
+	return servingVersion(c.active.namespace)
+}
+
+// servingVersion shortens a generation namespace to its fingerprint prefix.
+func servingVersion(namespace string) string {
+	v := strings.TrimPrefix(namespace, SemanticVectorStoreNamespace+"_")
+	return v[:min(len(v), 16)]
+}
+
 // SetGenerationClaimer supplies the optional registry that records which
 // namespace this node is using. Like the coordinator it changes only what peers
 // can see, never what a warm produces, so it does not restart one in flight.
