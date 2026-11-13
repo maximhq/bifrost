@@ -16,7 +16,6 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
-	geminiProvider "github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -62,7 +61,8 @@ func NewWSRealtimeHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfw
 }
 
 // RegisterRoutes registers the Realtime WebSocket endpoint at the base path and the OpenAI and Azure integration paths,
-// and the Gemini Live endpoint a Google GenAI client opens on the GenAI integration path.
+// and the Gemini Live endpoints a Google GenAI client opens on the GenAI integration path, for the Gemini API and
+// for Vertex AI.
 func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
 	r.GET("/v1/realtime", handler)
@@ -74,7 +74,7 @@ func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 		r.GET(path, handler)
 	}
 	liveHandler := lib.ChainMiddlewares(h.handleGeminiLiveUpgrade, middlewares...)
-	for _, path := range integrations.GenAIRealtimePaths("/genai") {
+	for _, path := range append(integrations.GenAIRealtimePaths("/genai"), integrations.GenAIVertexRealtimePaths("/genai")...) {
 		r.GET(path, liveHandler)
 	}
 }
@@ -501,10 +501,8 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	}
 
 	bifrostCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
-	if strings.HasPrefix(path, "/openai") {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
-	} else if clientConn.native {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	if integration := realtimeIntegrationType(path, clientConn.native); integration != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, integration)
 	}
 
 	provider := h.client.GetProviderByKey(providerKey)
@@ -518,8 +516,10 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support realtime: "+string(providerKey)))
 		return
 	}
-	if _, serves := rtProvider.(*geminiProvider.GeminiProvider); clientConn.native && !serves {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not speak the gemini live protocol: "+string(providerKey)))
+	nativeProvider, speaksNatively := rtProvider.(schemas.RealtimeNativeProvider)
+	if clientConn.native != nil && !speaksNatively {
+		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error",
+			fmt.Sprintf("provider %s cannot serve %s clients; use %s for it", providerKey, clientConn.native.name, lib.WithBasePath("/v1/realtime"))))
 		return
 	}
 
@@ -548,11 +548,11 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
 		model = aliasConfig.ModelID
 	}
-	if clientConn.native {
-		// The first frame carried the model the client asked for; Live gets the one Bifrost resolved.
-		setup, setupErr := geminiProvider.LiveSetupWithModel(buffered[0].data, model)
+	if clientConn.native != nil {
+		// The first frame carried the model the client asked for; Live gets the one Bifrost resolved, on the key's own project.
+		setup, setupErr := nativeProvider.NativeRealtimeSetup(bifrostCtx, key, buffered[0].data, model)
 		if setupErr != nil {
-			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "invalid setup message: "+setupErr.Error()))
+			clientConn.writeRealtimeError(setupErr)
 			return
 		}
 		buffered = []realtimeWebSocketFrame{{messageType: buffered[0].messageType, data: setup}}
@@ -568,7 +568,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRealtimeTransport, "websocket")
 
 	var translator schemas.RealtimeTranslator
-	if !clientConn.native {
+	if clientConn.native == nil {
 		var translatorErr *schemas.BifrostError
 		if translator, translatorErr = newRealtimeTranslator(bifrostCtx, rtProvider, key, model, intent); translatorErr != nil {
 			clientConn.writeRealtimeError(translatorErr)
@@ -585,7 +585,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	// A translated connection speaks OpenAI Realtime to the client, so OpenAI's rules govern the relays.
 	// A native one speaks the provider's own protocol, which the provider governs as it does for itself.
 	protocol := realtimeClientProtocol(rtProvider, model, intent)
-	if clientConn.native {
+	if clientConn.native != nil {
 		protocol = rtProvider
 	}
 	if translator != nil {
@@ -784,14 +784,14 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 	messageType int,
 	message []byte,
 ) (bool, error) {
-	if messageType != ws.TextMessage && !(clientConn.native && messageType == ws.BinaryMessage) {
+	if messageType != ws.TextMessage && !(clientConn.native != nil && messageType == ws.BinaryMessage) {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "realtime websocket only accepts text messages"))
 		return true, nil
 	}
 
 	var event *schemas.BifrostRealtimeEvent
 	var err error
-	if clientConn.native {
+	if clientConn.native != nil {
 		event, err = provider.ToBifrostRealtimeEvent(message)
 	} else {
 		event, err = schemas.ParseRealtimeEvent(message)
@@ -806,7 +806,7 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 	inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 
 	startsTurn := provider.ShouldStartRealtimeTurn(event)
-	if startsTurn && clientConn.native && session.PeekRealtimeTurnHooks() != nil {
+	if startsTurn && clientConn.native != nil && session.PeekRealtimeTurnHooks() != nil {
 		// A native client may speak over the model, which ends the response in progress; its turn is open already.
 		startsTurn = false
 	}
@@ -1073,7 +1073,7 @@ func (h *WSRealtimeHandler) forwardRealtimeProviderFrame(
 	message []byte,
 	lastEventWasError *bool,
 ) (bool, error) {
-	if messageType == ws.TextMessage || (clientConn.native && messageType == ws.BinaryMessage) {
+	if messageType == ws.TextMessage || (clientConn.native != nil && messageType == ws.BinaryMessage) {
 		event, err := provider.ToBifrostRealtimeEvent(message)
 		if err != nil {
 			finalizeRealtimeTurnHooksWithError(
@@ -1213,8 +1213,21 @@ func realtimeDefaultProviderForPath(path string) schemas.ModelProvider {
 	switch {
 	case strings.HasPrefix(path, "/openai/"):
 		return schemas.OpenAI
+	case strings.HasPrefix(path, "/genai/") && strings.Contains(path, ".LlmBidiService/"):
+		return schemas.Vertex
 	case strings.HasPrefix(path, "/genai/"):
 		return schemas.Gemini
+	}
+	return ""
+}
+
+// realtimeIntegrationType names the integration a session's route belongs to, which governance and logs record.
+func realtimeIntegrationType(path string, native *nativeProtocol) string {
+	switch {
+	case strings.HasPrefix(path, "/openai"):
+		return "openai"
+	case native != nil:
+		return native.integration
 	}
 	return ""
 }
@@ -1272,12 +1285,19 @@ var (
 	errRealtimeDeploymentFormat = errorf("deployment query parameter must resolve to provider/model for realtime websocket")
 )
 
+// nativeProtocol is a provider's own protocol that a client speaks on an integration route, which the gateway
+// relays instead of translating. The route supplies it, so the shared code assumes nothing about which one.
+type nativeProtocol struct {
+	name        string // names the protocol in an error, such as "Gemini Live"
+	integration string // the integration the route belongs to, which governance and logs record
+}
+
 type realtimeClientConn struct {
 	conn      *ws.Conn
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
-	native    bool // the client speaks the provider's own protocol, which reports every failure by closing
+	native    *nativeProtocol // set when the client speaks the provider's own protocol, which reports every failure by closing
 
 	// pingInterval is the heartbeat period. It is a field rather than a constant
 	// so tests can drive the heartbeat without waiting out realtimeWSPingInterval.
@@ -1410,7 +1430,7 @@ func (c *realtimeClientConn) closing() bool {
 
 // writeRealtimeError sends the canonical wire error without changing its status.
 func (c *realtimeClientConn) writeRealtimeError(bifrostErr *schemas.BifrostError) {
-	if c.native {
+	if c.native != nil {
 		c.writeNativeClose(bifrostErr)
 		return
 	}

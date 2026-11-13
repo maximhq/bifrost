@@ -2,7 +2,6 @@ package vertex
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -11,16 +10,19 @@ import (
 )
 
 var (
-	_ schemas.RealtimeProvider           = (*VertexProvider)(nil)
-	_ schemas.RealtimeTranslatorProvider = (*VertexProvider)(nil)
+	_ schemas.RealtimeProvider              = (*VertexProvider)(nil)
+	_ schemas.RealtimeTranslatorProvider    = (*VertexProvider)(nil)
+	_ schemas.RealtimeNativeProvider        = (*VertexProvider)(nil)
+	_ schemas.RealtimeUsageExtractor        = (*VertexProvider)(nil)
+	_ schemas.RealtimeInterimUsageExtractor = (*VertexProvider)(nil)
 )
 
 // vertexLivePath is the Live API (BidiGenerateContent) WebSocket endpoint under a Vertex AI host. It is the
 // v1beta1 service, which Google's SDKs use and which carries the newest Live settings.
 const vertexLivePath = "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
 
-// SupportsRealtimeAPI reports that Vertex AI serves the Gemini Live API. Every session is translated to the
-// OpenAI Realtime protocol by the Gemini translator, so the provider's own event conversion is never used.
+// SupportsRealtimeAPI reports that Vertex AI serves the Gemini Live API. A client that speaks OpenAI Realtime is
+// served by the Gemini translator; a client that speaks Live itself, such as the Google GenAI SDK, is relayed.
 func (provider *VertexProvider) SupportsRealtimeAPI() bool {
 	return true
 }
@@ -100,6 +102,36 @@ func (provider *VertexProvider) NewRealtimeTranslator(ctx *schemas.BifrostContex
 	return translator, nil
 }
 
+// liveProtocol serves the frames of a client that speaks Live itself, such as the Google GenAI SDK on /genai.
+// Vertex AI speaks the Gemini Live protocol unchanged and these methods keep no state, so Gemini's are Vertex's.
+var liveProtocol = &gemini.GeminiProvider{}
+
+// NativeRealtimeSetup addresses a Live client's setup frame to the model Bifrost resolved, by the path Vertex AI
+// expects. The project and location are the key's, or its alias's, as they are for the URL; the client's own are replaced.
+func (provider *VertexProvider) NativeRealtimeSetup(ctx *schemas.BifrostContext, key schemas.Key, setup []byte, model string) ([]byte, *schemas.BifrostError) {
+	project, region, bifrostErr := vertexLiveLocation(ctx, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	rewritten, err := gemini.LiveSetupWithModelPath(setup, expandVertexModelPath(model, project, region))
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError("invalid setup message: " + err.Error())
+	}
+	return rewritten, nil
+}
+
+func (provider *VertexProvider) ExtractRealtimeTurnUsage(terminalFrame []byte) *schemas.BifrostLLMUsage {
+	return liveProtocol.ExtractRealtimeTurnUsage(terminalFrame)
+}
+
+func (provider *VertexProvider) ExtractRealtimeInterimUsage(event *schemas.BifrostRealtimeEvent) *schemas.BifrostLLMUsage {
+	return liveProtocol.ExtractRealtimeInterimUsage(event)
+}
+
+func (provider *VertexProvider) ExtractRealtimeTurnOutput(terminalFrame []byte) *schemas.ChatMessage {
+	return liveProtocol.ExtractRealtimeTurnOutput(terminalFrame)
+}
+
 // SupportsRealtimeWebRTC reports that Live has no WebRTC signaling.
 func (provider *VertexProvider) SupportsRealtimeWebRTC() bool {
 	return false
@@ -110,20 +142,16 @@ func (provider *VertexProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostCont
 	return "", providerUtils.NewUnsupportedOperationError(schemas.RealtimeRequest, provider.GetProviderKey())
 }
 
-var errVertexLiveTranslated = errors.New("vertex live sessions are translated to the OpenAI Realtime protocol, not relayed")
-
-// ToBifrostRealtimeEvent is never used: a Vertex Live session is translated, not relayed.
-func (provider *VertexProvider) ToBifrostRealtimeEvent(json.RawMessage) (*schemas.BifrostRealtimeEvent, error) {
-	return nil, errVertexLiveTranslated
+func (provider *VertexProvider) ToBifrostRealtimeEvent(frame json.RawMessage) (*schemas.BifrostRealtimeEvent, error) {
+	return liveProtocol.ToBifrostRealtimeEvent(frame)
 }
 
-// ToProviderRealtimeEvent is never used: a Vertex Live session is translated, not relayed.
-func (provider *VertexProvider) ToProviderRealtimeEvent(*schemas.BifrostRealtimeEvent) (json.RawMessage, error) {
-	return nil, errVertexLiveTranslated
+func (provider *VertexProvider) ToProviderRealtimeEvent(event *schemas.BifrostRealtimeEvent) (json.RawMessage, error) {
+	return liveProtocol.ToProviderRealtimeEvent(event)
 }
 
-func (provider *VertexProvider) ShouldStartRealtimeTurn(*schemas.BifrostRealtimeEvent) bool {
-	return false
+func (provider *VertexProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
+	return liveProtocol.ShouldStartRealtimeTurn(event)
 }
 
 func (provider *VertexProvider) RealtimeTurnFinalEvent() schemas.RealtimeEventType {
@@ -142,6 +170,6 @@ func (provider *VertexProvider) ShouldForwardRealtimeEvent(*schemas.BifrostRealt
 	return true
 }
 
-func (provider *VertexProvider) ShouldAccumulateRealtimeOutput(schemas.RealtimeEventType) bool {
-	return false
+func (provider *VertexProvider) ShouldAccumulateRealtimeOutput(eventType schemas.RealtimeEventType) bool {
+	return liveProtocol.ShouldAccumulateRealtimeOutput(eventType)
 }
