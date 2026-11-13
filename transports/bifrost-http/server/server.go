@@ -2862,6 +2862,10 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 			return s.Config.ClientConfig != nil && s.Config.ClientConfig.DisableContentLogging
 		},
 	}, logger)
+	if s.Config.ModelCatalog != nil {
+		// Spans the gateway did not serve are priced from the catalog when the SDK sent no cost.
+		s.TraceIngest.SetPricer(s.Config.ModelCatalog)
+	}
 	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
 	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
 }

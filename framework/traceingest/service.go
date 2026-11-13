@@ -108,6 +108,7 @@ type Service struct {
 	cfg    Config
 	logger schemas.Logger
 	hooks  []SpanHook
+	pricer Pricer
 
 	requests chan *commitRequest
 	done     chan struct{}
@@ -120,6 +121,8 @@ type Service struct {
 	projects map[string]cachedProject
 	rates    map[string]*rateWindow // by key id
 	touched  map[string]time.Time   // by key id
+	// retries schedules another look at traces whose calls are not all linked yet.
+	retries map[logstore.TraceKey]matchRetry
 }
 
 type cachedKey struct {
@@ -140,6 +143,11 @@ type cachedMask struct {
 type compiledMask struct {
 	pattern     *regexp.Regexp
 	replacement string
+}
+
+type matchRetry struct {
+	attempt int
+	at      time.Time
 }
 
 type rateWindow struct {
@@ -168,7 +176,7 @@ func NewService(store logstore.TraceStore, config ConfigStore, cfg Config, logge
 		store: store, config: config, cfg: cfg.withDefaults(), logger: logger,
 		requests: make(chan *commitRequest, 1024), done: make(chan struct{}),
 		keys: make(map[string]cachedKey), masks: make(map[string]cachedMask), projects: make(map[string]cachedProject),
-		rates: make(map[string]*rateWindow), touched: make(map[string]time.Time),
+		rates: make(map[string]*rateWindow), touched: make(map[string]time.Time), retries: make(map[logstore.TraceKey]matchRetry),
 	}
 	s.wg.Add(2)
 	go s.commitLoop()
@@ -701,23 +709,64 @@ func (s *Service) rollupLoop() {
 	}
 }
 
-// FlushRollups rebuilds the rollup of every trace waiting for one.
+// FlushRollups links, prices and rolls up every trace waiting for it.
 func (s *Service) FlushRollups(ctx context.Context) error {
+	if err := s.requeueDueRetries(ctx, time.Now()); err != nil {
+		return err
+	}
 	for {
 		dirty, err := s.store.ListDirtyTraces(ctx, 200)
 		if err != nil {
 			return err
 		}
 		for _, trace := range dirty {
+			retry, err := s.enrichTrace(ctx, trace.TraceKey)
+			if err != nil {
+				return err
+			}
 			if _, err := s.store.RecomputeTraceRollup(ctx, trace.ProjectID, trace.TraceID); err != nil {
 				return err
 			}
 			if err := s.store.ClearTraceDirty(ctx, trace); err != nil {
 				return err
 			}
+			s.scheduleRetry(trace.TraceKey, retry)
 		}
 		if len(dirty) < 200 {
 			return nil
 		}
 	}
+}
+
+// scheduleRetry books the next look at a trace, or forgets it once every call is linked or the
+// retries are used up.
+func (s *Service) scheduleRetry(key logstore.TraceKey, retry bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, scheduled := s.retries[key]
+	if !retry {
+		delete(s.retries, key)
+		return
+	}
+	if scheduled && current.at.After(time.Now()) {
+		return // already booked: a new part of the trace does not restart the schedule
+	}
+	if current.attempt >= len(matchRetryDelays) {
+		delete(s.retries, key)
+		return
+	}
+	s.retries[key] = matchRetry{attempt: current.attempt + 1, at: time.Now().Add(matchRetryDelays[current.attempt])}
+}
+
+// requeueDueRetries marks the traces whose retry time has come.
+func (s *Service) requeueDueRetries(ctx context.Context, now time.Time) error {
+	var due []logstore.TraceKey
+	s.mu.Lock()
+	for key, retry := range s.retries {
+		if !retry.at.After(now) {
+			due = append(due, key)
+		}
+	}
+	s.mu.Unlock()
+	return s.store.MarkTracesDirty(ctx, due)
 }

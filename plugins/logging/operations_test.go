@@ -28,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/streaming"
+	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -7252,4 +7253,49 @@ func TestIdleTimedOutStreamEstimatedFromRealAccumulator(t *testing.T) {
 	require.Equal(t, 8, usage.PromptTokens)
 	require.Equal(t, 1, usage.CompletionTokens)
 	require.NotNil(t, usage.Estimation)
+}
+
+// TestTraceLinkIsRecordedOnTheGatewayRow pins what the trace matcher reads off a gateway row: the
+// trace position a link header names, a fingerprint of the last user message, and the provider's
+// response id. A request with no link header records no trace id, only the fingerprint.
+func TestTraceLinkIsRecordedOnTheGatewayRow(t *testing.T) {
+	prompt := "What is the capital of France?"
+	data := &InitialLogData{InputHistory: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &prompt}}}}
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-trace-id": "trace-1", "x-bf-parent-span-id": "span-1"})
+	data.TraceLink = traceLinkFromContext(ctx, data)
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{RequestID: "req-1", InitialData: data})
+	if entry.TraceID == nil || *entry.TraceID != "trace-1" || entry.ParentSpanID == nil || *entry.ParentSpanID != "span-1" {
+		t.Fatalf("trace link = %v/%v, want trace-1/span-1", entry.TraceID, entry.ParentSpanID)
+	}
+	if entry.InputFingerprint == nil || *entry.InputFingerprint != traceingest.TextFingerprint(prompt) {
+		t.Fatalf("input fingerprint = %v, want the hash of the last user message", entry.InputFingerprint)
+	}
+
+	// traceparent counts only when the request carried it: the middleware mints an id otherwise.
+	minted := schemas.NewBifrostContext(context.Background(), time.Time{})
+	minted.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{})
+	minted.SetValue(schemas.BifrostContextKeyExportTraceID, "minted-by-bifrost")
+	if link := traceLinkFromContext(minted, data); link.TraceID != "" {
+		t.Fatalf("a trace id Bifrost minted was recorded as a link: %q", link.TraceID)
+	}
+	propagated := schemas.NewBifrostContext(context.Background(), time.Time{})
+	propagated.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
+	propagated.SetValue(schemas.BifrostContextKeyExportTraceID, "0af7651916cd43dd8448eb211c80319c")
+	propagated.SetValue(schemas.BifrostContextKeyParentSpanID, "b7ad6b7169203331")
+	if link := traceLinkFromContext(propagated, nil); link.TraceID != "0af7651916cd43dd8448eb211c80319c" || link.ParentSpanID != "b7ad6b7169203331" {
+		t.Fatalf("traceparent link = %+v", link)
+	}
+
+	applyProviderResponseID(entry, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "chatcmpl-123"}})
+	if entry.ProviderResponseID == nil || *entry.ProviderResponseID != "chatcmpl-123" {
+		t.Fatalf("provider response id = %v, want chatcmpl-123", entry.ProviderResponseID)
+	}
+
+	mcpEntry := &logstore.MCPToolLog{}
+	applyMCPCorrelationFieldsToEntry(ctx, mcpEntry)
+	if mcpEntry.TraceID == nil || *mcpEntry.TraceID != "trace-1" || mcpEntry.ParentSpanID == nil || *mcpEntry.ParentSpanID != "span-1" {
+		t.Fatalf("mcp trace link = %v/%v, want trace-1/span-1", mcpEntry.TraceID, mcpEntry.ParentSpanID)
+	}
 }
