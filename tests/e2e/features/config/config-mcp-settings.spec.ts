@@ -49,4 +49,42 @@ test.describe('MCP Settings', () => {
     await saveBtn.click()
     await expect.poll(() => saved?.value).toBe(hostedURL)
   })
+
+  test('should save the switch that stops advertising client metadata documents', async ({ configSettingsPage }) => {
+    const page = configSettingsPage.page
+    let saved: { disable_client_metadata_documents?: boolean } | undefined
+    // Serve the stored config in OAuth mode (the switch is OAuth-only) and capture the save without writing it.
+    // Match on pathname: the GET carries ?from_db=, which a glob would miss.
+    await page.route(url => url.pathname === '/api/config', async route => {
+      if (route.request().method() === 'PUT') {
+        const payload = route.request().postDataJSON() as { client_config: { oauth2_server_config?: { disable_client_metadata_documents?: boolean } } }
+        saved = payload.client_config.oauth2_server_config
+        await route.fulfill({ json: { message: 'Configuration updated successfully' } })
+        return
+      }
+      const response = await route.fetch()
+      const body = await response.json()
+      body.client_config = {
+        ...body.client_config,
+        mcp_server_auth_mode: 'both',
+        oauth2_server_config: {
+          ...body.client_config.oauth2_server_config,
+          issuer_url: { value: 'https://bifrost.example.com' },
+          disable_client_metadata_documents: false,
+        },
+      }
+      await route.fulfill({ response, json: body })
+    })
+    await configSettingsPage.goto('mcp-gateway')
+    await page.getByTestId('mcp-settings-advanced-trigger').click()
+
+    const toggle = page.getByTestId('oauth2-disable-client-metadata-documents-switch')
+    await expect(toggle).toBeVisible()
+    await expect(toggle).not.toBeChecked()
+    await toggle.click()
+    const saveBtn = page.getByTestId('mcp-settings-save-btn')
+    await expect(saveBtn).toBeEnabled()
+    await saveBtn.click()
+    await expect.poll(() => saved?.disable_client_metadata_documents).toBe(true)
+  })
 })

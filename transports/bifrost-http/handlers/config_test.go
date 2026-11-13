@@ -1598,6 +1598,35 @@ func TestUpdateConfig_MCPClientMetadataURL(t *testing.T) {
 	assert.Empty(t, cfg.GetMCPClientMetadataURL())
 }
 
+// TestUpdateConfig_DisableClientMetadataDocuments pins that the switch is saved with oauth2_server_config,
+// stored, and cleared by a save without it.
+func TestUpdateConfig_DisableClientMetadataDocuments(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	put := func(disable bool) {
+		t.Helper()
+		ctx := putConfigCtx(fmt.Sprintf(`{"client_config":{"log_retention_days":8,"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":%q,"auth_code_ttl":300,"access_token_ttl":600,"disable_client_metadata_documents":%v}}}`, testIssuer, disable))
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	put(true)
+	assert.True(t, oauth2ServerCfg(cfg).DisableClientMetadataDocuments)
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.OAuth2ServerConfig)
+	assert.True(t, persisted.OAuth2ServerConfig.DisableClientMetadataDocuments)
+
+	put(false)
+	assert.False(t, oauth2ServerCfg(cfg).DisableClientMetadataDocuments)
+	persisted, err = store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	assert.False(t, persisted.OAuth2ServerConfig.DisableClientMetadataDocuments)
+}
+
 // TestUpdateConfigRejectsPrivateSkillsURLComponents prevents public catalogs from exposing URL credentials.
 func TestUpdateConfigRejectsPrivateSkillsURLComponents(t *testing.T) {
 	SetLogger(&mockLogger{})

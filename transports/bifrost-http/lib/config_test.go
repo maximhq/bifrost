@@ -442,8 +442,8 @@ func TestLoadClientConfig_InferenceAuthSetup(t *testing.T) {
 	}
 }
 
-// Adding allowed_redirect_uris (or disable_vk_identity) to config.json on a
-// deployment whose DB row already holds the rest of oauth2_server_config must
+// Adding allowed_redirect_uris (or disable_vk_identity, or disable_client_metadata_documents) to config.json
+// on a deployment whose DB row already holds the rest of oauth2_server_config must
 // reach the runtime config instead of being masked by a matching hash.
 func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.T) {
 	SetLogger(&testLogger{})
@@ -465,6 +465,14 @@ func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.
 	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
 	assert.Equal(t, []string{callback}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "file allowed_redirect_uris must be synced over the DB row")
 	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity, "file disable_vk_identity must be synced over the DB row")
+	assert.False(t, cfg.ClientConfig.OAuth2ServerConfig.DisableClientMetadataDocuments)
+
+	// Only disable_client_metadata_documents changes: the hash must still see it.
+	third := strings.Replace(after, `"disable_vk_identity":true`, `"disable_vk_identity":true,"disable_client_metadata_documents":true`, 1)
+	var thirdData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(third), &thirdData))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &thirdData))
+	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableClientMetadataDocuments, "file disable_client_metadata_documents must be synced over the DB row")
 }
 
 // A changed client section in config.json replaces the stored client config, but the max protocol

@@ -13,5 +13,6 @@ description: "Helm v2.1.49 changelog - 2026-11-12"
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
 - Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` (`server_type_on_slug`): code mode for the client on its own `/mcp/<slug>` only (`inherit`, `enabled` or `disabled`); `/mcp`, Virtual MCPs and LLM requests follow `isCodeModeClient`.
 - Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
+- Added `bifrost.client.oauth2ServerConfig.disableClientMetadataDocuments` (`client.oauth2_server_config.disable_client_metadata_documents`): stop advertising client metadata documents, so MCP clients register through Dynamic Client Registration. For deployments where Bifrost cannot reach the clients' document hosts.
 
 </Update>

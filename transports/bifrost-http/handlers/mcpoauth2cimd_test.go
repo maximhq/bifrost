@@ -319,6 +319,28 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
 }
 
+// With disable_client_metadata_documents on, Bifrost stops advertising support but still accepts a
+// client that sends a metadata-document client_id, so clients that ignore discovery keep working.
+func TestHandleAuthorize_ClientIDMetadataDocumentAcceptedWhenNotAdvertised(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.DisableClientMetadataDocuments = true
+	host := newMetadataHost(t)
+	h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+	v := url.Values{}
+	v.Set("client_id", host.document("/client.json", nil, nil))
+	v.Set("redirect_uri", "http://127.0.0.1:3000/callback")
+	v.Set("response_type", "code")
+	v.Set("code_challenge", "challenge")
+	v.Set("code_challenge_method", "S256")
+	v.Set("resource", testMCPResource)
+	v.Set("state", "xyz")
+
+	ctx := getCtx("/oauth2/authorize?" + v.Encode())
+	h.handleAuthorize(ctx)
+	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
+}
+
 // TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
 // Metadata Document refreshes the grant it was issued whatever grant types its document lists, and
 // without its document being fetched again: a refresh needs only the refresh token and the client_id

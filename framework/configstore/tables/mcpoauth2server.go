@@ -77,6 +77,8 @@ type OAuth2ServerConfig struct {
 	// option. Only meaningful when MCPServerAuthMode is oauth.
 	DisableVKIdentity bool `json:"disable_vk_identity,omitempty"`
 
+	DisableClientMetadataDocuments bool `json:"disable_client_metadata_documents,omitempty"` // Stop advertising Client ID Metadata Document support; URL client_ids are still accepted
+
 	// Refresh tokens have no hard expiry — they are invalidated only by:
 	//   - rotation on use (each /oauth2/token refresh call issues a new token
 	//     and immediately invalidates the previous one)

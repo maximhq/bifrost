@@ -382,6 +382,8 @@
 		"issuerUrlHelp": "ディスカバリードキュメントで公開され、すべての JWT の <code0>iss</code0> クレームに埋め込まれる安定した公開 URL。OAuth および Both モードでは必須です。Bifrost はリクエストの <code1>Host</code1> ヘッダーから発行者を導出することはありません（このヘッダーは呼び出し元が制御できるため）。環境変数構文（例：<code2>env.BIFROST_ISSUER_URL</code2>）に対応しています。",
 		"authCodeTtlHelp": "同意ページから MCP クライアントへ戻った後のワンタイムコード有効期間（デフォルト 300、最大 900＝15 分）。",
 		"accessTokenTtlHelp": "発行 JWT Bearer の有効期間。期限切れ時クライアントは黙って更新（デフォルト 600＝10 分）。取り消し後も旧グラントが効く上限にもなります。",
+		"disableClientMetadataDocuments": "クライアントメタデータドキュメントを無効にする",
+		"disableClientMetadataDocumentsHelp": "Bifrost がクライアントメタデータドキュメントを受け付けることを MCP クライアントに通知しないようにし、Codex や Claude Code などのクライアントが代わりに動的クライアント登録で登録するようにします。これらのドキュメントが公開されているホストに Bifrost から到達できない場合に有効にしてください。それでもメタデータドキュメントのアドレスを送信するクライアントは受け付けられ、既存のセッションには影響しません。",
 		"requireIdpLoginHelp": "有効時、OAuth 同意フローは ID プロバイダーログインのみ提示します。仮想キーでは MCP トークンを取得できず、既存の仮想キー OAuth セッションは即時失効します。匿名セッションは影響なし（推論での認証強制で制御）。",
 		"vFSStructure": "VFS 構造：",
 		"allToolsPerServerInASinglePyFile": "サーバーごとに全ツールを 1 つの .py ファイルに",

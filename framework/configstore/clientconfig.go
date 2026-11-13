@@ -609,6 +609,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if oc.DisableVKIdentity {
 			hash.Write([]byte("oauth2DisableVKIdentity:true"))
 		}
+		if oc.DisableClientMetadataDocuments {
+			hash.Write([]byte("oauth2DisableClientMetadataDocuments:true"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

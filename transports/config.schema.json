@@ -645,6 +645,11 @@
               "type": "boolean",
               "default": false,
               "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            },
+            "disable_client_metadata_documents": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, Bifrost's OAuth discovery stops advertising Client ID Metadata Document support, so MCP clients that follow it (Codex, Claude Code, ...) register through Dynamic Client Registration instead. Use it when Bifrost cannot reach the clients' document hosts. A client that still sends a metadata-document client_id is accepted only if Bifrost can fetch its document. Applies to /mcp and every /mcp/<slug>; Bifrost's own sign-in to upstream MCP servers is unaffected."
             }
           },
           "additionalProperties": false,

@@ -382,6 +382,8 @@
 		"issuerUrlHelp": "검색 문서에 광고되고 모든 JWT에 <code0>iss</code0> 클레임으로 포함된 안정적인 공개 URL입니다. OAuth 및 두 모드 모두에 필요: Bifrost는 요청 <code1>Host</code1> 헤더에서 발급자를 파생하지 않습니다. 해당 헤더가 호출자에 의해 제어되기 때문입니다. env var 구문(예: <code2>env.BIFROST_ISSUER_URL</code2>)을 지원합니다.",
 		"authCodeTtlHelp": "동의 페이지가 MCP 클라이언트로 다시 리디렉션된 후 일회성 코드가 유효한 기간(기본값: 300, 최대 900 = 15분)",
 		"accessTokenTtlHelp": "발행된 JWT Bearer 토큰의 수명이에요. 만료되면 클라이언트가 자동으로 새로 고쳐집니다(기본값: 600 = 10분). 또한 취소된 권한 부여가 중단되기 전에 계속 작동하는 기간을 제한해요.",
+		"disableClientMetadataDocuments": "클라이언트 메타데이터 문서 비활성화",
+		"disableClientMetadataDocumentsHelp": "Bifrost가 클라이언트 메타데이터 문서를 허용한다는 사실을 MCP 클라이언트에 알리지 않아, Codex나 Claude Code 같은 클라이언트가 대신 동적 클라이언트 등록으로 등록하도록 합니다. 해당 문서가 게시된 호스트에 Bifrost가 접근할 수 없을 때 켜세요. 그래도 메타데이터 문서 주소를 보내는 클라이언트는 허용되며, 기존 세션에는 영향이 없습니다.",
 		"requireIdpLoginHelp": "활성화되면 OAuth 동의 흐름은 ID 공급자 로그인만 제공해요. 가상 키는 더 이상 MCP 토큰을 얻는 데 사용할 수 없으며 기존 가상 키 OAuth 세션은 즉시 액세스 권한을 잃게 돼요. 익명 세션 액세스는 영향을 받지 않습니다(추론 시 인증 적용으로 제어됨).",
 		"vFSStructure": "VFS 구조:",
 		"allToolsPerServerInASinglePyFile": "단일 .py 파일에 있는 서버당 모든 도구",
