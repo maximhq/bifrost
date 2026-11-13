@@ -1601,5 +1601,25 @@
 		"retry": "重试",
 		"externalClientUrl": "外部客户端 URL",
 		"externalClientUrlHelp": "Bifrost 面向 Claude Code 和 Codex 市场的公共基础 URL。留空则禁用市场服务和注册，但仍可进行技能管理和下载。支持环境变量和 vault 引用。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。"
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "让开发者在 Claude Code 中通过 <code0>/login</code0> 登录 Bifrost，而无需手动配置虚拟密钥。",
+		"enableLabel": "启用 Claude Code 登录",
+		"enableDescription": "开发者在 <code1>/login</code1> 中选择 <b0>Cloud gateway</b0>，在浏览器中确认代码，然后选择身份：虚拟密钥、自己的账户，或在未强制推理认证时选择匿名会话。之后的请求将以该身份运行，并适用其预算、速率限制和模型访问权限。登录会显示在 OAuth 授权中，可在那里撤销。",
+		"issuerLabel": "颁发者 URL",
+		"issuerDescription": "Bifrost 的固定公共 URL。Claude Code 在 <code0/> 登录。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
+		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
+		"gatewayURLTemplate": "<颁发者 URL>/claude-code",
+		"connectTitle": "连接 Claude Code",
+		"gatewayURLLabel": "网关 URL：",
+		"connectBody": "Claude Code 只从机器级托管设置中读取网关 URL。请将以下键部署到每台开发者机器（通过 MDM 或 Claude Code 的 <code0>managed-settings.json</code0>），然后开发者运行 <code1>/login</code1>，并在 <b2>Cloud gateway</b2> 界面按 Enter：",
+		"requirements": "Claude Code 要求使用 https（仅 localhost 可用 http），且网关主机须解析为私有网络地址。",
+		"managedSettingsLabel": "托管设置（JSON）",
+		"managedSettingsDescription": "可选的 Claude Code <code0>managed-settings.json</code0>，会推送给每个已登录的客户端（权限、环境变量、模型允许列表等）。客户端每小时刷新一次。留空表示不使用托管策略。",
+		"issuerRequired": "请先设置颁发者 URL，再启用 Claude Code 登录。",
+		"invalidJSON": "托管设置必须是有效的 JSON。",
+		"notObject": "托管设置必须是 JSON 对象。",
+		"updated": "Claude Code 设置已更新。"
 	}
 }

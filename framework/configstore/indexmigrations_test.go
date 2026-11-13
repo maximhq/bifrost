@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/postgresconn"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -428,4 +430,99 @@ func TestEnsureIndexSmallTableRetriesLockTimeout(t *testing.T) {
 	require.NoError(t, ensureIndexConcurrently(db, "small_locked", "idx_small_locked_v", "v", false))
 	require.GreaterOrEqual(t, time.Since(start), 5*time.Second, "the build should have hit at least one lock timeout")
 	require.True(t, indexExists(t, db, "small_locked", "idx_small_locked_v"))
+}
+
+// TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumnsBoundsLockWait pins that the column
+// migration fails fast on a held table lock on postgres instead of waiting.
+func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE oauth2_authorize_requests (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM oauth2_authorize_requests")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
+// TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns pins the columns, re-runs and rollback.
+func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(t *testing.T) {
+	const id = "add_oauth2_authorize_requests_device_code_columns"
+	const table = "oauth2_authorize_requests"
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			ctx := context.Background()
+			require.NoError(t, db.Exec(`CREATE TABLE `+table+` (id VARCHAR(255) PRIMARY KEY)`).Error)
+			require.NoError(t, migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx, db, testMigrationLogger))
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", id).Error)
+			require.NoError(t, migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx, db, testMigrationLogger))
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				require.True(t, db.Migrator().HasColumn(table, c.column), "column %s must exist after the migration", c.column)
+			}
+
+			rollback := oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, id, testMigrationLogger).Rollback
+			require.NoError(t, rollback(db))
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				require.False(t, db.Migrator().HasColumn(table, c.column), "column %s must not exist after the rollback", c.column)
+			}
+			require.NoError(t, rollback(db))
+		})
+	}
+}
+
+// TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes pins that upgrades get the fresh-install
+// tag indexes, re-runs are safe, and rollback drops them.
+func TestMigrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes(t *testing.T) {
+	const id = "add_oauth2_authorize_requests_device_code_indexes"
+	const table = "oauth2_authorize_requests"
+
+	fresh, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, fresh.Migrator().CreateTable(&tables.TableOAuth2AuthorizeRequest{}))
+	for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+		require.True(t, fresh.Migrator().HasIndex(table, c.index), "a fresh install must build %s from the struct tags", c.index)
+	}
+
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE `+table+` (id VARCHAR(255) PRIMARY KEY, device_code_hash VARCHAR(255), user_code_hash VARCHAR(255))`).Error)
+			run := func(ctx context.Context, db *gorm.DB) error {
+				return migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes(ctx, db, testMigrationLogger)
+			}
+			runIndexMigrationTwice(t, db, id, run, table, oauth2AuthorizeRequestsDeviceCodeColumns[0].index)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				require.True(t, indexExists(t, db, table, c.index), "index %s must exist after the migration", c.index)
+			}
+
+			rollback := oauth2AuthorizeRequestsDeviceCodeIndexesMigration(context.Background(), id).Rollback
+			require.NoError(t, rollback(db))
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				require.False(t, indexExists(t, db, table, c.index), "index %s must not exist after the rollback", c.index)
+			}
+			require.NoError(t, rollback(db))
+		})
+	}
 }

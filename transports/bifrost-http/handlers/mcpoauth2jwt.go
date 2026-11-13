@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -108,6 +109,18 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 	return verifyBifrostJWT(ctx, rawToken, store, signingKey, oauth2MCPResourceURL(ctx, store))
 }
 
+// errOAuth2TokenRejected marks a verifyBifrostJWT error caused by the token
+// itself (bad signature, expired, wrong issuer or audience, ...), as opposed to
+// a server-side fault such as a missing signing key. Callers map it to 401.
+var errOAuth2TokenRejected = errors.New("oauth2 token rejected")
+
+// oauth2TokenRejection wraps a token failure so it matches
+// errOAuth2TokenRejected while keeping the original message.
+type oauth2TokenRejection struct{ err error }
+
+func (e oauth2TokenRejection) Error() string   { return e.err.Error() }
+func (e oauth2TokenRejection) Unwrap() []error { return []error{e.err, errOAuth2TokenRejected} }
+
 // verifyBifrostJWT parses and verifies a Bifrost-issued JWT. It validates the
 // RS256 signature using the supplied signing key, checks the audience includes
 // resource (RFC 8707), and returns the verified claims. The caller provides the
@@ -144,21 +157,21 @@ func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Conf
 		// RS256 so verification matches issuance.
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
 	if err != nil {
-		return nil, fmt.Errorf("invalid token: %w", err)
+		return nil, oauth2TokenRejection{fmt.Errorf("invalid token: %w", err)}
 	}
 	if !tok.Valid {
-		return nil, fmt.Errorf("token is not valid")
+		return nil, oauth2TokenRejection{fmt.Errorf("token is not valid")}
 	}
 	// WithIssuedAt only validates iat when present; require it, since every
 	// token we issue stamps one.
 	if claims.IssuedAt == nil {
-		return nil, fmt.Errorf("token missing iat claim")
+		return nil, oauth2TokenRejection{fmt.Errorf("token missing iat claim")}
 	}
 
 	// RFC 8707: the token must have been issued for this specific resource.
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
-		return nil, fmt.Errorf("token audience does not match this resource")
+		return nil, oauth2TokenRejection{fmt.Errorf("token audience does not match this resource")}
 	}
 
 	return claims, nil

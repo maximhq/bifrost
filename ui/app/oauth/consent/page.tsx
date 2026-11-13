@@ -149,19 +149,28 @@ function ConsentView({ flowId }: { flowId: string }) {
 					</p>
 				)}
 				<p className="text-muted-foreground mt-1.5 text-sm">{t("consent.chooseIdentity")}</p>
-				<p className="mt-4 text-sm">{t("consent.recognizeApplication")}</p>
-				<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
-					{flow.redirect_host}
-				</p>
-				<p className="text-muted-foreground mt-1 font-mono text-xs break-all" data-testid="oauth-consent-redirect-uri">
-					{flow.redirect_uri}
-				</p>
-				{flow.localhost_only_redirect && (
-					<p
-						className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
-						data-testid="oauth-consent-localhost-warning"
-					>
-						{t("consent.localhostWarning")}
+				{flow.redirect_uri ? (
+					<>
+						<p className="mt-4 text-sm">{t("consent.recognizeApplication")}</p>
+						<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
+							{flow.redirect_host}
+						</p>
+						<p className="text-muted-foreground mt-1 font-mono text-xs break-all" data-testid="oauth-consent-redirect-uri">
+							{flow.redirect_uri}
+						</p>
+						{flow.localhost_only_redirect && (
+							<p
+								className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
+								data-testid="oauth-consent-localhost-warning"
+							>
+								{t("consent.localhostWarning")}
+							</p>
+						)}
+					</>
+				) : (
+					// Device sign-ins (Claude Code gateway) have no callback; the device polls for the result.
+					<p className="mt-4 text-sm" data-testid="oauth-consent-device-signin">
+						{t("consent.deviceSignInConfirm")}
 					</p>
 				)}
 			</div>

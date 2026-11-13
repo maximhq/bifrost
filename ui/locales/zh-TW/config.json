@@ -1630,5 +1630,25 @@
 			"withMinimum": "{{pricing}}，最少 {{min}}",
 			"reportedCost": "回報成本"
 		}
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "讓開發者在 Claude Code 中透過 <code0>/login</code0> 登入 Bifrost，無需手動設定虛擬金鑰。",
+		"enableLabel": "啟用 Claude Code 登入",
+		"enableDescription": "開發者在 <code1>/login</code1> 中選擇 <b0>Cloud gateway</b0>，在瀏覽器中確認代碼，然後選擇身分：虛擬金鑰、自己的帳戶，或在未強制推論驗證時選擇匿名工作階段。之後的請求會以該身分執行，並套用其預算、速率限制與模型存取權限。登入會顯示在 OAuth 授權中，可在那裡撤銷。",
+		"issuerLabel": "簽發者 URL",
+		"issuerDescription": "Bifrost 的固定公開 URL。Claude Code 會在 <code0/> 登入。它與 MCP OAuth 伺服器使用同一個簽發者，因此變更它也會影響透過 OAuth 登入的 MCP 用戶端。支援環境變數語法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
+		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
+		"gatewayURLTemplate": "<簽發者 URL>/claude-code",
+		"connectTitle": "連線 Claude Code",
+		"gatewayURLLabel": "閘道 URL：",
+		"connectBody": "Claude Code 只會從機器層級的受管理設定讀取閘道 URL。請將以下金鑰部署到每台開發者電腦（透過 MDM 或 Claude Code 的 <code0>managed-settings.json</code0>），然後開發者執行 <code1>/login</code1>，並在 <b2>Cloud gateway</b2> 畫面按 Enter：",
+		"requirements": "Claude Code 需要 https（僅 localhost 可使用 http），且閘道主機必須解析為私人網路位址。",
+		"managedSettingsLabel": "受管理設定（JSON）",
+		"managedSettingsDescription": "選用的 Claude Code <code0>managed-settings.json</code0>，會推送給每個已登入的用戶端（權限、環境變數、模型允許清單等）。用戶端每小時重新整理一次。留空表示不使用受管理原則。",
+		"issuerRequired": "請先設定簽發者 URL，再啟用 Claude Code 登入。",
+		"invalidJSON": "受管理設定必須是有效的 JSON。",
+		"notObject": "受管理設定必須是 JSON 物件。",
+		"updated": "已更新 Claude Code 設定。"
 	}
 }

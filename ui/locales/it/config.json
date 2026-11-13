@@ -1606,5 +1606,25 @@
 		"retry": "Riprova",
 		"externalClientUrl": "URL client esterno",
 		"externalClientUrlHelp": "URL di base pubblico di Bifrost per i marketplace Claude Code e Codex. Lascialo vuoto per disabilitare la pubblicazione e la registrazione del marketplace. La gestione e il download delle skill restano disponibili. Supporta riferimenti a variabili d'ambiente e vault. Dietro un prefisso URL (server.base_path), includi il prefisso, ad esempio https://host/bifrost."
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "Consenti agli sviluppatori di accedere a Bifrost da Claude Code con <code0>/login</code0> invece di configurare a mano una chiave virtuale.",
+		"enableLabel": "Abilita l’accesso da Claude Code",
+		"enableDescription": "Gli sviluppatori scelgono <b0>Cloud gateway</b0> in <code1>/login</code1>, confermano un codice nel browser e scelgono un’identità: una chiave virtuale, il proprio account oppure una sessione anonima quando l’autenticazione sull’inferenza non è obbligatoria. Le richieste vengono poi eseguite con quell’identità, con i relativi budget, limiti di frequenza e accesso ai modelli. Gli accessi compaiono tra le autorizzazioni OAuth, dove possono essere revocati.",
+		"issuerLabel": "URL dell’emittente",
+		"issuerDescription": "L’URL pubblico stabile di Bifrost. Claude Code accede a <code0/>. È lo stesso emittente usato dal server OAuth MCP, quindi modificarlo influisce anche sui client MCP che hanno effettuato l’accesso con OAuth. Supporta la sintassi delle variabili d’ambiente (ad es. <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com oppure env.BIFROST_ISSUER_URL",
+		"gatewayURLTemplate": "<URL dell’emittente>/claude-code",
+		"connectTitle": "Collega Claude Code",
+		"gatewayURLLabel": "URL del gateway:",
+		"connectBody": "Claude Code legge l’URL del gateway solo dalle impostazioni gestite a livello di macchina. Distribuisci queste chiavi su ogni computer degli sviluppatori (tramite MDM o il file <code0>managed-settings.json</code0> di Claude Code); poi gli sviluppatori eseguono <code1>/login</code1> e premono Invio nella schermata <b2>Cloud gateway</b2>:",
+		"requirements": "Claude Code richiede https (http solo su localhost) e un host del gateway che si risolva in un indirizzo di rete privata.",
+		"managedSettingsLabel": "Impostazioni gestite (JSON)",
+		"managedSettingsDescription": "File <code0>managed-settings.json</code0> facoltativo di Claude Code inviato a ogni client che ha effettuato l’accesso (permessi, variabili d’ambiente, elenco dei modelli consentiti e così via). I client lo aggiornano ogni ora. Lascia vuoto per non applicare alcun criterio gestito.",
+		"issuerRequired": "Imposta l’URL dell’emittente prima di abilitare l’accesso da Claude Code.",
+		"invalidJSON": "Le impostazioni gestite devono essere JSON valido.",
+		"notObject": "Le impostazioni gestite devono essere un oggetto JSON.",
+		"updated": "Impostazioni di Claude Code aggiornate correttamente."
 	}
 }

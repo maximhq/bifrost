@@ -1160,11 +1160,11 @@
             },
             "oauth2ServerConfig": {
               "type": "object",
-              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "description": "OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is 'both' or 'oauth') and for the Claude Code gateway (when claudeCodeGateway.enabled). Maps to client.oauth2_server_config.",
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or claudeCodeGateway.enabled is true: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1199,6 +1199,22 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "claudeCodeGateway": {
+                  "type": "object",
+                  "description": "Claude Code gateway sign-in (/login -> Cloud gateway) at <issuerUrl>/claude-code. Independent of mcpServerAuthMode; requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.claude_code_gateway.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Serve the Claude Code gateway protocol under /claude-code.",
+                      "default": false
+                    },
+                    "managedSettings": {
+                      "type": "object",
+                      "description": "Claude Code managed-settings.json document served to every signed-in client. Omit for no managed policy."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false

@@ -529,7 +529,17 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "refresh_token and client_id are required")
 		return
 	}
+	h.refreshGrant(ctx, refreshToken, clientID, resource, oauth2MCPResourceURL(ctx, h.store))
+}
 
+// refreshGrant runs the refresh-token grant for a token bound to clientID:
+// replay detection, identity liveness checks, the resource binding, and an
+// atomic rotation. It writes the token response or OAuth error to ctx. Shared by
+// /oauth2/token and the Claude Code gateway token endpoint, which passes its
+// built-in client ID because Claude Code sends none. servedResource is the
+// resource the calling endpoint issues tokens for (/mcp or /claude-code): a
+// grant bound to any other resource cannot refresh there.
+func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshToken, clientID, resource, servedResource string) {
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
 	if errors.Is(err, configstore.ErrNotFound) {
@@ -630,10 +640,11 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "resource mismatch")
 		return
 	}
-	// The grant is bound to the /mcp resource as it was when it was authorized. A changed issuer_url
-	// moves that resource, and a token minted for the old one is refused by /mcp for its audience, so
-	// the grant cannot refresh; the client authorizes again against the server's current address.
-	if resource != oauth2MCPResourceURL(ctx, h.store) {
+	// The grant is bound to the served resource as it was when it was authorized. A changed issuer_url
+	// moves that resource, and a token minted for the old one is refused by the resource for its
+	// audience, so the grant cannot refresh; the client authorizes again against the server's current
+	// address. A grant for a different resource (a /claude-code grant at /oauth2/token) is refused too.
+	if resource != servedResource {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return
 	}

@@ -1630,5 +1630,25 @@
 		"retry": "다시 시도",
 		"externalClientUrl": "외부 클라이언트 URL",
 		"externalClientUrlHelp": "Claude Code 및 Codex 마켓플레이스에 사용되는 Bifrost의 공개 기본 URL이에요. 비워 두면 마켓플레이스 제공과 등록이 비활성화돼요. 스킬 관리와 다운로드는 계속 사용할 수 있어요. 환경 변수와 Vault 참조를 지원해요. URL 접두사(server.base_path) 뒤에서 실행되는 경우 https://host/bifrost처럼 접두사를 포함하세요."
+	},
+	"claudeCode": {
+		"title": "Claude Code",
+		"description": "가상 키를 직접 설정하는 대신 개발자가 Claude Code에서 <code0>/login</code0>으로 Bifrost에 로그인하게 하세요.",
+		"enableLabel": "Claude Code 로그인 사용",
+		"enableDescription": "개발자는 <code1>/login</code1>에서 <b0>Cloud gateway</b0>를 선택하고 브라우저에서 코드를 확인한 뒤 ID를 고릅니다. 가상 키, 자신의 계정, 또는 추론 인증이 강제되지 않을 때는 익명 세션을 선택할 수 있어요. 이후 요청은 해당 ID의 예산, 속도 제한, 모델 접근 권한으로 실행돼요. 로그인은 OAuth 권한 부여 목록에 표시되며 거기서 취소할 수 있어요.",
+		"issuerLabel": "발급자 URL",
+		"issuerDescription": "Bifrost의 고정 공개 URL이에요. Claude Code는 <code0/>에서 로그인해요. MCP OAuth 서버와 같은 발급자를 사용하므로 변경하면 OAuth로 로그인한 MCP 클라이언트에도 영향을 줘요. 환경 변수 구문을 지원해요(예: <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com 또는 env.BIFROST_ISSUER_URL",
+		"gatewayURLTemplate": "<발급자 URL>/claude-code",
+		"connectTitle": "Claude Code 연결",
+		"gatewayURLLabel": "게이트웨이 URL:",
+		"connectBody": "Claude Code는 게이트웨이 URL을 머신 수준의 관리 설정에서만 읽어요. 이 키를 각 개발자 머신에 배포한 뒤(MDM 또는 Claude Code의 <code0>managed-settings.json</code0>) 개발자가 <code1>/login</code1>을 실행하고 <b2>Cloud gateway</b2> 화면에서 Enter를 누르면 돼요:",
+		"requirements": "Claude Code에는 https(http는 localhost에서만)와 사설 네트워크 주소로 확인되는 게이트웨이 호스트가 필요해요.",
+		"managedSettingsLabel": "관리 설정(JSON)",
+		"managedSettingsDescription": "로그인한 모든 클라이언트에 배포되는 선택 사항인 Claude Code <code0>managed-settings.json</code0>이에요(권한, 환경 변수, 모델 허용 목록 등). 클라이언트는 매시간 새로 고쳐요. 관리 정책을 쓰지 않으려면 비워 두세요.",
+		"issuerRequired": "Claude Code 로그인을 사용하기 전에 발급자 URL을 설정하세요.",
+		"invalidJSON": "관리 설정은 올바른 JSON이어야 해요.",
+		"notObject": "관리 설정은 JSON 객체여야 해요.",
+		"updated": "Claude Code 설정을 업데이트했어요."
 	}
 }

@@ -28,7 +28,7 @@ import (
 // newRealOAuth2Store builds a real sqlite-backed ConfigStore (full migrations,
 // including the OAuth2 issuance tables) so issuance handlers exercise the actual
 // atomic store semantics rather than a hand-rolled mock.
-func newRealOAuth2Store(t *testing.T) configstore.ConfigStore {
+func newRealOAuth2Store(t testing.TB) configstore.ConfigStore {
 	t.Helper()
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
 		Enabled: true,
@@ -1011,6 +1011,31 @@ func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
 					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
 				})
 			}
+		})
+	}
+}
+
+// TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL pins that the Claude Code
+// gateway, which works in any MCP auth mode, cannot be stored on without a
+// pinned issuer_url, including via a partial update that clears the issuer.
+func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for name, body := range map[string]string{
+		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"claude_code_gateway":{"enabled":true}}}}`,
+		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","claude_code_gateway":{"enabled":true}}}}`,
+		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","claude_code_gateway":{"enabled":true}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "claude_code_gateway")
 		})
 	}
 }
