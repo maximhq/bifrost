@@ -20,7 +20,6 @@ import {
 	ChartNoAxesGantt,
 	ChevronDown,
 	ChevronRight,
-	Copy,
 	ExternalLink,
 	EyeOff,
 	Link2,
@@ -29,15 +28,21 @@ import {
 	Loader2,
 	MessagesSquare,
 	Search,
+	Settings2,
 	Sparkles,
+	User,
+	Wrench,
 	Trash2,
 	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { buildThread, buildTraceTree, messagesOf, spanUsage, type TraceTreeNode } from "../traceTree";
+import { buildThread, buildTraceTree, messagesOf, spanAttachments, spanUsage, type ThreadMessage, type TraceTreeNode } from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
+import CollapsibleBox from "@/app/workspace/logs/views/collapsibleBox";
+import { AttachmentList } from "./attachments";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface TraceViewerProps {
 	projectId: string | null;
@@ -230,44 +235,13 @@ export function TraceViewer({
 		if (!data) return null;
 		if (view === "thread")
 			return (
-				<div className="mx-auto flex max-w-3xl flex-col gap-6 py-2" data-testid="trace-viewer-thread">
-					{thread.length === 0 && <p className="text-muted-foreground text-sm">{t("tracing.viewer.noThread")}</p>}
-					{thread.map((message, index) =>
-						message.role === "user" ? (
-							<div
-								key={`${message.spanId}-${index}`}
-								className="flex flex-col items-end gap-1"
-								data-testid={`trace-viewer-thread-message-${index}`}
-							>
-								<div className="bg-muted max-w-[80%] rounded-sm px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">
-									{message.text}
-								</div>
-							</div>
-						) : (
-							<div
-								key={`${message.spanId}-${index}`}
-								className="flex flex-col gap-1.5"
-								data-testid={`trace-viewer-thread-message-${index}`}
-							>
-								<button
-									type="button"
-									onClick={() => {
-										setSelectedId(message.spanId);
-										setView("spans");
-									}}
-									className="text-muted-foreground hover:text-foreground flex items-center gap-2 text-[12px]"
-								>
-									<span className={cn("flex size-5 shrink-0 items-center justify-center rounded-sm", spanKindMeta("llm").tile)}>
-										<Sparkles className="size-3" />
-									</span>
-									<span className="font-medium capitalize">{message.role}</span>
-									<ChevronRight className="size-3.5" />
-								</button>
-								<div className="text-sm leading-relaxed whitespace-pre-wrap">{message.text}</div>
-							</div>
-						),
-					)}
-				</div>
+				<ThreadView
+					messages={thread}
+					onOpenSpan={(id) => {
+						setSelectedId(id);
+						setView("spans");
+					}}
+				/>
 			);
 		if (!selected) return <div className="text-muted-foreground p-6 text-sm">{t("tracing.viewer.noSpans")}</div>;
 		const link = linkOf(selected);
@@ -572,25 +546,100 @@ export function TraceViewer({
 	);
 }
 
+/**
+ * One stored value: JSON in the same collapsible code editor LLM Logs uses for raw requests and
+ * responses, anything else as wrapped text in the same box.
+ */
 function ValueBlock({ label, value, testId }: { label: string; value?: string; testId: string }) {
-	const { copy } = useCopyToClipboard();
 	if (!value) return null;
 	const pretty = prettyValue(value);
+	const json = pretty !== value || /^\s*[[{]/.test(value);
 	return (
-		<section className="space-y-1">
-			<div className="flex items-center justify-between">
-				<h4 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</h4>
-				<Button variant="ghost" size="icon" aria-label={`Copy ${label}`} data-testid={`${testId}-copy-button`} onClick={() => copy(pretty)}>
-					<Copy className="h-3.5 w-3.5" />
-				</Button>
-			</div>
-			<pre
-				data-testid={testId}
-				className="bg-muted/50 max-h-[420px] overflow-auto rounded-md border p-3 text-xs break-words whitespace-pre-wrap"
-			>
-				{pretty}
-			</pre>
-		</section>
+		<div data-testid={testId}>
+			<CollapsibleBox title={label} onCopy={() => pretty} collapsedHeight={150}>
+				{json ? (
+					<CodeEditor
+						className="z-0 w-full"
+						shouldAdjustInitialHeight
+						maxHeight={450}
+						wrap
+						code={pretty}
+						lang="json"
+						readonly
+						options={{
+							collapsibleBlocks: true,
+							showVerticalScrollbar: true,
+							scrollBeyondLastLine: false,
+							lineNumbers: "off",
+							alwaysConsumeMouseWheel: false,
+						}}
+					/>
+				) : (
+					<div className="px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap">{pretty}</div>
+				)}
+			</CollapsibleBox>
+		</div>
+	);
+}
+
+const THREAD_ROLES: Record<string, { icon: typeof Sparkles; tile: string }> = {
+	system: { icon: Settings2, tile: "bg-muted text-muted-foreground" },
+	user: { icon: User, tile: "bg-muted text-foreground" },
+	assistant: { icon: Sparkles, tile: spanKindMeta("llm").tile },
+	tool: { icon: Wrench, tile: spanKindMeta("tool").tile },
+};
+
+/**
+ * The conversation the trace's model calls carried, read like a chat log: every message on the left
+ * under its author, consecutive messages from one author grouped under one header.
+ */
+function ThreadView({ messages, onOpenSpan }: { messages: ThreadMessage[]; onOpenSpan: (spanId: string) => void }) {
+	const { t } = useTranslation("observability");
+	if (messages.length === 0) return <p className="text-muted-foreground p-2 text-sm">{t("tracing.viewer.noThread")}</p>;
+	return (
+		<div className="mx-auto flex max-w-3xl flex-col py-1" data-testid="trace-viewer-thread">
+			{messages.map((message, index) => {
+				const previous = messages[index - 1];
+				const grouped = previous?.role === message.role && previous.spanId === message.spanId;
+				const role = THREAD_ROLES[message.role] ?? THREAD_ROLES.assistant;
+				const Icon = role.icon;
+				return (
+					<div
+						key={`${message.spanId}-${index}`}
+						className={cn("group hover:bg-muted/50 flex gap-3 rounded-sm px-3", grouped ? "py-0.5" : "mt-2 pt-2 pb-0.5")}
+						data-testid={`trace-viewer-thread-message-${index}`}
+					>
+						<div className="w-7 shrink-0">
+							{!grouped && (
+								<span className={cn("mt-0.5 flex size-7 items-center justify-center rounded-sm", role.tile)} aria-hidden="true">
+									<Icon className="size-3.5" />
+								</span>
+							)}
+						</div>
+						<div className="min-w-0 flex-1">
+							{!grouped && (
+								<div className="flex items-baseline gap-2">
+									<span className="text-sm font-semibold capitalize">{message.role}</span>
+									{message.model && <span className="text-muted-foreground font-mono text-[11px]">{message.model}</span>}
+									<span className="text-muted-foreground text-[11px] tabular-nums">{new Date(message.at).toLocaleTimeString()}</span>
+									<button
+										type="button"
+										onClick={() => onOpenSpan(message.spanId)}
+										className="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-0.5 text-[11px] opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+										data-testid={`trace-viewer-thread-open-span-${index}`}
+									>
+										{t("tracing.viewer.openSpan")}
+										<ChevronRight className="size-3" />
+									</button>
+								</div>
+							)}
+							{message.text && <div className="text-sm leading-relaxed break-words whitespace-pre-wrap">{message.text}</div>}
+							<AttachmentList attachments={message.attachments} compact />
+						</div>
+					</div>
+				);
+			})}
+		</div>
 	);
 }
 
@@ -658,7 +707,12 @@ function SpanDetail({
 	const model = span.link_snapshot?.model || span.model;
 	const hasMetadata = !!span.metadata && Object.keys(span.metadata).length > 0;
 	// The Details tab shows content only. A span with none (an OTLP span with only numbers) opens on Raw.
-	const hasDetails = !!(span.error || span.input || span.output || span.expected || span.tags?.length) || scores.length > 0 || hasMetadata;
+	const attachments = useMemo(() => spanAttachments(span), [span]);
+	const hasDetails =
+		!!(span.error || span.input || span.output || span.expected || span.tags?.length) ||
+		scores.length > 0 ||
+		hasMetadata ||
+		attachments.length > 0;
 	const [tab, setTab] = useState("details");
 	const activeTab = tab === "details" && !hasDetails ? "raw" : tab;
 	const unpriced =
@@ -776,6 +830,7 @@ function SpanDetail({
 				<TabsContent value="details" className="space-y-4">
 					{span.error && <ValueBlock label={t("tracing.viewer.error")} value={span.error} testId="trace-span-error" />}
 					<Conversation span={span} />
+					<AttachmentList attachments={attachments} />
 					<ValueBlock label={t("tracing.viewer.expected")} value={span.expected} testId="trace-span-expected" />
 					{scores.length > 0 && (
 						<section className="space-y-1">
