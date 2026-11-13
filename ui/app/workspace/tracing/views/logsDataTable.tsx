@@ -191,7 +191,7 @@ export function LogsDataTable<TData>({
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2">
-			<div className="min-h-0 flex-1 overflow-hidden rounded-sm border">
+			<div className="min-h-0 flex-1 overflow-hidden rounded-md border">
 				<Table containerClassName="@container/logs-data-table h-full overflow-auto">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (

@@ -39,6 +39,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+	audioTracks,
 	buildThread,
 	buildTraceTree,
 	messagesOf,
@@ -50,7 +51,7 @@ import {
 } from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
 import CollapsibleBox from "@/app/workspace/logs/views/collapsibleBox";
-import { AttachmentList } from "./attachments";
+import { AttachmentList, ConversationPlayer } from "./attachments";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface TraceViewerProps {
@@ -87,7 +88,7 @@ function OpenInLogsLink({ to, id, label }: { to: "/workspace/logs" | "/workspace
 		<Link
 			to={to}
 			search={{ selected_log: id }}
-			className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 rounded-sm border px-2 py-1 text-xs whitespace-nowrap"
+			className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs whitespace-nowrap"
 			data-testid="trace-open-in-logs"
 		>
 			{label}
@@ -269,6 +270,7 @@ export function TraceViewer({
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
 			<SheetContent
 				className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]"
+				data-radius="md"
 				data-testid="trace-viewer"
 			>
 				<div className="border-b" data-testid="trace-viewer-topbar">
@@ -287,7 +289,7 @@ export function TraceViewer({
 						</div>
 						{traceId && (
 							<div
-								className="bg-muted/50 flex min-w-0 items-center gap-1.5 rounded-sm py-0.5 pr-0.5 pl-2 text-xs"
+								className="bg-muted/50 flex min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-0.5 pl-2 text-xs"
 								data-testid="trace-viewer-id"
 							>
 								<span className="text-muted-foreground shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
@@ -309,7 +311,7 @@ export function TraceViewer({
 							<button
 								type="button"
 								onClick={() => copyLink(window.location.href)}
-								className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs"
+								className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs"
 								data-testid="trace-viewer-copy-link"
 							>
 								<LinkIcon className="size-3.5" />
@@ -375,7 +377,7 @@ export function TraceViewer({
 									data-testid="trace-viewer-errors"
 								>
 									<span
-										className={cn("size-1.5 self-center rounded-sm", trace.error_count > 0 ? "bg-chart-error" : "bg-border")}
+										className={cn("size-1.5 self-center rounded-md", trace.error_count > 0 ? "bg-chart-error" : "bg-border")}
 										aria-hidden="true"
 									/>
 									{t("agentLogs.trace.errors")}
@@ -401,7 +403,7 @@ export function TraceViewer({
 							onClick={() => setView(value)}
 							data-testid={`trace-viewer-${value}-tab`}
 							className={cn(
-								"inline-flex h-8 items-center gap-1.5 rounded-sm px-2.5 text-[13px] font-medium",
+								"inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium",
 								view === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
 							)}
 						>
@@ -424,7 +426,7 @@ export function TraceViewer({
 					<div className="flex min-h-0 flex-1 flex-col md:flex-row">
 						<div className="flex max-h-[45vh] min-h-0 w-full shrink-0 flex-col border-b md:max-h-none md:w-[380px] md:border-r md:border-b-0">
 							<div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
-								<label className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 rounded-sm border px-2 py-1">
+								<label className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1">
 									<Search className="size-3.5 shrink-0" />
 									<span className="sr-only">{t("agentLogs.trace.findSpan")}</span>
 									<input
@@ -470,7 +472,7 @@ export function TraceViewer({
 											{node.depth > 0 && (
 												<span className="bg-border absolute top-0 bottom-0 w-px" style={{ left: node.depth * 16 - 4 }} aria-hidden="true" />
 											)}
-											<div className={cn("flex items-center rounded-sm pr-1", isSelected ? "bg-muted" : "hover:bg-muted/60")}>
+											<div className={cn("flex items-center rounded-md pr-1", isSelected ? "bg-muted" : "hover:bg-muted/60")}>
 												<button
 													type="button"
 													onClick={() => {
@@ -480,24 +482,24 @@ export function TraceViewer({
 													className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left"
 													data-testid={`trace-span-row-${span.span_id}`}
 												>
-													<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", style.tile)}>
+													<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", style.tile)}>
 														<Icon className="size-3.5" />
 													</span>
 													<span className="flex min-w-0 flex-1 flex-col">
 														<span className="flex min-w-0 items-center gap-1.5">
 															<span className="truncate text-[13px] font-medium">{label(span)}</span>
 															{usage.linked && (
-																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																<span className="bg-background text-muted-foreground shrink-0 rounded-md border px-1 text-[10px] font-medium">
 																	{t("tracing.viewer.gatewayBadge")}
 																</span>
 															)}
 															{node.orphan && (
-																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																<span className="bg-background text-muted-foreground shrink-0 rounded-md border px-1 text-[10px] font-medium">
 																	{t("tracing.viewer.partial")}
 																</span>
 															)}
 															{span.status === "error" && (
-																<span className="bg-chart-error/10 text-chart-error-ink shrink-0 rounded-sm px-1 text-[10px] font-semibold uppercase">
+																<span className="bg-chart-error/10 text-chart-error-ink shrink-0 rounded-md px-1 text-[10px] font-semibold uppercase">
 																	{t("agentLogs.trace.error")}
 																</span>
 															)}
@@ -532,7 +534,7 @@ export function TraceViewer({
 													<button
 														type="button"
 														onClick={() => toggle(span.span_id)}
-														className="text-muted-foreground hover:text-foreground hover:bg-background flex size-7 shrink-0 items-center justify-center rounded-sm"
+														className="text-muted-foreground hover:text-foreground hover:bg-background flex size-7 shrink-0 items-center justify-center rounded-md"
 														aria-label={t(isOpen ? "agentLogs.trace.collapse" : "agentLogs.trace.expand", { name: span.name })}
 														data-testid={`trace-span-toggle-${span.span_id}`}
 													>
@@ -610,9 +612,15 @@ const THREAD_ROLES: Record<string, { icon: typeof Sparkles; tile: string }> = {
  */
 function ThreadView({ messages, onOpenSpan }: { messages: ThreadMessage[]; onOpenSpan: (spanId: string) => void }) {
 	const { t } = useTranslation("observability");
+	const tracks = useMemo(() => audioTracks(messages), [messages]);
+	const [playingTrack, setPlayingTrack] = useState(-1);
+	const playingMessage = playingTrack >= 0 ? tracks[playingTrack]?.messageIndex : undefined;
 	if (messages.length === 0) return <p className="text-muted-foreground p-2 text-sm">{t("tracing.viewer.noThread")}</p>;
 	return (
 		<div className="mx-auto flex max-w-3xl flex-col py-1" data-testid="trace-viewer-thread">
+			<div className="bg-background sticky top-0 z-10 pb-2 empty:hidden">
+				<ConversationPlayer tracks={tracks} onTrackChange={setPlayingTrack} />
+			</div>
 			{messages.map((message, index) => {
 				const previous = messages[index - 1];
 				const grouped = previous?.role === message.role && previous.spanId === message.spanId;
@@ -621,12 +629,16 @@ function ThreadView({ messages, onOpenSpan }: { messages: ThreadMessage[]; onOpe
 				return (
 					<div
 						key={`${message.spanId}-${index}`}
-						className={cn("group hover:bg-muted/50 flex gap-3 rounded-sm px-3", grouped ? "py-0.5" : "mt-2 pt-2 pb-0.5")}
+						className={cn(
+							"group hover:bg-muted/50 flex gap-3 rounded-md px-3",
+							grouped ? "py-0.5" : "mt-2 pt-2 pb-0.5",
+							index === playingMessage && "bg-muted",
+						)}
 						data-testid={`trace-viewer-thread-message-${index}`}
 					>
 						<div className="w-7 shrink-0">
 							{!grouped && (
-								<span className={cn("mt-0.5 flex size-7 items-center justify-center rounded-sm", role.tile)} aria-hidden="true">
+								<span className={cn("mt-0.5 flex size-7 items-center justify-center rounded-md", role.tile)} aria-hidden="true">
 									<Icon className="size-3.5" />
 								</span>
 							)}
@@ -692,7 +704,7 @@ function Conversation({ span }: { span: TraceSpan }) {
 					<span className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{message.role}</span>
 					<div
 						className={cn(
-							"rounded-sm px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
+							"rounded-md px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
 							message.role === "user" ? "bg-muted" : message.role === "system" ? "border border-dashed" : "border",
 						)}
 					>
@@ -741,14 +753,14 @@ function SpanDetail({
 				</span>
 			</div>
 			{span.status === "error" && (
-				<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-xs font-medium">
-					<span className="bg-chart-error size-1.5 rounded-sm" aria-hidden="true" />
+				<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs font-medium">
+					<span className="bg-chart-error size-1.5 rounded-md" aria-hidden="true" />
 					{t("tracing.viewer.error")}
 				</span>
 			)}
-			<div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-sm border p-4 sm:grid-cols-2" data-testid="trace-span-identity">
+			<div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-md border p-4 sm:grid-cols-2" data-testid="trace-span-identity">
 				<div className="flex min-w-0 items-center gap-2 sm:col-span-2">
-					<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", meta.tile)}>
+					<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", meta.tile)}>
 						<Icon className="size-3.5" />
 					</span>
 					<span className="truncate font-medium">{span.name || span.span_id}</span>
@@ -771,7 +783,7 @@ function SpanDetail({
 			</div>
 
 			{/* Only the numbers this span has: a missing value is left out, not shown as "-". */}
-			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-sm border p-4 md:grid-cols-4" data-testid="trace-span-metrics">
+			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-md border p-4 md:grid-cols-4" data-testid="trace-span-metrics">
 				<Metric label={t("tracing.columns.duration")} value={formatDuration(span.duration_ms)} />
 				{usage.tokens > 0 && <Metric label={t("tracing.columns.tokens")} value={formatTokens(usage.tokens)} />}
 				{hasCost && (

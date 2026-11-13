@@ -59,7 +59,7 @@ function AddToDataset({ span }: { span: TraceSpan }) {
 							<SelectTrigger className="h-9 w-full max-w-sm" data-testid="trace-add-to-dataset-select">
 								<SelectValue placeholder={t("tracing.evals.chooseDataset")} />
 							</SelectTrigger>
-							<SelectContent>
+							<SelectContent data-radius="md">
 								{datasets.map((dataset) => (
 									<SelectItem key={dataset.id} value={dataset.id}>
 										{dataset.name}
@@ -132,7 +132,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 				{scores.length === 0 ? (
 					<p className="text-muted-foreground text-sm">{t("tracing.review.noScores")}</p>
 				) : (
-					<div className="divide-y rounded-sm border">
+					<div className="divide-y rounded-md border">
 						{scores.map((score) => (
 							<div
 								key={score.id}
@@ -171,7 +171,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 
 			<section className="space-y-2">
 				<SectionHeading>{t("tracing.review.addScoreHeading")}</SectionHeading>
-				<form className="space-y-3 rounded-sm border p-4" onSubmit={submit} data-testid="trace-review-score-form">
+				<form className="space-y-3 rounded-md border p-4" onSubmit={submit} data-testid="trace-review-score-form">
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
 							<Label htmlFor={fieldId("name")}>{t("tracing.review.scoreName")}</Label>

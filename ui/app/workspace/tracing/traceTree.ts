@@ -388,3 +388,20 @@ export function shouldPollTrace(trace: { in_progress: boolean; updated_at?: stri
 	if (!trace.updated_at) return false;
 	return nowMs - new Date(trace.updated_at).getTime() < TRACE_SETTLE_MS;
 }
+/** One audio part of a conversation, in the order the conversation plays. */
+export interface AudioTrack {
+	attachment: SpanAttachment;
+	messageIndex: number;
+	role: string;
+}
+
+/** Every audio part of a thread in message order: what "play conversation" plays, one after another. */
+export function audioTracks(messages: ThreadMessage[]): AudioTrack[] {
+	const tracks: AudioTrack[] = [];
+	messages.forEach((message, messageIndex) => {
+		for (const attachment of message.attachments) {
+			if (attachment.contentType.startsWith("audio/")) tracks.push({ attachment, messageIndex, role: message.role });
+		}
+	});
+	return tracks;
+}

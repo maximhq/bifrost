@@ -1,6 +1,6 @@
 import type { TraceSpan } from "@/lib/types/traces";
 import { describe, expect, it } from "vitest";
-import { buildThread, buildTraceTree, shouldPollTrace, spanAttachments, spanUsage } from "./traceTree";
+import { audioTracks, buildThread, buildTraceTree, shouldPollTrace, spanAttachments, spanUsage } from "./traceTree";
 
 function span(
 	id: string,
@@ -236,5 +236,28 @@ describe("audio, realtime and image generation payloads", () => {
 			["user", "", 1],
 			["assistant", "It is sunny in Oslo.", 1],
 		]);
+	});
+});
+describe("audioTracks", () => {
+	it("lists every audio part of a conversation in message order, with the message it belongs to", () => {
+		const wav = "UklGRiQAAABXQVZF";
+		const turn = (id: string, startMs: number, user: string, reply: string) =>
+			span(id, undefined, startMs, startMs + 1, {
+				kind: "llm",
+				input: JSON.stringify([{ role: "user", content: [{ type: "input_audio", input_audio: { data: wav + user, format: "wav" } }] }]),
+				output: JSON.stringify([{ message: { role: "assistant", audio: { data: wav + reply, transcript: reply } } }]),
+			});
+		const thread = buildThread([turn("b", 10, "B", "Tomorrow."), turn("a", 0, "A", "Let me check.")]);
+		const tracks = audioTracks(thread);
+		expect(tracks.map((t) => [t.messageIndex, t.role])).toEqual([
+			[0, "user"],
+			[1, "assistant"],
+			[2, "user"],
+			[3, "assistant"],
+		]);
+		// Images and text-only messages are not tracks.
+		expect(
+			audioTracks(buildThread([span("c", undefined, 0, 1, { kind: "llm", input: '[{"role":"user","content":"hi"}]', output: "hello" })])),
+		).toEqual([]);
 	});
 });

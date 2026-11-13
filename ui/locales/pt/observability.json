@@ -1979,6 +1979,13 @@
 			"deleteTraceConfirm": "Delete this trace? This cannot be undone.",
 			"noProjects": "There is no project yet. Create a tracing key first."
 		},
+		"player": {
+			"play": "Play conversation",
+			"pause": "Pause",
+			"previous": "Previous",
+			"next": "Next",
+			"position": "{{current}} of {{total}}"
+		},
 		"attachments": {
 			"heading": "Attachments ({{count}})",
 			"missing": "The file was not uploaded",
