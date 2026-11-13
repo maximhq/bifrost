@@ -226,6 +226,8 @@
               "mcp/sessions",
               "mcp/tool-execution",
               "mcp/resources-and-prompts",
+              "mcp/apps",
+              "mcp/multi-round-trip-requests",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",

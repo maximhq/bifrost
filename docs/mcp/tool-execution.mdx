@@ -406,13 +406,11 @@ if err != nil {
 
 ### Tools that ask for input
 
-Some MCP servers stop mid-call to ask for something: a question for the user (elicitation), a model completion (sampling), or the client's filesystem roots. Bifrost does not support these requests. It does not declare them to servers, and it cannot pass them to the MCP client or model that made the call.
-
-A tool that needs one fails. On a `2026-07-28` connection, the error names the server and what it asked for, and Bifrost does not retry the call. This applies to every path, including MCP clients connected through Bifrost's gateway, even if the client could answer the request itself.
+Some MCP servers stop mid-call to ask for something before the tool runs, such as a question for the user. Tool execution has no user to ask, so a tool that asks fails with an error that names the server and what it asked for. This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) and [Code Mode](./code-mode).
 
 If the server needs a step completed in the browser, such as connecting an account, the error includes the step and its URL. Complete it and call the tool again.
 
-To use such a tool, connect the MCP client directly to the server.
+MCP clients connected through Bifrost's [MCP gateway](./overview#bifrost-as-an-mcp-gateway) on MCP `2026-07-28` get the question instead and can answer it, when the server is on `2026-07-28` too and the client supports that kind of question. See [Multi Round-Trip Requests](./multi-round-trip-requests).
 
 ### Auth failure recovery
 
