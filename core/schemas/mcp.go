@@ -588,6 +588,39 @@ func ParseCodeModeDiscoveryRankerModel(value string) (ModelProvider, string, err
 	return ModelProvider(provider), model, nil
 }
 
+// MCPDiscoveryRankerCall is one decision request the code mode discovery
+// ranker made while answering a listToolFiles call. The ranker issues it as an
+// internal request, which skips the plugin pipeline, so it is recorded on the
+// tool call's context and the logging plugin writes it as its own log row.
+type MCPDiscoveryRankerCall struct {
+	Provider  ModelProvider    // provider that served the call, else the configured one
+	Model     string           // model that served the call, else the configured one
+	Usage     *BifrostLLMUsage // tokens used, or billed for a failed call; nil when unknown
+	StartedAt time.Time
+	Latency   time.Duration
+	Error     *BifrostError // nil when the call answered
+}
+
+// AppendMCPDiscoveryRankerCallOnContext records one discovery ranker call on
+// the tool call's context.
+func AppendMCPDiscoveryRankerCallOnContext(ctx *BifrostContext, call MCPDiscoveryRankerCall) {
+	if ctx == nil {
+		return
+	}
+	calls, _ := ctx.Value(BifrostContextKeyMCPDiscoveryRankerCalls).([]MCPDiscoveryRankerCall)
+	ctx.SetValue(BifrostContextKeyMCPDiscoveryRankerCalls, append(slices.Clip(calls), call))
+}
+
+// TakeMCPDiscoveryRankerCallsFromContext returns the discovery ranker calls
+// recorded on ctx and clears them, so each is logged once.
+func TakeMCPDiscoveryRankerCallsFromContext(ctx *BifrostContext) []MCPDiscoveryRankerCall {
+	if ctx == nil {
+		return nil
+	}
+	calls, _ := ctx.GetAndSetValue(BifrostContextKeyMCPDiscoveryRankerCalls, nil).([]MCPDiscoveryRankerCall)
+	return calls
+}
+
 // MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.
 type MCPCodeModeLimits struct {
 	MaxSourceBytes  int `json:"max_source_bytes,omitempty"`

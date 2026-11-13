@@ -1739,7 +1739,9 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 // codeModeDecisionRequest serves the code mode decision-model discovery ranker.
 // Like the complexity router's classifier, it issues an internal request: the
 // plugin pipeline is skipped and the caller's key routing and body state are
-// shed, so the ranker call is not governed, routed, or logged as the caller's.
+// shed, so the ranker call is not governed or routed as the caller's. The code
+// mode records the call on the tool call's context instead, and the logging
+// plugin writes it as its own row from the tool call's PostMCPHook.
 func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	PrepareContextForInternalRequest(ctx)
 	return bifrost.DecisionRequest(ctx, req)

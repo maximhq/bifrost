@@ -292,3 +292,63 @@ func TestDecisionRankerConfigUpdates(t *testing.T) {
 		t.Fatal("an empty config must remove the ranker")
 	}
 }
+
+func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
+	served := schemas.RoutingInfo{Provider: "openai", Model: "gpt-5-nano"}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 412, CompletionTokens: 9, TotalTokens: 421}
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}, ExtraFields: schemas.BifrostErrorExtraFields{RoutingInfo: served, BilledUsage: usage}}
+	for name, tc := range map[string]struct {
+		answer func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError)
+		want   schemas.MCPDiscoveryRankerCall
+	}{
+		// A fallback answered, so the row names it rather than the configured model.
+		"answered by a fallback": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				resp := decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1}, nil)
+				resp.Usage, resp.ExtraFields.RoutingInfo = usage, served
+				return resp, nil
+			},
+			want: schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
+		},
+		// A failed call is still recorded, with what the provider billed for it.
+		"failed after billing": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return nil, failure
+			},
+			want: schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage, Error: failure},
+		},
+		// Nothing says who served it, so the configured model is recorded.
+		"no routing info": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1}, nil), nil
+			},
+			want: schemas.MCPDiscoveryRankerCall{Provider: "typesafe", Model: "system-one"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+			useDecisionRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "typesafe/system-one", Fallbacks: []string{"openai/gpt-5-nano"}}, &fakeDecisions{answer: tc.answer})
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			if _, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeListToolFiles), Arguments: `{"query":"create an issue"}`},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			calls := schemas.TakeMCPDiscoveryRankerCallsFromContext(ctx)
+			if len(calls) != 1 {
+				t.Fatalf("expected one recorded decision call, got %d", len(calls))
+			}
+			got := calls[0]
+			if got.Provider != tc.want.Provider || got.Model != tc.want.Model || got.Usage != tc.want.Usage || got.Error != tc.want.Error {
+				t.Fatalf("recorded %+v, want %+v", got, tc.want)
+			}
+			if got.StartedAt.IsZero() || got.Latency <= 0 {
+				t.Fatalf("the call's start and latency were not recorded: %+v", got)
+			}
+			if again := schemas.TakeMCPDiscoveryRankerCallsFromContext(ctx); len(again) != 0 {
+				t.Fatalf("taking the calls must clear them, got %d more", len(again))
+			}
+		})
+	}
+}

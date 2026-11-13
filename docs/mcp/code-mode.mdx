@@ -446,7 +446,9 @@ At most 26 candidates are sent, the tightest choice limit among the decision pro
 <Note>
 **Latency and cost.** Every ranked query that is not an exact tool reference makes one decision call, and its answer is not cached, so each such `listToolFiles` call waits for the model and pays for its input: the query plus a short description of up to 26 tools. When the call fails, times out or returns an answer that does not pass validation, the lexical shortlist is returned instead.
 
-The ranker's calls are internal requests, like the complexity router's classifier calls: they skip the plugin pipeline, so governance, routing rules and request logs do not see them. They are not charged to the caller's virtual key or budget; the deployment pays for them through the configured provider keys.
+The ranker's calls are internal requests, like the complexity router's classifier calls: they skip the plugin pipeline, so governance and routing rules do not see them. They are not charged to the caller's virtual key or budget; the deployment pays for them through the configured provider keys.
+
+Each call is still written to the request logs as its own `decision` row with the provider and model that served it (a fallback when one answered), its tokens, latency, cost and status, including calls that failed or timed out. The row carries no virtual key, user, team or customer, matching the billing above, and its metadata holds `internal_request: code_mode_discovery_ranker` and `mcp_request_id`, the request ID of the `listToolFiles` call that made it. The `listToolFiles` call itself stays out of the MCP logs, like the other Code Mode tools.
 </Note>
 
 ### 2. readToolFile

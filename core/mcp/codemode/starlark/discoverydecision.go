@@ -58,7 +58,8 @@ func newDecisionDiscoveryRanker(config schemas.MCPCodeModeDiscoveryRanker, decid
 
 func (r *decisionDiscoveryRanker) maxCandidates() int { return discoveryMaxDecisionChoices }
 
-// rank asks the decision model, bounded by the configured timeout.
+// rank asks the decision model, bounded by the configured timeout, and records
+// the call on the tool call's context for the logging plugin.
 func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankRequest) (discoveryRankResponse, error) {
 	decide := r.decide.Load()
 	if decide == nil {
@@ -66,7 +67,11 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 	}
 	decisionCtx := schemas.NewBifrostContext(ctx, time.Now().Add(r.timeout))
 	defer decisionCtx.Cancel()
+	started := time.Now()
 	resp, bifrostErr := (*decide)(decisionCtx, r.decisionRequest(input))
+	if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, r.call(started, resp, bifrostErr))
+	}
 	if bifrostErr != nil {
 		message := "unknown error"
 		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
@@ -78,6 +83,24 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 		return discoveryRankResponse{}, errors.New("decision request returned no response")
 	}
 	return decisionRankResponse(input, resp)
+}
+
+// call describes one decision call for the log: the provider and model that
+// served it, else the configured ones, and its usage, which for a failed call
+// is what the provider billed anyway.
+func (r *decisionDiscoveryRanker) call(started time.Time, resp *schemas.BifrostDecisionResponse, bifrostErr *schemas.BifrostError) schemas.MCPDiscoveryRankerCall {
+	call := schemas.MCPDiscoveryRankerCall{Provider: r.provider, Model: r.model, StartedAt: started, Latency: time.Since(started)}
+	var served schemas.RoutingInfo
+	switch {
+	case bifrostErr != nil:
+		served, call.Usage, call.Error = bifrostErr.ExtraFields.RoutingInfo, bifrostErr.ExtraFields.BilledUsage, bifrostErr
+	case resp != nil:
+		served, call.Usage = resp.ExtraFields.RoutingInfo, resp.Usage
+	}
+	if served.Provider != "" && served.Model != "" {
+		call.Provider, call.Model = served.Provider, served.Model
+	}
+	return call
 }
 
 // decisionRequest asks which candidate fits the query and whether the
