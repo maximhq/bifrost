@@ -11,31 +11,43 @@ import {
 	ListOrdered,
 	Link2,
 	type LucideIcon,
-	MessageSquare,
 	Search,
+	Sparkles,
 	ShieldCheck,
 	Sigma,
 	Star,
 	Wrench,
 } from "lucide-react";
 
-/** Icon and colour of each span kind. The colour marks the kind in the tree and on the timeline. */
-export const SPAN_KINDS: Record<TraceSpanKind, { icon: LucideIcon; text: string; bar: string }> = {
-	llm: { icon: MessageSquare, text: "text-violet-600 dark:text-violet-400", bar: "bg-violet-500" },
-	tool: { icon: Wrench, text: "text-amber-600 dark:text-amber-400", bar: "bg-amber-500" },
-	task: { icon: CircleDot, text: "text-sky-600 dark:text-sky-400", bar: "bg-sky-500" },
-	function: { icon: FunctionSquare, text: "text-cyan-600 dark:text-cyan-400", bar: "bg-cyan-500" },
-	agent: { icon: Bot, text: "text-emerald-600 dark:text-emerald-400", bar: "bg-emerald-500" },
-	chain: { icon: Link2, text: "text-teal-600 dark:text-teal-400", bar: "bg-teal-500" },
-	retriever: { icon: Search, text: "text-orange-600 dark:text-orange-400", bar: "bg-orange-500" },
-	embedding: { icon: Sigma, text: "text-fuchsia-600 dark:text-fuchsia-400", bar: "bg-fuchsia-500" },
-	reranker: { icon: ListOrdered, text: "text-rose-600 dark:text-rose-400", bar: "bg-rose-500" },
-	guardrail: { icon: ShieldCheck, text: "text-lime-600 dark:text-lime-400", bar: "bg-lime-500" },
-	score: { icon: Star, text: "text-yellow-600 dark:text-yellow-400", bar: "bg-yellow-500" },
-	eval: { icon: FlaskConical, text: "text-indigo-600 dark:text-indigo-400", bar: "bg-indigo-500" },
-	event: { icon: Boxes, text: "text-slate-600 dark:text-slate-400", bar: "bg-slate-500" },
-	http: { icon: Globe, text: "text-zinc-500", bar: "bg-zinc-400" },
-	unknown: { icon: CircleHelp, text: "text-zinc-500", bar: "bg-zinc-400" },
+// The agent trace's palette (agent-logs/views/agentTraceView.tsx kindStyles), so a span reads the
+// same in Traces as in Agent Logs: agents emerald, model calls blue, tools orange, guardrails violet.
+const TILE = {
+	agent: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400",
+	llm: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400",
+	tool: "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400",
+	guard: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-400",
+	retriever: "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-400",
+	eval: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400",
+	plain: "bg-muted text-foreground",
+} as const;
+
+/** Icon, tile and timeline bar of each span kind. */
+export const SPAN_KINDS: Record<TraceSpanKind, { icon: LucideIcon; tile: string; text: string; bar: string }> = {
+	llm: { icon: Sparkles, tile: TILE.llm, text: "text-blue-700 dark:text-blue-400", bar: "bg-blue-500" },
+	embedding: { icon: Sigma, tile: TILE.llm, text: "text-blue-700 dark:text-blue-400", bar: "bg-blue-500" },
+	reranker: { icon: ListOrdered, tile: TILE.llm, text: "text-blue-700 dark:text-blue-400", bar: "bg-blue-500" },
+	agent: { icon: Bot, tile: TILE.agent, text: "text-emerald-700 dark:text-emerald-400", bar: "bg-emerald-500" },
+	tool: { icon: Wrench, tile: TILE.tool, text: "text-orange-700 dark:text-orange-400", bar: "bg-orange-500" },
+	guardrail: { icon: ShieldCheck, tile: TILE.guard, text: "text-violet-700 dark:text-violet-400", bar: "bg-violet-500" },
+	retriever: { icon: Search, tile: TILE.retriever, text: "text-cyan-700 dark:text-cyan-400", bar: "bg-cyan-500" },
+	score: { icon: Star, tile: TILE.eval, text: "text-rose-700 dark:text-rose-400", bar: "bg-rose-500" },
+	eval: { icon: FlaskConical, tile: TILE.eval, text: "text-rose-700 dark:text-rose-400", bar: "bg-rose-500" },
+	chain: { icon: Link2, tile: TILE.plain, text: "text-foreground", bar: "bg-zinc-400" },
+	task: { icon: CircleDot, tile: TILE.plain, text: "text-foreground", bar: "bg-zinc-400" },
+	function: { icon: FunctionSquare, tile: TILE.plain, text: "text-foreground", bar: "bg-zinc-400" },
+	event: { icon: Boxes, tile: TILE.plain, text: "text-foreground", bar: "bg-zinc-400" },
+	http: { icon: Globe, tile: TILE.plain, text: "text-muted-foreground", bar: "bg-zinc-400" },
+	unknown: { icon: CircleHelp, tile: TILE.plain, text: "text-muted-foreground", bar: "bg-zinc-400" },
 };
 
 export function spanKindMeta(kind: string) {
