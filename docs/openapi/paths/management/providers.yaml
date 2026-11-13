@@ -536,6 +536,15 @@ provider-key-by-id:
 provider-decisions-probe:
   post:
     operationId: probeProviderDecision
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Probe a decision route
     description: |
       Sends one fixed predicate question with a short text input to exactly this provider

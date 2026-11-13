@@ -43738,6 +43738,9 @@
     "/api/providers/{provider}/decisions/probe": {
       "post": {
         "operationId": "probeProviderDecision",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
         "summary": "Probe a decision route",
         "description": "Sends one fixed predicate question with a short text input to exactly this provider\nand model on the decisions endpoint, so a decision route can be checked before it is\nrelied on. The request carries no fallbacks and skips the plugin pipeline: routing\nrules, governance, caching, and logging do not apply, so the result reflects this\nroute alone. Each probe is a real, billed request.\n\nA probe that reached the provider returns `200` whether or not the route works:\n`ok` reports the outcome, and on failure `error` carries the provider's status code,\nerror type, code, and message, with the provider's key values and any URL\ncredentials removed. The request is rejected with `400` before anything is sent when\n`model` is missing, the model is not served on the provider's decisions endpoint\n(the same rule `GET /api/models?decisions=true` applies), or `key_id` is not one of\nthe provider's keys, and with `404` when the provider is not configured.\n",
         "tags": [
