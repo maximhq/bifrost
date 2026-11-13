@@ -13,8 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -2556,6 +2558,214 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`, `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`),
 		},
 		{
+			name:     "enabled suggestions accept their own model without an llm block",
+			analyzer: complexityAnalyzerSchemaConfig(semanticSchemaBlock, `,"suggestions":{"enabled":true,"provider":"openai","model":"gpt-5"}`),
+		},
+		{
+			name:      "enabled suggestions require a model",
+			analyzer:  complexityAnalyzerSchemaConfig(semanticSchemaBlock, `,"suggestions":{"enabled":true}`),
+			wantError: true,
+		},
+		{
+			name:      "enabled suggestions are not satisfied by a model without its provider",
+			analyzer:  complexityAnalyzerSchemaConfig(semanticSchemaBlock, `,"suggestions":{"enabled":true,"model":"gpt-5"}`),
+			wantError: true,
+		},
+		{
+			name:      "enabled suggestions require a semantic block",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"openai","model":"gpt-5"}`),
+			wantError: true,
+		},
+		{
+			name:      "enabled suggestions reject a decision primary classifier",
+			analyzer:  complexityAnalyzerSchemaConfig(semanticSchemaBlock, `,"classifier":"decision","suggestions":{"enabled":true,"provider":"openai","model":"gpt-5"}`),
+			wantError: true,
+		},
+		{
+			name:     "disabled suggestions need neither semantic nor a model",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":false}`),
+		},
+		{
+			name:     "suggestions accept sample rate and lookback",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"sample_rate":0.25,"lookback_days":14}`),
+		},
+		{
+			name:      "suggestions require enabled",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"sample_rate":0.25}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a zero sample rate",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"sample_rate":0}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a lookback past 90 days",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"lookback_days":91}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject unknown fields",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"samplerate":0.5}`),
+			wantError: true,
+		},
+		{
+			name: "suggestions accept run settings",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"every":"1w","start_at":"2026-11-06T04:30:00Z"},`+
+				`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`),
+		},
+		{
+			name: "suggestions accept a decision tier step",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":"openai","model":"gpt-5",`+
+				`"tier":{"classifier":"decision","provider":"typesafe","model":"jev-latest","instructions":"judge the work"}}`),
+		},
+		{
+			name:     "suggestions accept an llm tier step without a model",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm"}}`),
+		},
+		{
+			name: "suggestions accept an edited tier prompt and per-tier criteria",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"decision","prompt":"Refunds are SIMPLE.",`+
+				`"instructions":"Which tier?","criteria":{"SIMPLE":{"definition":"One short answer.","signals":[],"examples":["where is my refund"]}}}}`),
+		},
+		{
+			name:     "suggestions accept a tier prompt without a classifier, which defaults to llm",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"prompt":"Refunds are SIMPLE."}}`),
+		},
+		{
+			name:      "suggestions reject tier criteria for an unknown tier",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"decision","criteria":{"HARD":{"definition":"x"}}}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject tier criteria without a definition",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"examples":["hi"]}}}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject an unknown tier classifier",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"lexical"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a tier provider without a model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":"openai"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a blank tier provider",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":"  ","model":"gpt-4o-mini"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a blank tier model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":"openai","model":"\t"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a blank tier provider and model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":" ","model":" "}}`),
+			wantError: true,
+		},
+		{
+			// As for the phrase model: Go's regexp \S is ASCII-only, so a
+			// non-breaking space passed it, then strings.TrimSpace emptied the
+			// tier provider and the config failed to load.
+			name:      "suggestions reject a Unicode-whitespace-only tier provider",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":" ","model":"gpt-4o-mini"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a Unicode-whitespace-only tier model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":"openai","model":"\u0085"}}`),
+			wantError: true,
+		},
+		{
+			name:     "suggestions accept a tier provider and model",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"classifier":"llm","provider":"openai","model":"gpt-4o-mini"}}`),
+		},
+		{
+			name:      "suggestions reject unknown tier fields",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"tier":{"mode":"llm"}}`),
+			wantError: true,
+		},
+		{
+			name:     "suggestions accept an hourly schedule",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"every":"6h"}}`),
+		},
+		{
+			name:      "suggestions reject hours of a day or more",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"every":"24h"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a malformed first run",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"every":"1d","start_at":"tomorrow at 3"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject the old wall-clock fields",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"every":"1d","at":"03:00","timezone":"UTC"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject unknown schedule fields",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a provider without a model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":"openai"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only provider and model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":"  ","model":"\t"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only provider",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":" ","model":"gpt-5"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":"openai","model":"  "}`),
+			wantError: true,
+		},
+		{
+			// Go's regexp \S is ASCII-only, so a non-breaking space passed it,
+			// then strings.TrimSpace emptied the model and the config failed
+			// to load.
+			name:      "suggestions reject a Unicode-whitespace-only model",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"provider":"openai","model":"\u00a0"}`),
+			wantError: true,
+		},
+		{
+			name:     "suggestions accept a first run with fractional seconds and an offset",
+			analyzer: complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"start_at":"2028-02-29T23:59:59.5+05:30"}}`),
+		},
+		{
+			name:      "suggestions reject a first run on an impossible date",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-99-99T03:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a first run past the end of its month",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-04-31T03:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a first run at an impossible time",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-11-06T24:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a cluster budget below 1000",
+			analyzer:  complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":{"enabled":true,"max_clustered_requests":10}`),
+			wantError: true,
+		},
+		{
 			name:     "semantic fallback none does not require llm config",
 			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
 		},
@@ -2576,6 +2786,10 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, tt.analyzer)
+			// Suggestions are a model router's; their rules are checked there.
+			if strings.Contains(tt.analyzer, `"suggestions"`) {
+				config = fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(tt.analyzer))
+			}
 			err := validateConfig(t, compiled, config)
 			if tt.wantError && err == nil {
 				t.Fatal("expected schema validation to fail")
@@ -2587,8 +2801,67 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 	}
 }
 
+// TestSchemaSuggestionsModelMatchesGoTrimming pins the suggestions provider
+// and model patterns to strings.TrimSpace: every rune Go trims away is
+// rejected on its own, so a value the schema accepts is never emptied by
+// normalization, while real content padded with those runes still passes.
+func TestSchemaSuggestionsModelMatchesGoTrimming(t *testing.T) {
+	compiled := compileSchema(t)
+	validate := func(provider, model string) error {
+		block, err := json.Marshal(map[string]any{"enabled": true, "provider": provider, "model": model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return validateConfig(t, compiled, fmt.Sprintf(`{"model_routers":[%s]}`,
+			modelRouterSchemaConfig(complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":`+string(block)))))
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !unicode.IsSpace(r) {
+			continue
+		}
+		if validate("openai", string(r)) == nil {
+			t.Errorf("model %U alone is trimmed to nothing, yet the schema accepted it", r)
+		}
+		if validate(string(r), "gpt-5") == nil {
+			t.Errorf("provider %U alone is trimmed to nothing, yet the schema accepted it", r)
+		}
+		if err := validate("openai", string(r)+"gpt-5"+string(r)); err != nil {
+			t.Errorf("model with %U around it keeps its content, yet the schema refused it: %v", r, err)
+		}
+	}
+}
+
+// semanticSchemaBlock and suggestionsSchemaPrereqs satisfy what enabled
+// suggestions require, so a suggestions case fails only on what it tests.
+const (
+	semanticSchemaBlock      = `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`
+	suggestionsSchemaPrereqs = semanticSchemaBlock + `,"llm":{"provider":"openai","model":"gpt-4.1-mini"}`
+)
+
 func complexityAnalyzerSchemaConfig(fields ...string) string {
 	return `{"keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]}` + strings.Join(fields, "") + `}`
+}
+
+// modelRouterSchemaConfig turns a complexityAnalyzerSchemaConfig into a
+// model_routers entry with the same settings.
+func modelRouterSchemaConfig(analyzer string) string {
+	return `{"id":"suggestions-router","name":"Suggestions router",` + strings.TrimPrefix(analyzer, "{")
+}
+
+// The complexity analyzer config makes no phrase suggestions: only model
+// routers do, so config.json refuses a suggestions block on it, enabled or
+// not, and takes the same block on a router.
+func TestSchemaComplexityAnalyzerConfigRefusesSuggestions(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, block := range []string{`{"enabled":true,"provider":"openai","model":"gpt-5"}`, `{"enabled":false}`} {
+		analyzer := complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":`+block)
+		if err := validateConfig(t, compiled, fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, analyzer)); err == nil {
+			t.Fatalf("the complexity config must refuse suggestions %s", block)
+		}
+		if err := validateConfig(t, compiled, fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(analyzer))); err != nil {
+			t.Fatalf("a model router must take suggestions %s: %v", block, err)
+		}
+	}
 }
 
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
@@ -4802,5 +5075,44 @@ func TestValidateConfigSchema_DatasheetOverrideConstraints(t *testing.T) {
 				t.Errorf("validation error = %v, want error = %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The schema's schedule patterns must accept exactly what the Go schedule
+// parser accepts, or config.json passes schema validation and then fails to
+// load (or the reverse).
+func TestConfigSchemaSuggestionsScheduleMatchesParser(t *testing.T) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(loadLocalSchema(t)))
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("config.schema.json", doc); err != nil {
+		t.Fatalf("add schema: %v", err)
+	}
+	schedule, err := c.Compile("config.schema.json#/$defs/complexity_suggestions_schedule")
+	if err != nil {
+		t.Fatalf("compile schedule schema: %v", err)
+	}
+	for _, unit := range []string{"h", "d", "w"} {
+		for n := 1; n <= 40; n++ {
+			every := fmt.Sprintf("%d%s", n, unit)
+			goErr := (&configstore.ComplexitySuggestionsSchedule{Every: every}).Validate()
+			schemaErr := schedule.Validate(map[string]any{"every": every})
+			if (goErr == nil) != (schemaErr == nil) {
+				t.Errorf("%s: parser error %v, schema error %v", every, goErr, schemaErr)
+			}
+		}
+	}
+	// start_at: the schema's pattern accepts exactly the RFC 3339 times the Go
+	// decoder does.
+	for _, start := range []string{"2026-11-12T03:00:00Z", "2026-11-12T08:30:00+05:30", "2026-11-12T03:00:00.5Z",
+		"2026-11-12T03:00Z", "2026-11-12 03:00:00Z", "2026-11-12", "tomorrow"} {
+		var decoded configstore.ComplexitySuggestionsSchedule
+		goErr := json.Unmarshal([]byte(`{"start_at":"`+start+`"}`), &decoded)
+		schemaErr := schedule.Validate(map[string]any{"start_at": start})
+		if (goErr == nil) != (schemaErr == nil) {
+			t.Errorf("start_at %s: decoder error %v, schema error %v", start, goErr, schemaErr)
+		}
 	}
 }

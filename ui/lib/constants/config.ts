@@ -65,7 +65,7 @@ export const ModelPlaceholders = {
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
-	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	sarvam: "e.g. sarvam-105b, glm5.3-flash, gemma4",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",

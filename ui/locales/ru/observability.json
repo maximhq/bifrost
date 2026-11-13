@@ -70,7 +70,8 @@
 			"decision": "Модель принятия решений",
 			"llm": "LLM",
 			"skipped": "Пропущено"
-		}
+		},
+		"modelRouter": "Маршрутизатор"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1283,7 +1284,10 @@
 		"exactRoundTripID": "Точный ID цикла запросов",
 		"nothingRecorded": "За этот период ничего не записано",
 		"topics": "Темы",
-		"searchTopics": "Поиск тем"
+		"searchTopics": "Поиск тем",
+		"modelRouters": "Маршрутизаторы",
+		"searchModelRouters": "Поиск маршрутизаторов",
+		"loadFailed": "Не удалось загрузить этот список."
 	},
 	"requestTypes": {
 		"chat_completion": "Чат",

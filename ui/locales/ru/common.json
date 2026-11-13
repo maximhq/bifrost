@@ -77,7 +77,8 @@
 		"modelLimits": "ограничения модели",
 		"agent": "агент",
 		"relay": "ретранслятор",
-		"relays": "ретрансляторы"
+		"relays": "ретрансляторы",
+		"modelRouters": "маршрутизаторов"
 	},
 	"aboutField": "О поле {{field}}",
 	"thisField": "это поле",
