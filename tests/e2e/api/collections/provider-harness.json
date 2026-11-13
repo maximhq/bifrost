@@ -110,6 +110,10 @@
           "        hasContent = j.status === 'completed'",
           "            ? (Array.isArray(j.steps) && j.steps.some(function (s) { return s && s.type === 'model_output' && Array.isArray(s.content) && s.content.length > 0; }))",
           "            : (typeof j.id === 'string' && j.id.length > 0 && (j.status === 'in_progress' || j.status === 'cancelled'));",
+          "    } else if (typeof j.audio_base64 === 'string') {",
+          "        // ElevenLabs speech with with_timestamps answers JSON (audio_base64 plus alignment) instead of audio bytes.",
+          "        shape = 'speech-with-timestamps';",
+          "        hasContent = j.audio_base64.length > 0;",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -323124,9 +323128,9 @@
                   "pm.test('discovery advertises the device and refresh grants under /gateway/claude-code', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var body = pm.response.json();",
-                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/device_authorization$/);",
-                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/token$/);",
-                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/gateway\\/gateway/claude-code\\/oauth\\/revoke$/);",
+                  "  pm.expect(body.device_authorization_endpoint, pm.response.text()).to.match(/\\/gateway\\/claude-code\\/oauth\\/device_authorization$/);",
+                  "  pm.expect(body.token_endpoint, pm.response.text()).to.match(/\\/gateway\\/claude-code\\/oauth\\/token$/);",
+                  "  pm.expect(body.revocation_endpoint, pm.response.text()).to.match(/\\/gateway\\/claude-code\\/oauth\\/revoke$/);",
                   "  pm.expect(body.grant_types_supported, pm.response.text()).to.include.members(['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token']);",
                   "  pm.expect(body, pm.response.text()).to.not.have.property('authorization_endpoint');",
                   "});"
@@ -323689,6 +323693,7 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var body = pm.response.json();",
                   "  pm.expect(body.access_token, pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(body.refresh_token, 'a rotated refresh token: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
                   "  pm.expect(body.refresh_token, pm.response.text()).to.not.equal(pm.collectionVariables.get('cc_gateway_refresh_token'));",
                   "  pm.collectionVariables.set('cc_gateway_refresh_token', body.refresh_token);",
                   "});"
@@ -323714,7 +323719,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
