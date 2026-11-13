@@ -456,6 +456,8 @@
 				"responses_cancel": "Responses Cancel",
 				"responses_input_items": "Responses Input Items",
 				"embedding": "Embedding",
+				"search": "Web Search",
+				"fetch": "Page Fetch",
 				"speech": "Speech",
 				"speech_stream": "Speech Stream",
 				"transcription": "Transcription",

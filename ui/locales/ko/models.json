@@ -458,6 +458,8 @@
 				"responses_cancel": "응답 취소",
 				"responses_input_items": "응답 입력 항목",
 				"embedding": "임베딩",
+				"search": "웹 검색",
+				"fetch": "페이지 가져오기",
 				"speech": "연설",
 				"speech_stream": "음성 스트림",
 				"transcription": "전사",

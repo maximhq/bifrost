@@ -1309,6 +1309,8 @@
 		"responses_input_items": "Входные элементы Responses",
 		"embedding": "Эмбеддинг",
 		"rerank": "Переранжирование",
+		"search": "Веб-поиск",
+		"fetch": "Получение страницы",
 		"decisions": "Решения",
 		"speech": "Синтез речи",
 		"speech_stream": "Поток синтеза речи",

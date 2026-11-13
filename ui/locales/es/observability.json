@@ -1259,6 +1259,8 @@
 		"responses_input_items": "Respuestas Temas de entrada",
 		"embedding": "Incrustación",
 		"rerank": "Reordenación",
+		"search": "Búsqueda web",
+		"fetch": "Obtención de página",
 		"decisions": "Decisiones",
 		"speech": "Discurso",
 		"speech_stream": "Voz en streaming",

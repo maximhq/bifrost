@@ -1253,6 +1253,8 @@
 		"responses_input_items": "回答入力項目",
 		"embedding": "埋め込み",
 		"rerank": "再ランキング",
+		"search": "ウェブ検索",
+		"fetch": "ページ取得",
 		"decisions": "決定",
 		"speech": "スピーチ",
 		"speech_stream": "音声ストリーム",

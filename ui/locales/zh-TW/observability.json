@@ -1254,6 +1254,8 @@
 		"responses_input_items": "Responses 輸入項",
 		"embedding": "嵌入",
 		"rerank": "重排序",
+		"search": "網頁搜尋",
+		"fetch": "頁面擷取",
 		"decisions": "決策",
 		"speech": "語音生成",
 		"speech_stream": "流式語音生成",

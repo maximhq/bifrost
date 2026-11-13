@@ -1,3 +1,12 @@
+- [fix]: a Fetch that returns no page content is not billed, matching Search's empty-result rule [@jimaldon](https://github.com/jimaldon)
+- [fix]: Fetch URLs are validated on the core SDK path too, and a null DeepSeek tools option counts as absent [@jimaldon](https://github.com/jimaldon)
+- [fix]: Exa errors keep their reason, tag and requestId, and requested page text is bounded per call [@jimaldon](https://github.com/jimaldon)
+- [fix]: DeepSeek Search keeps `rerank_score` 0 as a real score and passes `authority` -1 through as DeepSeek's unknown tier, with the mapping comments stating what the upstream contract means [@jimaldon](https://github.com/jimaldon)
+- [fix]: a crawled page Exa could not read stays a failed Fetch, keeping the page's own status in the message instead of surfacing as an Exa credential or rate-limit failure [@jimaldon](https://github.com/jimaldon)
+- [feat]: Exa provider for Search (`/search`) and Fetch (`/contents`), priced at Exa's reported cost [@Radiergummi](https://github.com/Radiergummi)
+- [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: Search takes one provider-neutral request and result shape [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: DeepSeek provider - add Search and Fetch as first-class operations (`POST /v1/tools/search`, `POST /v1/tools/fetch`), model-less and priced per request [@jimaldon](https://github.com/jimaldon)
 - feat: Kimchi provider for chat, Responses and embeddings
 - fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null. Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`) (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)

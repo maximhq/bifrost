@@ -83,6 +83,8 @@ const RequestTypes = [
 	{ key: "responses_cancel" },
 	{ key: "responses_input_items" },
 	{ key: "embedding" },
+	{ key: "search" },
+	{ key: "fetch" },
 	{ key: "speech" },
 	{ key: "speech_stream" },
 	{ key: "transcription" },

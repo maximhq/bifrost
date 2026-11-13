@@ -1259,6 +1259,8 @@
 		"responses_input_items": "Respostas Itens de Entrada",
 		"embedding": "Incorporar",
 		"rerank": "Repetir",
+		"search": "Pesquisa na web",
+		"fetch": "Obtenção de página",
 		"decisions": "Decisões",
 		"speech": "Discurso",
 		"speech_stream": "Fluxo de fala",

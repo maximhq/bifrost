@@ -1259,6 +1259,8 @@
 		"responses_input_items": "Antworten-Eingabeelemente",
 		"embedding": "Embedding",
 		"rerank": "Reranking",
+		"search": "Websuche",
+		"fetch": "Seitenabruf",
 		"decisions": "Entscheidungen",
 		"speech": "Sprachsynthese",
 		"speech_stream": "Sprachsynthese-Stream",

@@ -1254,6 +1254,8 @@
 		"responses_input_items": "Responses 输入项",
 		"embedding": "嵌入",
 		"rerank": "重排序",
+		"search": "网页搜索",
+		"fetch": "页面抓取",
 		"decisions": "决策",
 		"speech": "语音生成",
 		"speech_stream": "流式语音生成",

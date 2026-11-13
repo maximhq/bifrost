@@ -458,6 +458,8 @@
 				"responses_cancel": "Annulation Responses",
 				"responses_input_items": "Éléments d’entrée Responses",
 				"embedding": "Plongement",
+				"search": "Recherche web",
+				"fetch": "Récupération de page",
 				"speech": "Synthèse vocale",
 				"speech_stream": "Flux de synthèse vocale",
 				"transcription": "Transcription",

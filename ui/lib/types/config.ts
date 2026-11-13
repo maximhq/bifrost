@@ -537,6 +537,8 @@ export type RequestType =
 	| "responses_input_items"
 	| "embedding"
 	| "rerank"
+	| "search"
+	| "fetch"
 	| "decisions"
 	| "speech"
 	| "speech_stream"
@@ -612,6 +614,8 @@ export interface AllowedRequests {
 	list_models: boolean;
 	model_retrieve?: boolean;
 	rerank: boolean;
+	search?: boolean;
+	fetch?: boolean;
 	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;

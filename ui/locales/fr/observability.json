@@ -1259,6 +1259,8 @@
 		"responses_input_items": "Éléments d’entrée Responses",
 		"embedding": "Plongement",
 		"rerank": "Rerank",
+		"search": "Recherche web",
+		"fetch": "Récupération de page",
 		"decisions": "Décisions",
 		"speech": "Synthèse vocale",
 		"speech_stream": "Flux de synthèse vocale",

@@ -478,6 +478,8 @@
 				"responses_cancel": "Отмена Responses",
 				"responses_input_items": "Входные элементы Responses",
 				"embedding": "Эмбеддинг",
+				"search": "Веб-поиск",
+				"fetch": "Получение страницы",
 				"speech": "Речь",
 				"speech_stream": "Потоковая речь",
 				"transcription": "Транскрипция",

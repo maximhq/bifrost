@@ -1259,6 +1259,8 @@
 		"responses_input_items": "Elementi input Responses",
 		"embedding": "Embedding",
 		"rerank": "Rerank",
+		"search": "Ricerca web",
+		"fetch": "Recupero pagina",
 		"decisions": "Decisioni",
 		"speech": "Voce",
 		"speech_stream": "Stream voce",
