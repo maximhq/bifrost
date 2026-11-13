@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -131,9 +132,9 @@ func (otherGatewayProfile) Enabled(*configtables.OAuth2ServerConfig) bool { retu
 
 // TestClientGateway_GrantsStayOnTheirGateway pins that with several client
 // gateways mounted, every grant is redeemable only on the gateway whose built-in
-// client it was issued to: a device code, a user code, a refresh token and an
-// access token from one gateway are all refused by another, and revoking at the
-// wrong gateway leaves the grant alone.
+// client it was issued to: a device code, a refresh token and an access token
+// from one gateway are all refused by another, and revoking at the wrong gateway
+// leaves the grant alone.
 func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
@@ -145,10 +146,6 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	vk := seedGatewayVK(t, store, "vk-cross", "sk-bf-cross")
 
 	deviceCode, userCode := startDeviceSignIn(t, claude)
-
-	verifyElsewhere := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
-	other.handleDeviceVerify(verifyElsewhere)
-	assert.Equal(t, fasthttp.StatusNotFound, verifyElsewhere.Response.StatusCode(), "user code verified at the wrong gateway")
 
 	approveWithVK(t, claude, consent, userCode, vk.Value.GetValue())
 	assert.Equal(t, "expired_token", oauthErrorCode(t, pollDeviceToken(other, deviceCode)), "device code redeemed at the wrong gateway")
@@ -174,6 +171,35 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	stillValid := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}.Encode())
 	claude.handleToken(stillValid)
 	assert.Equal(t, fasthttp.StatusOK, stillValid.Response.StatusCode(), "revoking at the wrong gateway must not revoke the grant: %s", stillValid.Response.Body())
+}
+
+// TestClientGateway_SharedDeviceVerify pins the one /oauth2/device/verify every
+// gateway shares: it hands out the consent page for a sign-in from any enabled
+// gateway, and refuses a code whose own gateway was switched off after the
+// sign-in started, even while another gateway stays on.
+func TestClientGateway_SharedDeviceVerify(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
+	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	verify := func(userCode string) *fasthttp.RequestCtx {
+		ctx := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+		gateways.handleDeviceVerify(ctx)
+		return ctx
+	}
+
+	_, claudeCode := startDeviceSignIn(t, gateways.endpoint("claude-code"))
+	_, otherCode := startDeviceSignIn(t, gateways.endpoint("other-client"))
+	for name, code := range map[string]string{"claude-code": claudeCode, "other-client": otherCode} {
+		ctx := verify(code)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s: %s", name, ctx.Response.Body())
+		assert.True(t, strings.HasPrefix(jsonBody(t, ctx)["consent_url"].(string), testIssuer+"/oauth/consent?flow="), name)
+	}
+
+	cfg.ClientConfig.OAuth2ServerConfig.Gateways.ClaudeCode.Enabled = false
+	assert.Equal(t, fasthttp.StatusNotFound, verify(claudeCode).Response.StatusCode(), "code of a switched-off gateway")
+	assert.Equal(t, fasthttp.StatusOK, verify(otherCode).Response.StatusCode(), "the other gateway is unaffected")
 }
 
 func TestClaudeCodeGateway_DisabledAnswers404(t *testing.T) {
@@ -518,6 +544,30 @@ func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		assert.Empty(t, string(ctx.Response.Header.Peek("x-should-retry")))
 	})
+}
+
+// TestClientGateway_DeviceVerifyNeedsNoCredentials pins that /oauth2/device/verify stays public:
+// a developer with no dashboard account calls it. Registering the routes with the OSS /api auth
+// chain (setup lock, dashboard auth) must not put it behind either, in both auth states.
+func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
+	for name, authConfig := range map[string]*configstore.AuthConfig{
+		"dashboard auth enabled": {AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar("hashed"), IsEnabled: true},
+		"setup lock active":      nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, _, _ := newClaudeCodeGateway(t, false)
+			_, userCode := startDeviceSignIn(t, h)
+			am := newSetupLockedAuthMiddleware("setup-secret", authConfig)
+			r := router.New()
+			h.ClientGatewayHandler.RegisterRoutes(r, am.SetupLockMiddleware(), am.APIMiddleware())
+
+			ctx := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+			ctx.Request.SetRequestURI("/oauth2/device/verify")
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, jsonBody(t, ctx)["consent_url"], "/oauth/consent?flow=")
+		})
+	}
 }
 
 func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {
