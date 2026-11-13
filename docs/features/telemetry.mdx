@@ -52,7 +52,8 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
 | `bifrost_error_requests_total`     | Counter   | Total failed requests, by effective status and normalized reason   | Base Labels, `status_code`, `error_type`, custom labels |
-| `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and reading the provider's stream, retries included. Excludes provider queue wait. WebSocket and realtime turns are timed from the pre-hook to the post-hook | Base Labels, `is_success`, custom labels              |
+| `bifrost_provider_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue | Base Labels, custom labels |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
 | `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers                     | Base Labels, custom labels                            |

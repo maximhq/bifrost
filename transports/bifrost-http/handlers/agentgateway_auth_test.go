@@ -453,7 +453,7 @@ func TestAgentGatewayManagementHistoryRoutesUseAdminMiddlewareAndHydrateDetail(t
 
 func TestParseAgentHistorySearchValidation(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	validRange := "?agent_name=fixture&operation=tasks/get&user_id=user-1&virtual_key_id=vk-1&team_id=team-1&customer_id=customer-1&business_unit_id=bu-1&project_id=project-1&request_id=req-1&trace_id=trace-1&task_id=task-1&context_id=context-1&push_config_id=push-1&delivery_id=delivery-1&attempt_id=attempt-1&event_type=status-update&task_state=completed&selected_id=log-1&start_time=" + now.Format(time.RFC3339) + "&end_time=" + now.Add(time.Hour).Format(time.RFC3339) + "&limit=25&offset=5"
+	validRange := "?agent_name=fixture&operation=tasks/get&user_id=user-1&virtual_key_id=vk-1&team_id=team-1&customer_id=customer-1&business_unit_id=bu-1&project_id=project-1&request_id=req-1&trace_id=trace-1&task_id=task-1&context_id=context-1&push_config_id=push-1&delivery_id=delivery-1&attempt_id=attempt-1&caller_correlation_id=task-parent&event_type=status-update&task_state=completed&selected_id=log-1&start_time=" + now.Format(time.RFC3339) + "&end_time=" + now.Add(time.Hour).Format(time.RFC3339) + "&limit=25&offset=5"
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetRequestURI("/api/agents/history" + validRange)
@@ -474,6 +474,7 @@ func TestParseAgentHistorySearchValidation(t *testing.T) {
 	require.Equal(t, "push-1", filter.PushConfigID)
 	require.Equal(t, "delivery-1", filter.DeliveryID)
 	require.Equal(t, "attempt-1", filter.AttemptID)
+	require.Equal(t, "task-parent", filter.CallerCorrelationID)
 	require.Equal(t, []string{"status-update"}, filter.EventType)
 	require.Equal(t, []string{"completed"}, filter.TaskState)
 	require.Equal(t, 25, pagination.Limit)

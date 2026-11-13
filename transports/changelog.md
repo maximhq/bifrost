@@ -1,4 +1,7 @@
 [feat]: add an optional stop reason column to the logs table [@Constantine3](https://github.com/Constantine3)
+## ✨ Features
+
+- **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 
 ## 🐞 Fixed
 

@@ -39,6 +39,8 @@ const (
 	ClassifierSemantic = configstore.ComplexityClassifierSemantic
 	// ClassifierDecision selects the decision-model classifier.
 	ClassifierDecision = configstore.ComplexityClassifierDecision
+	// ClassifierLLM selects the llm classifier: a chat model the operator configures.
+	ClassifierLLM = configstore.ComplexityClassifierLLM
 	// SemanticFallbackDecision uses the decision model when semantic matching has no tier.
 	SemanticFallbackDecision = configstore.ComplexitySemanticFallbackDecision
 	TierSimple               = "SIMPLE"
@@ -96,6 +98,14 @@ type DecisionConfig = configstore.ComplexityDecisionConfig
 
 // SessionConfig controls monotonic complexity-tier retention across requests.
 type SessionConfig = configstore.ComplexitySessionConfig
+
+// SuggestionsConfig is the phrase-suggestions block: request capture's sample
+// rate and the lookback captured vectors are kept for.
+type SuggestionsConfig = configstore.ComplexitySuggestionsConfig
+
+// DefaultSuggestionsLookbackDays is how long captured vectors are kept when
+// no lookback is configured.
+const DefaultSuggestionsLookbackDays = configstore.DefaultComplexitySuggestionsLookbackDays
 
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
@@ -213,3 +223,8 @@ func cloneStringSlice(values []string) []string {
 	}
 	return append([]string(nil), values...)
 }
+
+// DefaultRouterID names the one router a gateway has until it can define
+// several: every suggestion and run belongs to a router, and today they all
+// belong to this one.
+const DefaultRouterID = "default"

@@ -60,6 +60,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
 		params.routing_rule_ids = filters.routing_rule_ids.join(",");
 	}
+	if (filters.model_router_ids && filters.model_router_ids.length > 0) {
+		params.model_router_ids = filters.model_router_ids.join(",");
+	}
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
