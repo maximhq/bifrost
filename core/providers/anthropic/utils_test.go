@@ -1368,6 +1368,30 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic_provider_merges_overrides_false_item", func(t *testing.T) {
+		headers := []string{
+			AnthropicAdvisorBetaHeader,
+			"custom-beta-2026",
+		}
+		overrides := map[string]bool{"advisor-tool-": false, "custom-beta-": false}
+		result := FilterBetaHeadersForProvider(headers, schemas.Anthropic, overrides)
+		if len(result) != 0 {
+			t.Errorf("expected overridden headers to be dropped, got %v", result)
+		}
+	})
+
+	t.Run("unknown_provider_merges_overrides_false_item", func(t *testing.T) {
+		headers := []string{
+			AnthropicAdvisorBetaHeader,
+			"custom-beta-2026",
+		}
+		overrides := map[string]bool{"advisor-tool-": false, "custom-beta-": false}
+		result := FilterBetaHeadersForProvider(headers, schemas.ModelProvider("anthropic-credits"), overrides)
+		if len(result) != 0 {
+			t.Errorf("expected overridden headers to be dropped, got %v", result)
+		}
+	})
+
 	t.Run("override_enables_unsupported_header", func(t *testing.T) {
 		// redact-thinking is not supported on Vertex by default
 		overrides := map[string]bool{AnthropicRedactThinkingBetaHeaderPrefix: true}
@@ -3687,6 +3711,47 @@ func TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// BenchmarkFilterBetaHeadersForProvider measures the request-path hot path in the common
+// no-overrides case and the override-deletion path when client-provided beta headers are
+// explicitly disabled for a provider.
+func BenchmarkFilterBetaHeadersForProvider(b *testing.B) {
+	headers := []string{
+		AnthropicComputerUseBetaHeader20251124,
+		AnthropicStructuredOutputsBetaHeader,
+		AnthropicMCPClientBetaHeader,
+		AnthropicPromptCachingScopeBetaHeader,
+		AnthropicCompactionBetaHeader,
+		AnthropicContextManagementBetaHeader,
+		AnthropicAdvancedToolUseBetaHeader,
+		AnthropicFilesAPIBetaHeader,
+		AnthropicInterleavedThinkingBetaHeader,
+		AnthropicSkillsBetaHeader,
+		AnthropicContext1MBetaHeader,
+		AnthropicFastModeBetaHeader,
+		AnthropicRedactThinkingBetaHeader,
+		AnthropicToolSearchBetaHeader,
+		AnthropicEagerInputStreamingBetaHeader,
+	}
+	for _, tc := range []struct {
+		name      string
+		overrides map[string]bool
+	}{
+		{name: "no overrides", overrides: nil},
+		{name: "disabled prefixes", overrides: map[string]bool{
+			AnthropicStructuredOutputsBetaHeaderPrefix: false,
+			AnthropicToolSearchBetaHeaderPrefix:         false,
+			AnthropicFastModeBetaHeaderPrefix:           false,
+		}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = FilterBetaHeadersForProvider(headers, schemas.Vertex, tc.overrides)
+			}
+		})
 	}
 }
 
