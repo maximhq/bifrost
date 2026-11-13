@@ -1,7 +1,7 @@
 import type { ModelRouter, ModelRouterTarget } from "@/lib/types/complexityRouter";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_DECISION_CONFIG } from "@/lib/types/complexityRouter";
-import { classifierSummary, overviewStatus, tiersWithModels } from "./overviewTab";
+import { classifierSummary, modelCount, overviewStatus, tiersWithModels, trafficPeriodLabel } from "./overviewTab";
 
 const router = (targets: ModelRouterTarget[]) => ({ targets }) as unknown as ModelRouter;
 
@@ -52,6 +52,53 @@ describe("tiersWithModels", () => {
 				]),
 			),
 		).toBe(3);
+	});
+});
+
+describe("modelCount", () => {
+	it("counts every model, so two on one tier are two", () => {
+		expect(
+			modelCount(
+				router([
+					{ tier: "SIMPLE", model: "gpt-4o-mini", weight: 0.5 },
+					{ tier: "SIMPLE", provider: "openai", model: "gpt-4o", weight: 0.5 },
+					{ tier: "MEDIUM", model: "gpt-4o", weight: 1 },
+					{ tier: "COMPLEX", model: "claude-opus", weight: 1 },
+				]),
+			),
+		).toBe(4);
+	});
+
+	it("does not count a target that names no model", () => {
+		expect(
+			modelCount(
+				router([
+					{ tier: "MEDIUM", provider: "anthropic", weight: 0.5 },
+					{ tier: "MEDIUM", provider: "openai", model: "  ", weight: 0.25 },
+					{ tier: "MEDIUM", model: "gpt-4o", weight: 0.25 },
+				]),
+			),
+		).toBe(1);
+	});
+
+	it("counts nothing for a router without targets", () => {
+		expect(modelCount(router([]))).toBe(0);
+		expect(modelCount({} as unknown as ModelRouter)).toBe(0);
+	});
+});
+
+describe("trafficPeriodLabel", () => {
+	const t = (key: string) => `t(${key})`;
+
+	it("names a preset as the picker names it", () => {
+		expect(trafficPeriodLabel({ period: "7d" }, t)).toBe("t(timePeriods.7d)");
+		expect(trafficPeriodLabel({ period: "this_month" }, t)).toBe("t(timePeriods.this_month)");
+	});
+
+	it("names a custom range by its dates", () => {
+		const label = trafficPeriodLabel({ start: Date.UTC(2026, 2, 3, 12) / 1000, end: Date.UTC(2026, 2, 10, 12) / 1000 }, t);
+		expect(label).toContain("2026");
+		expect(label).not.toContain("t(");
 	});
 });
 
