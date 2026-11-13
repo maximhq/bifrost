@@ -268914,6 +268914,63 @@
               ]
             }
           }
+        },
+        {
+          "name": "232.38 anthropic/claude-sonnet-4-6 /anthropic/v1/messages tool_choice tool+disable_parallel_tool_use keeps the flag, exactly one tool_use (parallel tool use)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('232.38 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('232.38 tool_choice tool carries the flag', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(rr.tool_choice, 'tool_choice: ' + wire.slice(0, 1500)).to.eql({\"type\":\"tool\",\"name\":\"get_weather\",\"disable_parallel_tool_use\":true});",
+                  "});",
+                  "var n = (body.content || []).filter(function (b) { return b && b.type === 'tool_use'; }).length;",
+                  "pm.test('232.38 exactly one tool call comes back (forced choice)', function () {",
+                  "  pm.expect(n, 'parallel tool use was not disabled: ' + pm.response.text().slice(0, 1500)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Get the weather in Tokyo, Paris and Lima. Call the tool for every city right now in this single response.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for one city\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"get_weather\",\n    \"disable_parallel_tool_use\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
         }
       ]
     },
