@@ -614,13 +614,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Handle structured output conversion through the synthetic `bf_so_*` tool
-	// path for all Bedrock models, including Anthropic. We avoid native
-	// `output_config.format` because Bedrock Converse rejects it on some Claude
-	// variants (e.g. Opus 4.7 returns "output_config.format: Extra inputs are not
-	// permitted"), whereas the synthetic-tool path is a regular Converse tool
-	// call accepted by all variants.
-	responseFormatTool, _ := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	// Structured output goes natively through outputConfig.textFormat when the model and schema
+	// allow it, otherwise through the synthetic `bf_so_*` tool.
+	var responseFormatTool *BedrockTool
+	if outputConfig := chatNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params); outputConfig != nil {
+		bedrockReq.OutputConfig = outputConfig
+	} else {
+		responseFormatTool, _ = convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	}
 
 	// Filter provider-unsupported server tools once; both convertToolConfig and
 	// collectBedrockServerTools consume the same filtered set, and
@@ -921,6 +922,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		if len(bedrockReq.ExtraParams) == 0 {
 			bedrockReq.ExtraParams = nil
 		}
+	}
+	if bedrockReq.OutputConfig != nil {
+		setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
 	}
 	return nil
 }
@@ -2614,6 +2618,415 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 			Bytes: encoded,
 		},
 	}, nil
+}
+
+// chatNativeOutputConfig returns the native outputConfig for a json_schema response_format, or nil
+// when the request keeps the synthetic bf_so_* tool.
+func chatNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ChatParameters) json.RawMessage {
+	if params == nil || params.ResponseFormat == nil || !supportsNativeStructuredOutput(caps) {
+		return nil
+	}
+	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
+		return nil
+	}
+	name, _ := rf.Name()
+	description, _ := rf.Description()
+	var load claudeSchemaLoad
+	for i := range params.Tools {
+		if f := params.Tools[i].Function; f != nil && f.Strict != nil && *f.Strict {
+			load.add(f.Parameters)
+		}
+	}
+	return nativeOutputConfig(ctx, model, rf.RawSchema(), name, description, load)
+}
+
+func responsesNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, textConfig *schemas.ResponsesTextConfig, tools []schemas.ResponsesTool) json.RawMessage {
+	if textConfig == nil || textConfig.Format == nil || textConfig.Format.Type != "json_schema" || textConfig.Format.JSONSchema == nil ||
+		!supportsNativeStructuredOutput(caps) {
+		return nil
+	}
+	if _, acceptAll, err := textConfig.Format.JSONSchema.CompositeSchema(); err != nil || acceptAll {
+		return nil
+	}
+	var name, description string
+	if textConfig.Format.Name != nil {
+		name = strings.TrimSpace(*textConfig.Format.Name)
+	}
+	if textConfig.Format.JSONSchema.Description != nil {
+		description = *textConfig.Format.JSONSchema.Description
+	}
+	var load claudeSchemaLoad
+	for i := range tools {
+		if f := tools[i].ResponsesToolFunction; f != nil && f.Strict != nil && *f.Strict {
+			load.add(f.Parameters)
+		}
+	}
+	return nativeOutputConfig(ctx, model, extractJSONSchemaObject(textConfig.Format.JSONSchema), name, description, load)
+}
+
+// claudeSchemaLoad counts the optional and union-typed properties of strict caller tools, which share
+// Claude's structured-output limits with the output schema (verified live).
+type claudeSchemaLoad struct {
+	optional, unions int
+}
+
+func (l *claudeSchemaLoad) add(params *schemas.ToolFunctionParameters) {
+	if params == nil {
+		return
+	}
+	raw, err := providerUtils.MarshalSorted(params)
+	if err != nil {
+		return
+	}
+	walk := claudeSchemaWalk{schema: raw}
+	walk.node(gjson.ParseBytes(raw))
+	l.optional += walk.optional
+	l.unions += walk.unions
+}
+
+// setNativeStructuredOutputStrict sets additionalModelRequestFields.text.format.strict for GPT, which
+// otherwise treats outputConfig's schema as a hint (verified live); Claude 400s on the field.
+func setNativeStructuredOutputStrict(ctx *schemas.BifrostContext, model string, req *BedrockConverseRequest) {
+	if !schemas.IsOpenAIModelFamily(ctx, model) {
+		return
+	}
+	if req.AdditionalModelRequestFields == nil {
+		req.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	existingText, hasText := req.AdditionalModelRequestFields.Get("text")
+	if !hasText {
+		req.AdditionalModelRequestFields.Set("text", map[string]any{"format": map[string]any{"strict": true}})
+		return
+	}
+	text, format := schemas.NewOrderedMap(), schemas.NewOrderedMap()
+	if om, ok := toOrderedMap(existingText); ok && om != nil {
+		text = om
+	}
+	if existing, ok := text.Get("format"); ok {
+		if om, ok := toOrderedMap(existing); ok && om != nil {
+			format = om
+		}
+	}
+	format.Set("strict", true)
+	text.Set("format", format)
+	req.AdditionalModelRequestFields.Set("text", text)
+}
+
+// supportsNativeStructuredOutput reports whether the model takes outputConfig.textFormat.
+func supportsNativeStructuredOutput(caps schemas.ModelCaps) bool {
+	model := caps.Model()
+	fallback := anthropic.IsOpus47Plus(model) || anthropic.IsOpus5Plus(model) || anthropic.IsSonnet5Plus(model) ||
+		anthropic.IsHaiku5Plus(model) || (schemas.IsAnthropicModel(model) && (strings.Contains(model, "-4-5") || strings.Contains(model, "-4-6"))) ||
+		(schemas.IsOpenAIModel(model) && !strings.Contains(model, "gpt-oss"))
+	return caps.SupportsNativeStructuredOutput(fallback)
+}
+
+// nativeOutputConfig builds Converse outputConfig.textFormat for schema, or returns nil when
+// Claude would reject the schema. Callers check supportsNativeStructuredOutput first.
+func nativeOutputConfig(ctx *schemas.BifrostContext, model string, schema json.RawMessage, name, description string, load claudeSchemaLoad) json.RawMessage {
+	if len(schema) == 0 {
+		return nil
+	}
+	if schemas.IsAnthropicModelFamily(ctx, model) {
+		prepared, ok := prepareClaudeNativeSchema(schema, load)
+		if !ok {
+			return nil
+		}
+		schema = prepared
+	} else if gjson.GetBytes(schema, "type").String() != "object" {
+		// Non-Claude models answer a non-object schema with unconstrained text.
+		return nil
+	} else if bytes.Contains(schema, []byte(`"$ref"`)) && !localRefsResolve(gjson.ParseBytes(schema)) {
+		return nil
+	}
+	// GPT answers a name outside [A-Za-z0-9_-] with 200 and no text.
+	if bedrockUnsafeToolNameCharRegex.MatchString(name) {
+		name = strings.Trim(bedrockUnsafeToolNameCharRegex.ReplaceAllString(name, "_"), "_")
+	}
+	if name == "" {
+		name = "json_response"
+	}
+	config := BedrockOutputConfig{TextFormat: &BedrockOutputTextFormat{
+		Type:      "json_schema",
+		Structure: BedrockOutputTextStructure{JSONSchema: BedrockOutputJSONSchema{Schema: string(schema), Name: name}},
+	}}
+	if description != "" {
+		config.TextFormat.Structure.JSONSchema.Description = &description
+	}
+	out, err := providerUtils.MarshalSorted(config)
+	if err != nil {
+		return nil
+	}
+	if ctx != nil {
+		if _, stale := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); stale {
+			ctx.ClearValue(schemas.BifrostContextKeyStructuredOutputToolName)
+		}
+	}
+	return out
+}
+
+var claudeRejectedSchemaKeys = map[string]bool{
+	"oneOf": true, "not": true,
+	"minimum": true, "maximum": true, "exclusiveMinimum": true, "exclusiveMaximum": true, "multipleOf": true,
+	"maxItems": true, "uniqueItems": true, "prefixItems": true, "contains": true, "minContains": true, "maxContains": true, "unevaluatedItems": true,
+	"patternProperties": true, "propertyNames": true, "minProperties": true, "maxProperties": true,
+	"dependentRequired": true, "dependentSchemas": true, "unevaluatedProperties": true,
+}
+
+var claudeSchemaFormats = map[string]bool{
+	"date-time": true, "time": true, "date": true, "duration": true, "email": true,
+	"hostname": true, "uri": true, "ipv4": true, "ipv6": true, "uuid": true,
+}
+
+const (
+	claudeSchemaMaxOptionalProperties = 10
+	claudeSchemaMaxUnionProperties    = 16
+)
+
+var regexBackreferenceRe = regexp.MustCompile(`\\[1-9]|\\k<`)
+
+// prepareClaudeNativeSchema closes every object that leaves additionalProperties unset, which
+// Claude requires, and reports false when the schema uses anything Claude structured output
+// rejects so the caller keeps the synthetic tool. An unchanged schema is returned as-is.
+func prepareClaudeNativeSchema(schema []byte, load claudeSchemaLoad) ([]byte, bool) {
+	root := gjson.ParseBytes(schema)
+	if !root.IsObject() {
+		return nil, false
+	}
+	walk := claudeSchemaWalk{schema: schema}
+	if !walk.node(root) || walk.optional+load.optional > claudeSchemaMaxOptionalProperties ||
+		walk.unions+load.unions > claudeSchemaMaxUnionProperties || (bytes.Contains(schema, []byte(`"$ref"`)) && schemaRefsRejected(root)) {
+		return nil, false
+	}
+	if len(walk.closeAt) == 0 {
+		return schema, true
+	}
+	// One pass: insert the key before each recorded closing brace.
+	const closing = `,"additionalProperties":false`
+	slices.Sort(walk.closeAt)
+	out := make([]byte, 0, len(schema)+len(walk.closeAt)*len(closing))
+	prev := 0
+	for _, at := range walk.closeAt {
+		out = append(out, schema[prev:at]...)
+		out = append(out, closing...)
+		prev = at
+	}
+	return append(out, schema[prev:]...), true
+}
+
+// claudeSchemaWalk collects the closing-brace offsets of objects to close and the counts Bedrock limits.
+type claudeSchemaWalk struct {
+	schema   []byte
+	closeAt  []int
+	optional int
+	unions   int
+}
+
+// node checks one sub-schema, reporting false when Claude would reject it.
+func (w *claudeSchemaWalk) node(n gjson.Result) bool {
+	if !n.IsObject() {
+		return false
+	}
+	var typ, properties, required gjson.Result
+	ok, closed, hasAllOf, conditional := true, false, false, false
+	n.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		switch {
+		case claudeRejectedSchemaKeys[key]:
+			ok = false
+		case key == "type":
+			typ = v
+		case key == "required":
+			required = v
+		case key == "minItems":
+			ok = v.Int() <= 1
+		case key == "format":
+			ok = claudeSchemaFormats[v.String()]
+		case key == "pattern":
+			p := v.String()
+			ok = !strings.Contains(p, "(?=") && !strings.Contains(p, "(?!") && !strings.Contains(p, "(?<") && !regexBackreferenceRe.MatchString(p)
+		case key == "enum":
+			v.ForEach(func(_, e gjson.Result) bool {
+				ok = !e.IsObject() && !e.IsArray()
+				return ok
+			})
+		case key == "additionalProperties":
+			ok, closed = v.Type == gjson.False, true
+		case key == "items", key == "if", key == "then", key == "else":
+			conditional = conditional || key != "items"
+			ok = w.node(v)
+		case key == "anyOf", key == "allOf":
+			hasAllOf = hasAllOf || key == "allOf"
+			ok = v.IsArray()
+			branches, refBranch := 0, false
+			v.ForEach(func(_, branch gjson.Result) bool {
+				branches++
+				refBranch = refBranch || strings.Contains(branch.Raw, `"$ref"`)
+				ok = w.node(branch)
+				return ok
+			})
+			if ok && key == "allOf" && branches > 1 && refBranch {
+				ok = false
+			}
+		case key == "properties", key == "$defs", key == "definitions":
+			ok = v.IsObject()
+			if key == "properties" {
+				properties = v
+			}
+			v.ForEach(func(_, sub gjson.Result) bool {
+				if key == "properties" && isUnionSchema(sub) {
+					w.unions++
+				}
+				ok = w.node(sub)
+				return ok
+			})
+		}
+		return ok
+	})
+	if !ok {
+		return false
+	}
+	// Live: Claude cannot merge allOf beside the node's own properties, and rejects if/then/else on objects.
+	if hasAllOf && properties.Exists() || conditional && isObjectSchema(typ, properties) {
+		return false
+	}
+	if !isObjectSchema(typ, properties) {
+		return true
+	}
+	hasProperties, requiredNames := false, required.Array()
+	properties.ForEach(func(name, _ gjson.Result) bool {
+		hasProperties = true
+		if !slices.ContainsFunc(requiredNames, func(r gjson.Result) bool { return r.Str == name.Str }) {
+			w.optional++
+		}
+		return true
+	})
+	if !closed {
+		// Closing an object that declares no properties would only allow {}.
+		at := n.Index + len(n.Raw) - 1
+		if !hasProperties || at <= 0 || at >= len(w.schema) || w.schema[at] != '}' {
+			return false
+		}
+		w.closeAt = append(w.closeAt, at)
+	}
+	return true
+}
+
+// isUnionSchema reports whether a property uses a type array or anyOf, which Bedrock counts.
+func isUnionSchema(sub gjson.Result) bool {
+	union := false
+	sub.ForEach(func(k, v gjson.Result) bool {
+		union = (k.Str == "type" && v.IsArray() && len(v.Array()) > 1) || k.Str == "anyOf"
+		return !union
+	})
+	return union
+}
+
+// isObjectSchema reports whether a subschema with this type and properties describes an object.
+func isObjectSchema(typ, properties gjson.Result) bool {
+	if !typ.Exists() {
+		return properties.Exists()
+	}
+	if typ.IsArray() {
+		for _, item := range typ.Array() {
+			if item.Str == "object" {
+				return true
+			}
+		}
+		return false
+	}
+	return typ.Str == "object"
+}
+
+// schemaRefsRejected reports whether a $ref is one Claude rejects: anything but a literal
+// #/$defs/<name> or #/definitions/<name> entry (verified live), or a recursive one.
+func schemaRefsRejected(root gjson.Result) bool {
+	defs := map[string]gjson.Result{}
+	for _, container := range []string{"$defs", "definitions"} {
+		root.Get(gjson.Escape(container)).ForEach(func(name, def gjson.Result) bool {
+			// A name needing JSON Pointer escapes is left out, so a ref to it is rejected.
+			if !strings.ContainsAny(name.String(), "/~") {
+				defs["#/"+container+"/"+name.String()] = def
+			}
+			return true
+		})
+	}
+	var rootRefs []string
+	collectSchemaRefs(root, &rootRefs)
+	for _, ref := range rootRefs {
+		if _, known := defs[ref]; !known {
+			return true
+		}
+	}
+	edges := make(map[string][]string, len(defs))
+	for ref, def := range defs {
+		var refs []string
+		collectSchemaRefs(def, &refs)
+		edges[ref] = refs
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[string]int{}
+	var cyclic func(string) bool
+	cyclic = func(ref string) bool {
+		switch state[ref] {
+		case visiting:
+			return true
+		case done:
+			return false
+		}
+		state[ref] = visiting
+		for _, next := range edges[ref] {
+			if _, known := defs[next]; known && cyclic(next) {
+				return true
+			}
+		}
+		state[ref] = done
+		return false
+	}
+	for ref := range defs {
+		if cyclic(ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// localRefsResolve reports whether every $ref is a local JSON Pointer that resolves within root.
+func localRefsResolve(root gjson.Result) bool {
+	var refs []string
+	collectSchemaRefs(root, &refs)
+	for _, ref := range refs {
+		if ref == "#" {
+			continue
+		}
+		if !strings.HasPrefix(ref, "#/") {
+			return false
+		}
+		tokens := strings.Split(ref[2:], "/")
+		for i, token := range tokens {
+			tokens[i] = gjson.Escape(strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~"))
+		}
+		if !root.Get(strings.Join(tokens, ".")).Exists() {
+			return false
+		}
+	}
+	return true
+}
+
+// collectSchemaRefs appends every $ref string found under n.
+func collectSchemaRefs(n gjson.Result, refs *[]string) {
+	n.ForEach(func(k, v gjson.Result) bool {
+		if k.String() == "$ref" && v.Type == gjson.String {
+			*refs = append(*refs, v.String())
+		} else if v.IsObject() || v.IsArray() {
+			collectSchemaRefs(v, refs)
+		}
+		return true
+	})
 }
 
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
