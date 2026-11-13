@@ -161,8 +161,12 @@ export function messagesOf(value: unknown): { role: string; text: string; conten
 		let record = item as Record<string, unknown>;
 		if (record.message && typeof record.message === "object") record = record.message as Record<string, unknown>;
 		const role = typeof record.role === "string" ? record.role : "";
-		const content = record.content ?? record.contents ?? record.parts;
-		const text = contentText(content);
+		// A spoken reply (OpenAI audio output, realtime turns) has no content: its text is the
+		// transcript and its file is the audio object.
+		const audio = record.audio && typeof record.audio === "object" ? (record.audio as Record<string, unknown>) : undefined;
+		const content = record.content ?? record.contents ?? record.parts ?? (audio ? { audio } : undefined);
+		const text =
+			contentText(record.content ?? record.contents ?? record.parts) || (typeof audio?.transcript === "string" ? audio.transcript : "");
 		const hasFile = typeof content === "object" && content !== null && collectAttachments("", (c) => c.walk(content, "input")).length > 0;
 		if (role && (text || hasFile)) messages.push({ role, text, content });
 	}
@@ -212,7 +216,7 @@ export function spanUsage(span: TraceSpan): { tokens: number; cost?: number; est
 /** A file a span refers to: uploaded to Bifrost, inline as base64, or at an outside URL. */
 export interface SpanAttachment {
 	kind: "upload" | "inline" | "url";
-	field: "input" | "output" | "expected" | "metadata";
+	field: "input" | "output" | "expected" | "metadata" | "attributes";
 	name: string;
 	contentType: string;
 	/** The id under /api/traces/uploads, for kind "upload". */
@@ -268,6 +272,8 @@ export function spanAttachments(span: TraceSpan): SpanAttachment[] {
 		c.walk(span.output, "output");
 		c.walk(span.expected, "expected");
 		c.walk(span.metadata, "metadata");
+		// OpenInference puts a call's audio in the audio.url and audio.mime_type attributes.
+		c.walk(span.attributes, "attributes");
 	});
 }
 
@@ -340,6 +346,19 @@ function collectAttachments(projectId: string, fill: (collector: AttachmentColle
 				src: `data:${declaredType};base64,${base64}`,
 				name: nameFor(field, declaredType),
 			});
+			return;
+		}
+		// OpenAI audio: an input_audio part {data, format} and a spoken reply {data, transcript}.
+		if (str("data") && (str("format") || "transcript" in node)) {
+			const format = str("format") || "wav";
+			const contentType = format === "mp3" ? "audio/mpeg" : `audio/${format}`;
+			add({ kind: "inline", field, contentType, src: `data:${contentType};base64,${str("data")}`, name: nameFor(field, contentType) });
+			return;
+		}
+		// A generated image returned as base64 (image generation and edits).
+		if (str("b64_json")) {
+			const contentType = `image/${str("output_format") || "png"}`;
+			add({ kind: "inline", field, contentType, src: `data:${contentType};base64,${str("b64_json")}`, name: nameFor(field, contentType) });
 			return;
 		}
 		// A URL in a field that names a file: OTel uri parts, image_url, OpenInference image.url.
