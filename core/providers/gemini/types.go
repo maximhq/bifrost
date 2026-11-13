@@ -3841,3 +3841,160 @@ type GeminiLiveUsageMetadata struct {
 	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
 }
+
+// =============================================================================
+// DECISIONS (POST /v1beta/decisions)
+// =============================================================================
+
+// GeminiDecisionRequest is the body of POST /v1beta/decisions, which answers
+// named questions about one shared input with a Gemini Decision model.
+type GeminiDecisionRequest struct {
+	Model       string                            `json:"model"`
+	Input       GeminiDecisionInput               `json:"input"`
+	Questions   map[string]GeminiDecisionQuestion `json:"questions"`
+	ExtraParams map[string]interface{}            `json:"-"` // native extensions, merged onto the wire under the passthrough flag
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *GeminiDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// GeminiDecisionInput is a decision's input: a string, or a list of
+// Interactions API content blocks. At most one member is set.
+type GeminiDecisionInput struct {
+	Text   *string
+	Blocks []GeminiInteractionsContent
+}
+
+// MarshalJSON writes the string or the block list.
+func (in GeminiDecisionInput) MarshalJSON() ([]byte, error) {
+	if in.Text != nil && in.Blocks != nil {
+		return nil, fmt.Errorf("gemini decision input carries both text and blocks; only one should be set")
+	}
+	if in.Blocks != nil {
+		return providerUtils.MarshalSorted(in.Blocks)
+	}
+	if in.Text != nil {
+		return providerUtils.MarshalSorted(*in.Text)
+	}
+	return []byte("null"), nil
+}
+
+// Interactions API content block types a decision's input accepts.
+const (
+	GeminiContentTypeText     = "text"
+	GeminiContentTypeImage    = "image"
+	GeminiContentTypeAudio    = "audio"
+	GeminiContentTypeVideo    = "video"
+	GeminiContentTypeDocument = "document"
+)
+
+// GeminiInteractionsContent is one Interactions API content block, the shape a
+// decision's input takes. A media block carries its bytes in Data or a location
+// in URI, and always its MimeType.
+type GeminiInteractionsContent struct {
+	Type       string  `json:"type"`
+	Text       *string `json:"text,omitempty"`
+	Data       *string `json:"data,omitempty"` // base64
+	URI        *string `json:"uri,omitempty"`  // Files API URI or HTTPS URL
+	MimeType   *string `json:"mime_type,omitempty"`
+	Resolution *string `json:"resolution,omitempty"` // image or video: "low", "medium", "high", or "ultra_high"
+}
+
+// Gemini decision question types.
+const (
+	GeminiDecisionQuestionTypeNoul   = "noul"
+	GeminiDecisionQuestionTypeChoice = "choice"
+	GeminiDecisionQuestionTypeScore  = "score"
+)
+
+// GeminiDecisionQuestion is one named question of a decisions request.
+type GeminiDecisionQuestion struct {
+	Type         string                  `json:"type"`
+	Instructions string                  `json:"instructions,omitempty"`
+	Criteria     *GeminiDecisionCriteria `json:"criteria,omitempty"`
+}
+
+// GeminiDecisionCriteria is a question's criteria, written as the member its
+// type takes: the meaning of yes and no for noul, each option's description
+// for choice, and each level's description, lowest first, for score. At most
+// one member is set.
+type GeminiDecisionCriteria struct {
+	Noul   *GeminiNoulCriteria
+	Choice map[string]string
+	Score  []string
+}
+
+// MarshalJSON writes the set member; option keys are sorted.
+func (c GeminiDecisionCriteria) MarshalJSON() ([]byte, error) {
+	set := 0
+	for _, present := range []bool{c.Noul != nil, c.Choice != nil, c.Score != nil} {
+		if present {
+			set++
+		}
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("gemini decision criteria carries more than one of noul, choice, and score criteria")
+	}
+	switch {
+	case c.Noul != nil:
+		return providerUtils.MarshalSorted(c.Noul)
+	case c.Choice != nil:
+		return providerUtils.MarshalSorted(c.Choice)
+	case c.Score != nil:
+		return providerUtils.MarshalSorted(c.Score)
+	}
+	return []byte("null"), nil
+}
+
+// GeminiNoulCriteria says what yes and no mean for a noul question.
+type GeminiNoulCriteria struct {
+	TrueDescription  *string `json:"true_description,omitempty"`
+	FalseDescription *string `json:"false_description,omitempty"`
+}
+
+// GeminiDecisionResponse is the body of a successful decisions response.
+type GeminiDecisionResponse struct {
+	Answers map[string]GeminiDecisionAnswer `json:"answers"`
+	Usage   *GeminiDecisionUsage            `json:"usage,omitempty"`
+}
+
+// GeminiDecisionAnswer is one answer, under its question's name. Which of Noul,
+// Choice, and Score is set follows Type.
+type GeminiDecisionAnswer struct {
+	Type          string             `json:"type"`
+	Noul          *float64           `json:"noul,omitempty"`
+	Choice        *string            `json:"choice,omitempty"`
+	Score         *float64           `json:"score,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"` // level index -> description, as sent
+	Confidence    *float64           `json:"confidence,omitempty"`
+}
+
+// GeminiDecisionUsage is the Interactions API's usage, which decisions report
+// with input tokens only, plus the input split by modality.
+type GeminiDecisionUsage struct {
+	geminiInteractionsUsage
+	InputTokensByModality []GeminiModalityTokens `json:"input_tokens_by_modality,omitempty"`
+}
+
+// GeminiModalityTokens is one modality's share of a token count.
+type GeminiModalityTokens struct {
+	Modality string `json:"modality"`
+	Tokens   int    `json:"tokens"`
+}
+
+// GeminiDecisionError is the error body the decisions endpoint returns.
+type GeminiDecisionError struct {
+	Error *GeminiDecisionErrorBody `json:"error,omitempty"`
+}
+
+// GeminiDecisionErrorBody carries a string Code ("invalid_request", "not_found",
+// or a safety reason such as "safety", "prohibited_content", "blocklist",
+// "image_safety" or "content_blocked"), not the numeric status Google's other
+// errors carry.
+type GeminiDecisionErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
