@@ -855,7 +855,7 @@ When a request includes a bare model name without a `provider/` prefix (e.g., `"
 1. **Request arrives** without a provider prefix (e.g., `"model": "gpt-4o"`)
 2. Routing rules, VK load balancing, and in Enterprise the adaptive load balancer and circuit breaker all run first; if any of them sets `req.Provider`, the resolver no-ops
 3. **Catalog lookup** (if `req.Provider` is still empty): Bifrost calls `GetProvidersForModel("gpt-4o")` to find all providers that support the model
-4. **Provider selected**: If the request came in via an integration route (OpenAI / Anthropic / GenAI / Bedrock / Cohere) and the catalog includes that integration's canonical provider in the candidate list, it is preferred. Otherwise the first candidate is selected.
+4. **Provider selected**: If the request came in via an integration route (OpenAI / Anthropic / GenAI / Bedrock / Cohere / TypeSafe) and the catalog includes that integration's canonical provider in the candidate list, it is preferred. Otherwise the first candidate is selected, except for a decision request: when more than one provider (after the virtual key's allowlist) serves its bare model, none is selected and the request fails with `400`, naming the candidates. See [Decisions](/quickstart/gateway/decisions#endpoints).
 5. **Request continues**: The resolved `provider/model` is used for the provider call, fallback handling, and Level 2 key selection.
 
 This is logged as the **`model-catalog`** routing engine in telemetry and routing logs, with a message like:
