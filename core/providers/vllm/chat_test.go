@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -98,6 +99,101 @@ func TestChatCompletion_ExtraParamsForwardedAutomatically(t *testing.T) {
 	}
 	if kwargsMap["enable_thinking"] != true {
 		t.Fatalf("expected enable_thinking=true, got %v", kwargsMap["enable_thinking"])
+	}
+}
+
+// TestAnthropicEndpoints_ExtraParamsForwardedAutomatically pins that keys with
+// use_anthropic_endpoints forward extra params to /v1/messages without the passthrough header.
+func TestAnthropicEndpoints_ExtraParamsForwardedAutomatically(t *testing.T) {
+	t.Parallel()
+
+	extra := func() map[string]interface{} {
+		return map[string]interface{}{"chat_template_kwargs": map[string]interface{}{"enable_thinking": true}}
+	}
+	hello := "Hello"
+	chatReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.VLLM,
+			Model:    "gemma",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &hello}}},
+			Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(16), ExtraParams: extra()},
+		}
+	}
+	responsesReq := func() *schemas.BifrostResponsesRequest {
+		req := testVLLMResponsesStreamRequest()
+		req.Params = &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(16), ExtraParams: extra()}
+		return req
+	}
+
+	cases := []struct {
+		name string
+		call func(p *VLLMProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError
+	}{
+		{"chat", func(p *VLLMProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.ChatCompletion(ctx, key, chatReq())
+			return err
+		}},
+		{"chat stream", func(p *VLLMProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			stream, err := p.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, chatReq())
+			if err == nil {
+				drainStreamWithTimeout(t, stream, 5*time.Second)
+			}
+			return err
+		}},
+		{"responses", func(p *VLLMProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.Responses(ctx, key, responsesReq())
+			return err
+		}},
+		{"responses stream", func(p *VLLMProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			stream, err := p.ResponsesStream(ctx, noopPostHookRunner, nil, key, responsesReq())
+			if err == nil {
+				drainStreamWithTimeout(t, stream, 5*time.Second)
+			}
+			return err
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var capturedPath string
+			var capturedBody map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedPath = r.URL.Path
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &capturedBody)
+				if stream, _ := capturedBody["stream"].(bool); stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gemma\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+					fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+					fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"gemma","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			defer server.Close()
+
+			provider := newTestVLLMResponsesStreamProvider(t, false, false)
+			key := testVLLMKey(server.URL)
+			key.UseAnthropicEndpoints = schemas.Ptr(true)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			if err := tc.call(provider, ctx, key); err != nil {
+				t.Fatalf("request returned error: %v", err.Error.Message)
+			}
+			if capturedPath != "/v1/messages" {
+				t.Fatalf("expected request to /v1/messages, got %q", capturedPath)
+			}
+			kwargs, ok := capturedBody["chat_template_kwargs"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("chat_template_kwargs missing from /v1/messages body; got keys: %v", keys(capturedBody))
+			}
+			if kwargs["enable_thinking"] != true {
+				t.Fatalf("expected enable_thinking=true, got %v", kwargs["enable_thinking"])
+			}
+		})
 	}
 }
 
