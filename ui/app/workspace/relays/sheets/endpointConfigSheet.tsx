@@ -40,6 +40,7 @@ const FIELD_TAB: Record<string, string> = {
 	usage: "general",
 	streaming: "advanced",
 	extra_headers: "advanced",
+	body_overrides: "advanced",
 	network: "network",
 	proxy: "proxy",
 };
@@ -373,6 +374,23 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												disabled={!canUpdate}
 												useSecretVarInput
 												testIdPrefix="relay-extra-header"
+											/>
+										</div>
+										<Separator />
+										<div className="space-y-2">
+											<InfoLabel
+												label={t("relays.endpointConfig.bodyOverridesLabel")}
+												info={t("relays.endpointConfig.bodyOverridesInfo")}
+												inForm={false}
+											/>
+											<HeaderPairsTable
+												value={form.watch("body_overrides")}
+												onChange={(pairs) => form.setValue("body_overrides", pairs, { shouldDirty: true, shouldValidate: true })}
+												errors={form.formState.errors.body_overrides}
+												keyPlaceholder="options.depth"
+												valuePlaceholder='"advanced"'
+												disabled={!canUpdate}
+												testIdPrefix="relay-body-override"
 											/>
 										</div>
 										{saveButton("advanced")}

@@ -100,7 +100,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 			return;
 		}
 		// A route the document still lists keeps what the import cannot express: its pricing
-		// override, job, billing, streaming and enabled settings.
+		// override, body overrides, job, billing, streaming and enabled settings.
 		// Header matchers are part of a route's identity: AWS operations share POST / and differ only
 		// by X-Amz-Target.
 		const key = (method: string, path: string, headers: { name: string; value: string }[]) =>
@@ -117,7 +117,9 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 			return { ...existing.get(key(r.method, r.path, headers)), method: r.method, path: r.path, headers };
 		});
 		const kept = new Set(imported.map((r) => key(r.method, r.path, r.headers)));
-		const dropped = routes.filter((r) => !kept.has(key(r.method, r.path, r.headers)) && (r.job || cleanUsage(r.usage, true)));
+		const dropped = routes.filter(
+			(r) => !kept.has(key(r.method, r.path, r.headers)) && (r.job || cleanUsage(r.usage, true) || r.body_overrides?.some((o) => o.name)),
+		);
 		setPendingImport({ routes: imported, dropped: dropped.map((r) => key(r.method, r.path, r.headers)) });
 	};
 
@@ -206,6 +208,11 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 										<div className="flex min-w-0 items-center gap-2">
 											<span className="truncate font-mono text-sm">{route.path}</span>
 											{route.job && <Badge variant="outline">{t("relays.routes.jobBadge")}</Badge>}
+											{!!route.body_overrides?.some((o) => o.name) && (
+												<Badge variant="outline" data-testid={`relay-route-body-badge-${index}`}>
+													{t("relays.routes.bodyBadge")}
+												</Badge>
+											)}
 										</div>
 										{route.headers
 											.filter((h) => h.name)
@@ -262,6 +269,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 				route={editing?.route ?? null}
 				isNew={editing?.index === -1}
 				endpointUsage={endpointUsage}
+				endpointBodyOverridePaths={Object.keys(endpoint.body_overrides ?? {})}
 				ignoreUpstreamCost={endpoint.ignore_upstream_cost}
 				saving={saving}
 				disabled={!canUpdate}

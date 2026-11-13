@@ -354,6 +354,55 @@ test.describe("Relays", () => {
     expect(relay.routes ?? []).toHaveLength(0);
   });
 
+  test("sets body overrides on a route and on the relay, refusing a value that is not JSON", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-body-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+
+    // A bare word is not JSON, so the route is refused until the string is quoted.
+    await page.openAddRoute();
+    await page.fillRoute({ path: "/search", bodyOverrides: [{ path: "search_depth", value: "advanced" }] });
+    await page.page.getByTestId("relay-route-save").click();
+    await expect(page.routeSheet).toContainText('Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)');
+    await page.page.getByTestId("relay-route-body-override-value-0").fill('"advanced"');
+    await page.fillBodyOverrides("relay-route-body-override", [{ path: "options.max_results", value: "5" }]);
+    await page.saveRoute();
+    await expect(page.page.getByTestId("relay-route-body-badge-0")).toBeVisible();
+    let relay = await getRelay(request, name);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+
+    // The relay's own fields are set on the Advanced tab and shown on the route as inherited.
+    await page.openConfigTab("advanced");
+    await page.fillBodyOverrides("relay-body-override", [{ path: "include_usage", value: "true" }]);
+    await page.saveConfigTab("advanced");
+    relay = await getRelay(request, name);
+    expect(relay.body_overrides).toEqual({ include_usage: true });
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+    await page.closeSheets();
+    await page.openEditRoute(0);
+    await expect(page.page.getByTestId("relay-route-body-override-inherited")).toContainText("include_usage");
+    // Saved fields come back in key order.
+    await expect(page.page.getByTestId("relay-route-body-override-name-0")).toHaveValue("options.max_results");
+    await expect(page.page.getByTestId("relay-route-body-override-value-1")).toHaveValue('"advanced"');
+    await page.closeSheets();
+
+    // A route edit made from the table (the enabled switch) keeps the route's body overrides.
+    await page.routeEnabledSwitch(0).click();
+    await page.waitForSuccessToast("Route disabled");
+    relay = await getRelay(request, name);
+    expect(relay.routes[0].enabled).toBe(false);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+
+    // A field set twice under different letter case is refused on the relay too.
+    await page.openConfigTab("advanced");
+    await page.fillBodyOverrides("relay-body-override", [{ path: "Include_Usage", value: "false" }]);
+    await page.saveButton("advanced").click();
+    await expect(page.configSheet).toContainText("This field is already set (paths ignore letter case)");
+    expect((await getRelay(request, name)).body_overrides).toEqual({ include_usage: true });
+  });
+
   test("refuses letters in a route price and clears a price back to the relay's", async ({ relaysPage: page, request }) => {
     const name = `e2e-pte-price-${Date.now()}`;
     created.push(name);
