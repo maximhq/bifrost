@@ -77,7 +77,8 @@
 		"modelLimits": "límites de modelos",
 		"agent": "agente",
 		"relay": "relé",
-		"relays": "relés"
+		"relays": "relés",
+		"modelRouters": "enrutadores"
 	},
 	"aboutField": "Acerca de {{field}}",
 	"thisField": "este campo",
@@ -121,7 +122,8 @@
 		"searching": "Buscando…",
 		"loadingMore": "Cargando más…",
 		"useModel": "Usar <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados",
+		"templateUnknownGroup": "Hace referencia al grupo de captura {{group}}, que el patrón no define"
 	},
 	"providerSelect": {
 		"select": "Seleccionar proveedor",
@@ -581,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "La URL base es obligatoria para este proveedor",
 		"baseUrlMustStartWithHttpOrHttps": "La URL base debe comenzar con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "Se requiere al menos una clave de API",
-		"apiKeyValueCannotBeEmpty": "El valor de la clave de API no puede estar vacío"
+		"apiKeyValueCannotBeEmpty": "El valor de la clave de API no puede estar vacío",
+		"deploymentPatternInvalid": "Un patrón de despliegue no es válido o su ID de modelo usa un grupo de captura que el patrón no define"
 	},
 	"permissionDenied": {
 		"create": "No tienes permiso para crear {{entity}}.",

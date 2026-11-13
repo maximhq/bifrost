@@ -88,7 +88,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
-	servers := s.codeModeServers(availableToolsPerClient)
+	servers := s.codeModeServers(ctx, availableToolsPerClient)
 
 	// Parse the file path to extract server name and optional tool name
 	serverName, toolName, isToolLevel := parseVFSFilePath(fileName, servers)
@@ -104,7 +104,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 
@@ -174,7 +174,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -234,11 +234,11 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 // codeModeServers returns the sorted names of the connected code mode servers that expose tools,
 // i.e. the names readToolFile and getToolDocs can resolve.
-func (s *StarlarkCodeMode) codeModeServers(availableToolsPerClient map[string][]schemas.ChatTool) []string {
+func (s *StarlarkCodeMode) codeModeServers(ctx context.Context, availableToolsPerClient map[string][]schemas.ChatTool) []string {
 	servers := make([]string, 0, len(availableToolsPerClient))
 	for name, tools := range availableToolsPerClient {
 		client := s.clientManager.GetClientByName(name)
-		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 		servers = append(servers, name)

@@ -3,8 +3,10 @@ package schemas
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1078,6 +1080,62 @@ func TestKeyAliasesPatternOrder(t *testing.T) {
 	if got := aliases.Resolve("claude-opus-5"); got != "long" {
 		t.Errorf("Resolve(claude-opus-5) = %q, want long", got)
 	}
+}
+
+// TestKeyAliasesPatternTieIsLexical pins that equal-length patterns that both match resolve to the alphabetically first.
+func TestKeyAliasesPatternTieIsLexical(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-op.*": AliasConfig{ModelID: "second"},
+		"regex:cl.*-opus-5": AliasConfig{ModelID: "first"},
+	}
+	for i := 0; i < 20; i++ {
+		if got := aliases.Resolve("claude-opus-5"); got != "first" {
+			t.Fatalf("Resolve(claude-opus-5) = %q, want first", got)
+		}
+	}
+}
+
+// TestKeyAliasesExactBeatsLongerPattern pins that an exact alias wins in any casing, however long the matching pattern is.
+func TestKeyAliasesExactBeatsLongerPattern(t *testing.T) {
+	aliases := KeyAliases{
+		"claude-opus-5":                      AliasConfig{ModelID: "exact"},
+		"regex:(claude-(?:opus|sonnet)-\\d)": AliasConfig{ModelID: "long.$1"},
+		"regex:(claude-.*)":                  AliasConfig{ModelID: "short.$1"},
+	}
+	for model, want := range map[string]string{
+		"claude-opus-5":   "exact",
+		"Claude-OPUS-5":   "exact",
+		"claude-sonnet-5": "long.claude-sonnet-5",
+		"claude-haiku-5":  "short.claude-haiku-5",
+	} {
+		if got := aliases.Resolve(model); got != want {
+			t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+// TestKeyAliasesResolveConfigConcurrent runs first-use pattern lookups in parallel so the race detector covers the regex cache.
+func TestKeyAliasesResolveConfigConcurrent(t *testing.T) {
+	aliases := KeyAliases{"pinned": AliasConfig{ModelID: "exact"}}
+	for i := 0; i < 8; i++ {
+		aliases[fmt.Sprintf("regex:(race%d-.*)", i)] = AliasConfig{ModelID: fmt.Sprintf("t%d.$1", i)}
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				n := (w + i) % 8
+				model := fmt.Sprintf("race%d-%d-%d", n, w, i)
+				if got, want := aliases.Resolve(model), fmt.Sprintf("t%d.%s", n, model); got != want {
+					t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
 }
 
 func BenchmarkKeyAliasesResolveConfig(b *testing.B) {

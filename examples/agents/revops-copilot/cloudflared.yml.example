@@ -1,0 +1,28 @@
+# Named Cloudflare Tunnel: fixed public hostnames for the four agents, so their
+# Bifrost registrations survive restarts. `make agents-cloudflared` uses this
+# file when it exists as cloudflared.yml (gitignored); without it, it falls back
+# to quick tunnels with new hostnames on every start.
+#
+# One-time setup (needs a domain whose DNS is on Cloudflare):
+#   cloudflared tunnel login                      # pick the domain in the browser
+#   cloudflared tunnel create revops              # prints the tunnel id, writes ~/.cloudflared/<id>.json
+#   cloudflared tunnel route dns revops revops-copilot.<domain>
+#   cloudflared tunnel route dns revops support-analyst.<domain>
+#   cloudflared tunnel route dns revops report-writer.<domain>
+#   cloudflared tunnel route dns revops publisher.<domain>
+#   cp cloudflared.yml.example cloudflared.yml    # then fill in the id, path and domain
+#
+# Each agent is matched to its hostname by the port in `service`.
+tunnel: <tunnel-id>
+credentials-file: /Users/<you>/.cloudflared/<tunnel-id>.json
+
+ingress:
+  - hostname: revops-copilot.<domain>
+    service: http://127.0.0.1:9100
+  - hostname: support-analyst.<domain>
+    service: http://127.0.0.1:9101
+  - hostname: report-writer.<domain>
+    service: http://127.0.0.1:9102
+  - hostname: publisher.<domain>
+    service: http://127.0.0.1:9103
+  - service: http_status:404

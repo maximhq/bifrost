@@ -139,6 +139,7 @@ func (p *RoutingPlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExe
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetEmbeddingFunctions(embed, embedBatch)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetEmbeddingFunctions(embed, embedBatch) })
 }
 
 // SetComplexityVectorStore supplies the configured shared VectorStore. The
@@ -152,6 +153,7 @@ func (p *RoutingPlugin) SetComplexityVectorStore(store vectorstore.VectorStore) 
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetConfiguredStore(store)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetConfiguredStore(store) })
 }
 
 // SetComplexityWarmupDependencies supplies the configured VectorStore and the
@@ -170,6 +172,7 @@ func (p *RoutingPlugin) SetComplexityWarmupDependencies(store vectorstore.Vector
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetWarmupDependencies(store, embed, embedBatch)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetWarmupDependencies(store, embed, embedBatch) })
 }
 
 // storeComplexityVectorStore publishes the store for the classification path

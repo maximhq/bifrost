@@ -1,3 +1,4 @@
+import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
@@ -734,6 +735,7 @@ export const databricksKeyConfigSchema = z
 		client_id: secretVarSchema.optional(),
 		client_secret: secretVarSchema.optional(),
 		forward_gateway_tags: z.boolean().optional(),
+		scopes: z.array(z.string()).optional(),
 		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
 		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
 	})
@@ -841,7 +843,13 @@ export const modelProviderKeySchema = z
 			.pipe(
 				z.number().min(0, msg("validation.weightMustBeEqualToOrGreaterThan0")).max(1, msg("validation.weightMustBeEqualToOrLessThan1")),
 			),
-		aliases: z.record(z.string(), aliasConfigSchema).optional(),
+		aliases: z
+			.record(z.string(), aliasConfigSchema)
+			.optional()
+			.refine(
+				(value) => !value || Object.entries(value).every(([name, cfg]) => !validatePatternAlias(name, cfg.model_id, cfg.model_name)),
+				msg("validation.deploymentPatternInvalid"),
+			),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
@@ -1924,6 +1932,7 @@ export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
 export const mcpClientUpdateSchema = z
 	.object({
 		is_code_mode_client: z.boolean().optional(),
+		server_type_on_slug: z.enum(["inherit", "enabled", "disabled"]).optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
 		per_user_discovery: z.boolean().optional(),

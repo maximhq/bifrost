@@ -233,6 +233,7 @@ type ConfigData struct {
 	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+	ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
 	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
@@ -494,6 +495,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Relays != nil
 	case "datasheet_overrides":
 		return cd.DatasheetOverrides != nil
+	case "model_routers":
+		return cd.ModelRouters != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -581,6 +584,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+		ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
 		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
 		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
@@ -614,6 +618,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
 	cd.DatasheetOverrides = temp.DatasheetOverrides
+	cd.ModelRouters = temp.ModelRouters
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -1075,6 +1080,15 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagWarp = "warp"
 
+// FeatureFlagPhraseSuggestions gates the phrase suggestions dashboard: a
+// semantic model router's Suggestions tab, its settings sheet and the draft
+// bar. Off by default in every build, so a few deployments can try the
+// suggestion APIs before the dashboard ships. It gates only the UI: the
+// /api/routing/model-routers/{id}/suggestions routes, request capture and scheduled
+// runs keep working as a router's suggestions settings say, flag on or off.
+// The UI references the same id in ui/lib/constants/featureFlags.ts.
+const FeatureFlagPhraseSuggestions = "phrase-suggestions"
+
 // registerFeatureFlags adds Bifrost's code-declared flags to the process-wide
 // registry. LoadConfig runs more than once per process in tests, so a flag that
 // is already registered is not an error.
@@ -1086,6 +1100,12 @@ func registerFeatureFlags(_ context.Context) error {
 			Description:       "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
 			Default:           true,
 			EnterpriseDefault: new(false),
+		},
+		{
+			ID:          FeatureFlagPhraseSuggestions,
+			DisplayName: "Phrase suggestions",
+			Description: "The phrase suggestions dashboard: a semantic model router's Suggestions tab, which proposes phrases for its tiers from captured traffic. While off the dashboard hides it; the suggestion APIs and scheduled runs keep working as configured.",
+			Default:     false,
 		},
 	}
 	for _, def := range defs {
@@ -1268,7 +1288,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadRelaysConfig(ctx, config, &configData)
 	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
-	// 8a. Agent Gateway registrations (after governance so file-declared virtual
+	// 8a. Model routers
+	syncModelRoutersFromFile(ctx, config, &configData)
+	// 8b. Agent Gateway registrations (after governance so file-declared virtual
 	// keys exist before agent grants referencing them are written)
 	loadAgentsConfig(ctx, config, &configData)
 	// 9. Auth config
@@ -2986,6 +3008,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
 	clientConfigsToUpdate := make([]configstoreTables.TableMCPClient, 0)
 	perUserDiscoveryChanged := make(map[string]*schemas.MCPClientConfig)
+	clientHashUpgrades := make(map[string][2]string) // client ID -> stored pre-code-mode hash and its current form
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
 		if newClientConfig == nil {
 			continue
@@ -3014,6 +3037,14 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			if newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name {
 				found = true
 				if existingClientConfig.ConfigHash != fileHash {
+					if legacy, err := configstore.MCPClientHashMatchesLegacyCodeMode(fileClientRow, existingClientConfig.ConfigHash, existingClientConfig.IsCodeModeClient); err == nil && legacy {
+						// Same file client, hashed before is_code_mode_client was: keep the stored edits and move the
+						// stored hash to the current form so this runs once.
+						logger.Debug("MCP client %q carries a pre-code-mode hash, keeping DB config", newClientConfig.Name)
+						clientHashUpgrades[existingClientConfig.ID] = [2]string{existingClientConfig.ConfigHash, fileHash}
+						existingClientConfig.ConfigHash = fileHash
+						break
+					}
 					if err := pinnedPerUserDiscoveryError(newClientConfig, existingClientConfig); err != nil {
 						logger.Error("skipping MCP client config %q from config file: %v; keeping the stored configuration", newClientConfig.Name, err)
 						break
@@ -3063,6 +3094,9 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 	// Add new client configs to existing ones.
 	config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
+	if config.ConfigStore != nil {
+		upgradeMCPClientConfigHashes(ctx, config.ConfigStore, clientHashUpgrades)
+	}
 	// Persist additions and config-driven updates.
 	if config.ConfigStore != nil && (len(clientConfigsToAdd) > 0 || len(clientConfigsToUpdate) > 0) {
 		logger.Debug("updating MCP config in store with %d new clients and %d updated clients", len(clientConfigsToAdd), len(clientConfigsToUpdate))
@@ -3078,6 +3112,16 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			} else if client := perUserDiscoveryChanged[update.ClientID]; client != nil {
 				readBackPerUserDiscoveryChange(ctx, config.ConfigStore, client)
 			}
+		}
+	}
+}
+
+// upgradeMCPClientConfigHashes moves each stored client's config_hash from its old form to the current one,
+// writing nothing else. A hash another node has already moved is left alone.
+func upgradeMCPClientConfigHashes(ctx context.Context, store configstore.ConfigStore, hashes map[string][2]string) {
+	for id, hash := range hashes {
+		if _, err := store.UpdateMCPClientConfigHash(ctx, id, hash[0], hash[1]); err != nil {
+			logger.Warn("failed to upgrade config hash of MCP client %s: %v", id, err)
 		}
 	}
 }
@@ -3256,6 +3300,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Name:                   clientConfig.Name,
 		EndpointSlug:           clientConfig.EndpointSlug,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -4620,7 +4665,7 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		config.GovernanceConfig = &configstore.GovernanceConfig{}
 	}
 
-	fileConfig, fileAsWritten, fileHashes, ok := complexityAnalyzerConfigFromFile(configData)
+	fileConfig, fileAsWritten, fileHashes, ok := complexityAnalyzerConfigFromFile("complexity analyzer config", configData.Governance.ComplexityAnalyzerConfig)
 	if !ok {
 		return nil
 	}
@@ -4647,24 +4692,23 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 	return merged
 }
 
-// complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
-// returns the normalized config (what source-of-truth mode persists), the file as
+// complexityAnalyzerConfigFromFile validates a file-backed analyzer config (label
+// names it in logs) and returns the normalized config (what source-of-truth mode persists), the file as
 // written (what the split-mode merge reads), and the canonical section hashes used
 // to detect whether config.json changed. Hashes and the merge take presence from
 // the file as written: GenerateComplexityAnalyzerConfigHashes and
 // MergeComplexityAnalyzerConfigByHashes treat an omitted classifier, decision or
 // semantic section as "no opinion", and normalizing first would hand them a default
 // classifier, hash it, and then apply it over the one chosen in the dashboard.
-func complexityAnalyzerConfigFromFile(configData *ConfigData) (normalized, asWritten *configstore.ComplexityAnalyzerConfig, hashes configstore.ComplexityAnalyzerConfigHashes, ok bool) {
-	raw := configData.Governance.ComplexityAnalyzerConfig
+func complexityAnalyzerConfigFromFile(label string, raw *configstore.ComplexityAnalyzerConfig) (normalized, asWritten *configstore.ComplexityAnalyzerConfig, hashes configstore.ComplexityAnalyzerConfigHashes, ok bool) {
 	fileConfig, err := complexity.ValidateAndNormalize(raw)
 	if err != nil {
-		logger.Error("invalid complexity analyzer config in config file: %v", err)
+		logger.Error("invalid %s in config file: %v", label, err)
 		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
 	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(raw)
 	if err != nil {
-		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
+		logger.Warn("failed to generate %s hashes: %v", label, err)
 		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
 	fileConfig.ConfigHashes = fileHashes
@@ -8480,7 +8524,7 @@ func (c *Config) GetMCPClientNames() map[string]string {
 // registers it.
 type MCPPerUserDiscoveryClient struct {
 	Name     string
-	CodeMode bool // reached through the code-mode tools rather than its own
+	CodeMode bool // reached through the code-mode tools on /mcp or its own /mcp/<slug>
 }
 
 // GetMCPPerUserDiscoveryClients returns every enabled MCP client with
@@ -8500,7 +8544,39 @@ func (c *Config) GetMCPPerUserDiscoveryClients() map[string]MCPPerUserDiscoveryC
 		if result == nil {
 			result = make(map[string]MCPPerUserDiscoveryClient)
 		}
-		result[client.ID] = MCPPerUserDiscoveryClient{Name: client.Name, CodeMode: client.IsCodeModeClient}
+		result[client.ID] = MCPPerUserDiscoveryClient{Name: client.Name, CodeMode: client.UsesCodeModeGlobalOrSlug()}
+	}
+	return result
+}
+
+// MCPClientCodeModes is the code mode of an MCP client whose server_type_on_slug overrides is_code_mode_client.
+type MCPClientCodeModes struct {
+	Global bool // on /mcp, Virtual MCPs and LLM requests
+	OnSlug bool // on its own /mcp/<slug>
+}
+
+// GetMCPServerTypesOnSlug returns every enabled MCP client with a server_type_on_slug override, keyed by
+// client name; nil when none has one. Read-only snapshot.
+func (c *Config) GetMCPServerTypesOnSlug() map[string]MCPClientCodeModes {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	var result map[string]MCPClientCodeModes
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client == nil || client.Disabled {
+			continue
+		}
+		onSlug, overrides := client.ServerTypeOnSlug.CodeModeOverride()
+		if !overrides {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]MCPClientCodeModes)
+		}
+		result[client.Name] = MCPClientCodeModes{Global: client.IsCodeModeClient, OnSlug: onSlug}
 	}
 	return result
 }
@@ -9990,6 +10066,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	// as these are read-only and not sent in the update request
 	c.MCPConfig.ClientConfigs[configIndex].Name = updatedConfig.Name
 	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = updatedConfig.IsCodeModeClient
+	c.MCPConfig.ClientConfigs[configIndex].ServerTypeOnSlug = updatedConfig.ServerTypeOnSlug
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = updatedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
