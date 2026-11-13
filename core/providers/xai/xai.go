@@ -302,7 +302,16 @@ func (provider *XAIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 // Speech performs a text-to-speech request to xAI's POST /v1/tts, which returns raw
 // audio bytes in the requested codec.
 func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	if request == nil || request.Input == nil || request.Input.Input == "" {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("speech request is required", nil)
+	}
+	// A large-payload request carries the client's staged OpenAI-shaped body
+	// (input, voice), which /v1/tts does not accept (text, voice_id), and a
+	// stream cannot be converted in place. TTS input never needs that size.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, providerUtils.NewBifrostBadRequestError("xAI speech does not support large-payload passthrough: the staged body cannot be converted to the /v1/tts schema")
+	}
+	if request.Input == nil || request.Input.Input == "" {
 		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
 	}
 
@@ -328,10 +337,7 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 	for k, v := range openai.BearerAuthHeader(key) {
 		req.Header.Set(k, v)
 	}
-	// Large-payload mode stages the client body as a stream; jsonData is nil then.
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, provider.GetProviderKey()) {
-		req.SetBody(jsonData)
-	}
+	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()

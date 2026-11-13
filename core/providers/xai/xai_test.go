@@ -196,33 +196,69 @@ func TestXAISpeechReturnsRawAudio(t *testing.T) {
 	assert.Equal(t, audio, resp.Audio)
 }
 
-// In large-payload mode the request body is not built from the parsed request; the
-// staged client body must be what reaches /v1/tts.
-func TestXAISpeechSendsLargePayloadBody(t *testing.T) {
+// stageLargePayload puts ctx into large-payload mode with body as the staged client body.
+func stageLargePayload(ctx *schemas.BifrostContext, body, contentType string) {
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader(body)))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(body))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, contentType)
+}
+
+// A staged large-payload body is the client's OpenAI-shaped speech JSON (input, voice),
+// which /v1/tts does not accept. Speech refuses it instead of sending it, or an empty body.
+func TestXAISpeechRefusesLargePayload(t *testing.T) {
 	t.Parallel()
 
-	staged := `{"text":"Hello from a staged body.","language":"auto","voice_id":"eve"}`
-	var gotBody, gotContentType string
+	var hits int
+	var mu sync.Mutex
 	provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		gotBody, gotContentType = string(raw), r.Header.Get("Content-Type")
+		mu.Lock()
+		hits++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "audio/mpeg")
 		_, _ = w.Write([]byte("ID3fake"))
 	})
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader(staged)))
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(staged))
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
-	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostSpeechRequest{
-		Model: "grok-tts",
-		Input: &schemas.SpeechInput{Input: "Hello from a staged body."},
+	stageLargePayload(ctx, `{"model":"xai/grok-tts","input":"Hello from a staged body.","voice":"eve"}`, "application/json")
+	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostSpeechRequest{Model: "grok-tts"})
+	require.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	assert.Contains(t, bifrostErr.Error.Message, "large-payload")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, hits, "the staged body must not reach xAI")
+}
+
+// A large-payload transcription streams the staged multipart body to /v1/stt and must
+// still decode xAI's response shape: words named "text" and usage in seconds.
+func TestXAITranscriptionLargePayloadDecodesXAIResponse(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(xaiSTTResponse))
 	})
+
+	staged := "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake\r\n--b--\r\n"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stageLargePayload(ctx, staged, "multipart/form-data; boundary=b")
+	resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
 	require.Nil(t, bifrostErr)
-	assert.Equal(t, staged, gotBody)
-	assert.Equal(t, "application/json", gotContentType)
-	assert.Equal(t, []byte("ID3fake"), resp.Audio)
+	assert.Equal(t, "/v1/stt", gotPath)
+	assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp.Text)
+	require.Len(t, resp.Words, 9)
+	assert.Equal(t, schemas.TranscriptionWord{Word: "The", Start: 0.06, End: 0.16}, resp.Words[0])
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, "duration", resp.Usage.Type)
+	require.NotNil(t, resp.Usage.Seconds)
+	assert.Equal(t, 2.846, *resp.Usage.Seconds)
 }
 
 func TestXAISpeechError(t *testing.T) {

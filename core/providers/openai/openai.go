@@ -3258,6 +3258,12 @@ func HandleOpenAITranscriptionRequest(
 				response.Text = diarized.Text
 				response.DiarizedSegments = diarized.Segments
 				response.Usage = diarized.Usage
+			} else if customResponseHandler != nil {
+				// Providers with their own response shape (xAI names each word "text"
+				// and reports usage as duration) decode it the same way as the normal path.
+				if _, _, bifrostErr := customResponseHandler(lpResult.ResponseBody, response, nil, false, false); bifrostErr != nil {
+					return nil, bifrostErr
+				}
 			} else if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
