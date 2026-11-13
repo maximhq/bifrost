@@ -147,7 +147,12 @@ func TestBraintrustExperimentOverflowAndAttachments(t *testing.T) {
 
 	summary := env.do(fasthttp.MethodGet, "/tracing/braintrust/v1/experiment/"+experimentID+"/summarize?summarize_scores=true", auth, nil)
 	require.Equal(t, fasthttp.StatusOK, summary.Response.StatusCode())
-	assert.Contains(t, decodeJSON(t, summary), "scores")
+	summarized := decodeJSON(t, summary)
+	assert.Equal(t, "baseline", summarized["experiment_name"], "the summary names the experiment as it was registered")
+	exact := summarized["scores"].(map[string]any)["exact"].(map[string]any)
+	assert.Equal(t, 1.0, exact["score"], "the summary is the mean of the experiment's own scores")
+	assert.Nil(t, exact["diff"], "there is no base experiment to compare against")
+	assert.InDelta(t, 1.0, summarized["metrics"].(map[string]any)["duration"].(map[string]any)["metric"], 1e-9, "duration is reported in seconds")
 	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodPost, "/tracing/braintrust/api/base_experiment/get_id", auth, []byte(`{"id":"`+experimentID+`"}`)).Response.StatusCode())
 	assert.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodGet, "/tracing/braintrust/experiment-comparison2?experiment_id="+experimentID, auth, nil).Response.StatusCode())
 

@@ -1929,6 +1929,10 @@
 		"overCounted": "Os spans medidos ({{measured}}) excedem a sobrecarga calculada ({{overhead}}); o acumulador a montante pode estar a sobrecontar."
 	},
 	"tracing": {
+		"experiments": {
+			"hint": "Braintrust experiments and Langfuse dataset runs. Scores are the mean across each experiment's traces.",
+			"filtered": "Showing experiment {{experiment}}"
+		},
 		"evals": {
 			"addToDataset": "Add to dataset",
 			"chooseDataset": "Choose a dataset",
@@ -2018,7 +2022,8 @@
 			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
-			"sessions": "Trace sessions"
+			"sessions": "Trace sessions",
+			"experiments": "Experiments"
 		},
 		"columns": {
 			"timestamp": "Time",

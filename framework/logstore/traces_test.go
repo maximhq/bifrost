@@ -542,3 +542,29 @@ func TestTraceStatsCountEachCallOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, keys, 2)
 }
+
+// TestTraceExperimentsAreRegisteredOnce pins experiments: registering one again keeps the first
+// row, and experiments are listed newest first for the projects asked for.
+func TestTraceExperimentsAreRegisteredOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	first := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "baseline", Source: TraceSourceBraintrust, CreatedAt: first}))
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-1", Name: "renamed", Source: TraceSourceBraintrust}))
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p1", ID: "exp-2", Name: "candidate", Source: TraceSourceLangfuse, DatasetName: "golden"}))
+	require.NoError(t, store.RegisterTraceExperiment(ctx, &TraceExperiment{ProjectID: "p2", ID: "exp-1", Name: "other project", Source: TraceSourceBraintrust}))
+
+	found, err := store.FindTraceExperiment(ctx, "p1", "exp-1")
+	require.NoError(t, err)
+	assert.Equal(t, "baseline", found.Name, "a repeat registration keeps the stored row")
+	assert.Equal(t, first, found.CreatedAt.UTC())
+	_, err = store.FindTraceExperiment(ctx, "p1", "absent")
+	assert.ErrorIs(t, err, ErrNotFound)
+	listed, err := store.ListTraceExperiments(ctx, []string{"p1"}, 10)
+	require.NoError(t, err)
+	require.Len(t, listed, 2)
+	assert.Equal(t, "candidate", listed[0].Name, "newest first")
+	everywhere, err := store.ListTraceExperiments(ctx, nil, 10)
+	require.NoError(t, err)
+	assert.Len(t, everywhere, 3)
+}

@@ -358,6 +358,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_trace_tables"}, run: migrationAddTraceTables},
 	{IDs: []string{"logs_add_trace_link_columns"}, run: migrationAddTraceLinkColumns},
 	{IDs: []string{"trace_spans_add_row_id_index"}, run: migrationAddTraceSpanRowIDIndex},
+	{IDs: []string{"add_trace_experiments_table"}, run: migrationAddTraceExperimentsTable},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6211,6 +6212,27 @@ func traceLinkColumnsMigration(ctx context.Context, logger schemas.Logger) *migr
 			return nil
 		},
 	}
+}
+
+// migrationAddTraceExperimentsTable creates trace_experiments, the experiments SDKs register. It is
+// a new table, so no existing table is locked.
+func migrationAddTraceExperimentsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_trace_experiments_table"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&TraceExperiment{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the table would delete the names of registered experiments", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
 }
 
 // migrationAddTraceSpanRowIDIndex indexes trace_spans.row_id, the id Braintrust addresses a span by

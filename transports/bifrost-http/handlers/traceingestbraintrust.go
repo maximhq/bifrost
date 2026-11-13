@@ -181,8 +181,10 @@ func (h *TraceIngestHandler) braintrustExperiment(ctx *fasthttp.RequestCtx) (map
 	if name == "" {
 		name = "experiment-" + time.Now().UTC().Format("20060102-150405")
 	}
+	experimentID := traceingest.BraintrustObjectID("exp", project.ID, name)
+	h.registerExperiment(project.ID, experimentID, name, logstore.TraceSourceBraintrust, stringField(body, "dataset_id"), stringField(body, "description"))
 	return map[string]any{
-		"id": traceingest.BraintrustObjectID("exp", project.ID, name), "name": name, "project_id": project.ID,
+		"id": experimentID, "name": name, "project_id": project.ID,
 		"created": time.Now().UTC().Format(time.RFC3339Nano), "public": false,
 	}, project, true
 }
@@ -484,17 +486,50 @@ func (h *TraceIngestHandler) braintrustProjectRedirect(ctx *fasthttp.RequestCtx)
 	ctx.Redirect(target, fasthttp.StatusFound)
 }
 
-// braintrustSummarize answers the Python SDK's end-of-eval summary with an empty one.
+// braintrustSummarize answers the Python SDK's end-of-eval summary from the experiment's own traces:
+// the mean of each score, and the duration, token and cost metrics. There is no comparison, since
+// Bifrost keeps no base experiment.
 func (h *TraceIngestHandler) braintrustSummarize(ctx *fasthttp.RequestCtx) {
 	if _, ok := h.braintrustPrincipal(ctx); !ok {
 		return
 	}
 	id, _ := ctx.UserValue("id").(string)
 	projectID, _ := traceingest.BraintrustObjectProject("exp", id)
-	base := h.publicBaseURL(ctx) + braintrustPrefix + "/app/" + braintrustOrg + "/p/" + url.PathEscape(projectID)
+	storeCtx, cancel := ingestContext()
+	defer cancel()
+	projectName, experimentName := projectID, id
+	if project, err := h.service.Store().FindTraceExperiment(storeCtx, projectID, id); err == nil {
+		experimentName = project.Name
+	}
+	if h.config != nil && h.config.ConfigStore != nil {
+		if project, err := h.config.ConfigStore.GetTraceProject(storeCtx, projectID); err == nil {
+			projectName = project.Name
+		}
+	}
+	// The SDK asks for the summary right after its last flush: roll the experiment's traces up first.
+	_ = h.service.FlushRollups(storeCtx)
+	summary, err := summarizeTraceExperiment(storeCtx, h.service.Store(), projectID, id)
+	if err != nil {
+		h.fail(ctx, err)
+		return
+	}
+	scores := make(map[string]any, len(summary.Scores))
+	for name, mean := range summary.Scores {
+		scores[name] = map[string]any{"name": name, "score": mean, "diff": nil, "improvements": 0, "regressions": 0}
+	}
+	metric := func(name string, value float64, unit string) map[string]any {
+		return map[string]any{"name": name, "metric": value, "unit": unit, "diff": nil, "improvements": 0, "regressions": 0}
+	}
+	metrics := map[string]any{}
+	if summary.TraceCount > 0 {
+		metrics["duration"] = metric("duration", summary.AvgDurationMs/1000, "s")
+		metrics["total_tokens"] = metric("total_tokens", float64(summary.TotalTokens)/float64(summary.TraceCount), "tok")
+		metrics["estimated_cost"] = metric("estimated_cost", summary.TotalCost/float64(summary.TraceCount), "$")
+	}
+	base := h.publicBaseURL(ctx) + braintrustPrefix + "/app/" + braintrustOrg + "/p/" + url.PathEscape(projectName)
 	SendJSON(ctx, map[string]any{
-		"project_name": projectID, "experiment_name": id, "project_url": base, "experiment_url": base + "/experiments/" + url.PathEscape(id),
-		"comparison_experiment_name": nil, "scores": map[string]any{}, "metrics": map[string]any{},
+		"project_name": projectName, "experiment_name": experimentName, "project_url": base, "experiment_url": base + "/experiments/" + url.PathEscape(id),
+		"comparison_experiment_name": nil, "scores": scores, "metrics": metrics,
 	})
 }
 

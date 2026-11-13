@@ -1924,6 +1924,10 @@
 		"overCounted": "實測的 span（{{measured}}）超過計算出的開銷（{{overhead}}）；上游累加器可能重複計算。"
 	},
 	"tracing": {
+		"experiments": {
+			"hint": "Braintrust experiments and Langfuse dataset runs. Scores are the mean across each experiment's traces.",
+			"filtered": "Showing experiment {{experiment}}"
+		},
 		"evals": {
 			"addToDataset": "Add to dataset",
 			"chooseDataset": "Choose a dataset",
@@ -2013,7 +2017,8 @@
 			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
-			"sessions": "Trace sessions"
+			"sessions": "Trace sessions",
+			"experiments": "Experiments"
 		},
 		"columns": {
 			"timestamp": "Time",

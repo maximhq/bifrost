@@ -741,6 +741,7 @@ func migrationClickHouseTraceTables(ctx context.Context, db *gorm.DB, cluster st
 		{&TraceComment{}, chTableOpts{table: "trace_comments", orderBy: "id", ttl: chTraceRowTTL}},
 		{&TraceUpload{}, chTableOpts{table: "trace_uploads", orderBy: "id", ttl: chTraceRowTTL}},
 		{&TraceDirtyMark{}, chTableOpts{table: "trace_dirty_marks", orderBy: "(project_id, trace_id)"}},
+		{&TraceExperiment{}, chTableOpts{table: "trace_experiments", orderBy: "(project_id, id)", ttl: chTraceRowTTL}},
 	} {
 		if err := clickhouseCreateTable(ctx, db, table.model, table.opts, cluster); err != nil {
 			return fmt.Errorf("clickhouse: create %s table: %w", table.opts.table, err)
