@@ -2,6 +2,7 @@
 - feat: Kimchi provider for chat, Responses and embeddings
 - fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null. Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`) (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - feat: sarvam - move chat and model listing to Token Factory v2 and add Sarvam Prism decisions; `sarvam-30b` is no longer served, use `sarvam-105b` [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
+- feat: Wally provider for chat, chat streaming, Responses and list models (thanks [@sanchitmonga22](https://github.com/sanchitmonga22)!)
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
 - fix: anthropic - Messages requests routed to Bedrock keep `toolset_name` on replayed `tool_use` blocks, so a computer toolset turn no longer fails with a 400 on its paired `tool_result`

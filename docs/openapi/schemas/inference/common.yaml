@@ -42,6 +42,7 @@ ModelProvider:
     - byteplus
     - baseten
     - kimchi
+    - wally
     - soniox
 
 Fallback:

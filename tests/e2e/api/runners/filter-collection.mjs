@@ -361,6 +361,20 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
     buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames).includes("huggingface");
   if (provider === "baseten" && isHuggingFace) return false;
   if (provider === "huggingface" && !isHuggingFace && /"model"\s*:\s*"baseten\//.test(bodyRaw)) return false;
+  // Wally rows name the upstream vendor in the model id ("wally/deepseek-v4.1-flash",
+  // "wally/minimax-m3"), so they'd otherwise be claimed by the deepseek or minimax partitions.
+  // Route them exclusively to wally.
+  let model;
+  try { model = JSON.parse(item.request?.body?.raw || "{}").model; } catch { /* Template bodies may not be JSON. */ }
+  // An explicit model wins over names, folders and arbitrary message text. Rows
+  // without a model retain name/URL matching (including provider model listings).
+  const isWally = typeof model === "string"
+    ? model.toLowerCase().startsWith("wally/")
+    : /\bwally(?:\/|\b)/i.test(item.name || "") || /[?&]provider=wally(?:&|$)/i.test(
+      typeof item.request?.url === "string" ? item.request.url : item.request?.url?.raw || ""
+    );
+  if (provider === "wally") return isWally;
+  if (isWally) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

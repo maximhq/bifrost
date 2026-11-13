@@ -93,6 +93,7 @@ const (
 	BytePlus      ModelProvider = "byteplus"
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
+	Wally         ModelProvider = "wally"
 	Soniox        ModelProvider = "soniox"
 )
 
@@ -149,6 +150,7 @@ var StandardProviders = []ModelProvider{
 	BytePlus,
 	Baseten,
 	Kimchi,
+	Wally,
 	Soniox,
 }
 

@@ -212,6 +212,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.MaxCompletionTokens = nil
 		}
 		return openaiReq
+	case schemas.Wally:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Follow Wally's documented output-token contract.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
 	case schemas.Databricks:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// Llama, gpt-oss and Qwen endpoints reject max_completion_tokens with a 400

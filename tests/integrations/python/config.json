@@ -536,6 +536,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "wally": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Wally API Key",
+          "value": "env.WALLY_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openrouter": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -1746,6 +1762,12 @@
           },
           {
             "provider": "kimchi",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "wally",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

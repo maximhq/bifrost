@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Wally Provider** - `wally` is a built-in provider for Wally (RunAnywhere) open-weight models over an OpenAI-compatible API, with a config schema entry, dashboard entry and docs page (thanks [@sanchitmonga22](https://github.com/sanchitmonga22)!)
 
 ## 🐞 Fixed
 

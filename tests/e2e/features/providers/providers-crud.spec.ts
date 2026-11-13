@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { expectListLoadError } from "../../core/utils/test-helpers";
@@ -127,6 +128,48 @@ test.describe("Providers", () => {
     }) => {
       await expectListLoadError(page, "/api/providers", "providers-load-error", "providers-button-read-more");
     });
+  });
+
+  test("should add Wally from the provider menu and save a dummy key", async ({
+    providersPage,
+    page,
+  }) => {
+    // Backend model discovery must never leave the isolated test machine.
+    const upstream = createServer((_request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [] }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("missing stub port");
+    await page.route("**/api/providers", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const body = route.request().postDataJSON();
+      await route.continue({ postData: JSON.stringify({
+        ...body,
+        network_config: { ...body.network_config, base_url: `http://127.0.0.1:${address.port}/v1` },
+      }) });
+    });
+    try {
+      expect(await providersPage.providerExists("wally"), "use a fresh isolated backend").toBe(false);
+      createdProviders.push("wally");
+      await providersPage.addKnownProviderFromDropdown("wally");
+      await expect(providersPage.getProviderItem("wally")).toBeVisible();
+      await providersPage.selectProvider("wally");
+      const key = createProviderKeyData({
+        name: `Wally-E2E-${Date.now()}`,
+        value: "sk-dummy-wally-local-only",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "wally", keyName: key.name });
+      await providersPage.addKey(key);
+      await expect(providersPage.getKeyRow(key.name)).toBeVisible();
+      await page.reload();
+      await providersPage.selectProvider("wally");
+      await expect(providersPage.getKeyRow(key.name)).toBeVisible();
+    } finally {
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   test.describe("Provider Keys", () => {

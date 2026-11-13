@@ -61,6 +61,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/providers/vllm"
 	"github.com/maximhq/bifrost/core/providers/wafer"
+	"github.com/maximhq/bifrost/core/providers/wally"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
@@ -5287,6 +5288,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
+	case schemas.Wally:
+		return wally.NewWallyProvider(config, bifrost.logger)
 	case schemas.MiniMax:
 		return minimax.NewMiniMaxProvider(config, bifrost.logger)
 	case schemas.BytePlus:

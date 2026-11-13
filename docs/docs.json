@@ -185,6 +185,7 @@
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
+                  "providers/supported-providers/wally",
                   "providers/supported-providers/xai"
                 ]
               },

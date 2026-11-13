@@ -121361,7 +121361,8 @@
           "minimax",
           "byteplus",
           "baseten",
-          "kimchi"
+          "kimchi",
+          "wally"
         ]
       },
       "Fallback": {

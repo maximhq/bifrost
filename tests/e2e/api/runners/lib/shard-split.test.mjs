@@ -776,6 +776,23 @@ test("Baseten partition excludes Hugging Face rows and the anthropic partition e
   assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat", "list-models"]);
 });
 
+// Provider ownership comes from the model, never prompt text. Keep name-only listing rows.
+{
+  const source = join(WORK, "wally-routing.json");
+  const chat = (name, model, text) => ({ name, request: { method: "POST",
+    url: "{{baseUrl}}/v1/chat/completions",
+    body: { mode: "raw", raw: JSON.stringify({ model, messages: [{ role: "user", content: text }] }) } } });
+  writeFileSync(source, JSON.stringify({ item: [
+    chat("openai prompt mentions wally/", "openai/gpt-4o-mini", "Explain wally/deepseek"),
+    chat("Wally model", "wally/minimax-m3", "hi"),
+    { name: "wally list models", request: { method: "GET", url: "{{baseUrl}}/v1/models?provider=wally" } },
+  ] }));
+  test("Wally prompt text does not steal an OpenAI row", () => {
+    assert.deepStrictEqual(runFilter(["--provider", "wally"], { source }).sort(), ["Wally model", "wally list models"].sort());
+    assert.deepStrictEqual(runFilter(["--provider", "openai"], { source }), ["openai prompt mentions wally/"]);
+  });
+}
+
 // Soniox's OpenAI drop-in rows travel /openai/v1/audio/..., so the openai keywords claim them even
 // though the upstream call goes to Soniox. An openai-only sweep would then call Soniox without its
 // key, and a sweep with the key would run those rows (and bill them) twice.
