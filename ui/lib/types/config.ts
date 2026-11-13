@@ -967,6 +967,9 @@ export interface CoreConfig {
 	skip_access_profile_user_virtual_key_creation?: boolean;
 	// Enterprise: losing the last access profile does not delete the user's virtual keys.
 	skip_access_profile_user_virtual_key_deletion?: boolean;
+	// Enterprise: whether team, business unit and customer access profiles add to ("union", shown as
+	// Extend) or cap ("intersect", shown as Restrict) what a user may reach, like a project's access rule.
+	entity_access_profile_mode?: "union" | "intersect";
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	// Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to
@@ -1034,6 +1037,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	enforce_vk_object_ownership: true,
 	skip_access_profile_user_virtual_key_creation: false,
 	skip_access_profile_user_virtual_key_deletion: false,
+	entity_access_profile_mode: "union",
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };

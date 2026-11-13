@@ -248,7 +248,11 @@
 		"skipAccessProfileKeyCreation": "Não criar chaves virtuais de usuário para perfis de acesso",
 		"skipAccessProfileKeyCreationHelp": "Quando ativado, o primeiro perfil de acesso de um usuário não cria uma chave virtual para ele. As chaves que o usuário já possui, ou que você adicionar para ele, continuam sendo governadas pelo perfil enquanto ele tiver um.",
 		"skipAccessProfileKeyDeletion": "Não excluir chaves virtuais de usuário ao remover perfis de acesso",
-		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele."
+		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele.",
+		"entityAccessProfileMode": "Modo de perfis de acesso de entidades",
+		"entityAccessProfileModeHelp": "Como os perfis de acesso das equipas, unidades de negócio e clientes de um utilizador se combinam com o acesso do próprio utilizador, como a regra de acesso de um projeto. Alargar: cada um deles amplia o que o utilizador pode alcançar. Restringir: limitam-no, pelo que um pedido só é permitido se o perfil próprio ou a chave virtual do utilizador, um dos seus perfis de equipa ou unidade de negócio e um dos seus perfis de cliente o permitirem. Os grupos sem um perfil ativo são ignorados. Orçamentos e limites de taxa são cobrados da mesma forma nos dois modos.",
+		"entityAccessProfileModeExtend": "Alargar",
+		"entityAccessProfileModeRestrict": "Restringir"
 	},
 	"logging": {
 		"title": "Definições de registos",

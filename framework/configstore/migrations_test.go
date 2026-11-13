@@ -4920,6 +4920,29 @@ func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns
 	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigEntityAccessProfileModeColumn pins that the migration adds the
+// entity access profile mode column, that existing rows read back as union so an upgrade keeps entity access
+// profiles adding to a caller's access, and that a re-run is harmless.
+func TestMigrationAddClientConfigEntityAccessProfileModeColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Equal(t, tables.EntityAccessProfileModeUnion, cfg.EntityAccessProfileMode)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_entity_access_profile_mode_column").Error)
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
