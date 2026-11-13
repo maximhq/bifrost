@@ -28,6 +28,12 @@ import (
 // a thread id is the only thing an attacker would need to enumerate.
 var ErrWarpConversationNotFound = errors.New("warp conversation not found")
 
+// ErrWarpClaimNeedsSharedLock is returned by SwapWarpQuestion on a store that
+// cannot make the swap exclusive across instances: ClickHouse with no
+// distributed locker installed (no config store to lock on). Refusing keeps a
+// confirmed change from running twice when replicas share that ClickHouse.
+var ErrWarpClaimNeedsSharedLock = errors.New("confirming a warp change needs a shared lock: run with a config store when warp history is kept in ClickHouse")
+
 // WarpConversation is one saved Warp thread.
 //
 // OwnerID is the whole access-control story: reads always filter by it, and it
@@ -134,6 +140,13 @@ type WarpConversationStore interface {
 	// AppendWarpMessages adds turns to a thread, bumping its updated time so it
 	// sorts to the top of the list.
 	AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error
+	// SwapWarpQuestion replaces one message's stored question only if it still
+	// holds expected and is still the thread's newest message, checking and
+	// writing as one operation, and reports whether it did. Claiming a
+	// confirmation card goes through it, so of two Confirms on the same card, on
+	// any instances, exactly one sees true, and a card a later turn has overtaken
+	// is never claimed.
+	SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error)
 	// DeleteWarpConversation removes a thread and its messages.
 	DeleteWarpConversation(ctx context.Context, ownerID, id string) error
 	// DeleteWarpConversationIfEmpty removes a thread only if it has no messages,
@@ -361,6 +374,64 @@ func (s *RDBLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversat
 		}
 		return tx.Model(&existing).Update("updated_at", stamp).Error
 	})
+}
+
+// SwapWarpQuestion replaces one message's stored question only if it still
+// holds expected and is still the thread's newest message.
+//
+// One transaction: the conversation row is locked FOR UPDATE on postgres, the
+// lock AppendWarpMessages takes, so an append either commits first and the
+// newest check sees it, or waits for the swap. The UPDATE's WHERE carries the
+// expected value, so of two claims the second re-evaluates it after the first
+// commits and matches nothing. SQLite serializes writers at the database level.
+func (s *RDBLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	swapped := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Select("id").Where("id = ? AND owner_id = ?", conversationID, ownerID)
+		if tx.Dialector.Name() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var existing WarpConversation
+		if err := query.First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		newest, err := newestWarpMessageID(tx, conversationID)
+		if err != nil || newest != messageID {
+			return err
+		}
+		result := tx.Model(&WarpMessage{}).
+			Where("id = ? AND conversation_id = ? AND question_json = ?", messageID, conversationID, expected).
+			Update("question_json", replacement)
+		if result.Error != nil {
+			return result.Error
+		}
+		swapped = result.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return swapped, nil
+}
+
+// newestWarpMessageID is the id of a thread's newest message, in the order
+// GetWarpConversation reads it, or "" for an empty thread.
+func newestWarpMessageID(db *gorm.DB, conversationID string) (string, error) {
+	var ids []string
+	if err := db.Model(&WarpMessage{}).
+		Where("conversation_id = ?", conversationID).
+		Order("created_at DESC, position DESC, id DESC").
+		Limit(1).
+		Pluck("id", &ids).Error; err != nil {
+		return "", err
+	}
+	if len(ids) == 0 {
+		return "", nil
+	}
+	return ids[0], nil
 }
 
 // DeleteWarpConversation removes a thread and its messages.

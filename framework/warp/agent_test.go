@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // scriptedModel replays a fixed list of turns, so the loop can be exercised
@@ -2116,6 +2118,22 @@ func TestWarpAgentNamesArgumentMisplacedInsideFilters(t *testing.T) {
 	_, failed = agent.executeTool(context.Background(), "query_logs",
 		`{"filters":{"start_time":"-1d"},"limit":10}`)
 	require.False(t, failed, "the same argument beside filters runs")
+}
+
+// A call whose arguments do not parse is told so in a tool result that is
+// itself valid JSON: the parser's message carries quotes and newlines, so it is
+// quoted rather than spliced in. Both Warp's own tools and management reads.
+func TestWarpAgentInvalidArgumentsResultIsValidJSON(t *testing.T) {
+	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	management := newFakeManagement()
+	agent.management, agent.managementCatalog = management, management.catalog
+	for _, name := range []string{"query_logs", "listVirtualKeys"} {
+		result, failed := agent.executeTool(context.Background(), name, `{"limit":`)
+		require.True(t, failed, name)
+		require.True(t, json.Valid([]byte(result)), "%s: result is not valid JSON: %s", name, result)
+		require.Contains(t, gjson.Get(result, "error").String(), "arguments were not valid JSON: ", name)
+	}
+	require.Empty(t, management.called(), "a call with unparseable arguments never reaches /api")
 }
 
 // The same live run read an all-empty alias ranking as a finding about
