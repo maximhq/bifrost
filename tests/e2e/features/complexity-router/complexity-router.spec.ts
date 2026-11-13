@@ -460,52 +460,6 @@ test.describe('Complexity Router', () => {
           return route.fulfill({ json: { requests, clustered: requests, assigned: 0, skipped: 0, max_model_calls: 400 } })
         },
       )
-      await page.route(
-        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
-        (route) => {
-          const body = route.request().postDataJSON()
-          return route.fulfill({
-            json: {
-              phrases: body.phrases.map((p: { tier: string; text: string }) => ({
-                ...p,
-                nearest_existing: { tier: 'MEDIUM', phrase: 'summarize this support thread', similarity: 0.46, accepted: true, candidate: false },
-              })),
-              examples: [
-                {
-                  log_id: 'log-1',
-                  text: 'where is my refund for order 12',
-                  current: { tier: 'MEDIUM', phrase: 'summarize this support thread', similarity: 0.46, accepted: true, candidate: false },
-                  // A phrase that repeats the example word for word matches it almost exactly.
-                  with_phrases: {
-                    tier: body.phrases[0].tier,
-                    phrase: body.phrases[0].text,
-                    similarity: body.phrases[0].text === 'where is my refund for order 12' ? 0.99 : 0.91,
-                    accepted: true,
-                    candidate: true,
-                  },
-                  changed: true,
-                },
-                {
-                  log_id: 'log-2',
-                  text: 'refund for #47732 has not arrived',
-                  // Below the floor today: no tier from phrases.
-                  current: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.22, accepted: false, candidate: false },
-                  with_phrases: { tier: body.phrases[0].tier, phrase: body.phrases[0].text, similarity: 0.71, accepted: true, candidate: true },
-                  changed: true,
-                },
-                {
-                  log_id: 'log-3',
-                  text: 'design a caching layer for the api',
-                  current: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.81, accepted: true, candidate: false },
-                  with_phrases: { tier: 'COMPLEX', phrase: 'design a system', similarity: 0.81, accepted: true, candidate: false },
-                  changed: false,
-                },
-              ],
-              taken_over: 2 / 3,
-            },
-          })
-        },
-      )
     })
 
     test.afterEach(async ({ page }) => {
@@ -607,10 +561,9 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
 
       // Accepted into the draft: the row stays, marked added, its tier counts
-      // it, the examples are replayed with its phrase, and the draft bar shows.
+      // it, and the draft bar shows.
       await expect(page.getByTestId('complexity-suggestion-added-sug-refund')).toHaveText('Added · Simple')
       await expect(page.getByTestId('complexity-suggestions-zone-new-simple')).toHaveText('+1 new')
-      await expect(page.getByTestId('complexity-suggestion-replay-sug-refund')).toContainText('2 of 3 examples now go to Simple')
       await expect(page.getByTestId('complexity-suggestions-draft-message')).toHaveText('1 group added from Suggestions. Not live yet.')
       const stagedInput = page.getByTestId('complexity-suggestion-phrase-input-sug-refund')
       await expect(stagedInput).toHaveValue('where is my refund')
@@ -930,80 +883,6 @@ test.describe('Complexity Router', () => {
       await expect(note).not.toContainText('phrase suggestions')
     })
 
-    test('should test an edited phrase before staging it', async ({ page }) => {
-      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
-      await page.getByTestId('complexity-suggestion-test-sug-refund').click()
-      const dialog = page.getByTestId('complexity-phrase-test-dialog')
-      await expect(dialog).toBeVisible()
-      await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('refund status for my order')
-      await page.getByTestId('complexity-phrase-test-run-button').click()
-      // The summary counts what changes, not how many examples the phrase is nearest to.
-      await expect(page.getByTestId('complexity-phrase-test-changed')).toHaveText('2 of 3 examples would route differently.')
-      await expect(page.getByTestId('complexity-phrase-test-to-tier')).toHaveText('Routed to Simple: 2 of 3')
-      await expect(page.getByTestId('complexity-phrase-test-newly-matched')).toHaveText('1 newly above the similarity floor')
-      await expect(page.getByTestId('complexity-phrase-test-example-log-1')).toContainText('where is my refund for order 12')
-      // Below the floor reads as no match, not as a tier it does not route to.
-      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2-unmatched')).toHaveText('No match')
-      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2-tier')).toHaveCount(0)
-      await expect(page.getByTestId('complexity-phrase-test-example-with-log-2-tier')).toHaveText('Simple')
-      // The similarity is shown in full, ahead of the phrase it was measured against.
-      await expect(page.getByTestId('complexity-phrase-test-example-current-log-2')).toContainText('0.22')
-      await expect(page.getByTestId('complexity-phrase-test-example-log-1')).toHaveAttribute('data-changed', 'true')
-      await expect(page.getByTestId('complexity-phrase-test-example-log-3')).toHaveAttribute('data-changed', 'false')
-      await expect(page.getByTestId('complexity-phrase-test-copies-example')).toHaveCount(0)
-
-      // A phrase that repeats an example word for word is flagged.
-      await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('where is my refund for order 12')
-      await page.getByTestId('complexity-phrase-test-run-button').click()
-      await expect(page.getByTestId('complexity-phrase-test-copies-example')).toContainText('almost word for word')
-      await page.getByTestId('complexity-phrase-test-phrase-input-0').fill('refund status for my order')
-
-      await page.getByTestId('complexity-phrase-test-add-button').click()
-      await expect(dialog).toBeHidden()
-      await expect(page.getByTestId('complexity-suggestion-phrase-input-sug-refund')).toHaveValue('refund status for my order')
-    })
-
-    test('should drop a phrase test result once the phrases or tier it was run on change', async ({ page }) => {
-      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
-      await page.getByTestId('complexity-suggestion-test-sug-refund').click()
-      const result = page.getByTestId('complexity-phrase-test-result')
-      const runButton = page.getByTestId('complexity-phrase-test-run-button')
-      const phraseInput = page.getByTestId('complexity-phrase-test-phrase-input-0')
-
-      await runButton.click()
-      await expect(result).toBeVisible()
-      await phraseInput.fill('refund status for my order')
-      await expect(result).toHaveCount(0)
-
-      await runButton.click()
-      await expect(result).toBeVisible()
-      await page.getByTestId('complexity-phrase-test-tier-select').click()
-      await page.getByRole('option', { name: 'Complex' }).click()
-      await expect(result).toHaveCount(0)
-
-      // An answer still in flight when the phrase changes is for the old
-      // phrase, so it is not shown.
-      let release!: () => void
-      const held = new Promise<void>((resolve) => (release = resolve))
-      await page.route(
-        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
-        async (route) => {
-          await held
-          await route.fallback()
-        },
-      )
-      const answered = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/routing/model-routers/default/suggestions/test')
-      await runButton.click()
-      await phraseInput.fill('refund status for order 12')
-      release()
-      await answered
-      await expect(runButton).toBeEnabled()
-      await expect(result).toHaveCount(0)
-      await expect(page.getByTestId('complexity-phrase-test-error')).toHaveCount(0)
-    })
-
     test('should say which groups accept-all could not add', async ({ page }) => {
       // Two groups proposing the same phrase: once the first is staged, the
       // second has nothing new to add.
@@ -1201,30 +1080,6 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestions-tier-classifier-select').click()
       await page.getByTestId('complexity-suggestions-tier-classifier-option-decision').click()
       await expect(page.getByTestId('complexity-suggestions-tier-criteria-unavailable')).toBeVisible()
-    })
-
-    test('should warn about a phrase that repeats the bank even with no example to route', async ({ page }) => {
-      await page.route(
-        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
-        (route) => {
-          const body = route.request().postDataJSON()
-          return route.fulfill({
-            json: {
-              phrases: body.phrases.map((p: { tier: string; text: string }) => ({
-                ...p,
-                nearest_existing: { tier: 'SIMPLE', phrase: 'hello', similarity: 0.99, accepted: true, candidate: false },
-              })),
-              examples: [],
-            },
-          })
-        },
-      )
-      await page.goto('/workspace/model-routers?router=default&tab=suggestions')
-      await page.getByTestId('complexity-suggestion-expand-sug-refund').click()
-      await page.getByTestId('complexity-suggestion-test-sug-refund').click()
-      await page.getByTestId('complexity-phrase-test-run-button').click()
-      await expect(page.getByTestId('complexity-phrase-test-no-examples')).toBeVisible()
-      await expect(page.getByTestId('complexity-phrase-test-duplicate')).toBeVisible()
     })
 
     test('should save an interval and a first run from the settings sheet', async ({ page }) => {

@@ -229,38 +229,6 @@ export interface ModelRouter extends AnalyzerConfig {
 	routing: ModelRouterRouting;
 }
 
-// One statement to classify with a router; expected_tier labels it so the
-// answer can be checked.
-export interface ModelRouterClassifyInput {
-	id?: string;
-	text: string;
-	previous_user_messages?: string[];
-	expected_tier?: DecisionTier;
-}
-
-// What a router decided for one statement, as it is served now.
-export interface ModelRouterClassifyResult {
-	index: number;
-	id?: string;
-	text: string;
-	expected_tier?: string;
-	correct?: boolean;
-	tier?: string;
-	mechanism: string;
-	score?: number;
-	confidence?: number;
-	matched_exemplar?: string;
-	model?: string;
-}
-
-export interface ModelRouterClassifyResponse {
-	router_id: string;
-	router_name: string;
-	classifier: string;
-	results: ModelRouterClassifyResult[];
-	summary: { total: number; tiers: Record<string, number>; labeled: number; correct: number; accuracy?: number };
-}
-
 // What a new router starts from, before anything is saved.
 export interface ModelRouterDefaults {
 	config: AnalyzerConfig;
@@ -739,25 +707,6 @@ export interface SuggestionDetail {
 	examples: SuggestionExample[];
 }
 
-export interface PhraseRouting {
-	tier: string;
-	phrase: string;
-	similarity: number;
-	accepted: boolean;
-	candidate: boolean;
-}
-
-export interface PhraseTestRequest {
-	phrases: { tier: DecisionTier; text: string }[];
-	suggestion_id?: string;
-	log_ids?: string[];
-}
-
-export interface PhraseTestResult {
-	phrases: { tier: string; text: string; nearest_existing: PhraseRouting }[];
-	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
-	taken_over: number;
-}
 export interface SuggestionImpactChange {
 	log_id: string;
 	from: string;
