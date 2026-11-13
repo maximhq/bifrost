@@ -1506,37 +1506,52 @@ func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) 
 	return files, nil
 }
 
-// attachDecisionFiles gives each image part sent by reference the bytes of the file
-// part its name points at. files is nil for a JSON request, where no part can name a
-// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
-// own multipart rules also give: a name with no file part, two parts naming one file,
-// and a file part no image part names. A file part takes precedence over data.
+// attachDecisionFiles gives each part that names a file part, an image sent by
+// reference or an input_file, the bytes of the file part its name points at, so a
+// large file arrives as raw bytes rather than base64 in the JSON. files is nil for a
+// JSON request, where no part can name a file. Only what the request cannot be built
+// from is rejected, each a 400 Typesafe's own multipart rules also give: a name with
+// no file part, two parts naming one file, and a file part no part names. An image's
+// file part takes precedence over its data; an input_file sends its bytes one way
+// only, so naming a file part as well as sending data or a url is rejected.
 func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
 	used := make(map[string]string, len(files))
 	for m := range input.Messages {
 		parts := input.Messages[m].Content.Parts
 		for i := range parts {
 			part := &parts[i]
-			if !part.IsAsset() || part.Name == nil {
+			if part.Name == nil {
+				continue
+			}
+			var label string
+			switch {
+			case part.IsAsset():
+				label = fmt.Sprintf("input_image part %q", *part.ID)
+			case part.Type == schemas.DecisionInputPartTypeFile:
+				label = "input_file part"
+				if part.Data.File != nil || part.URL != nil {
+					return fmt.Errorf("input_file part names file part %q and also sends data or url; send its bytes one way", *part.Name)
+				}
+			default:
 				continue
 			}
 			if files == nil {
-				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+				return fmt.Errorf("%s names file part %q, which needs a multipart request", label, *part.Name)
 			}
 			data, ok := files[*part.Name]
 			if !ok {
-				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+				return fmt.Errorf("%s names part %q, which the request does not carry", label, *part.Name)
 			}
 			if other, taken := used[*part.Name]; taken {
-				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+				return fmt.Errorf("%s and %s both name part %q", other, label, *part.Name)
 			}
-			used[*part.Name] = *part.ID
+			used[*part.Name] = label
 			part.Data.File = data
 		}
 	}
 	for name := range files {
 		if _, ok := used[name]; !ok {
-			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+			return fmt.Errorf("multipart part %q is not named by any input_image or input_file part", name)
 		}
 	}
 	return nil

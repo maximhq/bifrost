@@ -77,7 +77,8 @@
 		"modelLimits": "limiti del modello",
 		"agent": "agente",
 		"relay": "relay",
-		"relays": "relay"
+		"relays": "relay",
+		"modelRouters": "router"
 	},
 	"aboutField": "Informazioni su {{field}}",
 	"thisField": "questo campo",
@@ -121,7 +122,8 @@
 		"searching": "Ricerca…",
 		"loadingMore": "Caricamento altri…",
 		"useModel": "Usa <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloccati"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloccati",
+		"templateUnknownGroup": "Fa riferimento al gruppo di cattura {{group}}, che il pattern non definisce"
 	},
 	"providerSelect": {
 		"select": "Seleziona fornitore",
@@ -581,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "L'URL di base è obbligatorio per questo provider",
 		"baseUrlMustStartWithHttpOrHttps": "L'URL di base deve iniziare con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "È richiesta almeno una chiave API",
-		"apiKeyValueCannotBeEmpty": "Il valore della chiave API non può essere vuoto"
+		"apiKeyValueCannotBeEmpty": "Il valore della chiave API non può essere vuoto",
+		"deploymentPatternInvalid": "Un pattern di deployment non è valido o il suo ID modello usa un gruppo di cattura che il pattern non definisce"
 	},
 	"permissionDenied": {
 		"create": "Non hai l'autorizzazione per creare {{entity}}.",

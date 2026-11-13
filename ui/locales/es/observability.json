@@ -70,7 +70,8 @@
 			"decision": "Modelo de decisión",
 			"llm": "LLM",
 			"skipped": "Omitido"
-		}
+		},
+		"modelRouter": "Enrutador"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1233,7 +1234,10 @@
 		"exactRoundTripID": "ID de ida y vuelta exacto",
 		"nothingRecorded": "No hay nada registrado en este intervalo de tiempo",
 		"topics": "Temas",
-		"searchTopics": "Buscar temas"
+		"searchTopics": "Buscar temas",
+		"modelRouters": "Enrutadores",
+		"searchModelRouters": "Buscar enrutadores",
+		"loadFailed": "No se pudo cargar esta lista."
 	},
 	"requestTypes": {
 		"chat_completion": "Conversación",
@@ -1632,6 +1636,70 @@
 				"publicAgentCardFetched": "Tarjeta de agente pública obtenida",
 				"extendedAgentCardFetched": "Tarjeta de agente extendida obtenida"
 			}
+		},
+		"trace": {
+			"title": "Traza del agente",
+			"loading": "Cargando traza…",
+			"partial": "No se pudieron cargar algunos logs vinculados, así que esta traza puede estar incompleta.",
+			"timeline": "Línea de tiempo",
+			"findSpan": "Buscar span",
+			"treeLabel": "Spans de la traza",
+			"noMatches": "Ningún span coincide.",
+			"artifacts": "Artefactos",
+			"latency": "Latencia",
+			"tokens": "Tokens",
+			"cost": "Costo",
+			"agents": "Agentes",
+			"llmCalls": "Llamadas LLM",
+			"mcpCalls": "Llamadas MCP",
+			"errors": "Errores",
+			"tokensShort": "{{value}} tok",
+			"errorsShort": "{{value}} errores",
+			"followUps": "+{{value}} llamadas de seguimiento",
+			"producedBy": "Producido por {{agent}}",
+			"artifactKind": {
+				"data": "datos",
+				"text": "texto"
+			},
+			"expand": "Expandir {{name}}",
+			"collapse": "Contraer {{name}}",
+			"openInLLMLogs": "Abrir en logs de LLM",
+			"openInMCPLogs": "Abrir en logs de MCP",
+			"a2a": "A2A",
+			"error": "Error",
+			"scopeTrace": "Traza",
+			"scopeSession": "Sesión",
+			"sessionName": "Sesión {{value}}",
+			"turn": "Turno {{value}}",
+			"turnCount": "Turnos {{value}}",
+			"turns": "Turnos",
+			"sessionId": "Sesión",
+			"taskId": "Tarea",
+			"copyLink": "Copiar enlace",
+			"linkCopied": "Enlace copiado",
+			"guardrails": "Guardrails",
+			"guard": {
+				"guardrail": "Guardrail",
+				"rule": "Regla",
+				"provider": "Proveedor",
+				"phase": "Fase",
+				"outcome": "Resultado",
+				"reason": "Motivo",
+				"judgeModel": "Modelo evaluador",
+				"assessments": "Evaluaciones"
+			},
+			"turnsLoaded": "{{loaded}} de {{total}} turnos cargados",
+			"loadMoreTurns": "Cargar más turnos",
+			"userMessage": "Usuario",
+			"viewSpans": "Ver spans",
+			"noReply": "No se registró respuesta.",
+			"spansTab": "Spans",
+			"threadTab": "Hilo",
+			"llmShort": "{{value}} LLM",
+			"mcpShort": "{{value}} MCP",
+			"guardShort": "{{value}} guardrails",
+			"agentSpan": "Span de agente",
+			"conversationEnd": "Fin"
 		},
 		"logSheet": {
 			"localOperationNote": "Bifrost gestiona esta operación sin una solicitud upstream. Los payloads de protocolo que se muestran abajo son datos serializados, no capturas de transporte.",

@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { clefModelFromProvider, isDecisionProvider } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
 import type { ParseKeys } from "i18next";
-import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
+import { ArrowRight, Bot, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -36,10 +36,16 @@ import {
 	type UseFormRegister,
 	type UseFormSetValue,
 } from "react-hook-form";
-import { decisionTimeoutFieldValue, type AnalyzerFormValues, type DecisionProviderState } from "../formSchema";
+import {
+	decisionTimeoutFieldValue,
+	type AnalyzerFormValues,
+	type DecisionGuidanceFormValues,
+	type DecisionProviderState,
+} from "../formSchema";
 import { FieldLabel, InfoTip, SectionHeading } from "./formPrimitives";
 
-// The Complexity Router page's sections. Each binds to the page's single form.
+// The classifier editor's sections, used by the Complexity Router page and by
+// model routers. Each binds to its page's single form.
 
 // The three tier lists sit side by side, so each is a fixed-height scroll
 // container rather than a fixed number of phrases: phrases wrap to different
@@ -161,19 +167,30 @@ interface LLMPromptSectionProps {
 	// prompt the operator cleared on purpose.
 	onEdit: () => void;
 	onReset: () => void;
+	// "primary" when the llm is the router's classifier; its prompt then decides every request.
+	variant?: "primary" | "fallback";
 }
 
-// LLMPromptSection edits the fallback classifier's system prompt. It needs
-// width and room to iterate, so it sits on the page below the phrase lists
-// rather than in the sheet with the fallback's other settings, and only shows
-// while the llm fallback is on, because that is the only time it runs.
-export function LLMPromptSection({ control, error, canUpdate, defaultPrompt, livePrompt, onEdit, onReset }: LLMPromptSectionProps) {
+// LLMPromptSection edits the llm classifier's system prompt: the fallback's,
+// or, on a model router whose classifier is the llm, the primary one's. It
+// needs width and room to iterate, so it sits on the page rather than in the
+// sheet with the llm's other settings, and only shows while the llm runs.
+export function LLMPromptSection({
+	control,
+	error,
+	canUpdate,
+	defaultPrompt,
+	livePrompt,
+	onEdit,
+	onReset,
+	variant = "fallback",
+}: LLMPromptSectionProps) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	return (
 		<div className="space-y-3">
 			<SectionHeading
-				title={tcpx("fallbackPromptTitle")}
-				description={tcpx("fallbackPromptDescription")}
+				title={tcpx(variant === "primary" ? "llmPromptTitle" : "fallbackPromptTitle")}
+				description={tcpx(variant === "primary" ? "llmPromptDescription" : "fallbackPromptDescription")}
 				aside={
 					<Button
 						type="button"
@@ -445,8 +462,14 @@ function sameList(a: string[] | undefined, b: string[] | undefined) {
 	return a.every((value, index) => value === b[index]);
 }
 
+// The form paths that hold per-tier decision criteria: the router's decision
+// guidance, and the suggestions tier step's choices.
+export type TierCriteriaPath = "decision.criteria" | "suggestions.tier_criteria";
+
 interface DecisionDefinitionFieldProps {
 	tier: DecisionTier;
+	basePath: TierCriteriaPath;
+	testIdPrefix: string;
 	control: Control<AnalyzerFormValues>;
 	error: string | undefined;
 	canUpdate: boolean;
@@ -457,16 +480,25 @@ interface DecisionDefinitionFieldProps {
 // DecisionDefinitionField shows a tier's definition as plain text, like the
 // semantic cards' tier descriptions, and turns into a textarea only while it
 // is being edited. An invalid definition stays open so its error is visible.
-function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onReset }: DecisionDefinitionFieldProps) {
+function DecisionDefinitionField({
+	tier,
+	basePath,
+	testIdPrefix,
+	control,
+	error,
+	canUpdate,
+	edited,
+	onReset,
+}: DecisionDefinitionFieldProps) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const tierLabel = tcpx(DECISION_TIER_LABEL_KEYS[tier]);
 	const [editing, setEditing] = useState(false);
 	const open = editing || Boolean(error);
-	const id = `decision-${tier.toLowerCase()}-definition`;
+	const id = `${testIdPrefix}-${tier.toLowerCase()}-definition`;
 	return (
 		<Controller
 			control={control}
-			name={`decision.criteria.${tier}.definition` as const}
+			name={`${basePath}.${tier}.definition` as const}
 			render={({ field }) => (
 				<div className="flex flex-1 flex-col space-y-1.5">
 					<div className="flex h-6 items-center justify-between">
@@ -484,7 +516,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 											className="size-6"
 											aria-label={tcpx("definitionEditAria", { tier: tierLabel.toLowerCase() })}
 											onClick={() => setEditing(true)}
-											data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-edit-button`}
+											data-testid={`${testIdPrefix}-${tier.toLowerCase()}-definition-edit-button`}
 										>
 											<Pencil className="size-3" />
 										</Button>
@@ -503,7 +535,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 											aria-label={tcpx("definitionResetAria", { tier: tierLabel.toLowerCase() })}
 											onClick={onReset}
 											disabled={!canUpdate}
-											data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-reset-button`}
+											data-testid={`${testIdPrefix}-${tier.toLowerCase()}-definition-reset-button`}
 										>
 											<RotateCcw className="size-3" />
 										</Button>
@@ -516,7 +548,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 					{open ? (
 						<Textarea
 							id={id}
-							data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-input`}
+							data-testid={`${testIdPrefix}-${tier.toLowerCase()}-definition-input`}
 							rows={4}
 							maxLength={MAX_DECISION_DEFINITION_CHARACTERS}
 							autoFocus={editing}
@@ -536,7 +568,7 @@ function DecisionDefinitionField({ tier, control, error, canUpdate, edited, onRe
 						<p
 							className={cn("text-muted-foreground grow text-xs leading-relaxed", canUpdate && "cursor-text")}
 							onClick={() => canUpdate && setEditing(true)}
-							data-testid={`complexity-router-decision-${tier.toLowerCase()}-definition-text`}
+							data-testid={`${testIdPrefix}-${tier.toLowerCase()}-definition-text`}
 						>
 							{field.value}
 						</p>
@@ -618,90 +650,17 @@ export function DecisionGuidanceSection({
 			{defaults ? (
 				<div className="grid items-stretch gap-3 md:grid-cols-3">
 					{COMPLEXITY_TIER_VALUES.map((tier) => (
-						<div
+						<DecisionTierCard
 							key={tier}
-							className="bg-card flex flex-col rounded-sm border"
-							data-testid={`complexity-router-decision-tier-${tier.toLowerCase()}`}
-						>
-							<div className="flex flex-1 flex-col space-y-3 p-4 pl-5">
-								<DecisionDefinitionField
-									tier={tier}
-									control={control}
-									error={errors?.criteria?.[tier]?.definition?.message}
-									canUpdate={canUpdate}
-									edited={!isDefaultDefinition(tier)}
-									onReset={() => resetDefinition(tier)}
-								/>
-								{DECISION_LIST_FIELDS.map(({ field: listField, label: labelKey, placeholder: placeholderKey, tooltip: tooltipKey }) => {
-									const label = tcpx(labelKey);
-									const tierLabel = tcpx(DECISION_TIER_LABEL_KEYS[tier]);
-									const fieldError = errors?.criteria?.[tier]?.[listField];
-									const errorId = `decision-${tier.toLowerCase()}-${listField}-error`;
-									const count = criteria?.[tier]?.[listField]?.length ?? 0;
-									const atLimit = count >= MAX_DECISION_CRITERIA_ITEMS;
-									const edited = !isDefaultList(tier, listField);
-									return (
-										<Controller
-											key={listField}
-											control={control}
-											name={`decision.criteria.${tier}.${listField}` as const}
-											render={({ field }) => (
-												<div className="space-y-1.5">
-													{/* Fixed height so a row with a reset icon lines up with one without. */}
-													<div className="flex h-6 items-center justify-between">
-														<div className="flex items-center gap-1.5">
-															<span className="text-muted-foreground text-xs">{label}</span>
-															<InfoTip label={tcpx("listAbout", { list: label.toLowerCase() })}>{tcpx(tooltipKey)}</InfoTip>
-														</div>
-														<div className="flex items-center gap-1">
-															<span
-																className={cn("font-mono text-[11px] tabular-nums", atLimit ? "text-amber-600" : "text-muted-foreground")}
-															>
-																{count} / {MAX_DECISION_CRITERIA_ITEMS}
-															</span>
-															{/* Doubles as the edited marker: present only where this list differs from the default. */}
-															{edited && (
-																<Button
-																	type="button"
-																	variant="ghost"
-																	size="icon"
-																	className="size-6"
-																	aria-label={tcpx("listResetAria", { tier: tierLabel.toLowerCase(), list: label.toLowerCase() })}
-																	onClick={() => resetList(tier, listField)}
-																	disabled={!canUpdate}
-																	data-testid={`complexity-router-decision-${tier.toLowerCase()}-${listField}-reset-button`}
-																>
-																	<RotateCcw className="size-3" />
-																</Button>
-															)}
-														</div>
-													</div>
-													<TagInput
-														data-testid={`complexity-router-decision-${tier.toLowerCase()}-${listField}-input`}
-														value={field.value}
-														onValueChange={field.onChange}
-														listHeight={DECISION_LIST_HEIGHT}
-														submitOnComma={false}
-														placeholder={atLimit ? tcpx("listLimitReached", { max: MAX_DECISION_CRITERIA_ITEMS }) : tcpx(placeholderKey)}
-														readOnly={!canUpdate}
-														disabled={!canUpdate || atLimit}
-														aria-label={tcpx("listAria", { tier: tierLabel, list: label.toLowerCase() })}
-														aria-invalid={fieldError ? true : undefined}
-														aria-describedby={fieldError ? errorId : undefined}
-														className={cn(fieldError && "border-destructive")}
-													/>
-													{fieldError && (
-														<p id={errorId} className="text-destructive text-xs">
-															{fieldError.message ?? fieldError.root?.message}
-														</p>
-													)}
-												</div>
-											)}
-										/>
-									);
-								})}
-							</div>
-						</div>
+							tier={tier}
+							basePath="decision.criteria"
+							testIdPrefix="complexity-router-decision"
+							control={control}
+							setValue={setValue}
+							errors={errors?.criteria?.[tier]}
+							canUpdate={canUpdate}
+							defaults={defaults.criteria[tier]}
+						/>
 					))}
 				</div>
 			) : (
@@ -780,6 +739,129 @@ export function DecisionGuidanceSection({
 	);
 }
 
+interface DecisionTierCardProps {
+	tier: DecisionTier;
+	basePath: TierCriteriaPath;
+	testIdPrefix: string;
+	control: Control<AnalyzerFormValues>;
+	setValue: UseFormSetValue<AnalyzerFormValues>;
+	errors: FieldErrors<DecisionGuidanceFormValues["criteria"][DecisionTier]> | undefined;
+	canUpdate: boolean;
+	// What a reset restores, and what an unedited field is compared against.
+	defaults: { definition: string; signals: string[]; examples: string[] };
+	// Lists that may be emptied; the router's decision guidance needs at least
+	// one signal and one example, the suggestions tier step does not.
+	allowEmptyLists?: boolean;
+}
+
+// DecisionTierCard edits one tier's decision criteria: its definition, signals
+// and examples, each with a reset to the defaults it was seeded from. The
+// router's decision guidance and the suggestions tier step both use it.
+export function DecisionTierCard({
+	tier,
+	basePath,
+	testIdPrefix,
+	control,
+	setValue,
+	errors,
+	canUpdate,
+	defaults,
+	allowEmptyLists = false,
+}: DecisionTierCardProps) {
+	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+	const criteria = useWatch({ control, name: `${basePath}.${tier}` as const });
+	const isDefaultList = (field: DecisionListField) =>
+		allowEmptyLists && criteria?.[field]?.length === 0 && defaults[field].length === 0
+			? true
+			: sameList(criteria?.[field], defaults[field]);
+	const resetList = (field: DecisionListField) =>
+		setValue(`${basePath}.${tier}.${field}` as const, [...defaults[field]], { shouldDirty: true, shouldValidate: true });
+	const resetDefinition = () =>
+		setValue(`${basePath}.${tier}.definition` as const, defaults.definition, { shouldDirty: true, shouldValidate: true });
+	return (
+		<div className="bg-card flex flex-col rounded-sm border" data-testid={`${testIdPrefix}-tier-${tier.toLowerCase()}`}>
+			<div className="flex flex-1 flex-col space-y-3 p-4 pl-5">
+				<DecisionDefinitionField
+					tier={tier}
+					basePath={basePath}
+					testIdPrefix={testIdPrefix}
+					control={control}
+					error={errors?.definition?.message}
+					canUpdate={canUpdate}
+					edited={criteria?.definition !== defaults.definition}
+					onReset={resetDefinition}
+				/>
+				{DECISION_LIST_FIELDS.map(({ field: listField, label: labelKey, placeholder: placeholderKey, tooltip: tooltipKey }) => {
+					const label = tcpx(labelKey);
+					const tierLabel = tcpx(DECISION_TIER_LABEL_KEYS[tier]);
+					const fieldError = errors?.[listField];
+					const errorId = `${testIdPrefix}-${tier.toLowerCase()}-${listField}-error`;
+					const count = criteria?.[listField]?.length ?? 0;
+					const atLimit = count >= MAX_DECISION_CRITERIA_ITEMS;
+					const edited = !isDefaultList(listField);
+					return (
+						<Controller
+							key={listField}
+							control={control}
+							name={`${basePath}.${tier}.${listField}` as const}
+							render={({ field }) => (
+								<div className="space-y-1.5">
+									{/* Fixed height so a row with a reset icon lines up with one without. */}
+									<div className="flex h-6 items-center justify-between">
+										<div className="flex items-center gap-1.5">
+											<span className="text-muted-foreground text-xs">{label}</span>
+											<InfoTip label={tcpx("listAbout", { list: label.toLowerCase() })}>{tcpx(tooltipKey)}</InfoTip>
+										</div>
+										<div className="flex items-center gap-1">
+											<span className={cn("font-mono text-[11px] tabular-nums", atLimit ? "text-amber-600" : "text-muted-foreground")}>
+												{count} / {MAX_DECISION_CRITERIA_ITEMS}
+											</span>
+											{/* Doubles as the edited marker: present only where this list differs from the default. */}
+											{edited && (
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													className="size-6"
+													aria-label={tcpx("listResetAria", { tier: tierLabel.toLowerCase(), list: label.toLowerCase() })}
+													onClick={() => resetList(listField)}
+													disabled={!canUpdate}
+													data-testid={`${testIdPrefix}-${tier.toLowerCase()}-${listField}-reset-button`}
+												>
+													<RotateCcw className="size-3" />
+												</Button>
+											)}
+										</div>
+									</div>
+									<TagInput
+										data-testid={`${testIdPrefix}-${tier.toLowerCase()}-${listField}-input`}
+										value={field.value}
+										onValueChange={field.onChange}
+										listHeight={DECISION_LIST_HEIGHT}
+										submitOnComma={false}
+										placeholder={atLimit ? tcpx("listLimitReached", { max: MAX_DECISION_CRITERIA_ITEMS }) : tcpx(placeholderKey)}
+										readOnly={!canUpdate}
+										disabled={!canUpdate || atLimit}
+										aria-label={tcpx("listAria", { tier: tierLabel, list: label.toLowerCase() })}
+										aria-invalid={fieldError ? true : undefined}
+										aria-describedby={fieldError ? errorId : undefined}
+										className={cn(fieldError && "border-destructive")}
+									/>
+									{fieldError && (
+										<p id={errorId} className="text-destructive text-xs">
+											{fieldError.message ?? fieldError.root?.message}
+										</p>
+									)}
+								</div>
+							)}
+						/>
+					);
+				})}
+			</div>
+		</div>
+	);
+}
+
 const DECISION_PROVIDER_PROBLEM_KEYS = {
 	missing: { message: "providerMissing", action: "providerMissingAction" },
 	failing: { message: "providerFailing", action: "providerFailingAction" },
@@ -818,17 +900,32 @@ const CLASSIFIER_OPTIONS: {
 }[] = [
 	{ value: "decision", title: "classifierNameDecision", description: "classifierDecisionCardDesc" },
 	{ value: "semantic", title: "classifierNameSemantic", description: "classifierSemanticCardDesc" },
+	{ value: "llm", title: "classifierNameLlm", description: "classifierLlmCardDesc" },
 ];
+
+const CLASSIFIER_ICONS: Record<Classifier, typeof Scale> = { decision: Scale, semantic: Waypoints, llm: Bot };
 
 // ClassifierChoice is the one decision everything else depends on, so each
 // option is an explained card rather than an entry in a dropdown. Anything a
 // choice still needs is reported once, below the cards, after it is picked.
-export function ClassifierChoice({ value, onChange }: { value: Classifier | undefined; onChange: (value: Classifier) => void }) {
+// The llm classifier is offered only where it can be the primary one: on a
+// model router, not on the Complexity Router page.
+export function ClassifierChoice({
+	value,
+	onChange,
+	includeLlm = false,
+}: {
+	value: Classifier | undefined;
+	onChange: (value: Classifier) => void;
+	includeLlm?: boolean;
+}) {
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+	const options = includeLlm ? CLASSIFIER_OPTIONS : CLASSIFIER_OPTIONS.filter((option) => option.value !== "llm");
 	return (
-		<div role="radiogroup" aria-label={tcpx("stepClassifier")} className="grid gap-3 sm:grid-cols-2">
-			{CLASSIFIER_OPTIONS.map((option) => {
+		<div role="radiogroup" aria-label={tcpx("stepClassifier")} className={cn("grid gap-3 sm:grid-cols-2", includeLlm && "lg:grid-cols-3")}>
+			{options.map((option) => {
 				const selected = option.value === value;
+				const Icon = CLASSIFIER_ICONS[option.value];
 				return (
 					<button
 						key={option.value}
@@ -843,11 +940,7 @@ export function ClassifierChoice({ value, onChange }: { value: Classifier | unde
 						)}
 					>
 						<div className="flex w-full items-center gap-2">
-							{option.value === "decision" ? (
-								<Scale className="text-muted-foreground size-4" />
-							) : (
-								<Waypoints className="text-muted-foreground size-4" />
-							)}
+							<Icon className="text-muted-foreground size-4" />
 							<span className="text-sm font-medium">{tcpx(option.title)}</span>
 							{selected && <Check className="ml-auto size-4 text-green-600" />}
 						</div>

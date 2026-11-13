@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
@@ -40,21 +40,36 @@ import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Link } from "@tanstack/react-router";
 import { format, isValid } from "date-fns";
 import type { TFunction } from "i18next";
-import { ChevronDown, Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
+import { ChevronDown, Download, Loader2, MoreVertical, Trash2, X } from "lucide-react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { A2APayloadView } from "./a2aPayloadView";
-import {
-	A2AConversationHistory,
-	A2AOperationConversation,
-	isA2AConversationOperation,
-	isA2APushConversationOperation,
-} from "./agentContextDetailsSheet";
+import { collectA2AArtifacts } from "./a2aArtifacts";
+import { A2APayloadView, ArtifactView } from "./a2aPayloadView";
+import { AgentTraceView } from "./agentTraceView";
+import { A2AOperationConversation, isA2AConversationOperation, isA2APushConversationOperation } from "./agentContextDetailsSheet";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { getLocale } from "@/lib/i18n";
+
+interface AgentLogDetailViewProps {
+	log: AgentLogSummary | null;
+	/** Gates the detail fetches; an embedded view is always open. */
+	open?: boolean;
+	/** Called with false after a delete. */
+	onOpenChange?: (open: boolean) => void;
+	onFilter?: (filters: FilterTarget) => void;
+	handleDelete?: (log: AgentLogSummary) => Promise<void>;
+	onViewContext?: (contextId: string, logId: string) => void;
+	/** Rendered before the title, e.g. the sheet's prev/next buttons. */
+	headerStart?: ReactNode;
+	/**
+	 * "embedded" renders inside the agent trace tree: no sheet header or padding, local tab state, and no
+	 * correlated LLM/MCP tabs because the tree already lists those calls as children.
+	 */
+	variant?: "sheet" | "embedded";
+}
 
 interface AgentLogDetailSheetProps {
 	log: AgentLogSummary | null;
@@ -438,11 +453,76 @@ export function AgentLogDetailSheet({
 	onOpenChange,
 	onFilter,
 	handleDelete,
-	onViewContext,
+	// The session is a scope of the trace tree now, so the sheet no longer opens the context sheet.
 	onNavigate,
 	hasPrev = false,
 	hasNext = false,
 }: AgentLogDetailSheetProps) {
+	const { t } = useTranslation("observability");
+	// Keyboard navigation: arrow up/down to navigate between operations
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
+	});
+
+	if (!log) return null;
+
+	return (
+		<Sheet open={open} onOpenChange={onOpenChange}>
+			<SheetContent className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]">
+				<AgentTraceView
+					key={log.id}
+					root={log}
+					open={open}
+					header={
+						<div className="flex items-center gap-2">
+							<SheetNavigationButtons
+								hasPrev={hasPrev}
+								hasNext={hasNext}
+								onNavigate={(dir) => onNavigate?.(dir)}
+								prevKeys={prevKeys}
+								nextKeys={nextKeys}
+								entityLabel="operation"
+							/>
+							<SheetTitle className="text-foreground text-sm font-medium">{t("agentLogs.trace.title")}</SheetTitle>
+						</div>
+					}
+					actions={
+						<SheetClose asChild>
+							<Button variant="ghost" className="size-7" type="button" aria-label={t("labels.close")} data-testid="agent-trace-close">
+								<X className="h-3.5 w-3.5" />
+							</Button>
+						</SheetClose>
+					}
+					renderAgentDetail={(operation) => (
+						<AgentLogDetailView
+							log={operation}
+							variant="embedded"
+							onOpenChange={onOpenChange}
+							onFilter={onFilter}
+							handleDelete={operation.id === log.id ? handleDelete : undefined}
+						/>
+					)}
+				/>
+			</SheetContent>
+		</Sheet>
+	);
+}
+
+// AgentLogDetailView is the agent operation detail body, shared by the trace sheet and any standalone sheet.
+export function AgentLogDetailView({
+	log,
+	open = true,
+	onOpenChange,
+	onFilter,
+	handleDelete,
+	onViewContext,
+	headerStart,
+	variant = "sheet",
+}: AgentLogDetailViewProps) {
+	const embedded = variant === "embedded";
 	const { t } = useTranslation("observability");
 	const {
 		data: fullLog,
@@ -487,22 +567,22 @@ export function AgentLogDetailSheet({
 		});
 	};
 
-	// Keyboard navigation: arrow up/down to navigate between operations
-	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
-		enabled: open,
-		hasPrev,
-		hasNext,
-		onNavigate: (direction) => onNavigate?.(direction),
-	});
-
 	const [dropdownOpen, setDropdownOpen] = useState(false);
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 	// URL state survives operation changes and sheet remounts, matching LLM logs.
-	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
+	const [urlMoreDetailsOpen, setUrlMoreDetailsOpen] = useQueryState(
 		"agent_log_more",
 		parseAsBoolean.withDefault(false).withOptions({ history: "replace" }),
 	);
-	const [tabParam, setTabParam] = useQueryState("agent_log_tab", parseAsString.withOptions({ history: "replace" }));
+	const [urlTabParam, setUrlTabParam] = useQueryState("agent_log_tab", parseAsString.withOptions({ history: "replace" }));
+	// Embedded views keep their own state so several of them never share URL keys.
+	const [localMoreDetailsOpen, setLocalMoreDetailsOpen] = useState(false);
+	const [localTabParam, setLocalTabParam] = useState<string | null>(null);
+	const moreDetailsOpen = embedded ? localMoreDetailsOpen : urlMoreDetailsOpen;
+	const setMoreDetailsOpen = embedded ? setLocalMoreDetailsOpen : setUrlMoreDetailsOpen;
+	const tabParam = embedded ? localTabParam : urlTabParam;
+	const setTabParam = embedded ? setLocalTabParam : setUrlTabParam;
+	const artifacts = useMemo(() => collectA2AArtifacts(fullLog, correlatedRows), [fullLog, correlatedRows]);
 
 	const isSelectedOperation = Boolean(log && fullLog && (fullLog.id === log.id || fullLog.request_id === log.request_id));
 	const isFullDataReady = Boolean(log) && (isError || (isSelectedOperation && !isLoading));
@@ -513,20 +593,16 @@ export function AgentLogDetailSheet({
 		[displayLog?.task_id, isCorrelatedConversation],
 	);
 	const correlationKey = logCorrelation?.agent_correlation_id ?? "";
-	const { llmCount, mcpCount } = useCorrelatedLogCounts(logCorrelation, open);
+	const { llmCount, mcpCount } = useCorrelatedLogCounts(logCorrelation, open && !embedded);
 
 	if (!log || !displayLog) return null;
 
 	if (!isFullDataReady) {
 		return (
-			<Sheet open={open} onOpenChange={onOpenChange}>
-				<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
-					<div className="flex h-full items-center justify-center p-4 md:p-8">
-						<SheetTitle className="sr-only">{t("agentLogs.logSheet.loadingDetails")}</SheetTitle>
-						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
-					</div>
-				</SheetContent>
-			</Sheet>
+			<div className="flex h-full items-center justify-center p-4 md:p-8">
+				<span className="sr-only">{t("agentLogs.logSheet.loadingDetails")}</span>
+				<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
+			</div>
 		);
 	}
 
@@ -549,22 +625,26 @@ export function AgentLogDetailSheet({
 		conversationLog && (conversationLog.request_body || conversationLog.response_body || conversationLog.error_details),
 	);
 	const hasPayload = Boolean(detail && (detail.request_body || detail.response_body || detail.error_details));
-	const defaultTab = hasConversation
-		? "conversation"
-		: hasPayload
-			? "payload"
-			: correlatedRows.length > 0
-				? "events"
-				: pluginLogCount > 0
-					? "plugins"
-					: "raw-capture";
+	const defaultTab =
+		artifacts.length > 0
+			? "artifacts"
+			: hasConversation
+				? "conversation"
+				: hasPayload
+					? "payload"
+					: correlatedRows.length > 0
+						? "events"
+						: pluginLogCount > 0
+							? "plugins"
+							: "raw-capture";
 	const availableTabs = [
+		artifacts.length > 0 && "artifacts",
 		hasConversation && "conversation",
 		!isConversationOperation && !isPushConversationOperation && hasPayload && "payload",
 		correlatedRows.length > 0 && "events",
 		pluginLogCount > 0 && "plugins",
-		logCorrelation && llmCount > 0 && "llm-logs",
-		logCorrelation && mcpCount > 0 && "mcp-logs",
+		!embedded && logCorrelation && llmCount > 0 && "llm-logs",
+		!embedded && logCorrelation && mcpCount > 0 && "mcp-logs",
 		"raw-capture",
 	].filter((tab): tab is string => Boolean(tab));
 	const activeTab = tabParam && availableTabs.includes(tabParam) ? tabParam : defaultTab;
@@ -707,590 +787,604 @@ export function AgentLogDetailSheet({
 		fields: section.fields.filter(([, value]) => value !== undefined && value !== ""),
 	}));
 
+	const headerTitle = <span className="text-foreground text-sm font-medium">{t("agentLogs.logSheet.agentOperation")}</span>;
+	const header = (
+		<>
+			<div className="flex w-full items-center gap-2">
+				{headerStart}
+				{embedded ? headerTitle : <SheetTitle className="flex w-fit items-center gap-2 font-medium">{headerTitle}</SheetTitle>}
+				{displayLog.context_id && onViewContext ? (
+					<Button
+						variant="outline"
+						size="sm"
+						data-testid="a2alogdetails-view-context"
+						onClick={() => onViewContext(displayLog.context_id!, displayLog.id)}
+					>
+						{t("agentLogs.logSheet.viewSession")}
+					</Button>
+				) : null}
+			</div>
+			<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+				<DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
+					<DropdownMenuTrigger asChild>
+						<Button variant="ghost" className="size-8" type="button" aria-label={t("logs.logActions")}>
+							<MoreVertical className="h-3 w-3" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end">
+						<DropdownMenuItem
+							data-testid="a2alogdetails-export-log-json"
+							onSelect={(e) => {
+								e.preventDefault();
+								downloadAsJson(displayLog, `agent-log-${displayLog.id ?? "export"}.json`);
+								setDropdownOpen(false);
+							}}
+						>
+							<Download className="h-4 w-4" />
+							{t("mcpLogs.exportJson")}
+						</DropdownMenuItem>
+						{handleDelete ? (
+							<>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem
+									variant="destructive"
+									onSelect={(e) => {
+										e.preventDefault();
+										setDeleteDialogOpen(true);
+										setDropdownOpen(false);
+									}}
+								>
+									<Trash2 className="h-4 w-4" />
+									{t("logs.detail.deleteLog")}
+								</DropdownMenuItem>
+							</>
+						) : null}
+					</DropdownMenuContent>
+				</DropdownMenu>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{t("mcpLogs.deleteConfirmTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("mcpLogs.deleteConfirmDesc")}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>{t("labels.cancel")}</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={async (e) => {
+								e.preventDefault();
+								if (!handleDelete) return;
+								try {
+									await handleDelete(displayLog);
+									setDeleteDialogOpen(false);
+									onOpenChange?.(false);
+								} catch (err) {
+									const errorMessage = err instanceof Error ? err.message : t("mcpLogs.detail.deleteFailed");
+									toast.error(errorMessage);
+									// Keep dialog open on error so user can see the error and retry
+								}
+							}}
+						>
+							{t("labels.delete")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
+	);
+
 	return (
-		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+		<>
+			{embedded ? (
+				<div className="flex flex-row items-center gap-2 pb-2">{header}</div>
+			) : (
 				<SheetHeader
 					className="flex flex-row items-center px-0"
 					headerClassName="sticky -top-5 z-20 mx-4 mb-0 w-auto bg-card pt-4 pb-2 md:mx-8 md:pt-8"
 				>
-					<div className="flex w-full items-center gap-2">
-						<SheetNavigationButtons
-							hasPrev={hasPrev}
-							hasNext={hasNext}
-							onNavigate={(dir) => onNavigate?.(dir)}
-							prevKeys={prevKeys}
-							nextKeys={nextKeys}
-							entityLabel="operation"
-						/>
-						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-							<span className="text-foreground text-sm font-medium">{t("agentLogs.logSheet.agentOperation")}</span>
-						</SheetTitle>
-						{displayLog.context_id && onViewContext ? (
-							<Button
-								variant="outline"
-								size="sm"
-								data-testid="a2alogdetails-view-context"
-								onClick={() => onViewContext(displayLog.context_id!, displayLog.id)}
-							>
-								{t("agentLogs.logSheet.viewSession")}
-							</Button>
-						) : null}
-					</div>
-					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-						<DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
-							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" className="size-8" type="button" aria-label={t("logs.logActions")}>
-									<MoreVertical className="h-3 w-3" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end">
-								<DropdownMenuItem
-									data-testid="a2alogdetails-export-log-json"
-									onSelect={(e) => {
-										e.preventDefault();
-										downloadAsJson(displayLog, `agent-log-${displayLog.id ?? "export"}.json`);
-										setDropdownOpen(false);
-									}}
-								>
-									<Download className="h-4 w-4" />
-									{t("mcpLogs.exportJson")}
-								</DropdownMenuItem>
-								{handleDelete ? (
-									<>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
-											variant="destructive"
-											onSelect={(e) => {
-												e.preventDefault();
-												setDeleteDialogOpen(true);
-												setDropdownOpen(false);
-											}}
-										>
-											<Trash2 className="h-4 w-4" />
-											{t("logs.detail.deleteLog")}
-										</DropdownMenuItem>
-									</>
-								) : null}
-							</DropdownMenuContent>
-						</DropdownMenu>
-						<AlertDialogContent>
-							<AlertDialogHeader>
-								<AlertDialogTitle>{t("mcpLogs.deleteConfirmTitle")}</AlertDialogTitle>
-								<AlertDialogDescription>{t("mcpLogs.deleteConfirmDesc")}</AlertDialogDescription>
-							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel>{t("labels.cancel")}</AlertDialogCancel>
-								<AlertDialogAction
-									onClick={async (e) => {
-										e.preventDefault();
-										if (!handleDelete) return;
-										try {
-											await handleDelete(displayLog);
-											setDeleteDialogOpen(false);
-											onOpenChange(false);
-										} catch (err) {
-											const errorMessage = err instanceof Error ? err.message : t("mcpLogs.detail.deleteFailed");
-											toast.error(errorMessage);
-											// Keep dialog open on error so user can see the error and retry
-										}
-									}}
-								>
-									{t("labels.delete")}
-								</AlertDialogAction>
-							</AlertDialogFooter>
-						</AlertDialogContent>
-					</AlertDialog>
+					{header}
 				</SheetHeader>
-				<div className="flex flex-col gap-2 px-4 pb-4 md:px-8 md:pb-8">
-					<div className="border-border rounded-sm border">
-						<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
-							<div className="min-w-0 flex-1">
-								<div className="flex flex-wrap items-center gap-2">
-									<StatusPill status={displayLog.status} />
-									{isPushRelated && (
-										<Badge variant="outline" className="text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-											{t("agentLogs.logSheet.pushNotification")}
-										</Badge>
-									)}
-								</div>
-								<div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
-									<div className="min-w-0" data-testid="agent-log-summary-primary">
-										<IdRow
-											label={t("filters.agent")}
-											value={displayLog.agent_name}
-											filter={{ agent_name: [displayLog.agent_name] }}
-											onFilter={onFilter}
-											testId="a2alogdetails-copy-agent-button"
-										/>
-										<IdRow
-											label={t("mcpLogs.detail.request")}
-											value={displayLog.request_id}
-											filter={{ request_id: displayLog.request_id }}
-											onFilter={onFilter}
-											testId="a2alogdetails-copy-request-id-button"
-										/>
-										{displayLog.push_config_id && (
-											<IdRow
-												label={t("agentLogs.logSheet.pushConfig")}
-												value={displayLog.push_config_id}
-												filter={{ push_config_id: displayLog.push_config_id }}
-												onFilter={onFilter}
-												testId="a2alogdetails-copy-push-config-id-button"
-											/>
-										)}
-										{displayLog.virtual_key_id && (
-											<div className="mt-1 flex items-center gap-2">
-												<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-													{t("agentLogs.logSheet.virtualKey")}
-												</span>
-												<Link
-													to="/workspace/governance/virtual-keys"
-													search={{ selected_vk: displayLog.virtual_key_id }}
-													className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-												>
-													{displayLog.virtual_key_name || displayLog.virtual_key_id}
-												</Link>
-											</div>
-										)}
-									</div>
-									<div className="min-w-0" data-testid="agent-log-summary-context">
-										{displayLog.task_id && (
-											<div className="mt-1 flex max-w-full items-center gap-2 first:mt-0">
-												<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-													{t("agentLogs.logSheet.task")}
-												</span>
-												<InteractiveValue
-													value={displayLog.task_id}
-													label={t("agentLogs.logSheet.task")}
-													filter={{ task_id: displayLog.task_id }}
-													onFilter={onFilter}
-													className="font-mono text-[13px]"
-												/>
-											</div>
-										)}
-										{displayLog.context_id && (
-											<div className="mt-1 flex max-w-full items-center gap-2 first:mt-0">
-												<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-													{t("agentLogs.logSheet.context")}
-												</span>
-												<InteractiveValue
-													value={displayLog.context_id}
-													label={t("agentLogs.logSheet.context")}
-													filter={{ context_id: displayLog.context_id }}
-													onFilter={onFilter}
-													className="font-mono text-[13px]"
-												/>
-											</div>
-										)}
-									</div>
-								</div>
+			)}
+			<div className={cn("flex flex-col gap-2", !embedded && "px-4 pb-4 md:px-8 md:pb-8")}>
+				<div className="border-border rounded-sm border">
+					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
+						<div className="min-w-0 flex-1">
+							<div className="flex flex-wrap items-center gap-2">
+								<StatusPill status={displayLog.status} />
+								{isPushRelated && (
+									<Badge variant="outline" className="text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
+										{t("agentLogs.logSheet.pushNotification")}
+									</Badge>
+								)}
 							</div>
-						</div>
-						<div
-							className={cn(
-								"border-border grid grid-cols-1 border-t sm:grid-cols-2",
-								correlatedRows.length > 0 ? "md:grid-cols-5" : "md:grid-cols-4",
-							)}
-						>
-							<HeroStat
-								label={t("labels.latency")}
-								valueClass="text-primary"
-								value={hasValidLatency ? formatLatency(displayLog.latency!) : "—"}
-								sub={
-									hasValidTimestamp
-										? `${format(timestampDate!, "HH:mm:ss")} → ${endTimestamp ? format(endTimestamp, "HH:mm:ss") : "—"}`
-										: undefined
-								}
-								hasRightBorder
-							/>
-							<HeroStat
-								label={t("agentLogs.logSheet.downstream")}
-								value={displayLog.downstream_transport || "—"}
-								valueClass="font-mono text-[15px]"
-								hasRightBorder
-							/>
-							<HeroStat
-								label={t("agentLogs.logSheet.upstream")}
-								value={displayLog.upstream_transport || "—"}
-								valueClass="font-mono text-[15px]"
-								hasRightBorder
-							/>
-							<HeroStat
-								label={t("agentLogs.filters.operation")}
-								value={displayLog.operation || "—"}
-								valueClass="whitespace-normal overflow-visible break-all font-mono text-[15px]"
-								hasRightBorder={correlatedRows.length > 0}
-							/>
-							{correlatedRows.length > 0 && <HeroStat label={t("agentLogs.logSheet.events")} value={String(totalCorrelatedEvents)} />}
-						</div>
-					</div>
-
-					<details
-						className="group bg-card rounded-sm border"
-						open={moreDetailsOpen}
-						onToggle={(event) => setMoreDetailsOpen(event.currentTarget.open)}
-					>
-						<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-							<span className="text-foreground font-medium">{t("mcpLogs.detail.moreDetails")}</span>
-							<span className="text-muted-foreground flex items-center gap-2 text-xs">
-								<span className="hidden md:inline">
-									{hasTimings ? t("agentLogs.logSheet.moreDetailsHintTimings") : t("agentLogs.logSheet.moreDetailsHint")}
-								</span>
-								<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-							</span>
-						</summary>
-						<div className="space-y-4 border-t px-4 py-4 md:px-6">
-							{hasTimings && (
-								<>
-									<div className="space-y-4">
-										<BlockHeader title={t("logs.detail.timings")} />
-										<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-											{hasValidTimestamp && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("logs.detail.startTimestamp")}
-													value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
-												/>
-											)}
-											{endTimestamp && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("logs.detail.endTimestamp")}
-													value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
-												/>
-											)}
-											{hasValidLatency && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("labels.latency")}
-													tooltip={t("logs.detail.totalLatencyTooltip")}
-													value={<div>{displayLog.latency!.toFixed(2)}ms</div>}
-												/>
-											)}
-											{displayLog.upstream_latency != null && !isNaN(displayLog.upstream_latency) && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("logs.detail.upstreamLatency")}
-													tooltip={t("agentLogs.logSheet.upstreamLatencyTooltip")}
-													value={<div>{displayLog.upstream_latency.toFixed(2)}ms</div>}
-												/>
-											)}
-											{displayLog.overhead_latency != null && !isNaN(displayLog.overhead_latency) && (
-												<LogEntryDetailsView
-													className="w-full"
-													label={t("logs.detail.bifrostOverhead")}
-													tooltip={t("logs.detail.bifrostOverheadTooltip")}
-													value={<div>{displayLog.overhead_latency.toFixed(2)}ms</div>}
-												/>
-											)}
-										</div>
-										{displayLog.overhead_breakdown && displayLog.overhead_breakdown.length > 0 ? (
-											<OverheadBreakdown buckets={displayLog.overhead_breakdown} overheadMs={displayLog.overhead_latency} />
-										) : null}
-									</div>
-									<DottedSeparator />
-								</>
-							)}
-							<div className="space-y-4">
-								<BlockHeader title={t("agentLogs.logSheet.requestDetails")} />
-								<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
-									<LogEntryDetailsView
-										className="w-full"
+							<div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+								<div className="min-w-0" data-testid="agent-log-summary-primary">
+									<IdRow
 										label={t("filters.agent")}
-										value={<span className="font-mono">{displayLog.agent_name}</span>}
+										value={displayLog.agent_name}
+										filter={{ agent_name: [displayLog.agent_name] }}
+										onFilter={onFilter}
+										testId="a2alogdetails-copy-agent-button"
 									/>
-									<LogEntryDetailsView
-										className="w-full"
-										label={t("agentLogs.filters.operation")}
-										value={<span className="font-mono">{displayLog.operation}</span>}
+									<IdRow
+										label={t("mcpLogs.detail.request")}
+										value={displayLog.request_id}
+										filter={{ request_id: displayLog.request_id }}
+										onFilter={onFilter}
+										testId="a2alogdetails-copy-request-id-button"
 									/>
-									<LogEntryDetailsView className="w-full" label={t("filters.status")} value={agentStatusLabel(displayLog.status, t)} />
-									{displayLog.content_type && (
-										<LogEntryDetailsView
-											className="w-full"
-											label={t("agentLogs.logSheet.fields.contentType")}
-											value={displayLog.content_type}
+									{displayLog.push_config_id && (
+										<IdRow
+											label={t("agentLogs.logSheet.pushConfig")}
+											value={displayLog.push_config_id}
+											filter={{ push_config_id: displayLog.push_config_id }}
+											onFilter={onFilter}
+											testId="a2alogdetails-copy-push-config-id-button"
 										/>
 									)}
 									{displayLog.virtual_key_id && (
-										<LogEntryDetailsView
-											className="w-full"
-											label={t("agentLogs.logSheet.virtualKey")}
-											value={
-												<Link
-													to="/workspace/governance/virtual-keys"
-													search={{ selected_vk: displayLog.virtual_key_id }}
-													className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-												>
-													{displayLog.virtual_key_name || displayLog.virtual_key_id}
-												</Link>
-											}
-										/>
+										<div className="mt-1 flex items-center gap-2">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+												{t("agentLogs.logSheet.virtualKey")}
+											</span>
+											<Link
+												to="/workspace/governance/virtual-keys"
+												search={{ selected_vk: displayLog.virtual_key_id }}
+												className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+											>
+												{displayLog.virtual_key_name || displayLog.virtual_key_id}
+											</Link>
+										</div>
 									)}
-									{governanceLinks.map(({ label, pluralLabel, route, searchKey, items }) => (
-										<LogEntryDetailsView
-											key={label}
-											className="w-full"
-											label={items.length > 1 ? pluralLabel : label}
-											value={
-												<span className="inline-flex flex-wrap gap-x-1">
-													{items.map((item, index) => (
-														<Tooltip key={item.id}>
-															<TooltipTrigger asChild>
-																<Link
-																	to={route}
-																	search={{ [searchKey]: item.id }}
-																	className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-																>
-																	{item.name}
-																	{index < items.length - 1 ? "," : ""}
-																</Link>
-															</TooltipTrigger>
-															<TooltipContent sideOffset={6}>{item.id}</TooltipContent>
-														</Tooltip>
-													))}
-												</span>
-											}
-										/>
-									))}
+								</div>
+								<div className="min-w-0" data-testid="agent-log-summary-context">
+									{displayLog.task_id && (
+										<div className="mt-1 flex max-w-full items-center gap-2 first:mt-0">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+												{t("agentLogs.logSheet.task")}
+											</span>
+											<InteractiveValue
+												value={displayLog.task_id}
+												label={t("agentLogs.logSheet.task")}
+												filter={{ task_id: displayLog.task_id }}
+												onFilter={onFilter}
+												className="font-mono text-[13px]"
+											/>
+										</div>
+									)}
+									{displayLog.context_id && (
+										<div className="mt-1 flex max-w-full items-center gap-2 first:mt-0">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+												{t("agentLogs.logSheet.context")}
+											</span>
+											<InteractiveValue
+												value={displayLog.context_id}
+												label={t("agentLogs.logSheet.context")}
+												filter={{ context_id: displayLog.context_id }}
+												onFilter={onFilter}
+												className="font-mono text-[13px]"
+											/>
+										</div>
+									)}
 								</div>
 							</div>
-							{diagnosticSections
-								.filter(({ fields }) => fields.length > 0)
-								.map(({ title, fields }) => (
-									<div key={title} className="space-y-4">
-										<DottedSeparator />
-										<BlockHeader title={title} />
-										<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
-											{fields.map(([label, value, filter]) => (
-												<LogEntryDetailsView
-													key={label}
-													className="w-full"
-													label={label}
-													value={
-														<span className="inline-flex max-w-full items-center gap-1">
-															{typeof value === "string" ? (
-																<InteractiveValue
-																	value={value}
-																	label={label}
-																	filter={filter}
-																	onFilter={onFilter}
-																	className="font-mono text-xs"
-																/>
-															) : (
-																<span className="truncate font-mono text-xs">{String(value)}</span>
-															)}
-														</span>
-													}
-												/>
-											))}
-										</div>
-									</div>
-								))}
 						</div>
-					</details>
-
-					<Tabs key={displayLog.id} value={activeTab} onValueChange={setTabParam} className="gap-2">
-						<TabsList className="bg-muted/60 h-10 w-fit">
-							{hasConversation && (
-								<TabsTrigger value="conversation" className="px-3">
-									{t("agentLogs.logSheet.conversation")}
-								</TabsTrigger>
-							)}
-							{!isConversationOperation && !isPushConversationOperation && hasPayload && (
-								<TabsTrigger value="payload" className="px-3">
-									{t("agentLogs.logSheet.payload")}
-								</TabsTrigger>
-							)}
-							{correlatedRows.length > 0 && (
-								<TabsTrigger value="events" className="px-3">
-									{t("agentLogs.logSheet.events")}
-									{correlatedRows.length > 0 ? (
-										<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-											{totalCorrelatedEvents}
-										</span>
-									) : null}
-								</TabsTrigger>
-							)}
-							{pluginLogCount > 0 && (
-								<TabsTrigger value="plugins" className="px-3">
-									{t("mcpLogs.pluginLogs")}
-									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-										{pluginLogCount}
-									</span>
-								</TabsTrigger>
-							)}
-							{logCorrelation && llmCount > 0 ? (
-								<TabsTrigger value="llm-logs" className="px-3">
-									{t("agentLogs.contextSheet.llmLogs")}{" "}
-									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-										{llmCount}
-									</span>
-								</TabsTrigger>
-							) : null}
-							{logCorrelation && mcpCount > 0 ? (
-								<TabsTrigger value="mcp-logs" className="px-3">
-									{t("agentLogs.contextSheet.mcpLogs")}{" "}
-									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-										{mcpCount}
-									</span>
-								</TabsTrigger>
-							) : null}
-							<TabsTrigger value="raw-capture" className="px-3">
-								{t("agentLogs.logSheet.rawCapture")}
-							</TabsTrigger>
-						</TabsList>
-
-						{hasConversation && conversationLog && (
-							<TabsContent value="conversation" className="space-y-4 px-1 py-2">
-								<A2AOperationConversation log={conversationLog} allowPushConversation={isPushConversationOperation} />
-								<A2AConversationHistory responseBody={conversationLog.response_body} />
-							</TabsContent>
+					</div>
+					<div
+						className={cn(
+							"border-border grid grid-cols-1 border-t sm:grid-cols-2",
+							correlatedRows.length > 0 ? "md:grid-cols-5" : "md:grid-cols-4",
 						)}
-
-						{!isConversationOperation && !isPushConversationOperation && hasPayload && detail && (
-							<TabsContent value="payload" className="px-1 py-2">
-								<A2APayloadView
-									operation={detail.operation}
-									onFilter={onFilter}
-									status={detail.status}
-									requestBody={detail.request_body}
-									responseBody={detail.response_body}
-									errorDetails={detail.error_details}
-								/>
-							</TabsContent>
-						)}
-
-						{correlatedRows.length > 0 && (
-							<TabsContent value="events" className="space-y-3">
-								<div className="text-muted-foreground text-sm">{t("agentLogs.logSheet.eventsIntro")}</div>
-								<div className="space-y-2">
-									{correlatedRows.map((row) => {
-										const rowDate = row.timestamp ? new Date(row.timestamp) : null;
-										const isExpanded = expandedEventIds.has(row.id);
-										const showRaw = rawEventIds.has(row.id);
-										const eventDetail: AgentLogDetail = row;
-										return (
-											<div key={row.id} className={cn("rounded-sm border", isExpanded && "border-primary/50 bg-muted/20")}>
-												<div className="hover:bg-muted/50 flex w-full items-start gap-3 px-3 py-3">
-													<button
-														type="button"
-														onClick={() => void toggleEvent(row)}
-														className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
-														data-testid={`a2alogdetails-event-row-${row.id}`}
-													>
-														<span className="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[10px]">
-															{row.event_sequence ?? "·"}
-														</span>
-														<div className="min-w-0 flex-1">
-															<div className="flex flex-wrap items-center gap-2">
-																<span className="text-sm font-medium capitalize">{eventLabel(row, t)}</span>
-																{row.task_state && (
-																	<Badge variant="outline" className="rounded-sm text-[10px]">
-																		{row.task_state}
-																	</Badge>
-																)}
-															</div>
-															<div className="text-muted-foreground mt-0.5 text-xs">{eventExplanation(row, t)}</div>
-														</div>
-													</button>
-													<div className="flex shrink-0 flex-col items-end gap-2">
-														<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-															{rowDate && isValid(rowDate) ? format(rowDate, "HH:mm:ss.SSS") : ""}
-														</span>
-														{isExpanded && eventDetail && (
-															<Tabs
-																value={showRaw ? "raw" : "formatted"}
-																onValueChange={(next) => (next === "raw") !== showRaw && toggleEventRaw(row.id)}
-																className="shrink-0"
-															>
-																<TabsList aria-label={t("agentLogs.logSheet.eventView")} className="h-6 rounded-sm p-0.5">
-																	<TabsTrigger value="formatted" className="rounded-[3px] px-2 text-[11px] leading-5">
-																		{t("agentLogs.logSheet.formatted")}
-																	</TabsTrigger>
-																	<TabsTrigger value="raw" className="rounded-[3px] px-2 text-[11px] leading-5">
-																		{t("agentLogs.logSheet.payloadJson")}
-																	</TabsTrigger>
-																</TabsList>
-															</Tabs>
-														)}
-													</div>
-												</div>
-												{isExpanded && (
-													<div className="border-t p-3">
-														{showRaw ? (
-															eventDetail.event_body ? (
-																<PayloadBlock title={t("agentLogs.contextSheet.event")} code={formatPayload(eventDetail.event_body)} />
-															) : (
-																<div className="text-muted-foreground text-sm">{t("agentLogs.logSheet.eventBodyMissing")}</div>
-															)
-														) : (
-															<FormattedEventDetail detail={eventDetail} onFilter={onFilter} />
-														)}
-													</div>
-												)}
-											</div>
-										);
-									})}
-								</div>
-							</TabsContent>
-						)}
-
-						{logCorrelation && llmCount > 0 ? (
-							<CorrelatedLogsContent
-								key={`llm:${correlationKey}`}
-								kind="llm"
-								correlation={logCorrelation}
-								active={activeTab === "llm-logs"}
-							/>
-						) : null}
-						{logCorrelation && mcpCount > 0 ? (
-							<CorrelatedLogsContent
-								key={`mcp:${correlationKey}`}
-								kind="mcp"
-								correlation={logCorrelation}
-								active={activeTab === "mcp-logs"}
-							/>
-						) : null}
-
-						<TabsContent value="raw-capture" className="space-y-4">
-							{detail?.upstream_transport === "GRPC" ? (
-								<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-									{t("agentLogs.logSheet.grpcDisabled")}
-								</div>
-							) : detail?.raw_request || detail?.raw_response ? (
-								<>
-									{detail.raw_request ? (
-										<RawCaptureBlock title={t("agentLogs.logSheet.rawRequest")} fileName="raw-request" body={detail.raw_request} />
-									) : (
-										<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-sm">
-											{t("agentLogs.logSheet.noRawRequest")}
-										</div>
-									)}
-									{detail.raw_response ? (
-										<RawCaptureBlock title={t("agentLogs.logSheet.rawResponse")} fileName="raw-response" body={detail.raw_response} />
-									) : (
-										<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-sm">
-											{displayLog.status === "processing"
-												? t("agentLogs.logSheet.rawResponsePending")
-												: t("agentLogs.logSheet.noRawResponse")}
-										</div>
-									)}
-								</>
-							) : (
-								<RawCaptureUnavailableNotice detail={detail} />
-							)}
-						</TabsContent>
-
-						{pluginLogCount > 0 && detail?.plugin_logs && (
-							<TabsContent value="plugins" className="space-y-3">
-								<PluginLogsView pluginLogs={detail.plugin_logs} />
-							</TabsContent>
-						)}
-					</Tabs>
+					>
+						<HeroStat
+							label={t("labels.latency")}
+							valueClass="text-primary"
+							value={hasValidLatency ? formatLatency(displayLog.latency!) : "—"}
+							sub={
+								hasValidTimestamp
+									? `${format(timestampDate!, "HH:mm:ss")} → ${endTimestamp ? format(endTimestamp, "HH:mm:ss") : "—"}`
+									: undefined
+							}
+							hasRightBorder
+						/>
+						<HeroStat
+							label={t("agentLogs.logSheet.downstream")}
+							value={displayLog.downstream_transport || "—"}
+							valueClass="font-mono text-[15px]"
+							hasRightBorder
+						/>
+						<HeroStat
+							label={t("agentLogs.logSheet.upstream")}
+							value={displayLog.upstream_transport || "—"}
+							valueClass="font-mono text-[15px]"
+							hasRightBorder
+						/>
+						<HeroStat
+							label={t("agentLogs.filters.operation")}
+							value={displayLog.operation || "—"}
+							valueClass="whitespace-normal overflow-visible break-all font-mono text-[15px]"
+							hasRightBorder={correlatedRows.length > 0}
+						/>
+						{correlatedRows.length > 0 && <HeroStat label={t("agentLogs.logSheet.events")} value={String(totalCorrelatedEvents)} />}
+					</div>
 				</div>
-			</SheetContent>
-		</Sheet>
+
+				<details
+					className="group bg-card rounded-sm border"
+					open={moreDetailsOpen}
+					onToggle={(event) => setMoreDetailsOpen(event.currentTarget.open)}
+				>
+					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+						<span className="text-foreground font-medium">{t("mcpLogs.detail.moreDetails")}</span>
+						<span className="text-muted-foreground flex items-center gap-2 text-xs">
+							<span className="hidden md:inline">
+								{hasTimings ? t("agentLogs.logSheet.moreDetailsHintTimings") : t("agentLogs.logSheet.moreDetailsHint")}
+							</span>
+							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+						</span>
+					</summary>
+					<div className="space-y-4 border-t px-4 py-4 md:px-6">
+						{hasTimings && (
+							<>
+								<div className="space-y-4">
+									<BlockHeader title={t("logs.detail.timings")} />
+									<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+										{hasValidTimestamp && (
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("logs.detail.startTimestamp")}
+												value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
+											/>
+										)}
+										{endTimestamp && (
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("logs.detail.endTimestamp")}
+												value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
+											/>
+										)}
+										{hasValidLatency && (
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("labels.latency")}
+												tooltip={t("logs.detail.totalLatencyTooltip")}
+												value={<div>{displayLog.latency!.toFixed(2)}ms</div>}
+											/>
+										)}
+										{displayLog.upstream_latency != null && !isNaN(displayLog.upstream_latency) && (
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("logs.detail.upstreamLatency")}
+												tooltip={t("agentLogs.logSheet.upstreamLatencyTooltip")}
+												value={<div>{displayLog.upstream_latency.toFixed(2)}ms</div>}
+											/>
+										)}
+										{displayLog.overhead_latency != null && !isNaN(displayLog.overhead_latency) && (
+											<LogEntryDetailsView
+												className="w-full"
+												label={t("logs.detail.bifrostOverhead")}
+												tooltip={t("logs.detail.bifrostOverheadTooltip")}
+												value={<div>{displayLog.overhead_latency.toFixed(2)}ms</div>}
+											/>
+										)}
+									</div>
+									{displayLog.overhead_breakdown && displayLog.overhead_breakdown.length > 0 ? (
+										<OverheadBreakdown buckets={displayLog.overhead_breakdown} overheadMs={displayLog.overhead_latency} />
+									) : null}
+								</div>
+								<DottedSeparator />
+							</>
+						)}
+						<div className="space-y-4">
+							<BlockHeader title={t("agentLogs.logSheet.requestDetails")} />
+							<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
+								<LogEntryDetailsView
+									className="w-full"
+									label={t("filters.agent")}
+									value={<span className="font-mono">{displayLog.agent_name}</span>}
+								/>
+								<LogEntryDetailsView
+									className="w-full"
+									label={t("agentLogs.filters.operation")}
+									value={<span className="font-mono">{displayLog.operation}</span>}
+								/>
+								<LogEntryDetailsView className="w-full" label={t("filters.status")} value={agentStatusLabel(displayLog.status, t)} />
+								{displayLog.content_type && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("agentLogs.logSheet.fields.contentType")}
+										value={displayLog.content_type}
+									/>
+								)}
+								{displayLog.virtual_key_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("agentLogs.logSheet.virtualKey")}
+										value={
+											<Link
+												to="/workspace/governance/virtual-keys"
+												search={{ selected_vk: displayLog.virtual_key_id }}
+												className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+											>
+												{displayLog.virtual_key_name || displayLog.virtual_key_id}
+											</Link>
+										}
+									/>
+								)}
+								{governanceLinks.map(({ label, pluralLabel, route, searchKey, items }) => (
+									<LogEntryDetailsView
+										key={label}
+										className="w-full"
+										label={items.length > 1 ? pluralLabel : label}
+										value={
+											<span className="inline-flex flex-wrap gap-x-1">
+												{items.map((item, index) => (
+													<Tooltip key={item.id}>
+														<TooltipTrigger asChild>
+															<Link
+																to={route}
+																search={{ [searchKey]: item.id }}
+																className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+															>
+																{item.name}
+																{index < items.length - 1 ? "," : ""}
+															</Link>
+														</TooltipTrigger>
+														<TooltipContent sideOffset={6}>{item.id}</TooltipContent>
+													</Tooltip>
+												))}
+											</span>
+										}
+									/>
+								))}
+							</div>
+						</div>
+						{diagnosticSections
+							.filter(({ fields }) => fields.length > 0)
+							.map(({ title, fields }) => (
+								<div key={title} className="space-y-4">
+									<DottedSeparator />
+									<BlockHeader title={title} />
+									<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
+										{fields.map(([label, value, filter]) => (
+											<LogEntryDetailsView
+												key={label}
+												className="w-full"
+												label={label}
+												value={
+													<span className="inline-flex max-w-full items-center gap-1">
+														{typeof value === "string" ? (
+															<InteractiveValue
+																value={value}
+																label={label}
+																filter={filter}
+																onFilter={onFilter}
+																className="font-mono text-xs"
+															/>
+														) : (
+															<span className="truncate font-mono text-xs">{String(value)}</span>
+														)}
+													</span>
+												}
+											/>
+										))}
+									</div>
+								</div>
+							))}
+					</div>
+				</details>
+
+				<Tabs key={displayLog.id} value={activeTab} onValueChange={setTabParam} className="gap-2">
+					<TabsList className="bg-muted/60 h-10 w-fit">
+						{artifacts.length > 0 && (
+							<TabsTrigger value="artifacts" className="px-3" data-testid="a2alogdetails-artifacts-tab">
+								{t("agentLogs.trace.artifacts")}
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{artifacts.length}
+								</span>
+							</TabsTrigger>
+						)}
+						{hasConversation && (
+							<TabsTrigger value="conversation" className="px-3">
+								{t("agentLogs.logSheet.conversation")}
+							</TabsTrigger>
+						)}
+						{!isConversationOperation && !isPushConversationOperation && hasPayload && (
+							<TabsTrigger value="payload" className="px-3">
+								{t("agentLogs.logSheet.payload")}
+							</TabsTrigger>
+						)}
+						{correlatedRows.length > 0 && (
+							<TabsTrigger value="events" className="px-3">
+								{t("agentLogs.logSheet.events")}
+								{correlatedRows.length > 0 ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{totalCorrelatedEvents}
+									</span>
+								) : null}
+							</TabsTrigger>
+						)}
+						{pluginLogCount > 0 && (
+							<TabsTrigger value="plugins" className="px-3">
+								{t("mcpLogs.pluginLogs")}
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{pluginLogCount}
+								</span>
+							</TabsTrigger>
+						)}
+						{!embedded && logCorrelation && llmCount > 0 ? (
+							<TabsTrigger value="llm-logs" className="px-3">
+								{t("agentLogs.contextSheet.llmLogs")}{" "}
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{llmCount}
+								</span>
+							</TabsTrigger>
+						) : null}
+						{!embedded && logCorrelation && mcpCount > 0 ? (
+							<TabsTrigger value="mcp-logs" className="px-3">
+								{t("agentLogs.contextSheet.mcpLogs")}{" "}
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{mcpCount}
+								</span>
+							</TabsTrigger>
+						) : null}
+						<TabsTrigger value="raw-capture" className="px-3">
+							{t("agentLogs.logSheet.rawCapture")}
+						</TabsTrigger>
+					</TabsList>
+
+					{artifacts.length > 0 && (
+						<TabsContent value="artifacts" className="space-y-3">
+							{artifacts.map((record) => (
+								<ArtifactView key={record.key} artifact={record.artifact} />
+							))}
+						</TabsContent>
+					)}
+					{hasConversation && conversationLog && (
+						<TabsContent value="conversation" className="space-y-4 px-1 py-2">
+							<A2AOperationConversation log={conversationLog} allowPushConversation={isPushConversationOperation} />
+						</TabsContent>
+					)}
+
+					{!isConversationOperation && !isPushConversationOperation && hasPayload && detail && (
+						<TabsContent value="payload" className="px-1 py-2">
+							<A2APayloadView
+								operation={detail.operation}
+								onFilter={onFilter}
+								status={detail.status}
+								requestBody={detail.request_body}
+								responseBody={detail.response_body}
+								errorDetails={detail.error_details}
+							/>
+						</TabsContent>
+					)}
+
+					{correlatedRows.length > 0 && (
+						<TabsContent value="events" className="space-y-3">
+							<div className="text-muted-foreground text-sm">{t("agentLogs.logSheet.eventsIntro")}</div>
+							<div className="space-y-2">
+								{correlatedRows.map((row) => {
+									const rowDate = row.timestamp ? new Date(row.timestamp) : null;
+									const isExpanded = expandedEventIds.has(row.id);
+									const showRaw = rawEventIds.has(row.id);
+									const eventDetail: AgentLogDetail = row;
+									return (
+										<div key={row.id} className={cn("rounded-sm border", isExpanded && "border-primary/50 bg-muted/20")}>
+											<div className="hover:bg-muted/50 flex w-full items-start gap-3 px-3 py-3">
+												<button
+													type="button"
+													onClick={() => void toggleEvent(row)}
+													className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
+													data-testid={`a2alogdetails-event-row-${row.id}`}
+												>
+													<span className="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[10px]">
+														{row.event_sequence ?? "·"}
+													</span>
+													<div className="min-w-0 flex-1">
+														<div className="flex flex-wrap items-center gap-2">
+															<span className="text-sm font-medium capitalize">{eventLabel(row, t)}</span>
+															{row.task_state && (
+																<Badge variant="outline" className="rounded-sm text-[10px]">
+																	{row.task_state}
+																</Badge>
+															)}
+														</div>
+														<div className="text-muted-foreground mt-0.5 text-xs">{eventExplanation(row, t)}</div>
+													</div>
+												</button>
+												<div className="flex shrink-0 flex-col items-end gap-2">
+													<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
+														{rowDate && isValid(rowDate) ? format(rowDate, "HH:mm:ss.SSS") : ""}
+													</span>
+													{isExpanded && eventDetail && (
+														<Tabs
+															value={showRaw ? "raw" : "formatted"}
+															onValueChange={(next) => (next === "raw") !== showRaw && toggleEventRaw(row.id)}
+															className="shrink-0"
+														>
+															<TabsList aria-label={t("agentLogs.logSheet.eventView")} className="h-6 rounded-sm p-0.5">
+																<TabsTrigger value="formatted" className="rounded-[3px] px-2 text-[11px] leading-5">
+																	{t("agentLogs.logSheet.formatted")}
+																</TabsTrigger>
+																<TabsTrigger value="raw" className="rounded-[3px] px-2 text-[11px] leading-5">
+																	{t("agentLogs.logSheet.payloadJson")}
+																</TabsTrigger>
+															</TabsList>
+														</Tabs>
+													)}
+												</div>
+											</div>
+											{isExpanded && (
+												<div className="border-t p-3">
+													{showRaw ? (
+														eventDetail.event_body ? (
+															<PayloadBlock title={t("agentLogs.contextSheet.event")} code={formatPayload(eventDetail.event_body)} />
+														) : (
+															<div className="text-muted-foreground text-sm">{t("agentLogs.logSheet.eventBodyMissing")}</div>
+														)
+													) : (
+														<FormattedEventDetail detail={eventDetail} onFilter={onFilter} />
+													)}
+												</div>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						</TabsContent>
+					)}
+
+					{!embedded && logCorrelation && llmCount > 0 ? (
+						<CorrelatedLogsContent
+							key={`llm:${correlationKey}`}
+							kind="llm"
+							correlation={logCorrelation}
+							active={activeTab === "llm-logs"}
+						/>
+					) : null}
+					{!embedded && logCorrelation && mcpCount > 0 ? (
+						<CorrelatedLogsContent
+							key={`mcp:${correlationKey}`}
+							kind="mcp"
+							correlation={logCorrelation}
+							active={activeTab === "mcp-logs"}
+						/>
+					) : null}
+
+					<TabsContent value="raw-capture" className="space-y-4">
+						{detail?.upstream_transport === "GRPC" ? (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								{t("agentLogs.logSheet.grpcDisabled")}
+							</div>
+						) : detail?.raw_request || detail?.raw_response ? (
+							<>
+								{detail.raw_request ? (
+									<RawCaptureBlock title={t("agentLogs.logSheet.rawRequest")} fileName="raw-request" body={detail.raw_request} />
+								) : (
+									<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-sm">
+										{t("agentLogs.logSheet.noRawRequest")}
+									</div>
+								)}
+								{detail.raw_response ? (
+									<RawCaptureBlock title={t("agentLogs.logSheet.rawResponse")} fileName="raw-response" body={detail.raw_response} />
+								) : (
+									<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-sm">
+										{displayLog.status === "processing"
+											? t("agentLogs.logSheet.rawResponsePending")
+											: t("agentLogs.logSheet.noRawResponse")}
+									</div>
+								)}
+							</>
+						) : (
+							<RawCaptureUnavailableNotice detail={detail} />
+						)}
+					</TabsContent>
+
+					{pluginLogCount > 0 && detail?.plugin_logs && (
+						<TabsContent value="plugins" className="space-y-3">
+							<PluginLogsView pluginLogs={detail.plugin_logs} />
+						</TabsContent>
+					)}
+				</Tabs>
+			</div>
+		</>
 	);
 }

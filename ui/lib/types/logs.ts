@@ -802,6 +802,8 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	model_router_id?: string; // The model router that took the request after the routing rules
+	model_router_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
@@ -914,6 +916,7 @@ export interface LogFilters {
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
+	model_router_ids?: string[]; // Requests a model router took
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
@@ -1683,7 +1686,17 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension =
+	| "team"
+	| "customer"
+	| "business_unit"
+	| "project"
+	| "user"
+	| "app"
+	| "user_agent"
+	| "virtual_key"
+	| "model_router"
+	| "complexity_tier";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;
