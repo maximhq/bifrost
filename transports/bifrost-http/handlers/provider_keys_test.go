@@ -1491,6 +1491,17 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			want403: true,
 		},
 		{
+			name:     "update baseten key adding a per-alias deployment url",
+			provider: schemas.Baseten,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "baseten-key", Weight: 1,
+				Value: *schemas.NewSecretVar("baseten-api-key"),
+			},
+			body:      `{"value":"baseten-api-key","weight":1,"aliases":{"dedicated":{"model_id":"not-required","deployment_url":"https://evil.example.com/sync/v1"}}}`,
+			want403:   true,
+			wantNamed: "aliases.dedicated.deployment_url",
+		},
+		{
 			name:      "create vertex key with a credential json",
 			provider:  schemas.Vertex,
 			body:      `{"name":"vertex-key","weight":1,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,

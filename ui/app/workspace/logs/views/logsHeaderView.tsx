@@ -328,13 +328,14 @@ export function LogsHeaderView({
 	return (
 		// justify-between only once the row can hold everything: while the controls
 		// wrap, spreading them pushes the last row's two icon buttons to opposite
-		// edges of the card and burns a whole row on two buttons.
+		// edges of the card and burns a whole row on two buttons. While wrapped, the
+		// text buttons and the date picker grow instead, so each row fills evenly.
 		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/logs-header:flex-nowrap @4xl/logs-header:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/logs-header:flex-none"
 				onClick={() => {
 					fetchLogs();
 					fetchStats();
@@ -349,7 +350,7 @@ export function LogsHeaderView({
 				data-testid="logs-live-btn"
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 			>
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
@@ -361,7 +362,7 @@ export function LogsHeaderView({
 						data-testid="logs-group-chains-btn"
 						variant={grouped ? "default" : "outline"}
 						size="sm"
-						className="h-7.5"
+						className="h-7.5 flex-1 @4xl/logs-header:flex-none"
 						onClick={() => onGroupedToggle(!grouped)}
 					>
 						<ListTree className="h-4 w-4" />
@@ -438,7 +439,8 @@ export function LogsHeaderView({
 			</div>
 
 			<DateTimePickerWithRange
-				buttonClassName="w-auto"
+				className="flex-1 @4xl/logs-header:flex-none"
+				buttonClassName="w-full @4xl/logs-header:w-auto"
 				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}

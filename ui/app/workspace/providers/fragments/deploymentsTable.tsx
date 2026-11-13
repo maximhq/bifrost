@@ -1,3 +1,4 @@
+import { isRegexEntry, validatePatternAlias } from "@/components/modelAccess/utils";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -7,10 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config";
-import { SecretVar } from "@/lib/types/schemas";
+import { isLiteralHTTPSURL, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { parseVertexEndpointURL } from "@/lib/vertexEndpoint";
-import { ChevronDown, ChevronRight, Trash } from "lucide-react";
+import { ChevronDown, ChevronRight, Regex, Trash } from "lucide-react";
 import { useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -59,6 +60,22 @@ function normalize(value: DeploymentsValue): Record<string, AliasConfig> {
 
 const emptySecretVar: SecretVar = { value: "", ref: "" };
 const isEmptySecretVar = (v: SecretVar | undefined): boolean => !v || (!v.value && !v.ref);
+
+function PatternMark({ testId }: { testId?: string }) {
+	const { t } = useTranslation("models");
+	const label = t("providers.deployments.patternBadge");
+	return (
+		<span
+			className="border-input text-muted-foreground absolute inset-y-0 right-0 flex w-9 items-center justify-center border-l"
+			title={label}
+			aria-label={label}
+			role="img"
+			data-testid={testId}
+		>
+			<Regex className="h-4 w-4" aria-hidden />
+		</span>
+	);
+}
 
 function FieldRow({ label, hint, htmlFor, children }: { label: string; hint?: string; htmlFor?: string; children: React.ReactNode }) {
 	return (
@@ -434,6 +451,39 @@ function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) 
 	);
 }
 
+function BasetenSection({ config, onChange, disabled }: ProviderSectionProps) {
+	const { t } = useTranslation("models");
+	const { t: tCommon } = useTranslation("common");
+	const inputId = useId();
+	const errorId = `${inputId}-error`;
+	const invalid = !isLiteralHTTPSURL(config.deployment_url);
+	return (
+		<div className="space-y-4">
+			<SectionHeader
+				title={t("providers.deployments.providerOverrides", { provider: "Baseten" })}
+				description={t("providers.deployments.overrideDefaultsShort", { provider: "Baseten" })}
+			/>
+			<FieldRow htmlFor={inputId} label={t("providers.deployments.deploymentUrl")} hint={t("providers.deployments.deploymentUrlHint")}>
+				<SecretVarInput
+					id={inputId}
+					value={config.deployment_url ?? emptySecretVar}
+					onChange={(next) => onChange({ deployment_url: isEmptySecretVar(next) ? undefined : next })}
+					placeholder={t("providers.deployments.deploymentUrlPlaceholder")}
+					disabled={disabled}
+					aria-invalid={invalid}
+					aria-describedby={invalid ? errorId : undefined}
+					data-testid="deployment-baseten-deployment-url"
+				/>
+				{invalid && (
+					<p id={errorId} className="text-destructive text-xs" data-testid="deployment-baseten-deployment-url-error">
+						{tCommon("validation.basetenDeploymentUrl")}
+					</p>
+				)}
+			</FieldRow>
+		</div>
+	);
+}
+
 function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, providerName }: ProviderSectionProps & { providerName: string }) {
 	const { t } = useTranslation("models");
 	return (
@@ -466,6 +516,8 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <BedrockMantleSection {...props} />;
 		case "replicate":
 			return <ReplicateSection {...props} />;
+		case "baseten":
+			return <BasetenSection {...props} />;
 		case "sgl":
 			return <UseAnthropicEndpointsToggleSection providerName="SGLang" {...props} />;
 		case "deepseek":
@@ -484,21 +536,28 @@ function ExpandedConfigPanel({
 	onChange,
 	providerName,
 	disabled,
+	isPattern,
 }: {
 	config: AliasConfig;
 	onChange: (patch: Partial<AliasConfig>) => void;
 	providerName: string;
 	disabled?: boolean;
+	isPattern?: boolean;
 }) {
 	const { t } = useTranslation("models");
 	return (
 		<div className="space-y-6 border-t p-4">
 			<div className="space-y-4">
-				<FieldRow label={t("providers.deployments.canonicalModelName")} hint={t("providers.deployments.canonicalModelNameHint")}>
+				<FieldRow
+					label={t("providers.deployments.canonicalModelName")}
+					hint={isPattern ? t("providers.deployments.canonicalModelNamePatternHint") : t("providers.deployments.canonicalModelNameHint")}
+				>
 					<StringField
 						value={config.model_name}
 						onChange={(v) => onChange({ model_name: v })}
-						placeholder={t("providers.deployments.canonicalPlaceholder")}
+						placeholder={
+							isPattern ? t("providers.deployments.canonicalPatternPlaceholder") : t("providers.deployments.canonicalPlaceholder")
+						}
 						disabled={disabled}
 					/>
 				</FieldRow>
@@ -650,6 +709,10 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 		setDraftExpanded(false);
 	};
 
+	const draftPatternError = draftRow.config.model_id.trim()
+		? validatePatternAlias(draftRow.name.trim(), draftRow.config.model_id.trim(), draftRow.config.model_name)
+		: null;
+
 	const toggleExpanded = (rowId: string) => {
 		setExpanded((prev) => {
 			const next = new Set(prev);
@@ -671,6 +734,8 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 				{rowsWithIds.map((row) => {
 					const isOpen = expanded.has(row.rowId);
 					const pending = pendingNames[row.rowId];
+					const isPattern = isRegexEntry(row.name);
+					const patternError = pending === undefined ? validatePatternAlias(row.name, row.config.model_id, row.config.model_name) : null;
 					return (
 						<Collapsible key={row.rowId} open={isOpen} onOpenChange={() => toggleExpanded(row.rowId)}>
 							<div className={cn(isOpen && "bg-muted/20")}>
@@ -687,16 +752,25 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										</Button>
 									</CollapsibleTrigger>
 									<div className="space-y-1">
-										<Input
-											value={pending ?? row.name}
-											onChange={(e) => renameRow(row.rowId, row.name, e.target.value)}
-											placeholder={t("providers.deployments.requestModelName")}
-											disabled={disabled}
-											data-testid={`deployment-name-${row.name}`}
-										/>
+										<div className="relative">
+											<Input
+												value={pending ?? row.name}
+												onChange={(e) => renameRow(row.rowId, row.name, e.target.value)}
+												placeholder={t("providers.deployments.requestModelName")}
+												disabled={disabled}
+												className={cn(isPattern && "pr-11")}
+												data-testid={`deployment-name-${row.name}`}
+											/>
+											{isPattern && <PatternMark testId={`deployment-pattern-${row.name}`} />}
+										</div>
 										{pending !== undefined && (
 											<p className="text-destructive text-xs">
 												{pending.trim() === "" ? t("providers.deployments.nameEmpty") : t("providers.deployments.nameExists")}
+											</p>
+										)}
+										{patternError && (
+											<p className="text-destructive text-xs" data-testid={`deployment-pattern-error-${row.name}`}>
+												{patternError}
 											</p>
 										)}
 									</div>
@@ -728,6 +802,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										onChange={(patch) => patchConfig(row.name, patch)}
 										providerName={providerName}
 										disabled={disabled}
+										isPattern={isPattern}
 									/>
 								</CollapsibleContent>
 							</div>
@@ -742,20 +817,24 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 									{draftExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
 								</Button>
 							</CollapsibleTrigger>
-							<Input
-								value={draftRow.name}
-								onChange={(e) => setDraftRow((r) => ({ ...r, name: e.target.value }))}
-								onBlur={() => commitDraftIfReady()}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") {
-										e.preventDefault();
-										commitDraftIfReady();
-									}
-								}}
-								placeholder={t("providers.deployments.requestModelName")}
-								disabled={disabled}
-								data-testid="draft-deployment-name"
-							/>
+							<div className="relative">
+								<Input
+									value={draftRow.name}
+									onChange={(e) => setDraftRow((r) => ({ ...r, name: e.target.value }))}
+									onBlur={() => commitDraftIfReady()}
+									onKeyDown={(e) => {
+										if (e.key === "Enter") {
+											e.preventDefault();
+											commitDraftIfReady();
+										}
+									}}
+									placeholder={t("providers.deployments.requestModelName")}
+									disabled={disabled}
+									className={cn(isRegexEntry(draftRow.name.trim()) && "pr-11")}
+									data-testid="draft-deployment-name"
+								/>
+								{isRegexEntry(draftRow.name.trim()) && <PatternMark testId="draft-deployment-pattern" />}
+							</div>
 							<ModelSelector
 								provider={providerName}
 								value={draftRow.config.model_id}
@@ -772,16 +851,28 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 							/>
 							<div />
 						</div>
+						{draftPatternError && (
+							<p className="text-destructive px-4 pb-2 text-xs" data-testid="draft-deployment-pattern-error">
+								{draftPatternError}
+							</p>
+						)}
 						{(draftRow.name.trim() !== "" || draftRow.config.model_id.trim() !== "") &&
 							!(draftRow.name.trim() && draftRow.config.model_id.trim()) && (
 								<p className="text-muted-foreground px-4 pb-2 text-xs">{t("providers.deployments.draftIncomplete")}</p>
 							)}
 						<CollapsibleContent>
-							<ExpandedConfigPanel config={draftRow.config} onChange={patchDraftConfig} providerName={providerName} disabled={disabled} />
+							<ExpandedConfigPanel
+								config={draftRow.config}
+								onChange={patchDraftConfig}
+								providerName={providerName}
+								disabled={disabled}
+								isPattern={isRegexEntry(draftRow.name.trim())}
+							/>
 						</CollapsibleContent>
 					</div>
 				</Collapsible>
 			</div>
+			<p className="text-muted-foreground border-t px-4 py-2 text-xs">{t("providers.deployments.patternHint")}</p>
 		</div>
 	);
 }

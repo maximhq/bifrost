@@ -77,7 +77,8 @@
 		"modelLimits": "モデル制限",
 		"agent": "エージェント",
 		"relay": "リレー",
-		"relays": "リレー"
+		"relays": "リレー",
+		"modelRouters": "ルーター"
 	},
 	"aboutField": "{{field}}について",
 	"thisField": "このフィールド",
@@ -121,7 +122,8 @@
 		"searching": "検索中…",
 		"loadingMore": "さらに読み込み中…",
 		"useModel": "<name>{{name}}</name> を使用",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} ブロック"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} ブロック",
+		"templateUnknownGroup": "パターンで定義されていないキャプチャグループ {{group}} を参照しています"
 	},
 	"providerSelect": {
 		"select": "プロバイダーを選択",
@@ -511,6 +513,7 @@
 		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
 		"invalidInput": "入力が無効です",
 		"vertexEndpointId": "Vertex エンドポイント ID を入力するか、対応するエンドポイント URL を貼り付けてください",
+		"basetenDeploymentUrl": "デプロイメント URL は、認証情報・クエリ・フラグメントを含まない絶対 https URL である必要があります",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt には秘密鍵が必要です",
 			"secretRequiredForMethod": "送信方法を選択するにはクライアントシークレットが必要です",
@@ -580,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "このプロバイダーにはベース URL が必要です",
 		"baseUrlMustStartWithHttpOrHttps": "ベース URL は http:// または https:// で始まる必要があります",
 		"atLeastOneApiKeyIsRequired": "API キーが少なくとも 1 つ必要です",
-		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません"
+		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません",
+		"deploymentPatternInvalid": "デプロイメントのパターンが無効か、モデル ID がパターンにないキャプチャグループを使用しています"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}を作成する権限がありません。",

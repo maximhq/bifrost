@@ -363,7 +363,7 @@ func normalizeHarnessAliasArgs(args []string) []string {
 		switch name {
 		case "--skip-verify":
 			prefix = append(prefix, argument)
-		case "--model", "--worktree":
+		case "--model", "--worktree", "--project-id", "--project-name":
 			prefix = append(prefix, argument)
 			if !hasInlineValue {
 				if index+1 >= len(args) {
@@ -427,7 +427,7 @@ func (r *Runner) runCommandHelp(ctx context.Context, name string, args []string,
 		return spec.handler(r, ctx, env, args)
 	}
 	if _, ok := harness.Get(name); ok {
-		_, err := fmt.Fprintf(r.Out, "Usage: bifrost %s [--model MODEL] [--worktree NAME] [--skip-verify] [-- agent arguments]\n", name)
+		_, err := fmt.Fprintf(r.Out, "Usage: bifrost %s [--model MODEL] [--project-id ID|--project-name NAME] [--worktree NAME] [--skip-verify] [-- agent arguments]\n", name)
 		return err
 	}
 	return fmt.Errorf("unknown command %q; run 'bifrost help'", name)
@@ -480,7 +480,8 @@ func apiCredentialRequirements(args []string) credentialRequirements {
 	if !ok {
 		return 0
 	}
-	mode := requestedAuthMode(client.ResolveAuthMode(client.AuthAuto, operation.Path), args[2:])
+	defaultAuth, _ := parseAuthMode(operation.Auth)
+	mode := requestedAuthMode(client.ResolveAuthMode(defaultAuth, operation.Path), args[2:])
 	return credentialsForAuthMode(client.ResolveAuthMode(mode, operation.Path))
 }
 
@@ -835,6 +836,7 @@ Commands:
   run                  Run a coding agent directly
   claude, codex        Direct coding-agent aliases
   gemini, opencode     Direct coding-agent aliases
+  pi, antigravity      Direct coding-agent aliases (also anti-gravity, agy, AGUI)
   configure            Persist reversible coding-agent configuration
   unconfigure          Restore coding-agent configuration from a receipt
   context              Manage gateway contexts

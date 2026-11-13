@@ -77,7 +77,8 @@
 		"webhookEndpoints": "Webhook 端點",
 		"agent": "代理",
 		"relay": "中繼",
-		"relays": "中繼"
+		"relays": "中繼",
+		"modelRouters": "路由器"
 	},
 	"aboutField": "關於{{field}}",
 	"thisField": "此欄位",
@@ -121,7 +122,8 @@
 		"searching": "正在搜尋…",
 		"loadingMore": "正在載入更多…",
 		"useModel": "使用 <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 已阻止"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} 已阻止",
+		"templateUnknownGroup": "引用了模式中未定義的擷取群組 {{group}}"
 	},
 	"providerSelect": {
 		"select": "選擇供應商",
@@ -307,6 +309,7 @@
 		"grpcHostPortFormat": "gRPC 的格式必須為 <host>:<port>（例如 {{example}}）",
 		"invalidInput": "輸入無效",
 		"vertexEndpointId": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL",
+		"basetenDeploymentUrl": "部署 URL 必須是不含憑證、查詢參數或片段的絕對 https URL",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt 需要私密金鑰",
 			"secretRequiredForMethod": "選擇傳送方式需要用戶端密鑰",
@@ -376,7 +379,8 @@
 		"baseUrlIsRequiredForThisProvider": "此供應商需要填寫基礎 URL",
 		"baseUrlMustStartWithHttpOrHttps": "基礎 URL 必須以 http:// 或 https:// 開頭",
 		"atLeastOneApiKeyIsRequired": "至少需要一個 API 金鑰",
-		"apiKeyValueCannotBeEmpty": "API 金鑰值不能為空"
+		"apiKeyValueCannotBeEmpty": "API 金鑰值不能為空",
+		"deploymentPatternInvalid": "部署模式無效，或其模型 ID 使用了模式中未定義的擷取群組"
 	},
 	"permissionDenied": {
 		"create": "你沒有許可權建立{{entity}}。",

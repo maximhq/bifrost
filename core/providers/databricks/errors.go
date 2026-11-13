@@ -9,6 +9,9 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// maxPlainErrorBody bounds a text/html error body that is surfaced verbatim as the message.
+const maxPlainErrorBody = 512
+
 // DatabricksError is the error envelope the Databricks workspace REST APIs return. The
 // inference surfaces return the OpenAI-shaped {"error": {...}} instead, so both shapes are
 // declared here and whichever is populated wins.
@@ -55,6 +58,16 @@ func parseDatabricksError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 		if dbErr.ErrorCode != "" {
 			bifrostErr.Error.Code = schemas.Ptr(dbErr.ErrorCode)
+		}
+	}
+
+	// Databricks answers a token whose scopes do not cover the path with a 403 whose body is a
+	// single plain-text line ("Invalid scope, required scopes: model-serving") but whose
+	// Content-Type is text/html, so the shared handler files it as an HTML page and drops the
+	// text. A short body with no markup is the message itself, so it is surfaced as-is.
+	if bifrostErr.Error.Message == schemas.ErrProviderResponseHTML && bifrostErr.Error.Error != nil {
+		if text := strings.TrimSpace(bifrostErr.Error.Error.Error()); text != "" && len(text) <= maxPlainErrorBody && !strings.ContainsAny(text, "<>") {
+			bifrostErr.Error.Message = text
 		}
 	}
 

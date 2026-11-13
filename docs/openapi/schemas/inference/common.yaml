@@ -40,6 +40,8 @@ ModelProvider:
     - typesafe
     - minimax
     - byteplus
+    - baseten
+    - kimchi
 
 Fallback:
   type: object

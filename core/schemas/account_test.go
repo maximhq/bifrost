@@ -3,8 +3,10 @@ package schemas
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -64,6 +66,7 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
 			BedrockAliasCfg:   &BedrockAliasCfg{},
 			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+			BasetenAliasCfg:   &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -83,6 +86,45 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 				t.Fatalf("redaction changed wire shape: got %s, want %s", after, before)
 			}
 		})
+	}
+}
+
+// TestBasetenAliasRoundTripAndRedaction pins the deployment_url wire key (distinct from
+// Azure's "endpoint", so the embedded sub-configs never share a JSON name) and that an
+// env-backed deployment URL is masked on read while a literal one stays readable.
+func TestBasetenAliasRoundTripAndRedaction(t *testing.T) {
+	raw := `{"dedicated":{"model_id":"not-required","deployment_url":"https://model-abc.api.baseten.co/environments/production/sync/v1"}}`
+	var ka KeyAliases
+	if err := json.Unmarshal([]byte(raw), &ka); err != nil {
+		t.Fatal(err)
+	}
+	ac := ka["dedicated"]
+	if ac.BasetenAliasCfg == nil || ac.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url not decoded into BasetenAliasCfg: %+v", ac)
+	}
+	if ac.AzureAliasCfg != nil {
+		t.Fatalf("deployment_url must not populate the Azure sub-config: %+v", ac.AzureAliasCfg)
+	}
+	out, err := json.Marshal(ka)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back KeyAliases
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back["dedicated"].BasetenAliasCfg; got == nil || got.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url lost on round trip: %s", out)
+	}
+
+	t.Setenv("BASETEN_DEPLOYMENT_URL_REDACT_TEST", "https://model-secret.api.baseten.co/sync/v1")
+	fromEnv := AliasConfig{ModelID: "m", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_REDACT_TEST")}}
+	redacted := fromEnv.Redacted()
+	if got := redacted.BasetenAliasCfg.DeploymentURL.GetValue(); strings.Contains(got, "model-secret") {
+		t.Fatalf("an env-backed deployment_url must be masked, got %q", got)
+	}
+	if fromEnv.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-secret.api.baseten.co/sync/v1" {
+		t.Fatal("redaction mutated the live config")
 	}
 }
 
@@ -521,6 +563,40 @@ func TestKeyAliasesValidate(t *testing.T) {
 			ka:       KeyAliases{"k": {ModelID: "v", ReplicateAliasCfg: replicateCfg}},
 			wantErr:  "replicate sub-config is only valid on Replicate keys",
 		},
+		{
+			name:     "baseten deployment_url on baseten key — ok",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}}},
+		},
+		{
+			name:     "baseten deployment_url from env — ok without resolving",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_UNSET_IN_TEST")}}},
+		},
+		{
+			name:     "baseten deployment_url over http — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("http://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url without host — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("model-abc/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url with a port but no hostname — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://:443/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten sub-config on openai key — error",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten sub-config is only valid on Baseten keys",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -883,4 +959,211 @@ func TestApplyRequestRouting(t *testing.T) {
 	var nilInfo *RoutingInfo
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
+}
+
+// TestBasetenAliasValidateRejectsUserinfoQueryFragment pins that a literal deployment_url
+// carries no credential (it is read back in plain text) and no query or fragment (the
+// provider appends the endpoint path, which would land inside them).
+func TestBasetenAliasValidateRejectsUserinfoQueryFragment(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pass@model-abc.api.baseten.co/environments/production/sync/v1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1?x=1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1#frag",
+	} {
+		if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar(raw)}).Validate(); err == nil {
+			t.Errorf("Validate(%q) = nil, want an error", raw)
+		}
+	}
+	if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}).Validate(); err != nil {
+		t.Fatalf("valid deployment_url rejected: %v", err)
+	}
+}
+
+func TestKeyAliasesResolvePatternAlias(t *testing.T) {
+	name := "canon-$1"
+	aliases := KeyAliases{
+		"claude-opus-4-8":         AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)":       AliasConfig{ModelID: "global.anthropic.$1"},
+		"regex:(claude-haiku-.*)": AliasConfig{ModelID: "us.anthropic.$1", ModelName: &name},
+		"regex:(?P<m>gpt-.*)":     AliasConfig{ModelID: "openai.${m}"},
+	}
+	cases := []struct {
+		model, wantID, wantName string
+	}{
+		{"claude-opus-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"CLAUDE-OPUS-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"claude-fable-5", "global.anthropic.claude-fable-5", ""},
+		{"Claude-Fable-5", "global.anthropic.Claude-Fable-5", ""},
+		{"claude-haiku-4-5", "us.anthropic.claude-haiku-4-5", "canon-claude-haiku-4-5"},
+		{"gpt-5.4", "openai.gpt-5.4", ""},
+	}
+	for _, c := range cases {
+		ac := aliases.ResolveConfig(c.model)
+		if ac == nil {
+			t.Fatalf("ResolveConfig(%q) = nil", c.model)
+		}
+		if ac.ModelID != c.wantID {
+			t.Errorf("ResolveConfig(%q).ModelID = %q, want %q", c.model, ac.ModelID, c.wantID)
+		}
+		gotName := ""
+		if ac.ModelName != nil {
+			gotName = *ac.ModelName
+		}
+		if gotName != c.wantName {
+			t.Errorf("ResolveConfig(%q).ModelName = %q, want %q", c.model, gotName, c.wantName)
+		}
+	}
+	for _, model := range []string{"mistral-large", "regex:(claude-.*)", "xclaude-1"} {
+		if ac := aliases.ResolveConfig(model); ac != nil {
+			t.Errorf("ResolveConfig(%q) = %+v, want nil", model, *ac)
+		}
+	}
+	if aliases["regex:(claude-.*)"].ModelID != "global.anthropic.$1" || *aliases["regex:(claude-haiku-.*)"].ModelName != "canon-$1" {
+		t.Error("resolving a pattern alias mutated the stored template")
+	}
+}
+
+func TestKeyAliasesValidatePatternAlias(t *testing.T) {
+	name := "$2"
+	cases := map[string]KeyAliases{
+		"no compile":     {"regex:(claude-": AliasConfig{ModelID: "x"}},
+		"bare wildcard":  {"regex:*": AliasConfig{ModelID: "x"}},
+		"empty pattern":  {"regex:": AliasConfig{ModelID: "x"}},
+		"missing group":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.$2"}},
+		"missing named":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.${m}"}},
+		"ambiguous name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1x"}},
+		"bad model_name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1", ModelName: &name}},
+	}
+	for label, aliases := range cases {
+		if err := aliases.Validate(Bedrock); err == nil {
+			t.Errorf("%s: Validate accepted %v", label, aliases)
+		}
+	}
+	ok := KeyAliases{
+		"regex:(claude-.*)":   AliasConfig{ModelID: "global.anthropic.${1}"},
+		"regex:(?P<m>gpt-.*)": AliasConfig{ModelID: "openai.$m"},
+		"regex:mistral-.*":    AliasConfig{ModelID: "mistral.fixed-$$"},
+		"claude-sonnet-5-pin": AliasConfig{ModelID: "2d8tchjis5cl"},
+	}
+	if err := ok.Validate(Bedrock); err != nil {
+		t.Errorf("Validate rejected valid pattern aliases: %v", err)
+	}
+}
+
+// TestKeyAliasesPatternEmptyExpansionIsNoMatch pins that a template expanding to an empty model id does not resolve.
+func TestKeyAliasesPatternEmptyExpansionIsNoMatch(t *testing.T) {
+	only := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}}
+	if ac := only.ResolveConfig("bar"); ac != nil {
+		t.Errorf("ResolveConfig(bar) = %+v, want nil for an empty expansion", *ac)
+	}
+	if got := only.Resolve("foobar"); got != "foo" {
+		t.Errorf("Resolve(foobar) = %q, want foo", got)
+	}
+	// The next matching pattern serves the name the first one expanded to nothing.
+	next := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}, "regex:(b.*)": AliasConfig{ModelID: "next.$1"}}
+	if got := next.Resolve("bar"); got != "next.bar" {
+		t.Errorf("Resolve(bar) = %q, want next.bar", got)
+	}
+}
+
+func TestKeyAliasesPatternOrder(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-.*":      AliasConfig{ModelID: "short"},
+		"regex:claude-opus-.*": AliasConfig{ModelID: "long"},
+		"regex:claude-sonn.*":  AliasConfig{ModelID: "b"},
+		"regex:claude-sona.*":  AliasConfig{ModelID: "a"},
+		"exact":                AliasConfig{ModelID: "e"},
+	}
+	if got := strings.Join(aliases.PatternKeys(), ","); got != "regex:claude-opus-.*,regex:claude-sona.*,regex:claude-sonn.*,regex:claude-.*" {
+		t.Errorf("PatternKeys() = %s", got)
+	}
+	if got := aliases.Resolve("claude-opus-5"); got != "long" {
+		t.Errorf("Resolve(claude-opus-5) = %q, want long", got)
+	}
+}
+
+// TestKeyAliasesPatternTieIsLexical pins that equal-length patterns that both match resolve to the alphabetically first.
+func TestKeyAliasesPatternTieIsLexical(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-op.*": AliasConfig{ModelID: "second"},
+		"regex:cl.*-opus-5": AliasConfig{ModelID: "first"},
+	}
+	for i := 0; i < 20; i++ {
+		if got := aliases.Resolve("claude-opus-5"); got != "first" {
+			t.Fatalf("Resolve(claude-opus-5) = %q, want first", got)
+		}
+	}
+}
+
+// TestKeyAliasesExactBeatsLongerPattern pins that an exact alias wins in any casing, however long the matching pattern is.
+func TestKeyAliasesExactBeatsLongerPattern(t *testing.T) {
+	aliases := KeyAliases{
+		"claude-opus-5":                      AliasConfig{ModelID: "exact"},
+		"regex:(claude-(?:opus|sonnet)-\\d)": AliasConfig{ModelID: "long.$1"},
+		"regex:(claude-.*)":                  AliasConfig{ModelID: "short.$1"},
+	}
+	for model, want := range map[string]string{
+		"claude-opus-5":   "exact",
+		"Claude-OPUS-5":   "exact",
+		"claude-sonnet-5": "long.claude-sonnet-5",
+		"claude-haiku-5":  "short.claude-haiku-5",
+	} {
+		if got := aliases.Resolve(model); got != want {
+			t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+// TestKeyAliasesResolveConfigConcurrent runs first-use pattern lookups in parallel so the race detector covers the regex cache.
+func TestKeyAliasesResolveConfigConcurrent(t *testing.T) {
+	aliases := KeyAliases{"pinned": AliasConfig{ModelID: "exact"}}
+	for i := 0; i < 8; i++ {
+		aliases[fmt.Sprintf("regex:(race%d-.*)", i)] = AliasConfig{ModelID: fmt.Sprintf("t%d.$1", i)}
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				n := (w + i) % 8
+				model := fmt.Sprintf("race%d-%d-%d", n, w, i)
+				if got, want := aliases.Resolve(model), fmt.Sprintf("t%d.%s", n, model); got != want {
+					t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
+func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
+	exact := KeyAliases{
+		"claude-opus-4-8": {ModelID: "us.anthropic.claude-opus-4-8"},
+		"claude-sonnet-5": {ModelID: "global.anthropic.claude-sonnet-5"},
+		"gpt-5.4":         {ModelID: "openai.gpt-5.4"},
+	}
+	withPattern := KeyAliases{
+		"claude-opus-4-8":   {ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		"regex:(gpt-.*)":    {ModelID: "openai.$1"},
+	}
+	for _, c := range []struct {
+		name    string
+		aliases KeyAliases
+		model   string
+	}{
+		{"exact-hit", exact, "claude-sonnet-5"},
+		{"exact-miss", exact, "mistral-large"},
+		{"pattern-hit", withPattern, "claude-fable-5"},
+		{"pattern-miss", withPattern, "mistral-large"},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = c.aliases.ResolveConfig(c.model)
+			}
+		})
+	}
 }

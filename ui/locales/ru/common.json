@@ -77,7 +77,8 @@
 		"modelLimits": "ограничения модели",
 		"agent": "агент",
 		"relay": "ретранслятор",
-		"relays": "ретрансляторы"
+		"relays": "ретрансляторы",
+		"modelRouters": "маршрутизаторов"
 	},
 	"aboutField": "О поле {{field}}",
 	"thisField": "это поле",
@@ -125,7 +126,8 @@
 		"searching": "Поиск…",
 		"loadingMore": "Загрузка ещё…",
 		"useModel": "Использовать <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}"
+		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}",
+		"templateUnknownGroup": "Ссылается на группу захвата {{group}}, которой нет в шаблоне"
 	},
 	"providerSelect": {
 		"select": "Выберите провайдер",
@@ -529,6 +531,7 @@
 		"grpcHostPortFormat": "Для gRPC укажите в формате <host>:<port> (например, {{example}})",
 		"invalidInput": "Некорректные данные",
 		"vertexEndpointId": "Введите ID конечной точки Vertex или вставьте поддерживаемый URL конечной точки",
+		"basetenDeploymentUrl": "URL развёртывания должен быть абсолютным https URL без учётных данных, параметров запроса и фрагмента",
 		"mcp": {
 			"privateKeyRequired": "Для private_key_jwt требуется закрытый ключ",
 			"secretRequiredForMethod": "Для выбора способа отправки требуется секрет клиента",
@@ -598,7 +601,8 @@
 		"baseUrlIsRequiredForThisProvider": "Для этого провайдера необходимо указать базовый URL",
 		"baseUrlMustStartWithHttpOrHttps": "Базовый URL должен начинаться с http:// или https://",
 		"atLeastOneApiKeyIsRequired": "Необходимо указать хотя бы один API-ключ",
-		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым"
+		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым",
+		"deploymentPatternInvalid": "Шаблон развёртывания недействителен или ID модели использует группу захвата, которой нет в шаблоне"
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",

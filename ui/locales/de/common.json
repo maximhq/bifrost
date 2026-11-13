@@ -77,7 +77,8 @@
 		"modelLimits": "Modelllimits",
 		"agent": "Agent",
 		"relay": "Relay",
-		"relays": "Relays"
+		"relays": "Relays",
+		"modelRouters": "Router"
 	},
 	"aboutField": "über {{field}}",
 	"thisField": "Dieses Feld",
@@ -121,7 +122,8 @@
 		"searching": "Suche…",
 		"loadingMore": "Weitere werden geladen…",
 		"useModel": "<name>{{name}}</name> verwenden",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blockiert",
+		"templateUnknownGroup": "Verweist auf die Erfassungsgruppe {{group}}, die das Muster nicht definiert"
 	},
 	"providerSelect": {
 		"select": "Anbieter auswählen",
@@ -511,6 +513,7 @@
 		"grpcHostPortFormat": "Muss für gRPC im Format <host>:<port> vorliegen (z. B. {{example}})",
 		"invalidInput": "Ungültige Eingabe",
 		"vertexEndpointId": "Gib eine Vertex-Endpunkt-ID ein oder füge eine unterstützte Endpunkt-URL ein",
+		"basetenDeploymentUrl": "Die Deployment-URL muss eine absolute https-URL ohne Anmeldedaten, Query oder Fragment sein",
 		"mcp": {
 			"privateKeyRequired": "Für private_key_jwt ist ein privater Schlüssel erforderlich",
 			"secretRequiredForMethod": "Für die Wahl der Übertragungsart ist ein Client-Secret erforderlich",
@@ -580,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "Für diesen Anbieter ist eine Basis-URL erforderlich",
 		"baseUrlMustStartWithHttpOrHttps": "Die Basis-URL muss mit http:// oder https:// beginnen",
 		"atLeastOneApiKeyIsRequired": "Mindestens ein API-Schlüssel ist erforderlich",
-		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein"
+		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein",
+		"deploymentPatternInvalid": "Ein Deployment-Muster ist ungültig oder seine Modell-ID nutzt eine Erfassungsgruppe, die das Muster nicht definiert"
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",

@@ -233,6 +233,7 @@ type ConfigData struct {
 	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+	ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
 	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
@@ -494,6 +495,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Relays != nil
 	case "datasheet_overrides":
 		return cd.DatasheetOverrides != nil
+	case "model_routers":
+		return cd.ModelRouters != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -581,6 +584,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+		ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
 		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
 		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
@@ -614,6 +618,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
 	cd.DatasheetOverrides = temp.DatasheetOverrides
+	cd.ModelRouters = temp.ModelRouters
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -1030,6 +1035,24 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 	}
 }
 
+// ignoreBudgetBusinessUnitIDs clears business_unit_id on every governance.budgets entry, with a
+// warning. A business unit's budgets are declared on the business unit (business_units[].budgets, or
+// its budget_id), so a governance.budgets row does not name a unit itself; honouring the field would
+// give a unit a budget its own entry knows nothing about.
+func ignoreBudgetBusinessUnitIDs(configData *ConfigData, warn func(string, ...any)) {
+	if configData == nil || configData.Governance == nil {
+		return
+	}
+	for i := range configData.Governance.Budgets {
+		budget := &configData.Governance.Budgets[i]
+		if budget.BusinessUnitID == nil {
+			continue
+		}
+		warn("config.json sets business_unit_id on budget %q in governance.budgets, which is not read: declare a business unit's budgets on the business unit (business_units[].budgets)", budget.ID)
+		budget.BusinessUnitID = nil
+	}
+}
+
 // promoteCalendarAligned ORs each child's legacy calendar_aligned input into
 // the owner's flag and clears the child field. Treats a nil child pointer as
 // "not set" — only explicit true contributes.
@@ -1057,6 +1080,15 @@ func promoteCalendarAligned(owner *bool, budgets []configstoreTables.TableBudget
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagWarp = "warp"
 
+// FeatureFlagPhraseSuggestions gates the phrase suggestions dashboard: a
+// semantic model router's Suggestions tab, its settings sheet and the draft
+// bar. Off by default in every build, so a few deployments can try the
+// suggestion APIs before the dashboard ships. It gates only the UI: the
+// /api/routing/model-routers/{id}/suggestions routes, request capture and scheduled
+// runs keep working as a router's suggestions settings say, flag on or off.
+// The UI references the same id in ui/lib/constants/featureFlags.ts.
+const FeatureFlagPhraseSuggestions = "phrase-suggestions"
+
 // registerFeatureFlags adds Bifrost's code-declared flags to the process-wide
 // registry. LoadConfig runs more than once per process in tests, so a flag that
 // is already registered is not an error.
@@ -1068,6 +1100,12 @@ func registerFeatureFlags(_ context.Context) error {
 			Description:       "Warp, the in-dashboard agent that answers questions about this deployment's logs, spend and configuration. While off, the Warp API and UI are hidden and new logs are not indexed for Warp's semantic search.",
 			Default:           true,
 			EnterpriseDefault: new(false),
+		},
+		{
+			ID:          FeatureFlagPhraseSuggestions,
+			DisplayName: "Phrase suggestions",
+			Description: "The phrase suggestions dashboard: a semantic model router's Suggestions tab, which proposes phrases for its tiers from captured traffic. While off the dashboard hides it; the suggestion APIs and scheduled runs keep working as configured.",
+			Default:     false,
 		},
 	}
 	for _, def := range defs {
@@ -1182,6 +1220,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
 		promoteDeprecatedCalendarAligned(&configData)
+		ignoreBudgetBusinessUnitIDs(&configData, logger.Warn)
 		// If version is 1, apply v1.4.x compatibility: empty allow-list arrays mean "allow all"
 		if configData.Version == 1 {
 			logger.Info("config version 1 detected, applying v1.4.x compatibility semantics (empty arrays = allow all)")
@@ -1249,7 +1288,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadRelaysConfig(ctx, config, &configData)
 	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
-	// 8a. Agent Gateway registrations (after governance so file-declared virtual
+	// 8a. Model routers
+	syncModelRoutersFromFile(ctx, config, &configData)
+	// 8b. Agent Gateway registrations (after governance so file-declared virtual
 	// keys exist before agent grants referencing them are written)
 	loadAgentsConfig(ctx, config, &configData)
 	// 9. Auth config
@@ -4607,7 +4648,7 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		config.GovernanceConfig = &configstore.GovernanceConfig{}
 	}
 
-	fileConfig, fileAsWritten, fileHashes, ok := complexityAnalyzerConfigFromFile(configData)
+	fileConfig, fileAsWritten, fileHashes, ok := complexityAnalyzerConfigFromFile("complexity analyzer config", configData.Governance.ComplexityAnalyzerConfig)
 	if !ok {
 		return nil
 	}
@@ -4634,24 +4675,23 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 	return merged
 }
 
-// complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
-// returns the normalized config (what source-of-truth mode persists), the file as
+// complexityAnalyzerConfigFromFile validates a file-backed analyzer config (label
+// names it in logs) and returns the normalized config (what source-of-truth mode persists), the file as
 // written (what the split-mode merge reads), and the canonical section hashes used
 // to detect whether config.json changed. Hashes and the merge take presence from
 // the file as written: GenerateComplexityAnalyzerConfigHashes and
 // MergeComplexityAnalyzerConfigByHashes treat an omitted classifier, decision or
 // semantic section as "no opinion", and normalizing first would hand them a default
 // classifier, hash it, and then apply it over the one chosen in the dashboard.
-func complexityAnalyzerConfigFromFile(configData *ConfigData) (normalized, asWritten *configstore.ComplexityAnalyzerConfig, hashes configstore.ComplexityAnalyzerConfigHashes, ok bool) {
-	raw := configData.Governance.ComplexityAnalyzerConfig
+func complexityAnalyzerConfigFromFile(label string, raw *configstore.ComplexityAnalyzerConfig) (normalized, asWritten *configstore.ComplexityAnalyzerConfig, hashes configstore.ComplexityAnalyzerConfigHashes, ok bool) {
 	fileConfig, err := complexity.ValidateAndNormalize(raw)
 	if err != nil {
-		logger.Error("invalid complexity analyzer config in config file: %v", err)
+		logger.Error("invalid %s in config file: %v", label, err)
 		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
 	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(raw)
 	if err != nil {
-		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
+		logger.Warn("failed to generate %s hashes: %v", label, err)
 		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
 	fileConfig.ConfigHashes = fileHashes

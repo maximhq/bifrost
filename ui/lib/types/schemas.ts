@@ -1,3 +1,4 @@
+import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
@@ -531,6 +532,18 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
+// isLiteralHTTPSURL mirrors BasetenAliasCfg.Validate: a literal deployment URL must be an
+// absolute https URL with a host and no userinfo, query or fragment. References and masked values pass; the server resolves them.
+// The literal must spell out "https://" and a host: the browser parser reads "https:///host"
+// or "https:host" as having that host, while Go's url.Parse finds none and rejects it.
+export const isLiteralHTTPSURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	if (!/^https:\/\/[^/\\]/i.test((v?.value ?? "").trim())) return false;
+	const u = parseLiteralURL(v);
+	return !!u && u.protocol === "https:" && u.hostname !== "" && u.username === "" && u.password === "" && u.search === "" && u.hash === "";
+};
+
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
 // when this block is whole for its grant. Literal values are shape-checked so a typo fails in
 // the form rather than at the first inference call; references resolve elsewhere.
@@ -722,6 +735,7 @@ export const databricksKeyConfigSchema = z
 		client_id: secretVarSchema.optional(),
 		client_secret: secretVarSchema.optional(),
 		forward_gateway_tags: z.boolean().optional(),
+		scopes: z.array(z.string()).optional(),
 		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
 		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
 	})
@@ -787,6 +801,8 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	// Baseten overrides
+	deployment_url: secretVarSchema.optional().refine(isLiteralHTTPSURL, msg("validation.basetenDeploymentUrl")),
 	use_anthropic_endpoints: z.boolean().optional(),
 	use_openai_endpoints: z.boolean().optional(),
 });
@@ -827,7 +843,13 @@ export const modelProviderKeySchema = z
 			.pipe(
 				z.number().min(0, msg("validation.weightMustBeEqualToOrGreaterThan0")).max(1, msg("validation.weightMustBeEqualToOrLessThan1")),
 			),
-		aliases: z.record(z.string(), aliasConfigSchema).optional(),
+		aliases: z
+			.record(z.string(), aliasConfigSchema)
+			.optional()
+			.refine(
+				(value) => !value || Object.entries(value).every(([name, cfg]) => !validatePatternAlias(name, cfg.model_id, cfg.model_name)),
+				msg("validation.deploymentPatternInvalid"),
+			),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),

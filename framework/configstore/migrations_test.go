@@ -5855,6 +5855,38 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added where it is missing, left alone where it is there, and never tied to a business
+// unit row by a constraint, since the config loader may write the budget first. The column's index
+// is its own migration (TestMigrationAddBudgetBusinessUnitIDIndex).
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	db := setupCalendarAlignedPreMigrationDB(t)
+	mig := db.Migrator()
+	require.NoError(t, mig.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "BusinessUnitID"))
+	require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+	assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the owner column to a business unit row")
+
+	// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+	buID := "bu-elsewhere"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+}
+
+// TestMigrationAddModelRoutersTable pins that the migration creates the
+// model_routers table and is safe to run again.
+func TestMigrationAddModelRoutersTable(t *testing.T) {
+	db := setupComplexityExemplarMigrationDB(t)
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger))
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
+	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
+}
+
 // A failed row must not roll back earlier repairs or mark the migration complete.
 func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
 	db := setupTestDB(t)
