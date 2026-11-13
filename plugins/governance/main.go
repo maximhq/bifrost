@@ -1044,11 +1044,11 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
-	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	bases, levelMode, scoping, mode := p.store.ResolvePermits(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := grant.NewAccess(bases, levelMode, scoping, mode, p.modelMatcher())
 	g.SetAccess(access)
 	return access, nil
 }
@@ -1975,11 +1975,12 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 		var scoping schemas.Permit
 		var mode grant.CompositionMode
 		if access != nil {
+			// Only the granting permits decide agents (see grant.Access), so they're all this needs.
 			bases = append(access.Bases(), defaultPermit)
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = grant.NewAccess(bases, "", scoping, mode, p.modelMatcher())
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)
