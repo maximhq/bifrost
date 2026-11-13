@@ -4084,3 +4084,147 @@ ModelRouterDefaults:
     llm_default_prompt:
       type: string
       description: The llm classifier's shipped classification prompt.
+
+ModelRouterClassifyRequest:
+  type: object
+  required:
+    - inputs
+  additionalProperties: false
+  properties:
+    inputs:
+      type: array
+      minItems: 1
+      maxItems: 100
+      items:
+        type: object
+        required:
+          - text
+        additionalProperties: false
+        properties:
+          id:
+            type: string
+            description: Your own identifier for the statement, echoed back in its result.
+          text:
+            type: string
+            description: The statement, classified as the latest user turn. At most 32 KiB together with previous_user_messages.
+          previous_user_messages:
+            type: array
+            items:
+              type: string
+            description: Earlier user turns, oldest first, for routers that read conversation history.
+          expected_tier:
+            type: string
+            description: The tier the statement should get - SIMPLE, MEDIUM or COMPLEX, in any case. Labelled statements are scored in the summary. Blank, or only whitespace, leaves the statement unlabelled and out of the labelled counts; any other value is 400.
+
+ModelRouterClassifyResponse:
+  type: object
+  properties:
+    router_id:
+      type: string
+    router_name:
+      type: string
+    classifier:
+      type: string
+      enum: [semantic, decision, llm]
+      description: The router's primary classifier.
+    results:
+      type: array
+      items:
+        $ref: '#/ModelRouterClassification'
+    summary:
+      type: object
+      properties:
+        total:
+          type: integer
+        tiers:
+          type: object
+          description: How many statements got each tier. UNCLASSIFIED counts statements that got none.
+          properties:
+            SIMPLE:
+              type: integer
+            MEDIUM:
+              type: integer
+            COMPLEX:
+              type: integer
+            UNCLASSIFIED:
+              type: integer
+        labeled:
+          type: integer
+          description: Statements sent with an expected_tier.
+        correct:
+          type: integer
+          description: Labelled statements that got their expected tier.
+        accuracy:
+          type: number
+          description: correct / labeled. Omitted when nothing is labelled.
+        confusion:
+          type: object
+          description: Counts keyed by expected tier, then by the tier given (UNCLASSIFIED for none). Omitted when nothing is labelled.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+
+ModelRouterClassification:
+  type: object
+  properties:
+    index:
+      type: integer
+      description: The statement's position in the request.
+    id:
+      type: string
+    text:
+      type: string
+    expected_tier:
+      type: string
+    correct:
+      type: boolean
+      description: Whether the statement got its expected tier. Present only for a labelled statement.
+    tier:
+      type: string
+      enum: [SIMPLE, MEDIUM, COMPLEX]
+      description: The tier the router gives the statement. Omitted when it gives none, which live traffic would route without a tier.
+    mechanism:
+      type: string
+      enum: [semantic, decision, llm, skipped]
+      description: The classifier that answered, or skipped when none produced a tier.
+    score:
+      type: number
+      description: Similarity to the matched exemplar, for a semantic answer, on the vector store's own scale - raw cosine for chromem, Qdrant, Pinecone and Redis, certainty for Weaviate - the scale min_similarity is compared against.
+    confidence:
+      type: number
+      description: The decision model's confidence, when it reports or implies one.
+    matched_exemplar:
+      type: string
+      description: The exemplar phrase a semantic answer matched.
+    model:
+      type: string
+      description: The provider/model that answered, for a decision-model or LLM answer.
+    semantic_miss:
+      type: object
+      description: The nearest exemplar when semantic similarity fell below min_similarity, kept even if a fallback classifier then answered. Raise the exemplars or lower min_similarity to turn a miss into a match.
+      properties:
+        tier:
+          type: string
+        score:
+          type: number
+          description: Similarity to the nearest exemplar, on the same scale as score, below min_similarity.
+        min_similarity:
+          type: number
+        matched_exemplar:
+          type: string
+    trace:
+      type: array
+      description: The routing engine log lines this statement produced, as they appear on a request log.
+      items:
+        type: object
+        properties:
+          engine:
+            type: string
+          level:
+            type: string
+          message:
+            type: string
+          timestamp:
+            type: integer
+            description: Unix milliseconds.

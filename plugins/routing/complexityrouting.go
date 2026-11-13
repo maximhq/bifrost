@@ -21,9 +21,12 @@ type complexityProposal struct {
 	// Model is the provider/model that classified, for decision-model and LLM
 	// proposals. The mechanism stays generic ("decision", "llm") because it is a
 	// metric label; logs name the model so operators can see which one answered.
-	Model      string
-	LogLevel   schemas.LogLevel
-	LogMessage string
+	Model string
+	// SemanticMiss is the nearest exemplar a semantic match rejected for
+	// falling below min_similarity, kept when a fallback answered instead.
+	SemanticMiss *complexity.SemanticResult
+	LogLevel     schemas.LogLevel
+	LogMessage   string
 }
 
 // computeComplexity classifies the request for a routing rule's complexity_tier, with the
@@ -313,7 +316,9 @@ func (p *RoutingPlugin) classifySemanticComplexity(ctx *schemas.BifrostContext, 
 			schemas.LogLevelInfo,
 			unavailableCause+"; falling back to the decision model",
 		)
-		return p.classifyRouterDecision(ctx, input, rt)
+		proposal := p.classifyRouterDecision(ctx, input, rt)
+		proposal.SemanticMiss = rejectedResult
+		return proposal
 	}
 	if rt.llm != nil && rt.llm.FallbackEnabled() {
 		ctx.AppendRoutingEngineLog(
@@ -321,12 +326,15 @@ func (p *RoutingPlugin) classifySemanticComplexity(ctx *schemas.BifrostContext, 
 			schemas.LogLevelInfo,
 			unavailableCause+"; falling back to the LLM classifier",
 		)
-		return p.classifyLLMComplexity(ctx, input, rt)
+		proposal := p.classifyLLMComplexity(ctx, input, rt)
+		proposal.SemanticMiss = rejectedResult
+		return proposal
 	}
 	return complexityProposal{
-		Mechanism:  complexity.MechanismSkipped,
-		LogLevel:   unavailableLevel,
-		LogMessage: unavailableCause + ", so no complexity tier is published",
+		Mechanism:    complexity.MechanismSkipped,
+		SemanticMiss: rejectedResult,
+		LogLevel:     unavailableLevel,
+		LogMessage:   unavailableCause + ", so no complexity tier is published",
 	}
 }
 

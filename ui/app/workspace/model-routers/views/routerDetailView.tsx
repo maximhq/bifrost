@@ -21,10 +21,11 @@ import { OverviewTab, tiersWithModels } from "./overviewTab";
 import { RouterConfigurationSheets } from "./routerConfigurationEditor";
 import RouterDetailsDialog from "./routerDetailsDialog";
 import { RoutingTab } from "./routingTab";
+import { TestTab } from "./testTab";
 import { useRouterConfigForm } from "./useRouterConfigForm";
 import type { RouterTrafficRead, TrafficWindow } from "./useRouterTraffic";
 
-export const ROUTER_TABS = ["overview", "configuration", "models", "routing", "suggestions"] as const;
+export const ROUTER_TABS = ["overview", "configuration", "models", "routing", "test", "suggestions"] as const;
 export type RouterTab = (typeof ROUTER_TABS)[number];
 
 // A count beside a tab's name, as the project page shows them.
@@ -56,6 +57,8 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
 	const [detailsOpen, setDetailsOpen] = useState(false);
 	const [deleteOpen, setDeleteOpen] = useState(false);
+	// Whether a test ran on this visit; testing is optional and nothing records it.
+	const [tested, setTested] = useState(false);
 
 	const config = useRouterConfigForm({
 		saved: data,
@@ -141,6 +144,9 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 							<TabsTrigger value="routing" data-testid="model-router-tab-routing">
 								{tmr("tabs.routing")}
 							</TabsTrigger>
+							<TabsTrigger value="test" data-testid="model-router-tab-test">
+								{tmr("tabs.test")}
+							</TabsTrigger>
 							{showSuggestions && (
 								<TabsTrigger value="suggestions" data-testid="complexity-router-tab-suggestions">
 									{tmr("tabs.suggestions")}
@@ -206,6 +212,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 						traffic={traffic.byRouter ? (traffic.byRouter.get(routerId) ?? { requests: 0, cost: 0, costTrend: null }) : undefined}
 						trafficState={traffic.state}
 						trafficWindow={trafficWindow}
+						tested={tested}
 						onNavigate={(next) => void setTab(next)}
 					/>
 				</TabsContent>
@@ -217,6 +224,9 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 				</TabsContent>
 				<TabsContent value="routing" className="flex min-h-0 flex-col overflow-hidden">
 					<RoutingTab router={data} canUpdate={canUpdate} />
+				</TabsContent>
+				<TabsContent value="test" className="flex min-h-0 flex-col overflow-hidden">
+					<TestTab router={data} onRun={() => setTested(true)} />
 				</TabsContent>
 				{showSuggestions && (
 					<TabsContent value="suggestions" className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto">
