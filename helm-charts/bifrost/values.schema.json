@@ -1226,6 +1226,14 @@
                               "description": "Attribute keys removed at every level before forwarding, e.g. prompt."
                             }
                           },
+                          "if": {
+                            "properties": { "enabled": { "const": true } },
+                            "required": ["enabled"]
+                          },
+                          "then": {
+                            "required": ["destinations"],
+                            "properties": { "destinations": { "minItems": 1 } }
+                          },
                           "additionalProperties": false
                         }
                       },

@@ -401,6 +401,16 @@ ClientConfig:
                         type: string
                         minLength: 1
                       description: Attribute keys removed at every level before forwarding, for example "prompt".
+                  if:
+                    properties:
+                      enabled:
+                        const: true
+                    required: [enabled]
+                  then:
+                    required: [destinations]
+                    properties:
+                      destinations:
+                        minItems: 1
                   additionalProperties: false
               additionalProperties: false
           additionalProperties: false

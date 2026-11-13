@@ -304,7 +304,9 @@ func TestTelemetryForwarder_CollectorErrorsAreCounted(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return testutil.ToFloat64(h.telemetry.metrics.forwards.WithLabelValues("claude-code", "metrics", "error")) == 3
 	}, 5*time.Second, 10*time.Millisecond)
-	assert.Zero(t, h.telemetry.bytes.Load(), "forwarded exports release their queue bytes")
+	// The error counter is bumped before the worker releases the export's bytes, so wait for those too.
+	require.Eventually(t, func() bool { return h.telemetry.bytes.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"forwarded exports release their queue bytes")
 }
 
 // BenchmarkStampTelemetryExport measures the per-export work on the request
