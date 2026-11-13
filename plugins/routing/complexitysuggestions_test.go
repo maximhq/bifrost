@@ -79,7 +79,7 @@ func waitForRun(t *testing.T, store logstore.LogStore) logstore.ComplexitySugges
 	t.Helper()
 	var run logstore.ComplexitySuggestionRun
 	require.Eventually(t, func() bool {
-		runs, err := store.ListComplexitySuggestionRuns(context.Background(), nil, 1)
+		runs, err := store.ListComplexitySuggestionRuns(context.Background(), logstore.ComplexitySuggestionRunFilter{}, 1)
 		if err != nil || len(runs) == 0 || runs[0].FinishedAt == nil {
 			return false
 		}
@@ -125,7 +125,7 @@ func suggestionScheduleStore(t *testing.T) ComplexitySuggestionScheduleStore {
 
 func runsOf(t *testing.T, store logstore.LogStore) []logstore.ComplexitySuggestionRun {
 	t.Helper()
-	runs, err := store.ListComplexitySuggestionRuns(context.Background(), nil, 50)
+	runs, err := store.ListComplexitySuggestionRuns(context.Background(), logstore.ComplexitySuggestionRunFilter{}, 50)
 	require.NoError(t, err)
 	return runs
 }
@@ -145,9 +145,10 @@ func TestComplexitySuggestionsScheduleRunsAtItsNextRun(t *testing.T) {
 	assert.Empty(t, runsOf(t, store), "not due yet")
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, due.Add(20*time.Second)))
 	run := waitForRun(t, store)
-	assert.Equal(t, complexitySuggestionSlotRunID(due), run.ID)
+	assert.Equal(t, complexitySuggestionSlotRunID(complexity.DefaultRouterID, due), run.ID)
 	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, run.Status, run.Error)
 	assert.Equal(t, logstore.ComplexitySuggestionTriggerSchedule, run.TriggeredBy)
+	assert.Equal(t, complexity.DefaultRouterID, run.RouterID)
 	assert.EqualValues(t, 6, run.RequestsRead)
 
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, due.Add(time.Minute)))
@@ -185,10 +186,11 @@ func TestComplexitySuggestionsDueRunIsClaimedOnce(t *testing.T) {
 	}
 	wg.Wait()
 	require.Len(t, queue.ids, 1, "exactly one node takes the run")
-	assert.Equal(t, complexitySuggestionSlotRunID(due), queue.ids[0])
+	assert.Equal(t, complexitySuggestionSlotRunID(complexity.DefaultRouterID, due), queue.ids[0])
 	runs := runsOf(t, store)
 	require.Len(t, runs, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunQueued, runs[0].Status, "visible as queued before a job runner picks it up")
+	assert.Equal(t, complexity.DefaultRouterID, runs[0].RouterID)
 
 	meta, err := nodes[0].RunComplexitySuggestionsJob(ctx, tables.TableSidekiqJob{ID: queue.ids[0], Metadata: queue.metas[0]}, nil)
 	require.NoError(t, err)
@@ -213,8 +215,8 @@ func TestComplexitySuggestionsScheduleCatchesUpOnceAndFollowsChanges(t *testing.
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, back))
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, back.Add(time.Second)))
 	require.Len(t, queue.ids, 1, "one catch-up run for the whole outage")
-	assert.Equal(t, complexitySuggestionSlotRunID(start.Add(time.Hour)), queue.ids[0], "the run due first")
-	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	assert.Equal(t, complexitySuggestionSlotRunID(complexity.DefaultRouterID, start.Add(time.Hour)), queue.ids[0], "the run due first")
+	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
 	require.NoError(t, err)
 	assert.True(t, row.NextRunAt.Equal(start.Add(6*time.Hour)), "next run counted from now: %s", row.NextRunAt)
 	assert.Len(t, runsOf(t, store), 1)
@@ -225,7 +227,7 @@ func TestComplexitySuggestionsScheduleCatchesUpOnceAndFollowsChanges(t *testing.
 	require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(settings)))
 	require.Eventually(t, func() bool { return p.semanticClassifier.Status().State == complexity.SemanticStatusReady }, 2*time.Second, 5*time.Millisecond)
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, back.Add(time.Minute)))
-	row, err = schedules.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	row, err = schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
 	require.NoError(t, err)
 	assert.True(t, row.NextRunAt.Equal(start.Add(24*time.Hour)), "next run from the new schedule: %s", row.NextRunAt)
 	assert.Len(t, queue.ids, 1)
@@ -240,15 +242,15 @@ func TestComplexitySuggestionsDueRunThatCannotStartIsSkipped(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(10*time.Minute)))
 
-	p.suggestions.inline.Store(true) // a run of this node's is still going
+	p.suggestions.inline[complexity.DefaultRouterID] = true // a run of this router's is still going here
 	due := start.Add(time.Hour)
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, due.Add(time.Second)))
-	p.suggestions.inline.Store(false)
+	delete(p.suggestions.inline, complexity.DefaultRouterID)
 	runs := runsOf(t, store)
 	require.Len(t, runs, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunSkipped, runs[0].Status)
 	assert.Contains(t, runs[0].Error, "still in progress")
-	assert.Equal(t, complexitySuggestionSlotRunID(due), runs[0].ID)
+	assert.Equal(t, complexitySuggestionSlotRunID(complexity.DefaultRouterID, due), runs[0].ID)
 
 	warming := complexity.NewSemanticClassifier(ctx, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	t.Cleanup(func() { _ = warming.Close() })
@@ -261,7 +263,7 @@ func TestComplexitySuggestionsDueRunThatCannotStartIsSkipped(t *testing.T) {
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, due.Add(time.Hour+time.Second)))
 	var skipped *logstore.ComplexitySuggestionRun
 	for _, run := range runsOf(t, store) {
-		if run.ID == complexitySuggestionSlotRunID(due.Add(time.Hour)) {
+		if run.ID == complexitySuggestionSlotRunID(complexity.DefaultRouterID, due.Add(time.Hour)) {
 			skipped = &run
 		}
 	}
@@ -280,7 +282,7 @@ func TestComplexitySuggestionsScheduleWithoutAConfigStore(t *testing.T) {
 	assert.Empty(t, runsOf(t, store))
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(time.Hour)))
 	run := waitForRun(t, store)
-	assert.Equal(t, complexitySuggestionSlotRunID(start.Add(time.Hour)), run.ID)
+	assert.Equal(t, complexitySuggestionSlotRunID(complexity.DefaultRouterID, start.Add(time.Hour)), run.ID)
 	require.NoError(t, p.scheduleComplexitySuggestions(ctx, start.Add(time.Hour+time.Minute)))
 	p.suggestions.wg.Wait()
 	assert.Len(t, runsOf(t, store), 1)
@@ -294,19 +296,19 @@ func TestNextComplexitySuggestionRun(t *testing.T) {
 	schedule := *hourlyFrom(start)
 	now := start.Add(90 * time.Minute)
 	ctx := context.Background()
-	assert.True(t, NextComplexitySuggestionRun(ctx, nil, schedule, now).Equal(start.Add(2*time.Hour)), "no state: from the settings")
+	assert.True(t, NextComplexitySuggestionRun(ctx, nil, complexity.DefaultRouterID, schedule, now).Equal(start.Add(2*time.Hour)), "no state: from the settings")
 
 	schedules := suggestionScheduleStore(t)
 	stored := start.Add(3 * time.Hour)
-	set, err := schedules.SetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey, complexitySuggestionScheduleHash(schedule), stored, nil)
+	set, err := schedules.SetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID, complexitySuggestionScheduleHash(schedule), stored, nil)
 	require.NoError(t, err)
 	require.True(t, set)
-	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, schedule, now).Equal(stored), "the stored next run")
+	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, complexity.DefaultRouterID, schedule, now).Equal(stored), "the stored next run")
 
 	daily := configstore.ComplexitySuggestionsSchedule{Every: "1d", StartAt: &start}
-	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, daily, now).Equal(start.Add(24*time.Hour)), "state for other settings is ignored")
+	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, complexity.DefaultRouterID, daily, now).Equal(start.Add(24*time.Hour)), "state for other settings is ignored")
 
-	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, schedule, stored.Add(time.Minute)).Equal(stored.Add(time.Minute)), "a due run is due now")
+	assert.True(t, NextComplexitySuggestionRun(ctx, schedules, complexity.DefaultRouterID, schedule, stored.Add(time.Minute)).Equal(stored.Add(time.Minute)), "a due run is due now")
 }
 
 type recordingQueue struct {
@@ -316,7 +318,7 @@ type recordingQueue struct {
 }
 
 func (q *recordingQueue) EnqueuePartitioned(_ context.Context, id, kind, partition, metadata, _ string) error {
-	if kind != ComplexitySuggestionsJobKind || partition != ComplexitySuggestionsJobKind {
+	if kind != ComplexitySuggestionsJobKind || partition != complexitySuggestionPartition(complexity.DefaultRouterID) {
 		return fmt.Errorf("unexpected kind %s / partition %s", kind, partition)
 	}
 	q.mu.Lock()
@@ -357,17 +359,47 @@ func (q *uniqueQueue) EnqueuePartitioned(ctx context.Context, id, kind, partitio
 	return q.recordingQueue.EnqueuePartitioned(ctx, id, kind, partition, metadata, createdBy)
 }
 
-// Manual starts that race past the in-flight check, as two clicks or two
-// nodes can, queue one job between them and are all handed its run; once
-// that job exists, the next start names a new one.
+// gatedRunsStore holds the first n reads of the run list, once read, until
+// all n are done, so n starts all pass the busy check before any records its run:
+// the race two clicks or two nodes hit, made certain.
+type gatedRunsStore struct {
+	logstore.LogStore
+	mu      sync.Mutex
+	waiting int
+	open    chan struct{}
+}
+
+func newGatedRunsStore(store logstore.LogStore, n int) *gatedRunsStore {
+	return &gatedRunsStore{LogStore: store, waiting: n, open: make(chan struct{})}
+}
+
+func (g *gatedRunsStore) ListComplexitySuggestionRuns(ctx context.Context, filter logstore.ComplexitySuggestionRunFilter, limit int) ([]logstore.ComplexitySuggestionRun, error) {
+	// Read first, then wait: every start has seen the list before any acts.
+	runs, err := g.LogStore.ListComplexitySuggestionRuns(ctx, filter, limit)
+	g.mu.Lock()
+	if g.waiting > 0 {
+		g.waiting--
+		if g.waiting == 0 {
+			close(g.open)
+		}
+	}
+	g.mu.Unlock()
+	<-g.open
+	return runs, err
+}
+
+// Manual starts that race past the busy check, as two clicks or two nodes
+// can, queue one job between them and are all handed its run, never a
+// second job. Once that run is over, the next start names a new one.
 func TestComplexitySuggestionsSimultaneousManualStartsQueueOneRun(t *testing.T) {
-	p, _, _ := suggestionPlugin(t)
+	p, store, _ := suggestionPlugin(t)
 	queue := &uniqueQueue{}
 	jobs := &inFlightJobs{} // nothing in flight yet, as each start sees it
 	p.SetComplexitySuggestionJobs(queue, jobs)
 	ctx := context.Background()
 
 	const starts = 8
+	p.SetComplexitySuggestionStore(newGatedRunsStore(store, starts), func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
 	ids := make([]string, starts)
 	errs := make([]error, starts)
 	var wg sync.WaitGroup
@@ -375,36 +407,42 @@ func TestComplexitySuggestionsSimultaneousManualStartsQueueOneRun(t *testing.T) 
 	for i := range starts {
 		wg.Go(func() {
 			<-gate
-			ids[i], errs[i] = p.StartComplexitySuggestionRunNow(ctx)
+			ids[i], errs[i] = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 		})
 	}
 	close(gate)
 	wg.Wait()
+	require.Len(t, queue.ids, 1, "one job queued")
+	runID := queue.ids[0]
+	_, err := uuid.Parse(runID)
+	require.NoError(t, err)
 	for i := range starts {
 		require.NoError(t, errs[i])
-		assert.Equal(t, ids[0], ids[i], "every start is handed the same run")
+		assert.Equal(t, runID, ids[i], "every start is handed the one queued run")
 	}
-	require.Len(t, queue.ids, 1, "one job queued")
-	_, err := uuid.Parse(ids[0])
-	require.NoError(t, err)
 
-	jobs.latest = &tables.TableSidekiqJob{ID: ids[0]} // it ran; the next start is a new run
-	next, err := p.StartComplexitySuggestionRunNow(ctx)
+	// The run finished; the next start is a new run.
+	finished := time.Now().UTC()
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{ID: runID, RouterID: complexity.DefaultRouterID,
+		Status: logstore.ComplexitySuggestionRunSucceeded, StartedAt: finished, FinishedAt: &finished}))
+	jobs.latest = &tables.TableSidekiqJob{ID: runID}
+	next, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.NoError(t, err)
-	assert.NotEqual(t, ids[0], next)
-	assert.Equal(t, []string{ids[0], next}, queue.ids)
+	assert.NotEqual(t, runID, next)
+	assert.Equal(t, []string{runID, next}, queue.ids)
 }
 
-// A slot's run ID is the run row's primary key, a varchar(36), and the same on
-// every node for the same slot.
+// A slot's run ID is the run row's primary key, a varchar(36), the same on
+// every node for the same router and slot, and different for another router.
 func TestComplexitySuggestionSlotRunIDIsAStableUUID(t *testing.T) {
 	slot := time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
-	id := complexitySuggestionSlotRunID(slot)
+	id := complexitySuggestionSlotRunID(complexity.DefaultRouterID, slot)
 	_, err := uuid.Parse(id)
 	require.NoError(t, err, "slot run ID %q is not a UUID", id)
 	assert.Len(t, id, 36)
-	assert.Equal(t, id, complexitySuggestionSlotRunID(slot.In(time.FixedZone("IST", 5*3600+1800))), "the same instant is the same slot")
-	assert.NotEqual(t, id, complexitySuggestionSlotRunID(slot.Add(time.Hour)), "a later slot gets its own ID")
+	assert.Equal(t, id, complexitySuggestionSlotRunID(complexity.DefaultRouterID, slot.In(time.FixedZone("IST", 5*3600+1800))), "the same instant is the same slot")
+	assert.NotEqual(t, id, complexitySuggestionSlotRunID(complexity.DefaultRouterID, slot.Add(time.Hour)), "a later slot gets its own ID")
+	assert.NotEqual(t, id, complexitySuggestionSlotRunID("support", slot), "another router due at the same slot gets its own job")
 }
 
 // Cleanup closes the classifier whose serving space a run reads, so a run
@@ -456,9 +494,10 @@ func TestComplexitySuggestionsCleanupStopsAQueuedRun(t *testing.T) {
 func TestComplexitySuggestionsJobAfterCleanupIsRefused(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	runID := uuid.NewString()
-	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, runID, logstore.ComplexitySuggestionTriggerSchedule))
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, complexitySuggestionJobMeta{
+		RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule}))
 	p.closeComplexitySuggestions()
-	job := tables.TableSidekiqJob{ID: "job-1", Metadata: `{"run_id":"` + runID + `","triggered_by":"schedule"}`}
+	job := tables.TableSidekiqJob{ID: "job-1", Metadata: `{"run_id":"` + runID + `","router_id":"` + complexity.DefaultRouterID + `","triggered_by":"schedule"}`}
 	_, err := p.RunComplexitySuggestionsJob(context.Background(), job, nil)
 	assert.ErrorIs(t, err, errSuggestionsClosing)
 	runs := runsOf(t, store)
@@ -480,7 +519,8 @@ func TestComplexitySuggestionsEnqueueFailureSkipsTheRun(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	p.SetComplexitySuggestionJobs(failingQueue{}, &inFlightJobs{})
 	runID := uuid.NewString()
-	started, err := p.startComplexitySuggestionRun(context.Background(), runID, logstore.ComplexitySuggestionTriggerSchedule)
+	started, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
+		RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 	require.ErrorContains(t, err, "job store unavailable")
 	assert.False(t, started)
 	runs := runsOf(t, store)
@@ -518,7 +558,8 @@ func TestComplexitySuggestionsUncertainEnqueueLeavesTheRunQueued(t *testing.T) {
 		p, store, _ := suggestionPlugin(t)
 		runID := uuid.NewString()
 		p.SetComplexitySuggestionJobs(failingQueue{}, &scriptedJobs{job: &tables.TableSidekiqJob{ID: runID}})
-		started, err := p.startComplexitySuggestionRun(context.Background(), runID, logstore.ComplexitySuggestionTriggerSchedule)
+		started, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
+			RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 		require.NoError(t, err)
 		assert.True(t, started)
 		runs := runsOf(t, store)
@@ -529,7 +570,8 @@ func TestComplexitySuggestionsUncertainEnqueueLeavesTheRunQueued(t *testing.T) {
 		p, store, _ := suggestionPlugin(t)
 		p.SetComplexitySuggestionJobs(failingQueue{}, &scriptedJobs{err: errors.New("job store unavailable")})
 		runID := uuid.NewString()
-		started, err := p.startComplexitySuggestionRun(context.Background(), runID, logstore.ComplexitySuggestionTriggerSchedule)
+		started, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
+			RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 		require.ErrorContains(t, err, "could not confirm")
 		assert.False(t, started)
 		runs := runsOf(t, store)
@@ -540,7 +582,8 @@ func TestComplexitySuggestionsUncertainEnqueueLeavesTheRunQueued(t *testing.T) {
 		p, store, _ := suggestionPlugin(t)
 		p.SetComplexitySuggestionJobs(failingQueue{}, &scriptedJobs{job: &tables.TableSidekiqJob{ID: "someone-else"}})
 		runID := uuid.NewString()
-		_, err := p.startComplexitySuggestionRun(context.Background(), runID, logstore.ComplexitySuggestionTriggerSchedule)
+		_, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
+			RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 		require.Error(t, err)
 		assert.Equal(t, logstore.ComplexitySuggestionRunQueued, runsOf(t, store)[0].Status)
 	})
@@ -554,11 +597,28 @@ func TestComplexitySuggestionsRunFailureIsRecordedAfterItsContextEnds(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runID := uuid.NewString()
-	_, err := p.runComplexitySuggestions(ctx, runID, logstore.ComplexitySuggestionTriggerSchedule)
+	_, err := p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{
+		RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 	require.Error(t, err)
 	runs := runsOf(t, store)
 	require.Len(t, runs, 1, "the failure is recorded: %v", err)
 	assert.Equal(t, logstore.ComplexitySuggestionRunFailed, runs[0].Status)
+	// The window it would have read, not a zero time: the whole lookback here.
+	require.NotNil(t, runs[0].FinishedAt)
+	lookback := time.Duration(p.complexityConfig.Load().Suggestions.LookbackDays) * 24 * time.Hour
+	assert.WithinDuration(t, runs[0].FinishedAt.Add(-lookback), runs[0].WindowStart, time.Second)
+
+	// A run over a window records that window.
+	windowedID := uuid.NewString()
+	_, err = p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{
+		RunID: windowedID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual, WindowSeconds: 3600})
+	require.Error(t, err)
+	for _, run := range runsOf(t, store) {
+		if run.ID == windowedID {
+			require.NotNil(t, run.FinishedAt)
+			assert.WithinDuration(t, run.FinishedAt.Add(-time.Hour), run.WindowStart, time.Second)
+		}
+	}
 }
 
 // With Chromem as Bifrost's vector store nothing is captured: each node would
@@ -583,11 +643,12 @@ func TestComplexitySuggestionsRefusedOnChromem(t *testing.T) {
 	}
 	p.suggestions.wg.Wait()
 	assert.Empty(t, runsOf(t, store))
-	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
 	require.NoError(t, err)
 	assert.Nil(t, row, "nothing claimed, so a capture store added later starts the schedule fresh")
 
-	_, err = p.runComplexitySuggestions(ctx, uuid.NewString(), logstore.ComplexitySuggestionTriggerSchedule)
+	_, err = p.runComplexitySuggestions(ctx, complexitySuggestionJobMeta{
+		RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 	require.ErrorIs(t, err, complexity.ErrNoCaptureStore)
 }
 
@@ -597,7 +658,8 @@ func TestComplexitySuggestionsInlineRunWhenTurnedOff(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
 	runID := uuid.NewString()
-	started, err := p.startComplexitySuggestionRun(context.Background(), runID, logstore.ComplexitySuggestionTriggerSchedule)
+	started, err := p.startComplexitySuggestionRun(context.Background(), complexitySuggestionJobMeta{
+		RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule})
 	require.NoError(t, err)
 	require.True(t, started)
 	p.suggestions.wg.Wait()
@@ -608,13 +670,36 @@ func TestComplexitySuggestionsInlineRunWhenTurnedOff(t *testing.T) {
 	assert.Equal(t, suggestionsTurnedOffReason, runs[0].Error)
 }
 
+// Two starts that race to the same run ID both register it as queued; the
+// later registration, landing after the run ended, must not put it back to
+// queued, or the router would read busy and the outcome would be lost.
+func TestComplexitySuggestionsLateRegistrationKeepsTheOutcome(t *testing.T) {
+	store := suggestionTestStore(t)
+	ctx := context.Background()
+	meta := complexitySuggestionJobMeta{RunID: uuid.NewString(), RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}
+	require.NoError(t, recordQueuedSuggestionRun(ctx, store, meta))
+	finished := time.Now().UTC()
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &logstore.ComplexitySuggestionRun{
+		ID: meta.RunID, RouterID: meta.RouterID, TriggeredBy: meta.TriggeredBy, Status: logstore.ComplexitySuggestionRunSucceeded,
+		StartedAt: finished.Add(-time.Minute), FinishedAt: &finished, Created: 2,
+	}))
+
+	require.NoError(t, recordQueuedSuggestionRun(ctx, store, meta))
+	runs := runsOf(t, store)
+	require.Len(t, runs, 1)
+	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, runs[0].Status, "the outcome is kept")
+	assert.EqualValues(t, 2, runs[0].Created)
+}
+
 // A job that finds no routing plugin to run it closes its queued run as
 // skipped, and is still not a job failure.
 func TestSkipComplexitySuggestionsJob(t *testing.T) {
 	store := suggestionTestStore(t)
 	ctx := context.Background()
 	runID := uuid.NewString()
-	require.NoError(t, recordQueuedSuggestionRun(ctx, store, runID, logstore.ComplexitySuggestionTriggerManual))
+	require.NoError(t, recordQueuedSuggestionRun(ctx, store, complexitySuggestionJobMeta{
+		RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerManual}))
+	// Queued before runs named their router: the default router's.
 	job := tables.TableSidekiqJob{ID: runID, Metadata: `{"run_id":"` + runID + `","triggered_by":"manual"}`}
 
 	meta, err := SkipComplexitySuggestionsJob(ctx, store, job, "no routing plugin")
@@ -624,6 +709,7 @@ func TestSkipComplexitySuggestionsJob(t *testing.T) {
 	require.Len(t, runs, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunSkipped, runs[0].Status)
 	assert.Equal(t, logstore.ComplexitySuggestionTriggerManual, runs[0].TriggeredBy)
+	assert.Equal(t, complexity.DefaultRouterID, runs[0].RouterID)
 	assert.Equal(t, "no routing plugin", runs[0].Error)
 
 	meta, err = SkipComplexitySuggestionsJob(ctx, nil, job, "no routing plugin")
@@ -637,7 +723,7 @@ func TestSkipComplexitySuggestionsJob(t *testing.T) {
 func TestComplexitySuggestionsJobWhenTurnedOff(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	runID := uuid.NewString()
-	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, runID, logstore.ComplexitySuggestionTriggerSchedule))
+	require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, complexitySuggestionJobMeta{RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule}))
 	require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
 	meta, err := p.RunComplexitySuggestionsJob(context.Background(), tables.TableSidekiqJob{ID: runID, Metadata: `{"run_id":"` + runID + `","triggered_by":"schedule"}`}, nil)
 	require.NoError(t, err)
@@ -673,7 +759,7 @@ func TestComplexitySuggestionsJobWhenTurnedOffRecordsTheSkip(t *testing.T) {
 	t.Run("after the job's context ended", func(t *testing.T) {
 		p, store, _ := suggestionPlugin(t)
 		runID := uuid.NewString()
-		require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, runID, logstore.ComplexitySuggestionTriggerSchedule))
+		require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, complexitySuggestionJobMeta{RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule}))
 		require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -687,7 +773,7 @@ func TestComplexitySuggestionsJobWhenTurnedOffRecordsTheSkip(t *testing.T) {
 	t.Run("a skip that cannot be recorded fails the job", func(t *testing.T) {
 		p, store, _ := suggestionPlugin(t)
 		runID := uuid.NewString()
-		require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, runID, logstore.ComplexitySuggestionTriggerSchedule))
+		require.NoError(t, recordQueuedSuggestionRun(context.Background(), store, complexitySuggestionJobMeta{RunID: runID, RouterID: complexity.DefaultRouterID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule}))
 		require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
 		p.SetComplexitySuggestionStore(refusingRunStore{store}, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
 		meta, err := p.RunComplexitySuggestionsJob(context.Background(), job(runID), nil)
@@ -701,7 +787,7 @@ func TestComplexitySuggestionsJobWhenTurnedOffRecordsTheSkip(t *testing.T) {
 func TestComplexitySuggestionsRunNow(t *testing.T) {
 	p, store, _ := suggestionPlugin(t)
 	ctx := context.Background()
-	runID, err := p.StartComplexitySuggestionRunNow(ctx)
+	runID, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.NoError(t, err)
 	_, err = uuid.Parse(runID)
 	require.NoError(t, err, "a manual run ID is the run row's varchar(36) key, so a bare UUID; got %q", runID)
@@ -709,15 +795,39 @@ func TestComplexitySuggestionsRunNow(t *testing.T) {
 	run := waitForRun(t, store)
 	assert.Equal(t, runID, run.ID)
 	assert.Equal(t, logstore.ComplexitySuggestionTriggerManual, run.TriggeredBy)
+	assert.Equal(t, complexity.DefaultRouterID, run.RouterID)
+	assert.Equal(t, p.ComplexitySuggestionRouterVersion(complexity.DefaultRouterID), run.RouterVersion)
+	assert.NotEmpty(t, run.RouterVersion)
 
 	queue := &recordingQueue{}
-	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{job: &tables.TableSidekiqJob{ID: "busy"}})
-	_, err = p.StartComplexitySuggestionRunNow(ctx)
+	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{job: &tables.TableSidekiqJob{ID: "busy", Metadata: `{"run_id":"busy","router_id":"default"}`}})
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.ErrorIs(t, err, ErrComplexitySuggestionRunInFlight)
 	assert.Empty(t, queue.ids)
 
+	// Another router's queued run is no reason for this one to wait.
+	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{job: &tables.TableSidekiqJob{ID: "other", Metadata: `{"run_id":"other","router_id":"office"}`}})
+	day, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 24*time.Hour)
+	require.NoError(t, err)
+	require.Len(t, queue.ids, 1)
+	assert.Equal(t, day, queue.ids[0])
+	assert.Contains(t, queue.metas[0], `"window_seconds":86400`)
+
+	// That run is queued now, so the router is busy until it runs, even
+	// while the job store reports another router's job.
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
+	require.ErrorIs(t, err, ErrComplexitySuggestionRunInFlight, "the router's own queued run")
+	require.Len(t, queue.ids, 1)
+
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 30*24*time.Hour)
+	require.ErrorIs(t, err, ErrComplexitySuggestionWindow, "a window past the 7-day lookback reads vectors that are gone")
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 500*time.Millisecond)
+	require.ErrorIs(t, err, ErrComplexitySuggestionWindow, "a sub-second window would be sent as 0 seconds, the whole lookback")
+	_, err = p.StartComplexitySuggestionRunNow(ctx, "office", 0)
+	require.ErrorIs(t, err, ErrUnknownComplexityRouter)
+
 	require.NoError(t, p.storeComplexityAnalyzerConfig(captureTestConfig(nil)))
-	_, err = p.StartComplexitySuggestionRunNow(ctx)
+	_, err = p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.ErrorIs(t, err, ErrComplexitySuggestionsOff)
 }
 
@@ -739,10 +849,10 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	require.Eventually(t, func() bool { return p.semanticClassifier.Status().State == complexity.SemanticStatusFailed },
 		2*time.Second, 5*time.Millisecond)
 
-	_, err := p.StartComplexitySuggestionRunNow(ctx)
+	_, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.ErrorIs(t, err, complexity.ErrNoServingGeneration)
 	p.suggestions.wg.Wait()
-	runs, err := store.ListComplexitySuggestionRuns(ctx, nil, 10)
+	runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{}, 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs)
 }
@@ -760,10 +870,10 @@ func TestComplexitySuggestionsScheduledRunDuringAManualOne(t *testing.T) {
 	queue := &recordingQueue{}
 	manual := &inFlightJobs{}
 	p.SetComplexitySuggestionJobs(queue, manual)
-	runID, err := p.StartComplexitySuggestionRunNow(ctx)
+	runID, err := p.StartComplexitySuggestionRunNow(ctx, complexity.DefaultRouterID, 0)
 	require.NoError(t, err)
 	require.Equal(t, []string{runID}, queue.ids)
-	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	row, err := schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
 	require.NoError(t, err)
 	assert.True(t, row.NextRunAt.Equal(start.Add(time.Hour)), "a manual run leaves the schedule alone")
 
@@ -773,14 +883,14 @@ func TestComplexitySuggestionsScheduledRunDuringAManualOne(t *testing.T) {
 	assert.Equal(t, []string{runID}, queue.ids, "nothing queued behind the manual run")
 	var scheduled *logstore.ComplexitySuggestionRun
 	for _, run := range runsOf(t, store) {
-		if run.ID == complexitySuggestionSlotRunID(due) {
+		if run.ID == complexitySuggestionSlotRunID(complexity.DefaultRouterID, due) {
 			scheduled = &run
 		}
 	}
 	require.NotNil(t, scheduled)
 	assert.Equal(t, logstore.ComplexitySuggestionRunSkipped, scheduled.Status)
 	assert.Contains(t, scheduled.Error, "still in progress")
-	row, err = schedules.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	row, err = schedules.GetComplexitySuggestionSchedule(ctx, complexity.DefaultRouterID)
 	require.NoError(t, err)
 	assert.True(t, row.NextRunAt.Equal(due.Add(time.Hour)), "the schedule moved on")
 }
@@ -788,7 +898,7 @@ func TestComplexitySuggestionsScheduledRunDuringAManualOne(t *testing.T) {
 // Testing a phrase uses the serving bank and the router's own floor.
 func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 	p, _, _ := suggestionPlugin(t)
-	got, err := p.TestComplexitySuggestionPhrases(context.Background(),
+	got, err := p.TestComplexitySuggestionPhrases(context.Background(), complexity.DefaultRouterID,
 		[]complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "simple request"}},
 		[]suggestrun.TestExample{{LogID: "log-0", Text: "simple request"}})
 	require.NoError(t, err)
@@ -796,7 +906,24 @@ func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 	assert.Equal(t, "SIMPLE", got.Examples[0].Current.Tier)
 	assert.Equal(t, "simple exemplar", got.Phrases[0].Nearest.Phrase, "the tested phrase duplicates a live one")
 	assert.InDelta(t, 1, got.Phrases[0].Nearest.Similarity, 1e-6)
-	assert.Equal(t, 1, p.ComplexitySuggestionMessageHistoryCount())
+	assert.Equal(t, 1, p.ComplexitySuggestionMessageHistoryCount(complexity.DefaultRouterID))
+}
+
+// An estimate counts the window's captured requests and bounds what a run of
+// the current settings would do with them.
+func TestComplexitySuggestionsEstimate(t *testing.T) {
+	p, _, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	got, err := p.EstimateComplexitySuggestionRun(ctx, complexity.DefaultRouterID, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 6, got.Requests)
+	assert.Equal(t, 6, got.Clustered)
+	assert.Equal(t, 6, got.MaxModelCalls, "6 requests make at most 3 clusters of 2, two calls each")
+
+	_, err = p.EstimateComplexitySuggestionRun(ctx, complexity.DefaultRouterID, 8*24*time.Hour)
+	require.ErrorIs(t, err, ErrComplexitySuggestionWindow)
+	_, err = p.EstimateComplexitySuggestionRun(ctx, "office", 0)
+	require.ErrorIs(t, err, ErrUnknownComplexityRouter)
 }
 
 // Testing a phrase reads only the serving bank, so it works on a router that
@@ -805,7 +932,7 @@ func TestComplexitySuggestionsTestPhrases(t *testing.T) {
 func TestComplexitySuggestionsTestPhrasesNeedNoCaptureStore(t *testing.T) {
 	p := newCapturePluginWithStore(t, suggestionTestSettings(), false)
 	require.False(t, p.semanticClassifier.Status().CaptureAvailable)
-	got, err := p.TestComplexitySuggestionPhrases(context.Background(),
+	got, err := p.TestComplexitySuggestionPhrases(context.Background(), complexity.DefaultRouterID,
 		[]complexity.SuggestionPhrase{{Tier: "COMPLEX", Text: "simple request"}},
 		[]suggestrun.TestExample{{LogID: "log-0", Text: "simple request"}})
 	require.NoError(t, err)

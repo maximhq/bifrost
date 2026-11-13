@@ -2122,7 +2122,30 @@
 				"samplePercentRange": "请输入大于 0 且不超过 100% 的采样率",
 				"firstRunRequired": "请选择首次运行的日期和时间",
 				"modelRequired": "请为此供应商选择模型",
-				"providerRequired": "请为此模型选择供应商"
+				"providerRequired": "请为此模型选择供应商",
+				"runDialogTitle": "立即运行建议",
+				"runDialogDescription": "读取此路由器在所选时间段内的流量并为其提议短语。在你接受并保存之前不会有任何更改。",
+				"runWindowLabel": "时间段",
+				"runWindow": {
+					"24h": "过去 24 小时",
+					"7d": "过去 7 天",
+					"14d": "过去 14 天",
+					"30d": "过去 30 天"
+				},
+				"estimating": "正在估算…",
+				"estimateFailed": "无法估算本次运行：{{error}}",
+				"estimateRequests_one": "时间段内有 {{formatted}} 个请求",
+				"estimateRequests_other": "时间段内有 {{formatted}} 个请求",
+				"estimateClustered_one": "其中 {{formatted}} 个会被分组成簇，其余的若匹配某个簇，就会加入该簇。",
+				"estimateClustered_other": "其中 {{formatted}} 个会被分组成簇，其余的若匹配某个簇，就会加入该簇。",
+				"estimateSkipped_one": "另有 {{formatted}} 个超出本次运行的上限，不计入。",
+				"estimateSkipped_other": "另有 {{formatted}} 个超出本次运行的上限，不计入。",
+				"estimateModelCalls_one": "最多调用建议模型 {{formatted}} 次",
+				"estimateModelCalls_other": "最多调用建议模型 {{formatted}} 次",
+				"runInBackground": "在你的网关内后台运行，不在请求路径上。",
+				"runStart": "开始运行",
+				"stale": "旧版短语库",
+				"staleTip": "计算于短语列表最近一次更改之前。添加前请用当前短语测试。"
 			}
 		},
 		"editDescription": "更新路由规则配置",

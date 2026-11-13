@@ -26,7 +26,7 @@ import {
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
-import { DecisionTier, MAX_SEMANTIC_PHRASES, Suggestion } from "@/lib/types/complexityRouter";
+import { DEFAULT_COMPLEXITY_ROUTER_ID, DecisionTier, MAX_SEMANTIC_PHRASES, Suggestion } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -239,7 +239,7 @@ export default function ComplexityRouterPage() {
 	const step = openStep ?? (canUpdate && !hasClassifier ? "classifier" : "setup");
 	// The tab's pending count; the tab itself reads the same cached list.
 	const { data: openSuggestions } = useGetComplexitySuggestionsQuery(
-		{ statuses: ["open"] },
+		{ statuses: ["open"], routerId: DEFAULT_COMPLEXITY_ROUTER_ID },
 		{ skip: step !== "setup" || liveClassifier !== "semantic" },
 	);
 

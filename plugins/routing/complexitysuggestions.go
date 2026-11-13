@@ -27,19 +27,19 @@ import (
 
 // Scheduled phrase-suggestion runs.
 //
-// The schedule's state lives in the config store: when the next run is due,
-// and a version every write bumps. Every node checks about once a minute,
-// reading the row only once its cached next run has come (or the schedule's
-// settings changed). A node that finds the run due claims it by moving the
-// next run on while the version still matches, so exactly one node takes it,
-// and the next run is counted from now, so a gateway that was down for
-// several runs catches up with one.
+// Each router's schedule state lives in the config store, one row per router:
+// when its next run is due, and a version every write bumps. Every node checks
+// about once a minute, reading a router's row only once its cached next run
+// has come (or the router's schedule settings changed). A node that finds a
+// run due claims it by moving the next run on while the version still matches,
+// so exactly one node takes it, and the next run is counted from now, so a
+// gateway that was down for several runs catches up with one.
 //
 // The node that claims a run records it, queued, before handing it to the job
 // runner, or skipped with its reason when it cannot start (the router is
-// still warming, or a run is still in progress here). Without a config store
-// there is no one to coordinate with: the node keeps the next run in memory
-// and runs it itself.
+// still warming, or one of its runs is still in progress). Without a config
+// store there is no one to coordinate with: the node keeps each router's next
+// run in memory and runs it itself.
 
 // ComplexitySuggestionsJobKind is the sidekiq kind a suggestion run is queued
 // as.
@@ -49,16 +49,13 @@ const ComplexitySuggestionsJobKind = "model_routing_suggestions"
 // suggestion runs.
 var complexitySuggestionRunNamespace = uuid.MustParse("e0cfefa2-278e-44ef-8e11-27edf6602d00")
 
-// complexitySuggestionSlotRunID is the run and job ID of a scheduled slot: a
-// UUID, so it fits the run table's key, and the same on every node, so a run
-// recorded or queued twice is still one run.
-func complexitySuggestionSlotRunID(slot time.Time) string {
-	return uuid.NewSHA1(complexitySuggestionRunNamespace, []byte(fmt.Sprintf("%s\x00%d", ComplexitySuggestionsJobKind, slot.Unix()))).String()
+// complexitySuggestionSlotRunID is the run and job ID of one router's
+// scheduled slot. It is the same on every node, which is what keeps a slot
+// from being queued twice, differs between routers due at the same slot, and
+// is a UUID, so it fits the run table's key.
+func complexitySuggestionSlotRunID(routerID string, slot time.Time) string {
+	return uuid.NewSHA1(complexitySuggestionRunNamespace, []byte(fmt.Sprintf("%s\x00%s\x00%d", ComplexitySuggestionsJobKind, routerID, slot.Unix()))).String()
 }
-
-// complexitySuggestionScheduleKey names the router a schedule row belongs to.
-// Suggestions run for one router, the complexity router.
-const complexitySuggestionScheduleKey = "default"
 
 // complexitySuggestionScheduleHash identifies the schedule settings a next
 // run was computed from, so a change to them moves it.
@@ -100,8 +97,8 @@ type ComplexitySuggestionJobStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 }
 
-// ComplexitySuggestionScheduleStore keeps schedule state and lets nodes
-// claim a due run. The config store is one.
+// ComplexitySuggestionScheduleStore keeps each router's schedule state and
+// lets nodes claim a due run. The config store is one.
 type ComplexitySuggestionScheduleStore interface {
 	GetComplexitySuggestionSchedule(ctx context.Context, routerID string) (*tables.TableComplexitySuggestionSchedule, error)
 	SetComplexitySuggestionSchedule(ctx context.Context, routerID, scheduleHash string, nextRunAt time.Time, readVersion *int64) (bool, error)
@@ -113,14 +110,16 @@ type complexitySuggestions struct {
 	deps      atomic.Pointer[complexitySuggestionDeps]
 	jobs      atomic.Pointer[complexitySuggestionJobs]
 	schedules atomic.Pointer[ComplexitySuggestionScheduleStore]
-	// inline guards the run a node without a job runner does itself.
-	inline atomic.Bool
+	// inline guards the run a node without a job runner does itself, per
+	// router.
+	inlineMu sync.Mutex
+	inline   map[string]bool
 
-	// next is this node's view of the schedule: the next run of the settings
-	// hash names. With a schedule store it only saves reading the row before
-	// the run is due; without one it is the schedule.
+	// next is this node's view of each router's schedule: the next run of the
+	// settings hash names. With a schedule store it only saves reading the
+	// row before the run is due; without one it is the schedule.
 	nextMu sync.Mutex
-	next   complexitySuggestionNext
+	next   map[string]complexitySuggestionNext
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -135,15 +134,15 @@ type complexitySuggestionNext struct {
 	at   time.Time
 }
 
-func (cs *complexitySuggestions) cachedNext() complexitySuggestionNext {
+func (cs *complexitySuggestions) cachedNext(routerID string) complexitySuggestionNext {
 	cs.nextMu.Lock()
 	defer cs.nextMu.Unlock()
-	return cs.next
+	return cs.next[routerID]
 }
 
-func (cs *complexitySuggestions) rememberNext(hash string, at time.Time) {
+func (cs *complexitySuggestions) rememberNext(routerID, hash string, at time.Time) {
 	cs.nextMu.Lock()
-	cs.next = complexitySuggestionNext{hash: hash, at: at}
+	cs.next[routerID] = complexitySuggestionNext{hash: hash, at: at}
 	cs.nextMu.Unlock()
 }
 
@@ -185,15 +184,55 @@ type complexitySuggestionJobs struct {
 
 // complexitySuggestionJobMeta is a run job's metadata.
 type complexitySuggestionJobMeta struct {
-	RunID       string `json:"run_id"`
-	TriggeredBy string `json:"triggered_by"`
-	Message     string `json:"message,omitempty"`
+	RunID         string `json:"run_id"`
+	RouterID      string `json:"router_id"`
+	TriggeredBy   string `json:"triggered_by"`
+	WindowSeconds int64  `json:"window_seconds,omitempty"` // 0 reads the whole lookback
+	Message       string `json:"message,omitempty"`
+}
+
+// suggestionRouter is one router suggestions are made for: its settings and
+// the classifier serving its phrase bank. A gateway has one today, the
+// default router, built from the plugin's own config and classifier; several
+// routers add entries here and nothing else in this file changes.
+type suggestionRouter struct {
+	id         string
+	config     *complexity.AnalyzerConfig
+	classifier *complexity.SemanticClassifier
+}
+
+// ErrUnknownComplexityRouter is a suggestion call for a router that does not
+// exist.
+var ErrUnknownComplexityRouter = errors.New("no such model router")
+
+// ErrComplexitySuggestionWindow is a run window outside what is kept.
+var ErrComplexitySuggestionWindow = errors.New("the run window must be at least one second and no longer than the suggestions lookback")
+
+// suggestionRouters lists the routers suggestions are made for.
+func (p *RoutingPlugin) suggestionRouters() []suggestionRouter {
+	return []suggestionRouter{{id: complexity.DefaultRouterID, config: p.complexityConfig.Load(), classifier: p.semanticClassifier}}
+}
+
+// suggestionRouter finds one router by ID.
+func (p *RoutingPlugin) suggestionRouter(id string) (suggestionRouter, bool) {
+	for _, r := range p.suggestionRouters() {
+		if r.id == id {
+			return r, true
+		}
+	}
+	return suggestionRouter{}, false
+}
+
+// complexitySuggestionPartition keeps one router's runs in order and apart
+// from every other router's.
+func complexitySuggestionPartition(routerID string) string {
+	return ComplexitySuggestionsJobKind + ":" + routerID
 }
 
 // startComplexitySuggestions starts the schedule check. tick <= 0 starts no
 // ticker, for tests that drive the check themselves.
 func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick time.Duration) {
-	cs := &complexitySuggestions{}
+	cs := &complexitySuggestions{inline: map[string]bool{}, next: map[string]complexitySuggestionNext{}}
 	cs.ctx, cs.cancel = context.WithCancel(ctx)
 	p.suggestions = cs
 	if tick <= 0 {
@@ -278,81 +317,91 @@ func (cs *complexitySuggestions) scheduleStore() ComplexitySuggestionScheduleSto
 	return nil
 }
 
-// scheduleComplexitySuggestions claims the schedule's run if it is due, and
-// starts or records it.
+// scheduleComplexitySuggestions claims, for each router, its schedule's run if
+// it is due, and starts or records it.
 func (p *RoutingPlugin) scheduleComplexitySuggestions(ctx context.Context, now time.Time) error {
-	cs := p.suggestions
-	config := p.complexityConfig.Load()
-	if cs == nil || !config.SuggestionsEnabled() {
+	if p.suggestions == nil {
 		return nil
 	}
+	var errs []error
+	for _, router := range p.suggestionRouters() {
+		if err := p.scheduleRouterSuggestions(ctx, router, now); err != nil {
+			errs = append(errs, fmt.Errorf("router %s: %w", router.id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (p *RoutingPlugin) scheduleRouterSuggestions(ctx context.Context, router suggestionRouter, now time.Time) error {
+	cs := p.suggestions
 	deps := cs.deps.Load()
-	if deps == nil {
+	if deps == nil || !router.config.SuggestionsEnabled() {
 		return nil
 	}
 	// Nothing is captured without a capture store, and that does not pass
 	// the way warming does, so the run is neither claimed nor recorded as
 	// skipped every interval; the status says why instead.
-	if p.semanticClassifier != nil && !p.semanticClassifier.Status().CaptureAvailable {
+	if router.classifier != nil && !router.classifier.Status().CaptureAvailable {
 		return nil
 	}
-	schedule := config.Suggestions.EffectiveSchedule()
+	schedule := router.config.Suggestions.EffectiveSchedule()
 	hash := complexitySuggestionScheduleHash(schedule)
-	due, version, isDue, err := cs.dueRun(ctx, schedule, hash, now)
+	due, version, isDue, err := cs.dueRun(ctx, router.id, schedule, hash, now)
 	if err != nil || !isDue {
 		return err
 	}
 	next := schedule.NextSlot(now)
-	runID := complexitySuggestionSlotRunID(due)
+	runID := complexitySuggestionSlotRunID(router.id, due)
 	if store := cs.scheduleStore(); store != nil {
-		claimed, err := store.ClaimComplexitySuggestionRun(ctx, complexitySuggestionScheduleKey, version, due, next, runID)
+		claimed, err := store.ClaimComplexitySuggestionRun(ctx, router.id, version, due, next, runID)
 		if err != nil {
 			return err
 		}
-		cs.rememberNext(hash, next)
+		cs.rememberNext(router.id, hash, next)
 		if !claimed {
 			return nil // another node took it
 		}
 	} else {
-		cs.rememberNext(hash, next)
+		cs.rememberNext(router.id, hash, next)
 	}
+	trigger := logstore.ComplexitySuggestionTriggerSchedule
 	// A router still warming (after a restart, or a phrase change) has no
 	// space to suggest against: the run is recorded as skipped, so the
 	// schedule never claims to have run when it did not.
-	if p.semanticClassifier == nil || p.semanticClassifier.Status().State != complexity.SemanticStatusReady {
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "the complexity router was still warming up")
+	if router.classifier == nil || router.classifier.Status().State != complexity.SemanticStatusReady {
+		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "the complexity router was still warming up")
 	}
-	started, err := p.startComplexitySuggestionRun(ctx, runID, logstore.ComplexitySuggestionTriggerSchedule)
+	started, err := p.startComplexitySuggestionRun(ctx, complexitySuggestionJobMeta{RunID: runID, RouterID: router.id, TriggeredBy: trigger})
 	switch {
 	case errors.Is(err, errSuggestionsClosing):
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "the gateway was shutting down")
+		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "the gateway was shutting down")
 	case err != nil:
 		return err
 	case !started:
-		return recordSkippedSuggestionRun(ctx, deps.store, runID, logstore.ComplexitySuggestionTriggerSchedule, "a suggestion run was still in progress")
+		return recordSkippedSuggestionRun(ctx, deps.store, runID, router.id, trigger, "a suggestion run was still in progress")
 	}
 	return nil
 }
 
-// dueRun reports the run due now, with the schedule row version to claim it
-// at. The row is read only once the run this node last saw is due, or the
-// schedule's settings changed; a row missing or computed from other settings
-// is set to the next run after now, so a new or changed schedule waits for its
-// next run rather than running at once.
-func (cs *complexitySuggestions) dueRun(ctx context.Context, schedule configstore.ComplexitySuggestionsSchedule, hash string, now time.Time) (time.Time, int64, bool, error) {
-	cached := cs.cachedNext()
+// dueRun reports a router's run due now, with the schedule row version to
+// claim it at. The row is read only once the run this node last saw is due,
+// or the schedule's settings changed; a row missing or computed from other
+// settings is set to the next run after now, so a new or changed schedule
+// waits for its next run rather than running at once.
+func (cs *complexitySuggestions) dueRun(ctx context.Context, routerID string, schedule configstore.ComplexitySuggestionsSchedule, hash string, now time.Time) (time.Time, int64, bool, error) {
+	cached := cs.cachedNext(routerID)
 	if cached.hash == hash && now.Before(cached.at) {
 		return time.Time{}, 0, false, nil
 	}
 	store := cs.scheduleStore()
 	if store == nil {
 		if cached.hash != hash {
-			cs.rememberNext(hash, schedule.NextSlot(now))
+			cs.rememberNext(routerID, hash, schedule.NextSlot(now))
 			return time.Time{}, 0, false, nil
 		}
 		return cached.at, 0, true, nil
 	}
-	row, err := store.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey)
+	row, err := store.GetComplexitySuggestionSchedule(ctx, routerID)
 	if err != nil {
 		return time.Time{}, 0, false, err
 	}
@@ -362,37 +411,37 @@ func (cs *complexitySuggestions) dueRun(ctx context.Context, schedule configstor
 		if row != nil {
 			readVersion = &row.Version
 		}
-		set, err := store.SetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey, hash, next, readVersion)
+		set, err := store.SetComplexitySuggestionSchedule(ctx, routerID, hash, next, readVersion)
 		if err != nil {
 			return time.Time{}, 0, false, err
 		}
 		if set {
-			cs.rememberNext(hash, next)
+			cs.rememberNext(routerID, hash, next)
 			return time.Time{}, 0, false, nil
 		}
 		// Another node wrote the row since it was read, and may already have
 		// claimed a slot: read what it wrote rather than overwrite it.
-		if row, err = store.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey); err != nil {
+		if row, err = store.GetComplexitySuggestionSchedule(ctx, routerID); err != nil {
 			return time.Time{}, 0, false, err
 		}
 		if row == nil || row.ScheduleHash != hash {
 			return time.Time{}, 0, false, nil // the next check sets it again
 		}
 	}
-	cs.rememberNext(hash, row.NextRunAt)
+	cs.rememberNext(routerID, hash, row.NextRunAt)
 	if now.Before(row.NextRunAt) {
 		return time.Time{}, 0, false, nil
 	}
 	return row.NextRunAt, row.Version, true, nil
 }
 
-// NextComplexitySuggestionRun is when the schedule runs next: the next run its
-// state has once a node has set it for these settings, else the next one the
-// settings give; a run already due is due now.
-func NextComplexitySuggestionRun(ctx context.Context, store ComplexitySuggestionScheduleStore, schedule configstore.ComplexitySuggestionsSchedule, now time.Time) time.Time {
+// NextComplexitySuggestionRun is when a router's schedule runs next: the next
+// run its state has once a node has set it for these settings, else the next
+// one the settings give; a run already due is due now.
+func NextComplexitySuggestionRun(ctx context.Context, store ComplexitySuggestionScheduleStore, routerID string, schedule configstore.ComplexitySuggestionsSchedule, now time.Time) time.Time {
 	next := schedule.NextSlot(now)
 	if store != nil {
-		if row, err := store.GetComplexitySuggestionSchedule(ctx, complexitySuggestionScheduleKey); err == nil && row != nil && row.ScheduleHash == complexitySuggestionScheduleHash(schedule) {
+		if row, err := store.GetComplexitySuggestionSchedule(ctx, routerID); err == nil && row != nil && row.ScheduleHash == complexitySuggestionScheduleHash(schedule) {
 			next = row.NextRunAt
 		}
 	}
@@ -403,9 +452,9 @@ func NextComplexitySuggestionRun(ctx context.Context, store ComplexitySuggestion
 }
 
 // recordSkippedSuggestionRun records a run that was due but could not start.
-func recordSkippedSuggestionRun(ctx context.Context, store suggestrun.Store, runID, triggeredBy, reason string) error {
+func recordSkippedSuggestionRun(ctx context.Context, store suggestrun.Store, runID, routerID, triggeredBy, reason string) error {
 	now := time.Now().UTC()
-	run := &logstore.ComplexitySuggestionRun{ID: runID, TriggeredBy: triggeredBy, Status: logstore.ComplexitySuggestionRunSkipped,
+	run := &logstore.ComplexitySuggestionRun{ID: runID, RouterID: routerID, TriggeredBy: triggeredBy, Status: logstore.ComplexitySuggestionRunSkipped,
 		Error: reason, StartedAt: now, WindowStart: now, FinishedAt: &now}
 	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
 		return fmt.Errorf("record skipped suggestion run: %w", err)
@@ -415,12 +464,14 @@ func recordSkippedSuggestionRun(ctx context.Context, store suggestrun.Store, run
 
 // recordQueuedSuggestionRun records a run handed to the job runner or this
 // node, before either starts it, so a run is visible from the moment it is
-// taken; the run itself then records its progress under the same ID.
-func recordQueuedSuggestionRun(ctx context.Context, store suggestrun.Store, runID, triggeredBy string) error {
+// taken; the run itself then records its progress under the same ID. Only a
+// run not recorded yet is written: two starts that raced to the same ID must
+// not have the later one put a run that already ended back to queued.
+func recordQueuedSuggestionRun(ctx context.Context, store suggestrun.Store, meta complexitySuggestionJobMeta) error {
 	now := time.Now().UTC()
-	run := &logstore.ComplexitySuggestionRun{ID: runID, TriggeredBy: triggeredBy, Status: logstore.ComplexitySuggestionRunQueued,
+	run := &logstore.ComplexitySuggestionRun{ID: meta.RunID, RouterID: meta.RouterID, TriggeredBy: meta.TriggeredBy, Status: logstore.ComplexitySuggestionRunQueued,
 		StartedAt: now, WindowStart: now}
-	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+	if _, err := store.InsertComplexitySuggestionRun(ctx, run); err != nil {
 		return fmt.Errorf("record queued suggestion run: %w", err)
 	}
 	return nil
@@ -444,22 +495,32 @@ var ErrComplexitySuggestionsOff = errors.New("phrase suggestions are off: enable
 // queued or running.
 var ErrComplexitySuggestionRunInFlight = errors.New("a phrase suggestion run is already queued or running")
 
-// StartComplexitySuggestionRunNow starts a run outside the schedule and
-// returns its ID; the run itself happens in the background.
-func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context) (string, error) {
-	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !p.complexityConfig.Load().SuggestionsEnabled() {
+// StartComplexitySuggestionRunNow starts a run for one router outside the
+// schedule and returns its ID; the run itself happens in the background.
+// window bounds how much of the lookback it reads; zero reads all of it.
+func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context, routerID string, window time.Duration) (string, error) {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return "", ErrUnknownComplexityRouter
+	}
+	if p.suggestions == nil || p.suggestions.deps.Load() == nil || !router.config.SuggestionsEnabled() {
 		return "", ErrComplexitySuggestionsOff
+	}
+	if err := checkSuggestionWindow(router, window); err != nil {
+		return "", err
 	}
 	// Refused up front rather than accepted and recorded as a failed run. A
 	// previous phrase bank still serving while a new one warms is enough.
-	if p.semanticClassifier == nil || !p.semanticClassifier.Serving() {
+	if router.classifier == nil || !router.classifier.Serving() {
 		return "", complexity.ErrNoServingGeneration
 	}
-	runID, err := p.manualSuggestionRunID(ctx)
+	runID, err := p.manualSuggestionRunID(ctx, router.id)
 	if err != nil {
 		return "", err
 	}
-	started, err := p.startComplexitySuggestionRun(ctx, runID, logstore.ComplexitySuggestionTriggerManual)
+	started, err := p.startComplexitySuggestionRun(ctx, complexitySuggestionJobMeta{
+		RunID: runID, RouterID: router.id, TriggeredBy: logstore.ComplexitySuggestionTriggerManual, WindowSeconds: int64(window / time.Second),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -475,8 +536,9 @@ func (p *RoutingPlugin) StartComplexitySuggestionRunNow(ctx context.Context) (st
 // takes the first, the others get the duplicate, and every caller is handed
 // the one run. Once that job exists it is the latest, so the next start names
 // a new one. Without a job runner the node's own guard serializes runs, and a
-// fresh UUID will do.
-func (p *RoutingPlugin) manualSuggestionRunID(ctx context.Context) (string, error) {
+// fresh UUID will do. The router is part of the name, so starts for
+// different routers never share a run.
+func (p *RoutingPlugin) manualSuggestionRunID(ctx context.Context, routerID string) (string, error) {
 	jobs := p.suggestions.jobs.Load()
 	if jobs == nil {
 		return uuid.NewString(), nil
@@ -489,17 +551,70 @@ func (p *RoutingPlugin) manualSuggestionRunID(ctx context.Context) (string, erro
 	if latest != nil {
 		previous = latest.ID
 	}
-	return uuid.NewSHA1(complexitySuggestionRunNamespace, []byte(ComplexitySuggestionsJobKind+"\x00manual\x00"+previous)).String(), nil
+	return uuid.NewSHA1(complexitySuggestionRunNamespace, []byte(ComplexitySuggestionsJobKind+"\x00manual\x00"+routerID+"\x00"+previous)).String(), nil
+}
+
+// checkSuggestionWindow refuses a window longer than what is kept, and one
+// shorter than a second: a run carries its window in whole seconds, so a
+// shorter one would arrive as 0, the whole lookback.
+func checkSuggestionWindow(router suggestionRouter, window time.Duration) error {
+	if window == 0 {
+		return nil
+	}
+	lookback := time.Duration(router.config.Suggestions.LookbackDays) * 24 * time.Hour
+	if window < time.Second || window > lookback {
+		return ErrComplexitySuggestionWindow
+	}
+	return nil
+}
+
+// EstimateComplexitySuggestionRun sizes a run of one router over window
+// without running it: how many requests it would read, cluster and count in,
+// and at most how many suggestion-model calls it would make.
+func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, routerID string, window time.Duration) (suggestrun.Estimate, error) {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return suggestrun.Estimate{}, ErrUnknownComplexityRouter
+	}
+	if !router.config.SuggestionsEnabled() {
+		return suggestrun.Estimate{}, ErrComplexitySuggestionsOff
+	}
+	if err := checkSuggestionWindow(router, window); err != nil {
+		return suggestrun.Estimate{}, err
+	}
+	if router.classifier == nil {
+		return suggestrun.Estimate{}, complexity.ErrNoServingGeneration
+	}
+	space, err := router.classifier.SuggestionSpace(ctx)
+	if err != nil {
+		return suggestrun.Estimate{}, err
+	}
+	defer space.Close()
+	settings := runSettings(router, "", "", window)
+	now := time.Now()
+	window = settings.Window
+	if window <= 0 || window > settings.Lookback {
+		window = settings.Lookback
+	}
+	count, err := space.CountCaptured(ctx, now.Add(-window), now)
+	if err != nil {
+		return suggestrun.Estimate{}, err
+	}
+	return suggestrun.EstimateRun(count, settings), nil
 }
 
 // TestComplexitySuggestionPhrases routes examples with and without phrases
-// against the serving phrase bank, without saving anything.
-func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
-	if p.semanticClassifier == nil {
+// against one router's serving phrase bank, without saving anything.
+func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, routerID string, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
+	router, ok := p.suggestionRouter(routerID)
+	if !ok {
+		return suggestrun.PhraseTest{}, ErrUnknownComplexityRouter
+	}
+	if router.classifier == nil {
 		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
 	}
 	// Only the serving bank is read, so no capture store is needed.
-	space, err := p.semanticClassifier.ServingSpace(ctx)
+	space, err := router.classifier.ServingSpace(ctx)
 	if err != nil {
 		return suggestrun.PhraseTest{}, err
 	}
@@ -507,42 +622,57 @@ func (p *RoutingPlugin) TestComplexitySuggestionPhrases(ctx context.Context, phr
 	return suggestrun.TestPhrases(ctx, space, space.MinSimilarity, phrases, examples)
 }
 
-// ComplexitySuggestionMessageHistoryCount is how many user turns the router
+// ComplexitySuggestionMessageHistoryCount is how many user turns a router
 // embeds, so request text read back from logs matches what was captured.
-func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount() int {
-	if config := p.complexityConfig.Load(); config != nil && config.Semantic != nil {
-		return config.Semantic.MessageHistoryCount
+func (p *RoutingPlugin) ComplexitySuggestionMessageHistoryCount(routerID string) int {
+	if router, ok := p.suggestionRouter(routerID); ok && router.config != nil && router.config.Semantic != nil {
+		return router.config.Semantic.MessageHistoryCount
 	}
 	return 1
 }
 
-// startComplexitySuggestionRun records a run as queued and hands it to the
-// job runner, or starts it here when there is no job runner, and reports
-// whether it did. A run already queued or running (in the job store, or on
-// this node without one) is not doubled: it reports false, which a scheduled
-// caller records as a skipped run and a manual one refuses.
-func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, runID, triggeredBy string) (bool, error) {
+// ComplexitySuggestionRouterVersion names the phrase bank a router serves, so
+// suggestions made against an earlier one can be shown as such. Empty while
+// nothing is serving or the router does not exist.
+func (p *RoutingPlugin) ComplexitySuggestionRouterVersion(routerID string) string {
+	if router, ok := p.suggestionRouter(routerID); ok && router.classifier != nil {
+		return router.classifier.ServingVersion()
+	}
+	return ""
+}
+
+// ComplexitySuggestionRouterExists reports whether suggestions can be kept
+// for a router.
+func (p *RoutingPlugin) ComplexitySuggestionRouterExists(routerID string) bool {
+	_, ok := p.suggestionRouter(routerID)
+	return ok
+}
+
+// startComplexitySuggestionRun records a router's run as queued and hands it
+// to the job runner, or starts it here when there is no job runner, and
+// reports whether it did. A run the router already has queued or running is
+// not doubled: it reports false, which a scheduled caller records as a
+// skipped run and a manual one refuses. Other routers' runs are no reason to
+// wait.
+func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta complexitySuggestionJobMeta) (bool, error) {
 	cs := p.suggestions
 	deps := cs.deps.Load()
 	if deps == nil {
 		return false, errSuggestionsUnavailable
 	}
 	if jobs := cs.jobs.Load(); jobs != nil {
-		inFlight, err := jobs.store.GetInFlightSidekiqJobByKind(ctx, ComplexitySuggestionsJobKind)
-		if err != nil {
-			return false, fmt.Errorf("check for a running suggestion run: %w", err)
+		busy, err := p.routerSuggestionBusy(ctx, jobs, meta.RouterID)
+		if err != nil || busy {
+			return false, err
 		}
-		if inFlight != nil {
-			return false, nil
-		}
-		meta, err := sonic.MarshalString(complexitySuggestionJobMeta{RunID: runID, TriggeredBy: triggeredBy})
+		encoded, err := sonic.MarshalString(meta)
 		if err != nil {
 			return false, err
 		}
-		if err := recordQueuedSuggestionRun(ctx, deps.store, runID, triggeredBy); err != nil {
+		if err := recordQueuedSuggestionRun(ctx, deps.store, meta); err != nil {
 			return false, err
 		}
-		err = jobs.queue.EnqueuePartitioned(ctx, runID, ComplexitySuggestionsJobKind, ComplexitySuggestionsJobKind, meta, "")
+		err = jobs.queue.EnqueuePartitioned(ctx, meta.RunID, ComplexitySuggestionsJobKind, complexitySuggestionPartition(meta.RouterID), encoded, "")
 		if sidekiq.IsDuplicateJobError(err) {
 			return true, nil // this run is already queued
 		}
@@ -558,48 +688,90 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, runID,
 			switch {
 			case lookupErr != nil:
 				return false, errors.Join(err, fmt.Errorf("could not confirm whether the run was queued: %w", lookupErr))
-			case inFlight != nil && inFlight.ID == runID:
+			case inFlight != nil && inFlight.ID == meta.RunID:
 				return true, nil // written after all; the dispatcher runs it
 			case inFlight != nil:
 				return false, err // another run's job; whether this one exists is unknown
 			}
-			if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, runID, triggeredBy, "the run could not be queued: "+err.Error()); recordErr != nil {
+			if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, "the run could not be queued: "+err.Error()); recordErr != nil {
 				err = errors.Join(err, recordErr)
 			}
 			return false, err
 		}
 		return true, nil
 	}
-	if !cs.inline.CompareAndSwap(false, true) {
+	cs.inlineMu.Lock()
+	if cs.inline[meta.RouterID] {
+		cs.inlineMu.Unlock()
 		return false, nil
 	}
 	runCtx, done, err := cs.beginRun(cs.ctx)
 	if err != nil {
-		cs.inline.Store(false)
+		cs.inlineMu.Unlock()
 		// Closing: not "already running", so a manual run is told why.
 		return false, err
 	}
-	if err := recordQueuedSuggestionRun(ctx, deps.store, runID, triggeredBy); err != nil {
+	cs.inline[meta.RouterID] = true
+	cs.inlineMu.Unlock()
+	if err := recordQueuedSuggestionRun(ctx, deps.store, meta); err != nil {
+		cs.inlineMu.Lock()
+		delete(cs.inline, meta.RouterID)
+		cs.inlineMu.Unlock()
 		done()
-		cs.inline.Store(false)
 		return false, err
 	}
 	go func() {
 		defer done()
-		defer cs.inline.Store(false)
-		_, err := p.runComplexitySuggestions(runCtx, runID, triggeredBy)
+		defer func() {
+			cs.inlineMu.Lock()
+			delete(cs.inline, meta.RouterID)
+			cs.inlineMu.Unlock()
+		}()
+		_, err := p.runComplexitySuggestions(runCtx, meta)
 		if errors.Is(err, errSuggestionsUnavailable) {
 			// Turned off between queueing and starting, as a job can find them:
 			// the run recorded as queued above is closed as skipped.
 			recordCtx, cancel := suggestionRecordContext(runCtx)
 			defer cancel()
-			err = recordSkippedSuggestionRun(recordCtx, deps.store, runID, triggeredBy, suggestionsTurnedOffReason)
+			err = recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, suggestionsTurnedOffReason)
 		}
 		if err != nil {
-			p.logger.Warn("[Routing] phrase suggestion run %s failed: %v", runID, err)
+			p.logger.Warn("[Routing] phrase suggestion run %s failed: %v", meta.RunID, err)
 		}
 	}()
 	return true, nil
+}
+
+// routerSuggestionBusy reports whether a router has a run queued or running.
+// The job store answers per job kind, so a queued job of the kind counts only
+// when it is this router's; the router's latest run record, queued or running
+// inside the run timeout, covers a job of this router queued behind another
+// router's.
+func (p *RoutingPlugin) routerSuggestionBusy(ctx context.Context, jobs *complexitySuggestionJobs, routerID string) (bool, error) {
+	inFlight, err := jobs.store.GetInFlightSidekiqJobByKind(ctx, ComplexitySuggestionsJobKind)
+	if err != nil {
+		return false, fmt.Errorf("check for a running suggestion run: %w", err)
+	}
+	if inFlight != nil {
+		var meta complexitySuggestionJobMeta
+		if sonic.UnmarshalString(inFlight.Metadata, &meta) != nil || meta.RouterID == "" || meta.RouterID == routerID {
+			return true, nil
+		}
+	}
+	deps := p.suggestions.deps.Load()
+	if deps == nil {
+		return false, nil
+	}
+	latest, err := deps.store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID}, 1)
+	if err != nil {
+		return false, fmt.Errorf("read the latest suggestion run: %w", err)
+	}
+	if len(latest) == 0 {
+		return false, nil
+	}
+	status := latest[0].Status
+	return (status == logstore.ComplexitySuggestionRunQueued || status == logstore.ComplexitySuggestionRunRunning) &&
+		time.Since(latest[0].StartedAt) < suggestionRunTimeout, nil
 }
 
 // RunComplexitySuggestionsJob is the sidekiq handler for a queued run.
@@ -617,7 +789,7 @@ func (p *RoutingPlugin) RunComplexitySuggestionsJob(ctx context.Context, job tab
 			err = beginErr
 			if deps := cs.deps.Load(); deps != nil {
 				recordCtx, cancel := suggestionRecordContext(ctx)
-				if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.TriggeredBy, "the routing plugin was shutting down"); recordErr != nil {
+				if recordErr := recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, "the routing plugin was shutting down"); recordErr != nil {
 					err = errors.Join(err, recordErr)
 				}
 				cancel()
@@ -628,7 +800,7 @@ func (p *RoutingPlugin) RunComplexitySuggestionsJob(ctx context.Context, job tab
 		}
 	}
 	if err == nil {
-		result, err = p.runComplexitySuggestions(ctx, meta.RunID, meta.TriggeredBy)
+		result, err = p.runComplexitySuggestions(ctx, meta)
 	}
 	switch {
 	case errors.Is(err, errSuggestionsUnavailable):
@@ -641,7 +813,7 @@ func (p *RoutingPlugin) RunComplexitySuggestionsJob(ctx context.Context, job tab
 		if cs := p.suggestions; cs != nil {
 			if deps := cs.deps.Load(); deps != nil {
 				recordCtx, cancel := suggestionRecordContext(ctx)
-				err = recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.TriggeredBy, suggestionsTurnedOffReason)
+				err = recordSkippedSuggestionRun(recordCtx, deps.store, meta.RunID, meta.RouterID, meta.TriggeredBy, suggestionsTurnedOffReason)
 				cancel()
 			}
 		}
@@ -665,6 +837,9 @@ func decodeComplexitySuggestionJobMeta(job tables.TableSidekiqJob) complexitySug
 	if err := sonic.UnmarshalString(job.Metadata, &meta); err != nil || meta.RunID == "" {
 		meta = complexitySuggestionJobMeta{RunID: job.ID, TriggeredBy: logstore.ComplexitySuggestionTriggerSchedule}
 	}
+	if meta.RouterID == "" {
+		meta.RouterID = complexity.DefaultRouterID
+	}
 	return meta
 }
 
@@ -685,7 +860,7 @@ func SkipComplexitySuggestionsJob(ctx context.Context, store suggestrun.Store, j
 	}
 	recordCtx, cancel := suggestionRecordContext(ctx)
 	defer cancel()
-	return encoded, recordSkippedSuggestionRun(recordCtx, store, meta.RunID, meta.TriggeredBy, reason)
+	return encoded, recordSkippedSuggestionRun(recordCtx, store, meta.RunID, meta.RouterID, meta.TriggeredBy, reason)
 }
 
 // SummarizeComplexitySuggestionsJob reports a run job's outcome for generic
@@ -705,34 +880,42 @@ const suggestionsTurnedOffReason = "phrase suggestions were turned off before th
 // errSuggestionsUnavailable is a run that had nothing to run against.
 var errSuggestionsUnavailable = errors.New("phrase suggestions are off or have nowhere to be kept")
 
-// runComplexitySuggestions runs one suggestion run against the serving
-// embedding space with the current settings.
-func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, runID, triggeredBy string) (suggestrun.Result, error) {
-	config := p.complexityConfig.Load()
-	var deps *complexitySuggestionDeps
-	if p.suggestions != nil {
-		deps = p.suggestions.deps.Load()
-	}
-	if !config.SuggestionsEnabled() || deps == nil || p.semanticClassifier == nil {
-		return suggestrun.Result{}, errSuggestionsUnavailable
-	}
-	ctx, cancel := context.WithTimeout(ctx, suggestionRunTimeout)
-	defer cancel()
-	settings := config.Suggestions
+// runSettings builds a router's run settings from its config.
+func runSettings(router suggestionRouter, runID, triggeredBy string, window time.Duration) suggestrun.Settings {
+	settings := router.config.Suggestions
 	s := suggestrun.Settings{
-		RunID: runID, TriggeredBy: triggeredBy,
+		RunID: runID, TriggeredBy: triggeredBy, RouterID: router.id,
 		Lookback:           time.Duration(settings.LookbackDays) * 24 * time.Hour,
+		Window:             window,
 		MaxClustered:       settings.MaxClusteredRequests,
 		MinClusterRequests: settings.MinClusterRequests,
 		Instructions:       settings.Instructions,
 		Seed:               time.Now().UnixNano(),
 	}
-	if config.LLM != nil {
-		s.Guidance = config.LLM.Prompt
+	if router.config.LLM != nil {
+		s.Guidance = router.config.LLM.Prompt
 	}
+	return s
+}
+
+// runComplexitySuggestions runs one router's suggestion run against its
+// serving embedding space with its current settings.
+func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta complexitySuggestionJobMeta) (suggestrun.Result, error) {
+	router, ok := p.suggestionRouter(meta.RouterID)
+	var deps *complexitySuggestionDeps
+	if p.suggestions != nil {
+		deps = p.suggestions.deps.Load()
+	}
+	if !ok || !router.config.SuggestionsEnabled() || deps == nil || router.classifier == nil {
+		return suggestrun.Result{}, errSuggestionsUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, suggestionRunTimeout)
+	defer cancel()
+	s := runSettings(router, meta.RunID, meta.TriggeredBy, time.Duration(meta.WindowSeconds)*time.Second)
+	settings := router.config.Suggestions
 	provider, model := settings.Provider, settings.Model
-	if model == "" && config.LLM != nil {
-		provider, model = config.LLM.Provider, config.LLM.Model
+	if model == "" && router.config.LLM != nil {
+		provider, model = router.config.LLM.Provider, router.config.LLM.Model
 	}
 	var llm suggest.LLM
 	if model != "" {
@@ -741,14 +924,23 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, runID, tri
 		llm, s.Cost = adapter, adapter.totalCost
 	}
 
-	space, err := p.semanticClassifier.SuggestionSpace(ctx)
+	space, err := router.classifier.SuggestionSpace(ctx)
 	if err != nil {
 		// Recorded, so a run that could not start reads as failed rather than
 		// never having happened, and the schedule does not retry it every
 		// minute.
-		run := &logstore.ComplexitySuggestionRun{ID: runID, TriggeredBy: triggeredBy, Status: logstore.ComplexitySuggestionRunFailed, Model: s.Model, Error: err.Error()}
+		run := &logstore.ComplexitySuggestionRun{ID: meta.RunID, RouterID: router.id, TriggeredBy: meta.TriggeredBy,
+			Status: logstore.ComplexitySuggestionRunFailed, Model: s.Model, Error: err.Error()}
 		finished := time.Now().UTC()
 		run.StartedAt, run.FinishedAt = finished, &finished
+		// The window it would have read, resolved as suggestrun.Run does: the
+		// one asked for, else the whole lookback; with neither, the failure
+		// time.
+		window := s.Window
+		if window <= 0 || window > s.Lookback {
+			window = s.Lookback
+		}
+		run.WindowStart = finished.Add(-window)
 		recordCtx, cancelRecord := suggestionRecordContext(ctx)
 		defer cancelRecord()
 		if recordErr := deps.store.UpsertComplexitySuggestionRun(recordCtx, run); recordErr != nil {
@@ -763,7 +955,7 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, runID, tri
 	result, err := suggestrun.Run(ctx, space, deps.store, texts, llm, s)
 	if err == nil && result.Unmatched > 0 {
 		p.logger.Info("[Routing] phrase suggestion run %s: %d of %d assigned requests matched no cluster; raise max_clustered_requests to cluster more of the window",
-			runID, result.Unmatched, result.Assigned)
+			meta.RunID, result.Unmatched, result.Assigned)
 	}
 	return result, err
 }

@@ -834,3 +834,55 @@ func captureUnix(value any) int64 {
 	}
 	return 0
 }
+
+// CountCaptured counts the requests captured from from through to, reading
+// only their timestamps, so a run can be sized before it reads any vector.
+//
+// Not every store can page a read that leaves the vectors out: Pinecone's
+// returns one page and no cursor. A full page with no cursor therefore does
+// not prove the count complete, and the window is counted again through the
+// vector read, which every store pages to the end (EachCaptured relies on
+// it). Only that recount reads vectors, a page at a time.
+func CountCaptured(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time) (int, error) {
+	if store == nil || namespace == "" {
+		return 0, nil
+	}
+	count, complete, err := countCapturedPages(ctx, store, namespace, from, to)
+	if err != nil || complete {
+		return count, err
+	}
+	count, _, err = countCapturedPages(vectorstore.WithIncludeVectors(ctx), store, namespace, from, to)
+	return count, err
+}
+
+// countCapturedPages counts by paging GetAll. complete is false when a read
+// without vectors ended on a full page with no cursor, which a store that
+// cannot page that read also returns.
+func countCapturedPages(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time) (count int, complete bool, err error) {
+	queries := []vectorstore.Query{
+		{Field: captureMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: captureMetadataKindValue},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: from.Unix()},
+		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: to.Unix()},
+	}
+	var cursor *string
+	for {
+		results, next, err := store.GetAll(ctx, namespace, queries, []string{captureMetadataTimestamp}, cursor, captureReadPage)
+		// As in EachCaptured: a namespace missing from the start holds
+		// nothing yet, but one that goes after a page was read leaves the
+		// count partial, which is not passed off as the whole window.
+		if errors.Is(err, vectorstore.ErrNotFound) && cursor == nil {
+			return count, true, nil
+		}
+		if err != nil {
+			return count, false, fmt.Errorf("count captured requests: %w", err)
+		}
+		count += len(results)
+		if len(results) == 0 {
+			return count, true, nil
+		}
+		if next == nil || *next == "" {
+			return count, len(results) < captureReadPage || vectorstore.IncludeVectorsRequested(ctx), nil
+		}
+		cursor = next
+	}
+}

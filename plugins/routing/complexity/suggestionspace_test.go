@@ -2,10 +2,12 @@ package complexity
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,6 +32,8 @@ func TestSuggestionSpaceReadsPhrasesAndCapturedRequests(t *testing.T) {
 	require.NoError(t, err)
 	defer space.Close()
 	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), space.CaptureNamespace)
+	assert.NotEmpty(t, space.Version)
+	assert.Equal(t, classifier.ServingVersion(), space.Version, "the space names the phrase bank it was taken from")
 	var texts []string
 	for _, p := range space.Phrases {
 		texts = append(texts, p.Tier+":"+p.Text)
@@ -70,4 +74,36 @@ func TestSuggestionSpaceNeedsAServingGeneration(t *testing.T) {
 	t.Cleanup(func() { _ = classifier.Close() })
 	_, err := classifier.SuggestionSpace(context.Background())
 	require.ErrorIs(t, err, ErrNoServingGeneration)
+}
+
+// dimensionlessStore is a store that, like Pinecone after a restart, cannot
+// read without vectors until CreateNamespace has told it the dimension.
+type dimensionlessStore struct {
+	vectorstore.VectorStore
+	created bool
+}
+
+func (s *dimensionlessStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
+	s.created = true
+	return s.VectorStore.CreateNamespace(ctx, namespace, dimension, properties)
+}
+
+func (s *dimensionlessStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, fields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	if !s.created && !vectorstore.IncludeVectorsRequested(ctx) {
+		return nil, nil, errors.New("dimension not set: CreateNamespace must be called before GetAll")
+	}
+	return s.VectorStore.GetAll(ctx, namespace, queries, fields, cursor, limit)
+}
+
+// An estimate made before anything was captured since a restart counts the
+// window, rather than failing on a store that needs the namespace set up
+// first.
+func TestSuggestionSpaceCountsBeforeTheFirstCapture(t *testing.T) {
+	store := &dimensionlessStore{VectorStore: newCaptureTestStore(t)}
+	space := &SuggestionSpace{Store: store, CaptureNamespace: CaptureNamespace("openai", "m", 2, 1), Dimension: 2}
+	now := time.Now()
+	count, err := space.CountCaptured(context.Background(), now.Add(-time.Hour), now)
+	require.NoError(t, err)
+	assert.Zero(t, count)
+	assert.True(t, store.created)
 }

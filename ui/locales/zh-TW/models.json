@@ -2122,7 +2122,30 @@
 				"samplePercentRange": "請輸入大於 0 且不超過 100% 的取樣率",
 				"firstRunRequired": "請選擇首次執行的日期和時間",
 				"modelRequired": "請為此供應商選擇模型",
-				"providerRequired": "請為此模型選擇供應商"
+				"providerRequired": "請為此模型選擇供應商",
+				"runDialogTitle": "立即執行建議",
+				"runDialogDescription": "讀取此路由器在所選時間範圍內的流量並為其提議短語。在你接受並儲存之前不會有任何變更。",
+				"runWindowLabel": "時間範圍",
+				"runWindow": {
+					"24h": "過去 24 小時",
+					"7d": "過去 7 天",
+					"14d": "過去 14 天",
+					"30d": "過去 30 天"
+				},
+				"estimating": "正在估算…",
+				"estimateFailed": "無法估算本次執行：{{error}}",
+				"estimateRequests_one": "時間範圍內有 {{formatted}} 個請求",
+				"estimateRequests_other": "時間範圍內有 {{formatted}} 個請求",
+				"estimateClustered_one": "其中 {{formatted}} 個會分組成叢集，其餘的若符合某個叢集，就會加入該叢集。",
+				"estimateClustered_other": "其中 {{formatted}} 個會分組成叢集，其餘的若符合某個叢集，就會加入該叢集。",
+				"estimateSkipped_one": "另有 {{formatted}} 個超出本次執行的上限，不計入。",
+				"estimateSkipped_other": "另有 {{formatted}} 個超出本次執行的上限，不計入。",
+				"estimateModelCalls_one": "最多呼叫建議模型 {{formatted}} 次",
+				"estimateModelCalls_other": "最多呼叫建議模型 {{formatted}} 次",
+				"runInBackground": "在你的閘道內於背景執行，不在請求路徑上。",
+				"runStart": "開始執行",
+				"stale": "舊版短語庫",
+				"staleTip": "計算於短語清單最近一次變更之前。新增前請用目前的短語測試。"
 			}
 		},
 		"editDescription": "更新路由規則配置",

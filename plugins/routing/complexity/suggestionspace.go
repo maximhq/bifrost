@@ -31,6 +31,7 @@ type SuggestionSpace struct {
 	Dimension           int
 	MessageHistoryCount int
 	MinSimilarity       float64 // the router's acceptance floor; 0 accepts any nearest phrase
+	Version             string  // the phrase bank served, as ServingVersion names it
 	Phrases             []SuggestionPhrase
 
 	semantic   *SemanticConfig
@@ -88,6 +89,7 @@ func (c *SemanticClassifier) snapshotSpace(ctx context.Context, needCapture bool
 		Dimension:           generation.dimension,
 		MessageHistoryCount: generation.semantic.MessageHistoryCount,
 		MinSimilarity:       generation.semantic.MinSimilarity,
+		Version:             servingVersion(generation.namespace),
 		semantic:            cloneSemanticConfig(generation.semantic),
 		embed:               generation.embed,
 		embedBatch:          embedBatch,
@@ -187,3 +189,22 @@ func (s *SuggestionSpace) Namespace() string { return s.CaptureNamespace }
 
 // LivePhrases returns the serving phrases.
 func (s *SuggestionSpace) LivePhrases() []SuggestionPhrase { return s.Phrases }
+
+// ServedVersion names the phrase bank the space was taken from.
+func (s *SuggestionSpace) ServedVersion() string { return s.Version }
+
+// CountCaptured counts the space's captured requests from from through to.
+//
+// The namespace is created first, as the capture writer does before its first
+// write. Some stores need that before they can count: Pinecone keeps the
+// dimension a read without vectors queries with in memory, set only by
+// CreateNamespace, so after a restart an estimate made before anything was
+// captured would fail. Creating a namespace that exists changes nothing.
+func (s *SuggestionSpace) CountCaptured(ctx context.Context, from, to time.Time) (int, error) {
+	if s.Store != nil && s.CaptureNamespace != "" {
+		if err := s.Store.CreateNamespace(ctx, s.CaptureNamespace, s.Dimension, captureProperties); err != nil {
+			return 0, fmt.Errorf("create capture namespace: %w", err)
+		}
+	}
+	return CountCaptured(ctx, s.Store, s.CaptureNamespace, from, to)
+}

@@ -1196,6 +1196,8 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion-test"
   /api/routing/complexity-suggestions/runs:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion-runs"
+  /api/routing/complexity-suggestions/runs/estimate:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-run-estimate"
   /api/routing/complexity-suggestions/{suggestion_id}:
     $ref: "./paths/management/routing.yaml#/complexity-suggestion"
   /api/routing/complexity-suggestions/{suggestion_id}/status:
