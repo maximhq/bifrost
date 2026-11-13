@@ -648,6 +648,9 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		if vk == nil || !vk.IsActiveValue() {
 			return fasthttp.StatusUnauthorized, "the virtual key behind this session is no longer active; " + hint
 		}
+		if vk.IsExpiredAt(now) {
+			return fasthttp.StatusUnauthorized, "the virtual key behind this session has expired; " + hint
+		}
 		stripGatewayCredentials(ctx)
 		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), vk.Value.GetValue())
 	case schemas.MCPAuthModeUser:
