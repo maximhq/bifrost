@@ -63,7 +63,7 @@ type Space interface {
 // Store is the part of the log store a run writes to.
 type Store interface {
 	ListComplexitySuggestions(ctx context.Context, filter logstore.ComplexitySuggestionFilter) ([]logstore.ComplexitySuggestion, error)
-	UpsertComplexitySuggestions(ctx context.Context, suggestions []logstore.ComplexitySuggestion) error
+	ReconcileComplexitySuggestions(ctx context.Context, writes []logstore.ComplexitySuggestionWrite) ([]string, error)
 	UpsertComplexitySuggestionRun(ctx context.Context, run *logstore.ComplexitySuggestionRun) error
 	ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]logstore.ComplexitySuggestionRun, error)
 	PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error)
@@ -264,10 +264,26 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 
 	// 5. Reconcile.
 	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, space.Namespace(), s.RunID, s.Now)
-	run.Created, run.Refreshed, run.Superseded = int64(created), int64(refreshed), int64(superseded)
-	if err := store.UpsertComplexitySuggestions(ctx, writes); err != nil {
+	// A suggestion the user accepted or dismissed while the run was going is
+	// left as they decided, and not counted as refreshed or superseded.
+	skipped, err := store.ReconcileComplexitySuggestions(ctx, writes)
+	if err != nil {
 		return result, fmt.Errorf("store suggestions: %w", err)
 	}
+	for _, id := range skipped {
+		for _, w := range writes {
+			if w.Suggestion.ID != id {
+				continue
+			}
+			if w.Suggestion.Status == logstore.ComplexitySuggestionStatusSuperseded {
+				superseded--
+			} else {
+				refreshed--
+			}
+			break
+		}
+	}
+	run.Created, run.Refreshed, run.Superseded = int64(created), int64(refreshed), int64(superseded)
 	return result, nil
 }
 
@@ -367,11 +383,16 @@ func matchClusters(clusters []*suggest.Cluster, stored []logstore.ComplexitySugg
 
 // reconcile turns the run's suggestions into rows to write and counts what
 // changed.
-func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logstore.ComplexitySuggestion, namespace, runID string, now time.Time) (writes []logstore.ComplexitySuggestion, created, refreshed, superseded int) {
+//
+// Each write to an existing row carries the status the run read it at, so the
+// store writes it only while it is still there (see
+// ReconcileComplexitySuggestions).
+func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logstore.ComplexitySuggestion, namespace, runID string, now time.Time) (writes []logstore.ComplexitySuggestionWrite, created, refreshed, superseded int) {
 	supersede := func(row logstore.ComplexitySuggestion) {
+		from := row.Status
 		row.Status = logstore.ComplexitySuggestionStatusSuperseded
 		row.ResolvedAt = &now
-		writes = append(writes, row)
+		writes = append(writes, logstore.ComplexitySuggestionWrite{Suggestion: row, From: from})
 		superseded++
 	}
 	proposed := map[string]bool{}
@@ -393,15 +414,16 @@ func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logsto
 			continue
 		}
 		row := logstore.ComplexitySuggestion{ID: uuid.NewString(), CreatedAt: now}
+		from := ""
 		if match != nil {
-			row.ID, row.CreatedAt = match.ID, match.CreatedAt
+			row.ID, row.CreatedAt, from = match.ID, match.CreatedAt, match.Status
 			proposed[match.ID] = true
 			refreshed++
 		} else {
 			created++
 		}
 		fillSuggestion(&row, sg, namespace, runID, now)
-		writes = append(writes, row)
+		writes = append(writes, logstore.ComplexitySuggestionWrite{Suggestion: row, From: from})
 	}
 	// Open suggestions this run did not propose again are superseded: their
 	// traffic stopped, or their embedding space is no longer the one served.

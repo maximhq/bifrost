@@ -1815,6 +1815,95 @@ func chCreateInChunks[T any](ctx context.Context, s *ClickHouseLogStore, rows []
 	return nil
 }
 
+// complexitySuggestionLockKey is the shared lock for one suggestion's status.
+func complexitySuggestionLockKey(id string) string {
+	return "model_routing_suggestion:" + id
+}
+
+// ReconcileComplexitySuggestions writes a run's outcome. New rows are
+// inserted; an existing row is read, checked and written back whole under the
+// suggestion's lock, as a status change is, only while it is still at the
+// status the run read it at.
+func (s *ClickHouseLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	inserts, updates, err := splitComplexitySuggestionWrites(writes)
+	if err != nil {
+		return nil, err
+	}
+	var skipped []string
+	for _, w := range updates {
+		written, err := s.writeComplexitySuggestionFrom(ctx, w)
+		if err != nil {
+			return skipped, err
+		}
+		if !written {
+			skipped = append(skipped, w.Suggestion.ID)
+		}
+	}
+	if len(inserts) > 0 {
+		if err := chCreateInChunks(ctx, s, inserts); err != nil {
+			return skipped, err
+		}
+	}
+	return skipped, nil
+}
+
+func (s *ClickHouseLogStore) writeComplexitySuggestionFrom(ctx context.Context, w ComplexitySuggestionWrite) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(w.Suggestion.ID))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", w.Suggestion.ID)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{w.Suggestion.ID}, OmitCentroids: true})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != w.From {
+		return false, nil
+	}
+	written := []ComplexitySuggestion{w.Suggestion}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+// ClickHouse has no conditional update, so the row is read, checked and
+// written back whole under the suggestion's lock: the shared one when a
+// locker is set, so decisions on any instance are serialized, and this
+// process's row lock. Of two decisions read from the same status only the
+// first lands. A run's writes to existing rows take the same lock (see
+// ReconcileComplexitySuggestions), so a decision and a run never both land on
+// the status they read.
+func (s *ClickHouseLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	held, release, err := s.lockShared(ctx, complexitySuggestionLockKey(id))
+	if err != nil {
+		return false, fmt.Errorf("acquire suggestion lock: %w", err)
+	}
+	defer release()
+	unlock := s.lockRMW("model_routing_suggestions", id)
+	defer unlock()
+	rows, err := s.ListComplexitySuggestions(held, ComplexitySuggestionFilter{IDs: []string{id}})
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 || rows[0].Status != from {
+		return false, nil
+	}
+	row := rows[0]
+	row.Status, row.ResolvedAt = to, resolvedAt
+	written := []ComplexitySuggestion{row}
+	if err := prepareComplexitySuggestions(written, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err := s.db.WithContext(held).Create(&written).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // DeleteComplexitySuggestions removes suggestions outright.
 func (s *ClickHouseLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
 	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {

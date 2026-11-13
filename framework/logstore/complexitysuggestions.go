@@ -200,8 +200,8 @@ type ComplexitySuggestionRun struct {
 	TriggeredBy        string     `gorm:"type:varchar(16);not null" json:"triggered_by"`
 	Status             string     `gorm:"type:varchar(16);not null" json:"status"`
 	EmbeddingSignature string     `gorm:"type:varchar(255);not null" json:"embedding_signature"`
-	Model              string     `gorm:"type:varchar(255);not null" json:"model,omitempty"`      // provider/model the suggestions were written with
-	PromptHash         string     `gorm:"type:varchar(64);not null" json:"prompt_hash,omitempty"` // of the instructions and guidance in force
+	Model              string     `gorm:"type:varchar(255);not null" json:"model,omitempty"`           // provider/model the suggestions were written with
+	PromptHash         string     `gorm:"type:varchar(64);not null" json:"prompt_hash,omitempty"`      // of the instructions and guidance in force
 	Stage              string     `gorm:"type:varchar(16);not null;default:''" json:"stage,omitempty"` // how far a running run got; empty once it ends
 	RequestsRead       int64      `gorm:"not null" json:"requests_read"`
 	RequestsClustered  int64      `gorm:"not null;default:0" json:"requests_clustered"` // the sample the groups were formed from
@@ -217,8 +217,8 @@ type ComplexitySuggestionRun struct {
 	ClustersCovered    int64      `gorm:"not null;default:0" json:"clusters_covered"`    // the bank already routes them well
 	ClustersIncoherent int64      `gorm:"not null;default:0" json:"clusters_incoherent"` // several request types, or no usable answer
 	ClustersUnreadable int64      `gorm:"not null;default:0" json:"clusters_unreadable"` // no example could be read back
-	Created            int64      `gorm:"not null" json:"created"`   // suggestions new in this run
-	Refreshed          int64      `gorm:"not null" json:"refreshed"` // open suggestions this run proposed again
+	Created            int64      `gorm:"not null" json:"created"`                       // suggestions new in this run
+	Refreshed          int64      `gorm:"not null" json:"refreshed"`                     // open suggestions this run proposed again
 	Superseded         int64      `gorm:"not null" json:"superseded"`
 	Cost               float64    `gorm:"not null" json:"cost"`
 	Error              string     `gorm:"type:text" json:"error,omitempty"`
@@ -244,6 +244,14 @@ type ComplexityVectorDelete struct {
 // model.
 func (ComplexityVectorDelete) TableName() string { return "model_routing_vector_deletes" }
 
+// ComplexitySuggestionWrite is one row a suggestion run writes: a new
+// suggestion (From empty), or an existing one written only while it is still
+// at status From.
+type ComplexitySuggestionWrite struct {
+	Suggestion ComplexitySuggestion
+	From       string
+}
+
 // ComplexitySuggestionFilter selects suggestions. A zero filter selects all.
 type ComplexitySuggestionFilter struct {
 	// RouterID narrows the selection to one router's suggestions.
@@ -253,6 +261,9 @@ type ComplexitySuggestionFilter struct {
 	EmbeddingSignature string
 	// OmitCentroids leaves Centroid unread, for callers that only list.
 	OmitCentroids bool
+	// Limit and Offset page the selection, in its order; a Limit of 0 reads
+	// all of it.
+	Limit, Offset int
 }
 
 // ComplexitySuggestionStore is the phrase-suggestion surface. It is embedded
@@ -263,10 +274,24 @@ type ComplexitySuggestionStore interface {
 	// with the same ID. A caller changing one field (a dismiss) reads the row,
 	// changes it and writes it back: ClickHouse has no partial update.
 	UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error
+	// ReconcileComplexitySuggestions writes a run's outcome: each existing
+	// row only while its status is still the one the run read it at (From),
+	// so a decision a user made while the run was going (an accept, a
+	// dismiss) is never overwritten; a write with no From is a new row. It
+	// returns the IDs of the existing rows left alone for having moved.
+	ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) (skipped []string, err error)
 	// ListComplexitySuggestions returns the selected suggestions, largest
 	// cluster first. Suggestions have no owner, so the access scope does not
 	// apply; the examples are resolved through the scoped log reads.
 	ListComplexitySuggestions(ctx context.Context, filter ComplexitySuggestionFilter) ([]ComplexitySuggestion, error)
+	// CountComplexitySuggestionsByStatus counts the suggestions the filter
+	// selects, per status; its Statuses, Limit and Offset are ignored.
+	CountComplexitySuggestionsByStatus(ctx context.Context, filter ComplexitySuggestionFilter) (map[string]int, error)
+	// UpdateComplexitySuggestionStatus moves one suggestion from status from
+	// to status to, stamping resolvedAt, only while it is still at from. It
+	// reports whether it did: false means the suggestion is gone or another
+	// write moved it first.
+	UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error)
 	// DeleteComplexitySuggestions removes suggestions outright.
 	DeleteComplexitySuggestions(ctx context.Context, ids []string) error
 
@@ -414,6 +439,61 @@ func (s *RDBLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestio
 		CreateInBatches(suggestions, complexitySuggestionWriteBatch).Error
 }
 
+// ReconcileComplexitySuggestions writes a run's outcome, each existing row
+// with one conditional update on the status it was read at.
+func (s *RDBLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	inserts, updates, err := splitComplexitySuggestionWrites(writes)
+	if err != nil || (len(inserts) == 0 && len(updates) == 0) {
+		return nil, err
+	}
+	var skipped []string
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, w := range updates {
+			row := w.Suggestion
+			result := tx.Model(&ComplexitySuggestion{}).
+				Where("id = ? AND status = ?", row.ID, w.From).
+				Select("*").Omit("id", "created_at").
+				Updates(&row)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				skipped = append(skipped, row.ID)
+			}
+		}
+		if len(inserts) == 0 {
+			return nil
+		}
+		return tx.CreateInBatches(inserts, complexitySuggestionWriteBatch).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return skipped, nil
+}
+
+// splitComplexitySuggestionWrites prepares a run's writes and splits them into
+// new rows and conditional writes to existing ones.
+func splitComplexitySuggestionWrites(writes []ComplexitySuggestionWrite) ([]ComplexitySuggestion, []ComplexitySuggestionWrite, error) {
+	rows := make([]ComplexitySuggestion, len(writes))
+	for i := range writes {
+		rows[i] = writes[i].Suggestion
+	}
+	if err := prepareComplexitySuggestions(rows, time.Now().UTC()); err != nil {
+		return nil, nil, err
+	}
+	var inserts []ComplexitySuggestion
+	var updates []ComplexitySuggestionWrite
+	for i, w := range writes {
+		if w.From == "" {
+			inserts = append(inserts, rows[i])
+		} else {
+			updates = append(updates, ComplexitySuggestionWrite{Suggestion: rows[i], From: w.From})
+		}
+	}
+	return inserts, updates, nil
+}
+
 // ListComplexitySuggestions returns the selected suggestions, largest cluster
 // first.
 //
@@ -436,9 +516,60 @@ func (s *RDBLogStore) ListComplexitySuggestions(ctx context.Context, filter Comp
 	if filter.EmbeddingSignature != "" {
 		query = query.Where("embedding_signature = ?", filter.EmbeddingSignature)
 	}
+	query = query.Order("request_count DESC, id ASC")
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query = query.Offset(filter.Offset)
+	}
 	var suggestions []ComplexitySuggestion
-	err := query.Order("request_count DESC, id ASC").Find(&suggestions).Error
+	err := query.Find(&suggestions).Error
 	return suggestions, err
+}
+
+// CountComplexitySuggestionsByStatus counts the selected suggestions per
+// status.
+func (s *RDBLogStore) CountComplexitySuggestionsByStatus(ctx context.Context, filter ComplexitySuggestionFilter) (map[string]int, error) {
+	query := s.db.WithContext(ctx).Model(&ComplexitySuggestion{})
+	if filter.RouterID != "" {
+		query = query.Where("router_id = ?", filter.RouterID)
+	}
+	if len(filter.IDs) > 0 {
+		query = query.Where("id IN ?", filter.IDs)
+	}
+	if filter.EmbeddingSignature != "" {
+		query = query.Where("embedding_signature = ?", filter.EmbeddingSignature)
+	}
+	var rows []struct {
+		Status string
+		Count  int64
+	}
+	if err := query.Select("status, COUNT(*) AS count").Group("status").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int, len(rows))
+	for _, row := range rows {
+		counts[row.Status] = int(row.Count)
+	}
+	return counts, nil
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses with
+// one conditional update, so of two decisions read from the same status only
+// the first lands.
+func (s *RDBLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	if resolvedAt != nil {
+		resolved := resolvedAt.UTC()
+		resolvedAt = &resolved
+	}
+	result := s.db.WithContext(ctx).Model(&ComplexitySuggestion{}).
+		Where("id = ? AND status = ?", id, from).
+		Updates(map[string]any{"status": to, "resolved_at": resolvedAt, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 // DeleteComplexitySuggestions removes suggestions outright.
