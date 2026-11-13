@@ -321229,6 +321229,194 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Gemini 4 Hydrogen xhigh thinking level (gemini 4 hydrogen thinking level)",
+      "description": "Gemini 4 Hydrogen (gemini-4-hydrogen) takes thinkingLevel low, medium, high (default) and xhigh, and rejects minimal. Bifrost had no thinking-level entry for it, so it used the low/medium/high fallback and clamped reasoning_effort xhigh (and max) down to high. These cases assert the OUTBOUND payload via x-bf-send-back-raw-request, so they do not depend on model behaviour: xhigh on chat completions and max on responses must reach Hydrogen as xhigh, and gemini-4-argon, which has no xhigh rung, must still receive high. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+      "item": [
+        {
+          "name": "gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh",
+          "description": "reasoning_effort xhigh must reach gemini-4-hydrogen as its xhigh rung instead of being clamped to high. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-hydrogen\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/chat/completions reasoning_effort xhigh sent as thinkingLevel xhigh: xhigh effort sent as thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh",
+          "description": "max is above the highest rung gemini-4-hydrogen implements, so it lands on xhigh. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-hydrogen\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-hydrogen /v1/responses reasoning.effort max sent as thinkingLevel xhigh: max effort clamped to thinkingLevel xhigh', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('xhigh');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high",
+          "description": "gemini-4-argon has no xhigh rung, so xhigh keeps clamping to high there. Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\",\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning_effort xhigh still sent as thinkingLevel high: xhigh effort clamped to thinkingLevel high', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('high');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
