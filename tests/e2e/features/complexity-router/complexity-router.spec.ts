@@ -531,6 +531,42 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-phrase-test-error')).toHaveCount(0)
     })
 
+    test('should filter the list to prompt-template suggestions', async ({ page }) => {
+      const TEMPLATE = {
+        ...OPEN[1],
+        id: 'sug-template',
+        tier: 'MEDIUM',
+        category: 'template',
+        phrases: ['write an image prompt for a scene'],
+        reason: 'One image-prompt scaffold sent with different scenes.',
+      }
+      // Registered after beforeEach, so it answers first.
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (route) =>
+          route.fulfill({
+            json: {
+              suggestions: [...OPEN, TEMPLATE],
+              counts: { open: OPEN.length + 1, dismissed: DISMISSED.length },
+              enabled: true,
+              last_run: LAST_RUN,
+              next_run_at: '2026-11-05T03:00:00Z',
+            },
+          }),
+      )
+      await page.goto('/workspace/complexity-router?tab=suggestions')
+      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toBeVisible()
+
+      await page.getByTestId('complexity-suggestions-category-select').click()
+      await expect(page.getByTestId('complexity-suggestions-category-option-template')).toContainText('Prompt template (1)')
+      await page.getByTestId('complexity-suggestions-category-option-template').click()
+
+      await expect(page.getByTestId('complexity-suggestion-row-sug-template')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestion-row-sug-template')).toContainText('write an image prompt for a scene')
+      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-suggestion-row-sug-migration')).toHaveCount(0)
+    })
+
     test('should save an interval and a first run from the settings sheet', async ({ page }) => {
       await page.goto('/workspace/complexity-router?tab=suggestions')
       await page.getByTestId('complexity-suggestions-settings-button').click()

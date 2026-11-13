@@ -507,8 +507,9 @@ export const SUGGESTION_STATUSES = ["open", "accepted", "dismissed", "superseded
 export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 
 // Why a cluster of traffic needs a phrase: nothing matches it, it matches
-// weakly, it routes confidently to another tier, or its routing is split.
-export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed"] as const;
+// weakly, it routes confidently to another tier, its routing is split, or it
+// is one prompt template sent with different fills.
+export const SUGGESTION_CATEGORIES = ["uncovered", "weak", "misrouted", "mixed", "template"] as const;
 export type SuggestionCategory = (typeof SUGGESTION_CATEGORIES)[number];
 
 export const SUGGESTION_EVERY_OPTIONS = ["1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "2d", "3d", "1w", "2w", "4w"] as const;

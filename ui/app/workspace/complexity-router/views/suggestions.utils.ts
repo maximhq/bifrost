@@ -101,7 +101,7 @@ export function filterSuggestions(suggestions: Suggestion[], { query, category }
 
 // categoryCounts counts suggestions per category, for the filter menu.
 export function categoryCounts(suggestions: Suggestion[], hidden: Set<string>): Record<SuggestionCategory | "all", number> {
-	const counts: Record<SuggestionCategory | "all", number> = { all: 0, uncovered: 0, weak: 0, misrouted: 0, mixed: 0 };
+	const counts: Record<SuggestionCategory | "all", number> = { all: 0, uncovered: 0, weak: 0, misrouted: 0, mixed: 0, template: 0 };
 	for (const suggestion of suggestions) {
 		if (hidden.has(suggestion.id)) continue;
 		counts.all += 1;

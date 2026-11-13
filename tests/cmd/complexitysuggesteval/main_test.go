@@ -2,6 +2,8 @@ package main
 
 import (
 	"hash/fnv"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,25 @@ func unit(dim, i int) []float32 {
 	v := make([]float32, dim)
 	v[i] = 1
 	return v
+}
+
+func TestValidateFloatFlags(t *testing.T) {
+	// Finite split and rescue keep their meaning: 0 default, negative off.
+	for _, ok := range [][3]float64{{0, 0, 0}, {-1, -1, 1}, {0.8, 0.75, 0.5}, {2, 3, 0}} {
+		assert.NoError(t, validateFloatFlags(ok[0], ok[1], ok[2]), "%v", ok)
+	}
+	for name, bad := range map[string][3]float64{
+		"NaN split":           {math.NaN(), 0, 0},
+		"+Inf split":          {math.Inf(1), 0, 0},
+		"-Inf rescue":         {0, math.Inf(-1), 0},
+		"NaN rescue":          {0, math.NaN(), 0},
+		"NaN drop-below":      {0, 0, math.NaN()},
+		"+Inf drop-below":     {0, 0, math.Inf(1)},
+		"negative drop-below": {0, 0, -0.1},
+		"drop-below above 1":  {0, 0, 1.1},
+	} {
+		assert.Error(t, validateFloatFlags(bad[0], bad[1], bad[2]), name)
+	}
 }
 
 func TestRouteFloorBoundaryAndAbstention(t *testing.T) {
@@ -154,4 +175,104 @@ func TestWriteOutputsHeldoutKeysAreSorted(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "heldout.jsonl"))
 	require.NoError(t, err)
 	assert.Equal(t, `{"count":1,"gold":"SIMPLE","routed":"SIMPLE","text":"x","via":"p"}`+"\n", string(data))
+}
+
+// captureStdout returns what fn prints; purity reports on stdout like the
+// rest of the run.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = stdout }()
+	fn()
+	require.NoError(t, w.Close())
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(out)
+}
+
+// labelled builds train items of the given intent:gold pairs, in order, so
+// item i is referred to by member ID "i".
+func labelled(pairs ...string) []*item {
+	var out []*item
+	for _, p := range pairs {
+		intent, gold, _ := strings.Cut(p, ":")
+		out = append(out, &item{Text: p, Count: 1, Intent: intent, Gold: gold})
+	}
+	return out
+}
+
+func cluster(size int, ids ...string) *suggest.Cluster {
+	cl := &suggest.Cluster{Size: size}
+	for _, id := range ids {
+		cl.Members = append(cl.Members, suggest.Member{Request: suggest.Request{ID: id}})
+	}
+	return cl
+}
+
+func TestPurityReport(t *testing.T) {
+	heldOut := labelled("a:SIMPLE", "c:COMPLEX")
+	heldOut[1].test = true
+	heldOut = append(heldOut, &item{Text: "no label", Count: 1})
+
+	cases := []struct {
+		name     string
+		items    []*item
+		clusters []*suggest.Cluster
+		want     string
+	}{
+		{
+			name:     "input without types prints nothing",
+			items:    []*item{{Text: "x", Count: 1}},
+			clusters: []*suggest.Cluster{cluster(1, "0")},
+			want:     "",
+		},
+		{
+			name:     "a type with a cluster of its own",
+			items:    labelled("a:SIMPLE", "a:SIMPLE"),
+			clusters: []*suggest.Cluster{cluster(2, "0", "1")},
+			want:     "types 1 · own cluster 1 · absorbed 0 (cross-tier 0) · dropped 0 · member purity 100.0%\n",
+		},
+		{
+			name:     "absorbed by a type of the same tier is not cross-tier",
+			items:    labelled("a:SIMPLE", "a:SIMPLE", "a:SIMPLE", "b:SIMPLE"),
+			clusters: []*suggest.Cluster{cluster(4, "0", "1", "2", "3")},
+			want:     "types 2 · own cluster 1 · absorbed 1 (cross-tier 0) · dropped 0 · member purity 75.0%\n",
+		},
+		{
+			name:     "absorbed by a type of another tier is reported with an example",
+			items:    labelled("a:COMPLEX", "a:COMPLEX", "b:SIMPLE"),
+			clusters: []*suggest.Cluster{cluster(5, "0", "1", "2")},
+			want: "types 2 · own cluster 1 · absorbed 1 (cross-tier 1) · dropped 0 · member purity 66.7%\n" +
+				"  cross-tier: b (SIMPLE, 1 train, 1 here) in a (COMPLEX, cluster of 5)\n",
+		},
+		{
+			// Cross-tier, so the example line names which type won the tie.
+			name:     "a majority tie goes to the alphabetically first type",
+			items:    labelled("b:SIMPLE", "a:COMPLEX"),
+			clusters: []*suggest.Cluster{cluster(2, "0", "1")},
+			want: "types 2 · own cluster 1 · absorbed 1 (cross-tier 1) · dropped 0 · member purity 50.0%\n" +
+				"  cross-tier: b (SIMPLE, 1 train, 1 here) in a (COMPLEX, cluster of 2)\n",
+		},
+		{
+			name:     "a type no cluster kept a member of is dropped",
+			items:    labelled("a:SIMPLE", "b:MEDIUM"),
+			clusters: []*suggest.Cluster{cluster(1, "0")},
+			want:     "types 2 · own cluster 1 · absorbed 0 (cross-tier 0) · dropped 1 · member purity 100.0%\n",
+		},
+		{
+			name:     "unreadable member IDs, held-out and unlabelled items are not counted",
+			items:    heldOut,
+			clusters: []*suggest.Cluster{cluster(5, "0", "x", "-1", "9", "2")},
+			want:     "types 1 · own cluster 1 · absorbed 0 (cross-tier 0) · dropped 0 · member purity 100.0%\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := captureStdout(t, func() { purity(tc.items, tc.clusters) })
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

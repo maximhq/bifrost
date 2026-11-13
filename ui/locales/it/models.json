@@ -2006,19 +2006,22 @@
 					"uncovered": "Nessuna corrispondenza ({{n}})",
 					"weak": "Corrispondenza debole ({{n}})",
 					"misrouted": "Livello diverso ({{n}})",
-					"mixed": "Livelli misti ({{n}})"
+					"mixed": "Livelli misti ({{n}})",
+					"template": "Modello di prompt ({{n}})"
 				},
 				"category": {
 					"uncovered": "Nessuna corrispondenza",
 					"weak": "Corrispondenza debole",
 					"misrouted": "Livello diverso",
-					"mixed": "Livelli misti"
+					"mixed": "Livelli misti",
+					"template": "Modello di prompt"
 				},
 				"categoryDescription": {
 					"uncovered": "La maggior parte di queste richieste non corrisponde abbastanza ad alcuna frase, quindi riceve il livello predefinito.",
 					"weak": "Queste richieste raggiungono il livello suggerito, ma solo tramite corrispondenze deboli.",
 					"misrouted": "Queste richieste corrispondono nettamente a frasi di un livello diverso da quello suggerito.",
-					"mixed": "Richieste simili sono attualmente suddivise tra più livelli."
+					"mixed": "Richieste simili sono attualmente suddivise tra più livelli.",
+					"template": "Queste richieste sono un unico modello di prompt inviato con contenuti diversi, quindi le frasi sono scritte a partire dal testo fisso del modello."
 				},
 				"lastDays_one": "Ultimo {{count}} giorno",
 				"lastDays_other": "Ultimi {{count}} giorni",
