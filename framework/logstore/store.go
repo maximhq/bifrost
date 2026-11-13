@@ -269,6 +269,9 @@ type LogStore interface {
 	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
 	FlushRelayLogs(ctx context.Context, since time.Time) error
 
+	// Trace methods (Tracing).
+	TraceStore
+
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
 	FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error)

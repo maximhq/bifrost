@@ -718,6 +718,40 @@ func migrationClickHouseWarpVectorDeletesTable(ctx context.Context, db *gorm.DB,
 	return clickhouseReconcileColumns(ctx, db, &WarpVectorDelete{}, "warp_vector_deletes", cluster, logger)
 }
 
+// chTraceRowTTL expires a trace row at its own expires_at. Trace retention is set per project, so
+// the expiry is a column, not a table-wide interval. A row with no expiry is kept.
+const chTraceRowTTL = "toDateTime(ifNull(expires_at, toDateTime64('2100-01-01 00:00:00', 3)))"
+
+// migrationClickHouseTraceTables creates the Tracing tables. Each is ordered by the row's identity,
+// so a rewrite of a span, rollup, score or mark replaces the stored row, and one trace's rows are
+// read with the sort key. Spans and rollups are not partitioned by time: a refold can move a span's
+// start time, and ReplacingMergeTree only replaces a row inside its own partition. No table has a
+// bloom filter index, since every read runs under FINAL on rows that are rewritten.
+func migrationClickHouseTraceTables(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating trace tables")
+	for _, table := range []struct {
+		model any
+		opts  chTableOpts
+	}{
+		{&TraceSpanPart{}, chTableOpts{table: "trace_span_parts", partitionBy: "toYYYYMM(received_at)", orderBy: "(project_id, trace_id, span_id, id)", ttl: chTraceRowTTL}},
+		{&TraceSpan{}, chTableOpts{table: "trace_spans", orderBy: "(project_id, trace_id, span_id)", ttl: chTraceRowTTL}},
+		{&TraceSpanLink{}, chTableOpts{table: "trace_span_links", orderBy: "(project_id, trace_id, span_id, log_kind, log_id)", ttl: chTraceRowTTL}},
+		{&Trace{}, chTableOpts{table: "traces", orderBy: "(project_id, trace_id)", ttl: chTraceRowTTL}},
+		{&TraceScore{}, chTableOpts{table: "trace_scores", orderBy: "id", ttl: chTraceRowTTL}},
+		{&TraceComment{}, chTableOpts{table: "trace_comments", orderBy: "id", ttl: chTraceRowTTL}},
+		{&TraceUpload{}, chTableOpts{table: "trace_uploads", orderBy: "id", ttl: chTraceRowTTL}},
+		{&TraceDirtyMark{}, chTableOpts{table: "trace_dirty_marks", orderBy: "(project_id, trace_id)"}},
+	} {
+		if err := clickhouseCreateTable(ctx, db, table.model, table.opts, cluster); err != nil {
+			return fmt.Errorf("clickhouse: create %s table: %w", table.opts.table, err)
+		}
+		if err := clickhouseReconcileColumns(ctx, db, table.model, table.opts.table, cluster, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -731,6 +765,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseWarpTopicTables,
 	migrationClickHouseWarpVectorDeletesTable,
 	migrationClickHouseRelayLogsTable,
+	migrationClickHouseTraceTables,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

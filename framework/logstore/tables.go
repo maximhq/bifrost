@@ -469,6 +469,15 @@ type Log struct {
 	HasObject               bool                 `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
 	ContentHidden           bool                 `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
 
+	// Trace link columns attach this call to a trace an SDK pushed. TraceID and ParentSpanID come
+	// from a link header or traceparent. ProviderResponseID is the provider's own id for the
+	// response, matched against the id an SDK span recorded. InputFingerprint is a hash of the
+	// last user message, kept even when content logging is off.
+	TraceID            *string `gorm:"type:varchar(128);index:idx_logs_trace_id,where:trace_id IS NOT NULL" json:"trace_id,omitempty"`
+	ParentSpanID       *string `gorm:"type:varchar(128)" json:"parent_span_id,omitempty"`
+	ProviderResponseID *string `gorm:"type:varchar(255);index:idx_logs_provider_response_id,where:provider_response_id IS NOT NULL" json:"provider_response_id,omitempty"`
+	InputFingerprint   *string `gorm:"type:varchar(64)" json:"input_fingerprint,omitempty"`
+
 	// Aggregates over this log's child rows (rows whose parent_request_id equals
 	// this log's ID, i.e. fallback attempts). Populated only on roots_only list
 	// queries so the UI can render an expandable chain row; never stored.
@@ -2001,6 +2010,10 @@ type MCPToolLog struct {
 	BusinessUnitNames *string `gorm:"type:text" json:"-"` // JSON serialized []string
 	BudgetIDs         *string `gorm:"type:text" json:"-"` // JSON serialized []string
 	RateLimitIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string
+
+	// TraceID and ParentSpanID attach this tool call to a trace an SDK pushed.
+	TraceID      *string `gorm:"type:varchar(128);index:idx_mcp_logs_trace_id,where:trace_id IS NOT NULL" json:"trace_id,omitempty"`
+	ParentSpanID *string `gorm:"type:varchar(128)" json:"parent_span_id,omitempty"`
 
 	ID                 string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	RequestID          string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context

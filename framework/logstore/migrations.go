@@ -355,6 +355,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
 	{IDs: []string{"mcp_tool_logs_add_round_trip_id_column"}, run: migrationAddRoundTripIDColumnToMCPToolLogs},
 	{IDs: []string{"agent_logs_add_caller_correlation_id_column"}, run: migrationAddCallerCorrelationIDColumnToAgentLogs},
+	{IDs: []string{"add_trace_tables"}, run: migrationAddTraceTables},
+	{IDs: []string{"logs_add_trace_link_columns"}, run: migrationAddTraceLinkColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3043,6 +3045,21 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_round_trip_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_round_trip_id ON mcp_tool_logs(round_trip_id) WHERE round_trip_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_trace_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_trace_id ON logs(trace_id) WHERE trace_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_provider_response_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_provider_response_id ON logs(provider_response_id) WHERE provider_response_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_trace_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_trace_id ON mcp_tool_logs(trace_id) WHERE trace_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -6102,6 +6119,121 @@ func callerCorrelationIDColumnMigration(ctx context.Context, logger schemas.Logg
 			return dropColumnIfExists(tx, logger, &AgentLog{}, "caller_correlation_id")
 		},
 	}
+}
+
+// traceLinkColumns are the columns a pushed trace is matched on, per gateway table.
+var traceLinkColumns = []struct {
+	model   any
+	columns []string
+	indexes []string
+}{
+	{&Log{}, []string{"trace_id", "parent_span_id", "provider_response_id", "input_fingerprint"}, []string{"idx_logs_trace_id", "idx_logs_provider_response_id"}},
+	{&MCPToolLog{}, []string{"trace_id", "parent_span_id"}, []string{"idx_mcp_logs_trace_id"}},
+}
+
+// migrationAddTraceLinkColumns adds the columns that attach a gateway LLM or MCP call to a trace an
+// SDK pushed. Older rows leave them null, so there is no backfill. Each is a nullable column with no
+// default, a catalog change on Postgres, taken under a bounded lock wait because ADD COLUMN queues
+// behind open transactions on these busy tables. Postgres builds the indexes concurrently through
+// performanceIndexes; other dialects create them here.
+func migrationAddTraceLinkColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_trace_link_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{traceLinkColumnsMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// traceLinkColumnsMigration refuses its rollback while any link column holds a value: which trace a
+// gateway call belonged to cannot be recaptured once dropped.
+func traceLinkColumnsMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	const id = "logs_add_trace_link_columns"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, table := range traceLinkColumns {
+				for _, column := range table.columns {
+					if err := addColumnIfNotExists(tx, logger, table.model, column); err != nil {
+						return err
+					}
+				}
+				if tx.Dialector.Name() == "postgres" {
+					continue
+				}
+				for _, index := range table.indexes {
+					if tx.Migrator().HasIndex(table.model, index) {
+						continue
+					}
+					if err := tx.Migrator().CreateIndex(table.model, index); err != nil {
+						return fmt.Errorf("create %s index: %w", index, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, table := range traceLinkColumns {
+				if err := refuseRollbackWhileRecorded(tx, id, []any{table.model}, table.columns...); err != nil {
+					return err
+				}
+			}
+			for _, table := range traceLinkColumns {
+				for _, index := range table.indexes {
+					if !tx.Migrator().HasIndex(table.model, index) {
+						continue
+					}
+					if err := tx.Migrator().DropIndex(table.model, index); err != nil {
+						return fmt.Errorf("drop %s index: %w", index, err)
+					}
+				}
+				for _, column := range table.columns {
+					if err := dropColumnIfExists(tx, logger, table.model, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddTraceTables creates the tables behind SDK trace ingest: received parts, folded spans,
+// links to gateway rows, the per-trace rollup, scores, comments and uploads. AutoMigrate creates
+// each table with the indexes its struct tags declare and only what does not exist yet, so a rerun
+// after a partial apply is a no-op. All are new tables, so no existing table is locked.
+func migrationAddTraceTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_trace_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return tx.AutoMigrate(traceModels()...)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: the trace tables hold ingested spans, scores and comments, and dropping them would delete that content rather than reverse a schema change", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }
 
 // migrationCreateRelayLogsTable creates the Relay Logs table with the indexes its

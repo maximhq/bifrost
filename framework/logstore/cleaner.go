@@ -59,6 +59,13 @@ type RelayLogRetentionManager interface {
 	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
+// TraceRetentionManager is implemented by stores that hold trace rows. Trace rows expire on their
+// own expires_at column, because trace retention is set per project, so the pass's cutoff does not
+// apply to them.
+type TraceRetentionManager interface {
+	DeleteExpiredTraceRowsBatch(ctx context.Context, now time.Time, batchSize int) (deletedCount int64, err error)
+}
+
 // WarpTopicRetentionManager is implemented by stores that keep Warp's topic
 // rows. Optional for the same reason MCPToolLogRetentionManager is. Both tables
 // hold rows about individual logs, and expire on the log's own created time so
@@ -227,6 +234,11 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	}
 	if endpoints, ok := c.manager.(RelayLogRetentionManager); ok {
 		rest = append(rest, expiringTable{"relay logs", endpoints.DeleteRelayLogsBatch})
+	}
+	if traces, ok := c.manager.(TraceRetentionManager); ok {
+		rest = append(rest, expiringTable{"trace rows", func(ctx context.Context, _ time.Time, batchSize int) (int64, error) {
+			return traces.DeleteExpiredTraceRowsBatch(ctx, time.Now().UTC(), batchSize)
+		}})
 	}
 	if hasTopics {
 		rest = append(rest,

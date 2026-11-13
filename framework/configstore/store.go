@@ -398,6 +398,21 @@ type ConfigStore interface {
 	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
 	ReplaceVirtualKeyRelayGrants(ctx context.Context, virtualKeyID string, endpointNames []string, tx ...*gorm.DB) error
 
+	// Tracing projects and ingest keys.
+	ListTraceProjects(ctx context.Context) ([]*tables.TableTraceProject, error)
+	GetTraceProject(ctx context.Context, id string) (*tables.TableTraceProject, error)
+	GetTraceProjectByName(ctx context.Context, name string) (*tables.TableTraceProject, error)
+	CreateTraceProject(ctx context.Context, project *tables.TableTraceProject) error
+	UpdateTraceProject(ctx context.Context, project *tables.TableTraceProject) error
+	DeleteTraceProject(ctx context.Context, id string) error
+	ListTracingKeys(ctx context.Context) ([]*tables.TableTracingKey, error)
+	GetTracingKey(ctx context.Context, id string) (*tables.TableTracingKey, error)
+	GetTracingKeyByHash(ctx context.Context, hash string) (*tables.TableTracingKey, error)
+	CreateTracingKey(ctx context.Context, key *tables.TableTracingKey) error
+	UpdateTracingKey(ctx context.Context, key *tables.TableTracingKey) error
+	TouchTracingKey(ctx context.Context, id string, at time.Time) error
+	DeleteTracingKey(ctx context.Context, id string) error
+
 	// Relay CRUD.
 	ListRelays(ctx context.Context) ([]*schemas.RelayConfig, error)
 	GetRelay(ctx context.Context, name string) (*schemas.RelayConfig, error)
