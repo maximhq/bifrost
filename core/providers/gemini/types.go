@@ -1906,6 +1906,9 @@ type Part struct {
 	ToolCall *ToolCall `json:"toolCall,omitempty"`
 	// Optional. The result of a server-side ToolCall, paired to it by ID.
 	ToolResponse *ToolResponse `json:"toolResponse,omitempty"`
+	// Optional. Transcript produced by a dedicated transcription model such as
+	// gemini-3.5-transcribe, which answers with this part instead of a text part.
+	AudioTranscription *PartAudioTranscription `json:"audioTranscription,omitempty"`
 	// Optional. Text part (can be code).
 	Text string `json:"text,omitempty"`
 }
@@ -1915,18 +1918,19 @@ type Part struct {
 // allowing the official bypass sentinel to be emitted as a literal string.
 func (p Part) MarshalJSON() ([]byte, error) {
 	type PartAlias struct {
-		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
-		MediaResolution     *PartMediaResolution `json:"mediaResolution,omitempty"`
-		Thought             bool                 `json:"thought,omitempty"`
-		InlineData          *Blob                `json:"inlineData,omitempty"`
-		FileData            *FileData            `json:"fileData,omitempty"`
-		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
-		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
-		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
-		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
-		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
-		ToolCall            *ToolCall            `json:"toolCall,omitempty"`
-		ToolResponse        *ToolResponse        `json:"toolResponse,omitempty"`
+		VideoMetadata       *VideoMetadata          `json:"videoMetadata,omitempty"`
+		MediaResolution     *PartMediaResolution    `json:"mediaResolution,omitempty"`
+		Thought             bool                    `json:"thought,omitempty"`
+		InlineData          *Blob                   `json:"inlineData,omitempty"`
+		FileData            *FileData               `json:"fileData,omitempty"`
+		ThoughtSignature    string                  `json:"thoughtSignature,omitempty"`
+		CodeExecutionResult *CodeExecutionResult    `json:"codeExecutionResult,omitempty"`
+		ExecutableCode      *ExecutableCode         `json:"executableCode,omitempty"`
+		FunctionCall        *FunctionCall           `json:"functionCall,omitempty"`
+		FunctionResponse    *FunctionResponse       `json:"functionResponse,omitempty"`
+		ToolCall            *ToolCall               `json:"toolCall,omitempty"`
+		ToolResponse        *ToolResponse           `json:"toolResponse,omitempty"`
+		AudioTranscription  *PartAudioTranscription `json:"audioTranscription,omitempty"`
 		// Text is a pointer so that "set to empty" and "not set" stay distinguishable:
 		// omitempty drops a nil pointer but keeps a pointer to "". See the empty-text
 		// restoration below for why that distinction has to survive the round trip.
@@ -1945,6 +1949,7 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		FunctionResponse:    p.FunctionResponse,
 		ToolCall:            p.ToolCall,
 		ToolResponse:        p.ToolResponse,
+		AudioTranscription:  p.AudioTranscription,
 	}
 	if p.Text != "" {
 		aux.Text = &p.Text
@@ -1993,26 +1998,28 @@ func (p Part) hasNonTextData() bool {
 		p.FunctionCall != nil ||
 		p.FunctionResponse != nil ||
 		p.ToolCall != nil ||
-		p.ToolResponse != nil
+		p.ToolResponse != nil ||
+		p.AudioTranscription != nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
 // This handles the thoughtSignature field which can be sent as a base64-encoded string from the Google GenAI SDK.
 func (p *Part) UnmarshalJSON(data []byte) error {
 	type PartAlias struct {
-		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
-		MediaResolution     *PartMediaResolution `json:"mediaResolution,omitempty"`
-		Thought             bool                 `json:"thought,omitempty"`
-		InlineData          *Blob                `json:"inlineData,omitempty"`
-		FileData            *FileData            `json:"fileData,omitempty"`
-		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
-		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
-		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
-		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
-		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
-		ToolCall            *ToolCall            `json:"toolCall,omitempty"`
-		ToolResponse        *ToolResponse        `json:"toolResponse,omitempty"`
-		Text                string               `json:"text,omitempty"`
+		VideoMetadata       *VideoMetadata          `json:"videoMetadata,omitempty"`
+		MediaResolution     *PartMediaResolution    `json:"mediaResolution,omitempty"`
+		Thought             bool                    `json:"thought,omitempty"`
+		InlineData          *Blob                   `json:"inlineData,omitempty"`
+		FileData            *FileData               `json:"fileData,omitempty"`
+		ThoughtSignature    string                  `json:"thoughtSignature,omitempty"`
+		CodeExecutionResult *CodeExecutionResult    `json:"codeExecutionResult,omitempty"`
+		ExecutableCode      *ExecutableCode         `json:"executableCode,omitempty"`
+		FunctionCall        *FunctionCall           `json:"functionCall,omitempty"`
+		FunctionResponse    *FunctionResponse       `json:"functionResponse,omitempty"`
+		ToolCall            *ToolCall               `json:"toolCall,omitempty"`
+		ToolResponse        *ToolResponse           `json:"toolResponse,omitempty"`
+		AudioTranscription  *PartAudioTranscription `json:"audioTranscription,omitempty"`
+		Text                string                  `json:"text,omitempty"`
 		// snake_case fallbacks: the google-genai SDK serializes FunctionResponsePart
 		// (nested inside functionResponse.parts) with snake_case keys, unlike top-level parts.
 		// mediaResolution needs one for a separate reason: Google's own REST reference documents
@@ -2050,6 +2057,7 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.ToolResponse = aux.ToolResponse
 	p.FunctionCall = aux.FunctionCall
 	p.FunctionResponse = aux.FunctionResponse
+	p.AudioTranscription = aux.AudioTranscription
 	p.Text = aux.Text
 
 	if aux.ThoughtSignature != "" {
@@ -2110,6 +2118,12 @@ func (m *PartMediaResolution) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// PartAudioTranscription is the transcript a Gemini transcription model returns in
+// Part.audioTranscription.
+type PartAudioTranscription struct {
+	Text string `json:"text,omitempty"`
 }
 
 // Blob represents content blob.

@@ -3,6 +3,7 @@ package gemini
 import (
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,4 +78,91 @@ func TestToGeminiTranscriptionRequest_ExtraParamsSurviveRetries(t *testing.T) {
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "cached_content")
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "labels")
 	assert.Len(t, bifrostReq.Params.ExtraParams, 4)
+}
+
+// geminiTranscribeResponse is a gemini-3.5-transcribe :generateContent response as
+// returned by the Gemini Developer API: the transcript sits in
+// parts[].audioTranscription.text and there is no text part.
+const geminiTranscribeResponse = `{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "audioTranscription": {
+              "text": "The quick brown fox jumps over the lazy dog."
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 79,
+    "candidatesTokenCount": 10,
+    "totalTokenCount": 89,
+    "promptTokensDetails": [
+      {"modality": "TEXT", "tokenCount": 7},
+      {"modality": "AUDIO", "tokenCount": 72}
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.5-transcribe",
+  "responseId": "-0T3aub7Mei8kdUPqtjb2QQ"
+}`
+
+func TestToBifrostTranscriptionResponseReadsAudioTranscriptionPart(t *testing.T) {
+	var resp GenerateContentResponse
+	require.NoError(t, sonic.Unmarshal([]byte(geminiTranscribeResponse), &resp))
+
+	got := resp.ToBifrostTranscriptionResponse()
+	assert.Equal(t, "The quick brown fox jumps over the lazy dog.", got.Text)
+	require.NotNil(t, got.Task)
+	assert.Equal(t, "transcribe", *got.Task)
+	require.NotNil(t, got.Usage)
+	require.NotNil(t, got.Usage.InputTokens)
+	assert.Equal(t, 79, *got.Usage.InputTokens)
+}
+
+func TestToBifrostTranscriptionResponseFallsBackToTextParts(t *testing.T) {
+	resp := &GenerateContentResponse{
+		Candidates: []*Candidate{{Content: &Content{Role: string(RoleModel), Parts: []*Part{
+			{Text: "Hello "},
+			nil,
+			{AudioTranscription: &PartAudioTranscription{}},
+			{Text: "world."},
+		}}}},
+	}
+	assert.Equal(t, "Hello world.", resp.ToBifrostTranscriptionResponse().Text)
+}
+
+// The streaming endpoint sends the transcript in an audioTranscription chunk and
+// then a closing chunk with an empty text part and finishReason STOP.
+func TestTranscriptionStreamChunksReadAudioTranscriptionPart(t *testing.T) {
+	chunks := []string{
+		`{"candidates": [{"content": {"parts": [{"audioTranscription": {"text": "The quick brown fox jumps over the lazy dog."}}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 79,"candidatesTokenCount": 10,"totalTokenCount": 89},"modelVersion": "gemini-3.5-transcribe"}`,
+		`{"candidates": [{"content": {"parts": [{"text": ""}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 79,"candidatesTokenCount": 10,"totalTokenCount": 89},"modelVersion": "gemini-3.5-transcribe"}`,
+	}
+	var full string
+	for _, c := range chunks {
+		resp, err := processGeminiStreamChunk([]byte(c))
+		require.NoError(t, err)
+		full += resp.transcriptText()
+	}
+	assert.Equal(t, "The quick brown fox jumps over the lazy dog.", full)
+}
+
+func TestPartAudioTranscriptionRoundTrips(t *testing.T) {
+	in := Part{AudioTranscription: &PartAudioTranscription{Text: "hi"}}
+	data, err := sonic.Marshal(in)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"audioTranscription":{"text":"hi"}}`, string(data))
+
+	var out Part
+	require.NoError(t, sonic.Unmarshal(data, &out))
+	require.NotNil(t, out.AudioTranscription)
+	assert.Equal(t, "hi", out.AudioTranscription.Text)
 }

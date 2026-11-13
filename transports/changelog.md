@@ -4,6 +4,7 @@
 
 ## 🐞 Fixed
 
+- **Gemini Transcription Models** - `/v1/audio/transcriptions` on `gemini/gemini-3.5-transcribe` returned an empty `text` while the audio was still billed, because the model answers with an `audioTranscription` part instead of a text part. The transcript is now returned, streaming included
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
 - **Null Entries in Gemini Requests** - A `null` inside `parts` or `functionDeclarations` on a GenAI request is skipped instead of failing with a 500. Null entries in Gemini and Vertex responses are skipped too
 - **Streaming Panic Recovery** - A panic in a provider stream, a stream chunk converter, a plugin post-hook or chunk hook, or stream teardown no longer takes down the gateway. The client gets a terminal error frame in the route's own format, and logging and billing record the failure
