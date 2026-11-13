@@ -87,16 +87,28 @@ test.describe('Claude Code device sign-in page', () => {
     await page.route('**/oauth2/device/verify', async route => {
       verifyCalls++
       expect(route.request().postDataJSON()).toEqual({ user_code: 'BCDF-GHJK' })
-      await route.fulfill({ status: 404, json: { error: { message: 'this code is not valid or has expired; run /login in Claude Code again' } } })
+      // The shared handler's own answer for an unknown or expired code.
+      await route.fulfill({ status: 404, json: { error: { message: 'this code is not valid or has expired; start the sign-in again from your terminal' } } })
     })
     await claudeCodeGatewayPage.gotoDevicePage('?user_code=bcdfghjk')
 
+    // The page serves every client gateway, so it never names one.
+    await expect(page.getByRole('heading', { name: 'Sign in to Bifrost' })).toBeVisible()
+    await expect(page.getByText('Confirm the code shown in your terminal matches the one below.')).toBeVisible()
+    await expect(page.getByText('Claude Code')).toHaveCount(0)
     await expect(claudeCodeGatewayPage.deviceCodeInput).toHaveValue('BCDF-GHJK')
     expect(verifyCalls).toBe(0)
 
     await claudeCodeGatewayPage.deviceContinueBtn.click()
-    await expect(claudeCodeGatewayPage.deviceError).toContainText('not valid or has expired')
+    await expect(claudeCodeGatewayPage.deviceError).toHaveText('this code is not valid or has expired; start the sign-in again from your terminal')
     expect(verifyCalls).toBe(1)
+  })
+
+  test('falls back to client-neutral guidance when verify gives no reason', async ({ page, claudeCodeGatewayPage }) => {
+    await page.route('**/oauth2/device/verify', route => route.fulfill({ status: 500, body: '' }))
+    await claudeCodeGatewayPage.gotoDevicePage('?user_code=bcdfghjk')
+    await claudeCodeGatewayPage.deviceContinueBtn.click()
+    await expect(claudeCodeGatewayPage.deviceError).toHaveText('This code could not be verified. Start the sign-in again from your terminal.')
   })
 
   test('stays on the code entry for a signed-out visitor while dashboard auth is on', async ({ page, claudeCodeGatewayPage }) => {
@@ -124,5 +136,7 @@ test.describe('Claude Code device sign-in page', () => {
   test('confirms an approved sign-in', async ({ claudeCodeGatewayPage }) => {
     await claudeCodeGatewayPage.gotoDevicePage('?approved=1')
     await expect(claudeCodeGatewayPage.deviceApproved).toContainText("You're signed in")
+    await expect(claudeCodeGatewayPage.deviceApproved).toContainText('Return to your terminal to finish.')
+    await expect(claudeCodeGatewayPage.deviceApproved).not.toContainText('Claude Code')
   })
 })

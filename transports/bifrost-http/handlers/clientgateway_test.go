@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -543,6 +544,30 @@ func TestClaudeCodeGateway_BearerUserMode(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		assert.Empty(t, string(ctx.Response.Header.Peek("x-should-retry")))
 	})
+}
+
+// TestClientGateway_DeviceVerifyNeedsNoCredentials pins that /oauth2/device/verify stays public:
+// a developer with no dashboard account calls it. Registering the routes with the OSS /api auth
+// chain (setup lock, dashboard auth) must not put it behind either, in both auth states.
+func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
+	for name, authConfig := range map[string]*configstore.AuthConfig{
+		"dashboard auth enabled": {AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar("hashed"), IsEnabled: true},
+		"setup lock active":      nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, _, _ := newClaudeCodeGateway(t, false)
+			_, userCode := startDeviceSignIn(t, h)
+			am := newSetupLockedAuthMiddleware("setup-secret", authConfig)
+			r := router.New()
+			h.ClientGatewayHandler.RegisterRoutes(r, am.SetupLockMiddleware(), am.APIMiddleware())
+
+			ctx := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
+			ctx.Request.SetRequestURI("/oauth2/device/verify")
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, jsonBody(t, ctx)["consent_url"], "/oauth/consent?flow=")
+		})
+	}
 }
 
 func TestClaudeCodeGateway_DeviceAuthorizationRateLimit(t *testing.T) {
