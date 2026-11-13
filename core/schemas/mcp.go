@@ -1168,6 +1168,27 @@ func (m *MCPServerTypeOnSlug) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// CodeModeFor reports whether the client runs in code mode on ctx's request: server_type_on_slug on its
+// own /mcp/<slug>, is_code_mode_client everywhere else.
+func (c *MCPClientConfig) CodeModeFor(ctx context.Context) bool {
+	if codeMode, overrides := c.ServerTypeOnSlug.CodeModeOverride(); overrides && ctx != nil {
+		if client, _ := ctx.Value(BifrostContextKeyMCPGatewayClient).(string); client == c.Name {
+			return codeMode
+		}
+	}
+	return c.IsCodeModeClient
+}
+
+// UsesCodeModeGlobalOrSlug reports whether the client runs in code mode on /mcp or on its own slug.
+func (c *MCPClientConfig) UsesCodeModeGlobalOrSlug() bool {
+	return c.IsCodeModeClient || c.ServerTypeOnSlug == MCPServerTypeOnSlugEnabled
+}
+
+// ServesOwnToolsGlobalOrSlug reports whether /mcp or the client's own slug lists its tools directly (not behind code mode).
+func (c *MCPClientConfig) ServesOwnToolsGlobalOrSlug() bool {
+	return !c.IsCodeModeClient || c.ServerTypeOnSlug == MCPServerTypeOnSlugDisabled
+}
+
 // ResolveAllowByDefault settles the flag from the two keys the wire accepts for it: allow_by_default,
 // and the earlier allow_on_all_virtual_keys. The current key decides whenever it is present; the
 // earlier one is read only in its absence, so a caller that sends both is taken at its current word.

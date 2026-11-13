@@ -496,6 +496,8 @@
 			"showErrorDetails": "詳細を表示",
 			"hideErrorDetails": "詳細を非表示",
 			"codeMode": "コードモード",
+			"serverTypeOnSlugEnabled": "/mcp/{{slug}} でコードモード",
+			"serverTypeOnSlugDisabled": "/mcp/{{slug}} でツールを直接公開",
 			"spec": "仕様",
 			"calls": "呼び出し先",
 			"copyBaseUrl": "ベース URL をコピー",
