@@ -12,10 +12,12 @@ export interface OAuth2ConsentFlowDetail {
 	expires_at: string;
 }
 
-export interface OAuth2ConsentSubmitRequest {
-	mode: "vk" | "session" | "user";
-	value?: string; // VK plaintext for mode=vk; absent for session/user
-}
+export type OAuth2ConsentSubmitRequest =
+	| {
+			mode: "vk" | "session" | "user";
+			value?: string; // VK plaintext for mode=vk; absent for session/user
+	  }
+	| { deny: true }; // refuse a device sign-in instead of approving it
 
 export interface OAuth2ConsentSubmitResponse {
 	redirect_url: string;

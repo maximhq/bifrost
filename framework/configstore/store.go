@@ -1243,6 +1243,10 @@ type ConfigStore interface {
 	// ErrNotFound when no longer pending, so concurrent double-consent can't
 	// overwrite an already-minted code.
 	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	// DenyOAuth2AuthorizeRequest atomically transitions a still-pending request to
+	// revoked when the person on the consent page refuses it - returns ErrNotFound
+	// when no longer pending.
+	DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error
 	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
 
 	// OAuth2 refresh tokens

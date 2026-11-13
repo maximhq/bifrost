@@ -437,6 +437,19 @@ func TestConsentFlowSubmit_DeviceFlowUserWithoutAccess(t *testing.T) {
 	})
 }
 
+// TestConsentFlowSubmit_DenyIsDeviceOnly pins that Deny is offered for device sign-ins only:
+// an /mcp authorization-code flow answers a refusal by redirecting to its client, which this
+// endpoint does not do, so a deny there is rejected and the flow stays pending.
+func TestConsentFlowSubmit_DenyIsDeviceOnly(t *testing.T) {
+	store := newConsentStore()
+	seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+	h := newConsentHandler(store, nil, false)
+	ctx := consentCtx("flow-1", `{"deny":true}`)
+	h.flowSubmit(ctx)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-1"].Status)
+}
+
 func TestConsentFlowSubmit_User(t *testing.T) {
 	t.Run("user mode rejected when no resolver (mode not offered)", func(t *testing.T) {
 		store := newConsentStore()

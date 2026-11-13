@@ -178,8 +178,9 @@ const (
 
 // consentFlowSubmitRequest is the wire shape for PUT /api/oauth2/consent/flows/{id}.
 type consentFlowSubmitRequest struct {
-	Mode  consentFlowMode `json:"mode"`  // "vk" | "session" | "user"
-	Value string          `json:"value"` // VK plaintext value for mode=vk; empty for session/user
+	Mode  consentFlowMode `json:"mode"`           // "vk" | "session" | "user"
+	Value string          `json:"value"`          // VK plaintext value for mode=vk; empty for session/user
+	Deny  bool            `json:"deny,omitempty"` // refuse the sign-in instead of approving it (device sign-ins only)
 }
 
 // consentFlowSubmitResponse is returned after successful consent. The frontend
@@ -207,6 +208,10 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	var body consentFlowSubmitRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.Deny {
+		h.denyFlow(ctx, req)
 		return
 	}
 
@@ -413,6 +418,32 @@ func (h *OAuth2ConsentHandler) availableModes(ctx *fasthttp.RequestCtx) []consen
 // (500 — crypto or DB error). resolveIdentity mixes both kinds; without the
 // status every failure would be reported as a 400, mislabeling a broken server
 // as a bad request and leaking the cause to the client.
+// denyFlow refuses a device sign-in (a client gateway's /login) from the consent
+// page: the request moves to revoked, so the device's next poll is answered
+// access_denied (RFC 8628 §3.5) instead of polling until the code expires, and
+// the browser is sent to the device page's denied state. Refusing needs no
+// identity, so whoever holds the consent link can do it. An authorization-code
+// flow would answer a refusal by redirecting to its client with
+// error=access_denied, which this endpoint does not do, so it is rejected there.
+func (h *OAuth2ConsentHandler) denyFlow(ctx *fasthttp.RequestCtx, req *configtables.TableOAuth2AuthorizeRequest) {
+	if req.DeviceCodeHash == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "only a device sign-in can be denied here")
+		return
+	}
+	if err := h.store.ConfigStore.DenyOAuth2AuthorizeRequest(ctx, req.ID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusConflict, "authorization flow has already been completed")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to record the refusal")
+		return
+	}
+	if h.tempTokens != nil {
+		_, _ = h.tempTokens.DeleteByResourceID(ctx, temptoken.OAuth2ConsentScopeName, req.ID)
+	}
+	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceDeniedURL(oauth2IssuerURL(ctx, h.store))})
+}
+
 type consentError struct {
 	status  int
 	message string
