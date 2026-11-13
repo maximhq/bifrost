@@ -429,7 +429,7 @@ function MessageRow({ message, last = false }: { message: Record<string, unknown
 
 const ARTIFACT_CLAIMED = ["artifactId", "name", "description", "parts"];
 
-function ArtifactView({ artifact }: { artifact: unknown }) {
+export function ArtifactView({ artifact }: { artifact: unknown }) {
 	const { t } = useTranslation("observability");
 	const record = asRecord(artifact);
 	if (!record) return <JsonBlock code={prettyPrint(artifact)} maxHeight={200} />;

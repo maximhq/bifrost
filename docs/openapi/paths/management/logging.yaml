@@ -73,6 +73,11 @@ logs:
         description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
         schema:
           type: string
+      - name: model_router_ids
+        in: query
+        description: Comma-separated list of model router IDs. Matches requests a model router took.
+        schema:
+          type: string
       - name: session_id
         in: query
         description: Exact Bifrost session ID used for key stickiness and request correlation
@@ -302,6 +307,11 @@ logs-stats:
       - name: complexity_mechanisms
         in: query
         description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
+        schema:
+          type: string
+      - name: model_router_ids
+        in: query
+        description: Comma-separated list of model router IDs. Matches requests a model router took.
         schema:
           type: string
       - name: session_id
@@ -562,6 +572,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -623,6 +634,7 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -680,6 +692,7 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -743,6 +756,7 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -800,6 +814,7 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -857,6 +872,7 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -914,6 +930,7 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -971,6 +988,7 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -1033,6 +1051,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -1093,6 +1112,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -1210,6 +1230,12 @@ _histogram-parameters:
     name: routing_rule_ids
     in: query
     description: Comma-separated list of routing rule IDs to filter by
+    schema:
+      type: string
+  model_router_ids:
+    name: model_router_ids
+    in: query
+    description: Comma-separated list of model router IDs. Matches requests a model router took.
     schema:
       type: string
   routing_engine_used:
@@ -2026,6 +2052,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -2108,6 +2135,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -2179,6 +2207,7 @@ logs-rankings-users:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/team_ids"
       - $ref: "#/_histogram-parameters/customer_ids"
       - $ref: "#/_histogram-parameters/user_ids"
@@ -2248,6 +2277,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -2331,6 +2361,7 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -2395,6 +2426,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
@@ -2459,6 +2491,7 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/project_ids"
       - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
+      - $ref: "#/_histogram-parameters/model_router_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"

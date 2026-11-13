@@ -664,6 +664,6 @@ func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
 	b.ReportAllocs()
 	for b.Loop() {
-		plugin.warnFallbacksOutsideAccess(ctx, "rule", fallbacks)
+		plugin.warnFallbacksOutsideAccess(ctx, schemas.RoutingEngineRoutingRule, "Rule", "rule", fallbacks)
 	}
 }
