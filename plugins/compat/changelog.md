@@ -1,2 +1,1 @@
 - chore: upgraded core to v1.15.2 and framework to v1.12.2
-- feat: `gemini-decision-*` models on `gemini` are native decisions models, so `convert_decision_to_responses` no longer emulates them

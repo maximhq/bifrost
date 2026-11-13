@@ -249,10 +249,10 @@ func TestIsBasetenDecisionModel(t *testing.T) {
 }
 
 func TestIsGeminiDecisionModel(t *testing.T) {
-	for _, model := range []string{"gemini-decision-1", "Gemini-Decision-2"} {
+	for _, model := range []string{"gemini-decision-1", "models/gemini-decision-1", "Gemini-Decision-2-preview"} {
 		assert.True(t, IsGeminiDecisionModel(model), model)
 	}
-	for _, model := range []string{"gemini-2.5-flash", "gemini/gemini-decision-1", "models/gemini-decision-1", ""} {
+	for _, model := range []string{"gemini-3-flash", "gemini-2.5-flash-lite", "gemini/gemini-decision-1", "gemini-decision", ""} {
 		assert.False(t, IsGeminiDecisionModel(model), model)
 	}
 }

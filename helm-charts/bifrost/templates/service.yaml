@@ -5,6 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}

@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +246,67 @@ func TestTranscription_VerboseJSON_StillWorks(t *testing.T) {
 	}
 	if len(resp.DiarizedSegments) != 0 {
 		t.Fatalf("expected DiarizedSegments to stay empty, got %d", len(resp.DiarizedSegments))
+	}
+}
+
+// runTranscriptionAgainstBody sends a transcription request with the given
+// response_format to a stub that answers 200 with body.
+func runTranscriptionAgainstBody(t *testing.T, responseFormat, body string) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 30,
+		},
+	}, &testLogger{})
+
+	request := &schemas.BifrostTranscriptionRequest{
+		Model: "whisper-1",
+		Input: &schemas.TranscriptionInput{
+			File:     []byte("fake-audio-bytes"),
+			Filename: "noise.wav",
+		},
+		Params: &schemas.TranscriptionParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, request)
+}
+
+// Audio with no speech (white noise, music, silence) makes OpenAI answer a
+// plain-text format with 200 and an empty or whitespace-only body. That is a
+// valid empty transcript, not a provider failure.
+func TestTranscription_PlainTextFormats_EmptyTranscriptIsNotAnError(t *testing.T) {
+	for _, format := range []string{"text", "srt", "vtt"} {
+		for _, body := range []string{"", "\n"} {
+			t.Run(format+"/"+strconv.Quote(body), func(t *testing.T) {
+				resp, bifrostErr := runTranscriptionAgainstBody(t, format, body)
+				if bifrostErr != nil {
+					t.Fatalf("expected an empty transcript, got error: %s", bifrostErr.Error.Message)
+				}
+				if resp == nil || strings.TrimSpace(resp.Text) != "" {
+					t.Fatalf("expected empty text, got %+v", resp)
+				}
+			})
+		}
+	}
+}
+
+// A JSON format still needs a body to decode, so an empty one stays an error.
+func TestTranscription_JSONFormat_EmptyBodyIsStillAnError(t *testing.T) {
+	_, bifrostErr := runTranscriptionAgainstBody(t, "json", "")
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != schemas.ErrProviderResponseEmpty {
+		t.Fatalf("expected %q, got %+v", schemas.ErrProviderResponseEmpty, bifrostErr)
 	}
 }
 

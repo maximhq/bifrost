@@ -462,6 +462,7 @@ func migrationClickHouseAgentLogsTable(ctx context.Context, db *gorm.DB, cluster
 			"INDEX idx_agent_logs_context_id context_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_request_message_id request_message_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_response_message_id response_message_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_caller_correlation_id caller_correlation_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_operation operation TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_status status TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_record_kind record_kind TYPE bloom_filter GRANULARITY 1",
@@ -730,6 +731,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseWarpTopicTables,
 	migrationClickHouseWarpVectorDeletesTable,
 	migrationClickHouseRelayLogsTable,
+	migrationClickHouseComplexitySuggestionTables,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations
@@ -739,6 +741,36 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 func triggerClickHouseMigrations(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
 	for _, step := range clickhouseMigrationSteps {
 		if err := step(ctx, db, cluster, retentionDays, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrationClickHouseComplexitySuggestionTables creates the storage for the
+// complexity router's phrase suggestions.
+//
+// None of the three has a TTL. A suggestion row carries the user's accept or
+// dismiss decision, which must outlive the requests it was drawn from;
+// expiring it would bring a dismissed suggestion back. Runs are bounded from
+// the application by PruneComplexitySuggestionRuns. A vector delete row goes
+// when its retry succeeds, and expiring it would leave the vector behind.
+// Each table is ordered by its identity, so a re-insert replaces the row.
+func migrationClickHouseComplexitySuggestionTables(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating tables model_routing_suggestions, model_routing_suggestion_runs, model_routing_vector_deletes")
+	for _, table := range []struct {
+		model   any
+		name    string
+		orderBy string
+	}{
+		{&ComplexitySuggestion{}, "model_routing_suggestions", "id"},
+		{&ComplexitySuggestionRun{}, "model_routing_suggestion_runs", "id"},
+		{&ComplexityVectorDelete{}, "model_routing_vector_deletes", "(log_id, namespace)"},
+	} {
+		if err := clickhouseCreateTable(ctx, db, table.model, chTableOpts{table: table.name, orderBy: table.orderBy}, cluster); err != nil {
+			return fmt.Errorf("clickhouse: create %s table: %w", table.name, err)
+		}
+		if err := clickhouseReconcileColumns(ctx, db, table.model, table.name, cluster, logger); err != nil {
 			return err
 		}
 	}

@@ -1724,34 +1724,42 @@ func TestListModels_DecisionsBasetenListsDecisionModels(t *testing.T) {
 }
 
 // TestListModels_DecisionsGeminiListsDecisionModels pins that decisions=true lists
-// Gemini's gemini-decision models, which its Decision call serves on /v1beta/decisions,
-// and not its chat models.
+// Gemini's Decision models, which its Decision call serves on /v1beta/decisions, and
+// not its chat models, for Gemini itself and for a custom provider on the Gemini
+// base, which its Decision gates by the same name.
 func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	models := []string{"gemini-decision-1", "gemini-2.5-flash"}
-	h := providerHandlerForTest(schemas.Gemini, []schemas.Key{{ID: "key-a"}}, models, models)
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, "my-gemini"} {
+		models := []string{"gemini-decision-1", "gemini-3-flash", "gemini-embedding-001"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		if provider != schemas.Gemini {
+			config := h.inMemoryStore.Providers[provider]
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+			h.inMemoryStore.Providers[provider] = config
+		}
 
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=gemini&decisions=true&limit=10")
-	h.listModels(ctx)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	var resp ListModelsResponse
-	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	names := make([]string, 0, len(resp.Models))
-	for _, model := range resp.Models {
-		names = append(names, model.Name)
-	}
-	if want := []string{"gemini-decision-1"}; !slices.Equal(names, want) {
-		t.Fatalf("expected %v, got %v", want, names)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		if want := []string{"gemini-decision-1"}; !slices.Equal(names, want) {
+			t.Fatalf("%s: expected %v, got %v", provider, want, names)
+		}
 	}
 }
 

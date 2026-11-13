@@ -85,7 +85,6 @@ func TestGemini(t *testing.T) {
 			SpeechSynthesisStream:      true,
 			Reasoning:                  true,
 			ListModels:                 true,
-			Decision:                   true,
 			BatchCreate:                true,
 			BatchList:                  true,
 			BatchRetrieve:              true,
@@ -101,6 +100,7 @@ func TestGemini(t *testing.T) {
 			StructuredOutputs:          true, // Structured outputs with nullable enum support
 			PassthroughAPI:             true,
 			Realtime:                   true,
+			Decision:                   true, // native on /v1beta/decisions for gemini-decision-*
 		},
 	}
 

@@ -287,12 +287,12 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
 // typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
 // models on Ollama, Microsoft's decision models and gpt-6-luna on Azure,
-// ai_decide and System One models on Databricks, decision-models/ on Baseten). gpt-6-luna is native by name only on OpenAI and
+// ai_decide and System One models on Databricks, decision-models/ on Baseten,
+// Gemini Decision models on Gemini). gpt-6-luna is native by name only on OpenAI and
 // Azure (its /openai/v1/decisions route): another provider hosting it
 // (OpenRouter's gpt-6-luna chat models) serves it as a chat model, so it is
 // emulated unless that provider's datasheet row says otherwise (OpenRouter's
 // openai/gpt-6-luna-decisions).
-// gemini-decision models are native on Gemini, the only provider serving them.
 // Typesafe, vLLM and SGLang serve every model natively, so they are never marked. Custom
 // providers have no catalog rows and are matched by their own name, so one
 // serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
