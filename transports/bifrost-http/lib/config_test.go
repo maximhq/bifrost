@@ -662,7 +662,8 @@ type MockConfigStore struct {
 		ID     string
 		Config tables.TableMCPClient
 	}
-	governanceItemsCreated struct {
+	mcpClientConfigHashUpdates [][3]string // client ID, old hash, new hash
+	governanceItemsCreated     struct {
 		budgets     []tables.TableBudget
 		rateLimits  []tables.TableRateLimit
 		customers   []tables.TableCustomer
@@ -933,6 +934,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 				Name:                clientConfig.Name,
 				EndpointSlug:        m.mcpConfig.ClientConfigs[i].EndpointSlug, // immutable: the real store never updates it
 				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 				ConnectionString:    clientConfig.ConnectionString,
 				StdioConfig:         clientConfig.StdioConfig,
@@ -949,6 +951,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		ID:                  clientConfig.ClientID,
 		Name:                clientConfig.Name,
 		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 		ConnectionString:    clientConfig.ConnectionString,
 		StdioConfig:         clientConfig.StdioConfig,
@@ -959,6 +962,11 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	})
 
 	return nil
+}
+
+func (m *MockConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	m.mcpClientConfigHashUpdates = append(m.mcpClientConfigHashUpdates, [3]string{clientID, oldHash, newHash})
+	return true, nil
 }
 
 func (m *MockConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
@@ -23940,6 +23948,145 @@ func TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled(t *testing.T) {
 	require.Len(t, store.mcpClientConfigUpdates, 1, "an endpoint_slug-only edit must be reconciled, not skipped")
 	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
 	require.Equal(t, "echo-http", cfg.MCPConfig.ClientConfigs[0].EndpointSlug, "the stored slug still wins")
+}
+
+// TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled: a config.json edit that only sets server_type_on_slug drifts the
+// hash, so the stored client takes the override and the runtime config carries it.
+func TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	declared := func(slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: true,
+			ServerTypeOnSlug: slug,
+		}
+	}
+	existing := declared(schemas.MCPServerTypeOnSlugInherit)
+	existing.ID = "mcp-existing"
+	row, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(schemas.MCPServerTypeOnSlugDisabled)}}}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "a server_type_on_slug-only edit must be reconciled, not skipped")
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, store.mcpClientConfigUpdates[0].Config.ServerTypeOnSlug, "the stored row takes the override")
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, cfg.MCPConfig.ClientConfigs[0].ServerTypeOnSlug, "the runtime config carries the override")
+}
+
+// TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits: on the first boot after is_code_mode_client joined the hash,
+// an unchanged config.json code-mode client keeps its dashboard edits and only its stored hash moves to the
+// current form; a later config.json edit that only turns code mode off or on still applies.
+func TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	mock := NewMockConfigStore()
+
+	declared := func(codeMode bool) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: codeMode,
+		}
+	}
+	// Stored by an older build: config.json's client hashed without is_code_mode_client, then edited in the UI.
+	legacyRow, err := mcpClientConfigToTable(declared(false))
+	require.NoError(t, err)
+	legacyHash, err := configstore.GenerateMCPClientHash(legacyRow)
+	require.NoError(t, err)
+	existing := declared(true)
+	existing.ID = "mcp-existing"
+	existing.ToolsToExecute = schemas.WhiteList{"echo"}
+	existing.ConfigHash = legacyHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+
+	cfg := &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+
+	currentRow, err := mcpClientConfigToTable(declared(true))
+	require.NoError(t, err)
+	currentHash, err := configstore.GenerateMCPClientHash(currentRow)
+	require.NoError(t, err)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, schemas.WhiteList{"echo"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the dashboard edit survives the upgrade")
+	assert.Empty(t, mock.mcpClientConfigUpdates, "no stored field is rewritten")
+	assert.Equal(t, [][3]string{{"mcp-existing", legacyHash, currentHash}}, mock.mcpClientConfigHashUpdates,
+		"only the stored hash moves, and only from the legacy value")
+
+	// Next boot, config.json turns code mode off: the upgraded hash makes that a detected edit.
+	upgraded := declared(true)
+	upgraded.ID = "mcp-existing"
+	upgraded.ToolsToExecute = schemas.WhiteList{"echo"}
+	upgraded.ConfigHash = currentHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{upgraded}}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(false)}}}, mock.mcpConfig)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode off in config.json is a file edit")
+	assert.False(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.Equal(t, schemas.WhiteList{"*"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the file version applies")
+
+	// A client stored without code mode hashes the same under both formulas, so config.json turning it on
+	// must apply rather than read as an old hash.
+	withoutCodeMode := declared(false)
+	withoutCodeMode.ID = "mcp-existing"
+	withoutCodeMode.ConfigHash = legacyHash
+	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{withoutCodeMode}}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode on in config.json is a file edit")
+	assert.True(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].IsCodeModeClient, "the file version applies")
+}
+
+// TestGetMCPServerTypesOnSlug: the gateway learns every enabled client with an override, and nothing else; a
+// per-user discovery client counts as code mode when either /mcp or its slug runs it in code mode.
+func TestGetMCPServerTypesOnSlug(t *testing.T) {
+	perUser := func(name string, codeMode bool, slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: name + "-id", Name: name, AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserDiscovery: schemas.Ptr(true),
+			IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
+		}
+	}
+	cfg := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "plain", IsCodeModeClient: true},
+		{Name: "slug_direct", IsCodeModeClient: true, ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled},
+		{Name: "slug_code", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+		{Name: "off", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled, Disabled: true},
+		perUser("per_user_direct", false, schemas.MCPServerTypeOnSlugInherit),
+		perUser("per_user_slug_code", false, schemas.MCPServerTypeOnSlugEnabled),
+		perUser("per_user_code", true, schemas.MCPServerTypeOnSlugDisabled),
+	}}}
+
+	assert.Equal(t, map[string]MCPClientCodeModes{
+		"slug_direct":        {Global: true, OnSlug: false},
+		"slug_code":          {Global: false, OnSlug: true},
+		"per_user_slug_code": {Global: false, OnSlug: true},
+		"per_user_code":      {Global: true, OnSlug: false},
+	}, cfg.GetMCPServerTypesOnSlug(), "only enabled clients with an override are listed")
+
+	perUserClients := cfg.GetMCPPerUserDiscoveryClients()
+	assert.False(t, perUserClients["per_user_direct-id"].CodeMode)
+	assert.True(t, perUserClients["per_user_slug_code-id"].CodeMode, "code mode on its slug only still needs the code-mode placeholders")
+	assert.True(t, perUserClients["per_user_code-id"].CodeMode)
+
+	assert.Nil(t, (&Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "plain"}}}}).GetMCPServerTypesOnSlug(),
+		"no override anywhere leaves the gateway nothing to check")
 }
 
 // TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug: a config.json client with no endpoint_slug gets

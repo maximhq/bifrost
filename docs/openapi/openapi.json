@@ -46444,6 +46444,16 @@
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
+                          },
                           "is_ping_available": {
                             "type": "boolean",
                             "default": true,
@@ -46797,6 +46807,16 @@
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
+                          },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
                           },
                           "is_ping_available": {
                             "type": "boolean",
@@ -47160,6 +47180,16 @@
                           },
                           "is_code_mode_client": {
                             "type": "boolean"
+                          },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
                           },
                           "is_ping_available": {
                             "type": "boolean",
@@ -47544,6 +47574,16 @@
                           "is_code_mode_client": {
                             "type": "boolean"
                           },
+                          "server_type_on_slug": {
+                            "type": "string",
+                            "enum": [
+                              "inherit",
+                              "enabled",
+                              "disabled"
+                            ],
+                            "default": "inherit",
+                            "description": "Code mode on this client's own /mcp/<slug> endpoint only. \"inherit\" follows\nis_code_mode_client, \"enabled\" turns code mode on there, \"disabled\" serves the\nclient's tools directly there. /mcp, Virtual MCP endpoints and LLM requests\nalways follow is_code_mode_client.\n"
+                          },
                           "is_ping_available": {
                             "type": "boolean",
                             "default": true,
@@ -47919,6 +47959,15 @@
                   "is_code_mode_client": {
                     "type": "boolean",
                     "description": "Whether this client is available in code mode"
+                  },
+                  "server_type_on_slug": {
+                    "type": "string",
+                    "enum": [
+                      "inherit",
+                      "enabled",
+                      "disabled"
+                    ],
+                    "description": "Code mode on this client's own /mcp/<slug> endpoint only. Omit to keep the\ncurrent value; \"inherit\" goes back to following is_code_mode_client.\n"
                   },
                   "is_ping_available": {
                     "type": "boolean",
@@ -89050,7 +89099,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Cancel a phrase suggestion run",
-        "description": "Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the record returned may still read running until then.\n",
+        "description": "Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the call waits a few seconds for that and returns the run as it ended, or, if it has not stopped by then, as it stands, still running.\n",
         "tags": [
           "Routing"
         ],
@@ -139942,6 +139991,15 @@
           "is_code_mode_client": {
             "type": "boolean",
             "description": "Whether this client is available in code mode"
+          },
+          "server_type_on_slug": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "enabled",
+              "disabled"
+            ],
+            "description": "Code mode on this client's own /mcp/<slug> endpoint; \"inherit\" follows is_code_mode_client"
           },
           "connection_type": {
             "type": "string",

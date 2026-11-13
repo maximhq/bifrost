@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,4 +63,65 @@ func TestMCPClientUpdateRequestResolvedAllowByDefault(t *testing.T) {
 			assert.Equal(t, tc.want, req.resolvedAllowByDefault(tc.existing))
 		})
 	}
+}
+
+// TestMCPClientRequestReadsServerTypeOnSlug pins the create request's server_type_on_slug decode: the wire
+// value lands on the embedded table, absent and "inherit" inherit, and an unknown value refuses the request.
+func TestMCPClientRequestReadsServerTypeOnSlug(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want schemas.MCPServerTypeOnSlug
+	}{
+		{"absent inherits", `{"name":"demo"}`, schemas.MCPServerTypeOnSlugInherit},
+		{"inherit", `{"name":"demo","server_type_on_slug":"inherit"}`, schemas.MCPServerTypeOnSlugInherit},
+		{"enabled", `{"name":"demo","server_type_on_slug":"enabled"}`, schemas.MCPServerTypeOnSlugEnabled},
+		{"disabled", `{"name":"demo","is_code_mode_client":true,"server_type_on_slug":"disabled"}`, schemas.MCPServerTypeOnSlugDisabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req MCPClientRequest
+			require.NoError(t, json.Unmarshal([]byte(tc.raw), &req))
+			assert.Equal(t, tc.want, req.ServerTypeOnSlug)
+			assert.Equal(t, "demo", req.Name)
+		})
+	}
+
+	var req MCPClientRequest
+	assert.Error(t, json.Unmarshal([]byte(`{"name":"demo","server_type_on_slug":"on"}`), &req))
+}
+
+// TestMCPClientUpdateRequestResolvedServerTypeOnSlug pins PATCH semantics: omitted keeps the stored value,
+// "inherit" clears an override, and an unknown value is refused.
+func TestMCPClientUpdateRequestResolvedServerTypeOnSlug(t *testing.T) {
+	decode := func(raw string) MCPClientUpdateRequest {
+		var req MCPClientUpdateRequest
+		require.NoError(t, json.Unmarshal([]byte(raw), &req))
+		return req
+	}
+	inherit, enabled, disabled := schemas.MCPServerTypeOnSlugInherit, schemas.MCPServerTypeOnSlugEnabled, schemas.MCPServerTypeOnSlugDisabled
+	cases := []struct {
+		name     string
+		raw      string
+		existing schemas.MCPServerTypeOnSlug
+		want     schemas.MCPServerTypeOnSlug
+	}{
+		{"omitted keeps an override", `{}`, disabled, disabled},
+		{"omitted keeps inherit", `{}`, inherit, inherit},
+		{"inherit clears an override", `{"server_type_on_slug":"inherit"}`, enabled, inherit},
+		{"enabled sets", `{"server_type_on_slug":"enabled"}`, inherit, enabled},
+		{"disabled replaces", `{"server_type_on_slug":"disabled"}`, enabled, disabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := decode(tc.raw)
+			got, err := req.resolvedServerTypeOnSlug(tc.existing)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	req := decode(`{"server_type_on_slug":"true"}`)
+	_, err := req.resolvedServerTypeOnSlug(inherit)
+	assert.ErrorContains(t, err, "server_type_on_slug")
 }

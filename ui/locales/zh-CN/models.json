@@ -2488,18 +2488,13 @@
 			"title": "路由器",
 			"pageDescription": "按复杂度对请求分类，并将每个层级发送到各自的模型。",
 			"newRouter": "新建路由器",
-			"editDetails": "编辑详情",
 			"viewLogs": "查看日志",
-			"editDetailsTitle": "编辑路由器详情",
 			"actionsAria": "路由器 {{name}} 的操作",
-			"editDetailsDescription": "在列出此路由器的所有位置显示的名称和描述。",
 			"namePlaceholder": "例如：工程助手",
 			"descriptionLabel": "描述",
 			"descriptionPlaceholder": "此路由器的用途",
 			"createRouter": "创建路由器",
 			"created": "路由器已创建",
-			"detailsSaved": "路由器详情已保存",
-			"detailsSaveFailed": "保存路由器详情失败：{{error}}",
 			"columnName": "名称",
 			"columnRequests": "请求 · 7 天",
 			"columnActive": "启用",
@@ -2561,13 +2556,14 @@
 				},
 				"status": {
 					"offTitle": "此路由器已关闭",
-					"offDetail": "请在路由器列表中开启它。",
+					"offDetail": "开启后，它将开始处理与其路由匹配的请求。",
 					"onTitle": "此路由器已开启",
 					"noTrafficTitle": "没有流量路由到这里",
 					"noTrafficDetail": "过去 7 天内没有请求与此路由器的路由匹配。",
 					"servingTitle": "正在接管请求",
 					"servingDetail": "与其路由匹配的请求会被分类，并发送到对应层级的模型。",
-					"viewRequests": "查看请求"
+					"viewRequests": "查看请求",
+					"turnOn": "开启"
 				}
 			},
 			"models": {
@@ -2580,17 +2576,22 @@
 				"weightPositive": "每个权重都必须大于 0。",
 				"weightsMustSum": "此层级中的权重之和必须为 1（当前为 {{total}}）。"
 			},
+			"sheet": {
+				"title": "编辑路由器",
+				"description": "名称和描述、是否开启，以及它处理哪些请求。",
+				"enabledLabel": "开启路由器",
+				"enabledHelp": "关闭期间，路由器不处理任何请求。",
+				"saved": "路由器已保存",
+				"saveFailed": "保存路由器失败：{{error}}"
+			},
 			"routing": {
 				"description": "选择此路由器接管哪些请求。",
 				"orderNote": "路由规则先运行，因此路由器看到的是规则处理后的请求。第一个匹配的路由器接管请求：先按范围从窄到宽，再按优先级从低到高。",
-				"sheetTitle": "编辑路由",
 				"everyRequest": "范围内的所有请求",
 				"priorityHelp": "在同一范围内，数值越低越先尝试。路由器的优先级独立于路由规则的优先级。",
 				"priorityInvalid": "请输入 0 到 1000 之间的整数。",
 				"conditionLabel": "条件",
-				"conditionHelp": "留空则接管范围内的所有请求。匹配模型字段可让应用按名称请求此路由器。此处不能使用层级：路由器在接管请求后才决定层级。",
-				"saved": "路由已保存",
-				"saveFailed": "无法保存路由：{{error}}"
+				"conditionHelp": "留空则接管范围内的所有请求。匹配模型字段可让应用按名称请求此路由器。此处不能使用层级：路由器在接管请求后才决定层级。"
 			}
 		}
 	},

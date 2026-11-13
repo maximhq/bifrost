@@ -22,7 +22,7 @@ import { DeleteConfirmDialog } from "./formParts";
 import { ModelsTab } from "./modelsTab";
 import { OverviewTab, tiersWithModels } from "./overviewTab";
 import { RouterConfigurationSheets } from "./routerConfigurationEditor";
-import RouterDetailsDialog from "./routerDetailsDialog";
+import { RouterSheet } from "./routerSheet";
 import { RoutingTab } from "./routingTab";
 import { useRouterConfigForm } from "./useRouterConfigForm";
 import type { RouterTrafficRead, TrafficWindow } from "./useRouterTraffic";
@@ -45,8 +45,10 @@ interface RouterDetailViewProps {
 }
 
 // RouterDetailView is one model router's page, laid out like a project's: the
-// router's name in the topbar, its tabs, and beside them its on/off switch and
-// its actions (the requests it took, its details, deleting it).
+// router's name in the topbar, its tabs, and beside them its actions (the
+// requests it took, editing it, deleting it). Editing opens the router sheet,
+// which also turns the router on; a save that turns it on lands on the
+// overview, whose status line then says it is taking requests.
 export default function RouterDetailView({ routerId, traffic, trafficWindow, onBack }: RouterDetailViewProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
@@ -60,7 +62,8 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 	const { data, isLoading, error, refetch } = useGetModelRouterQuery(routerId, { refetchOnMountOrArgChange: true });
 	const [updateRouter] = useUpdateModelRouterMutation();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
-	const [detailsOpen, setDetailsOpen] = useState(false);
+	// The router sheet while it is open; turnOn opens it with the switch on.
+	const [sheet, setSheet] = useState<{ turnOn: boolean } | null>(null);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	const config = useRouterConfigForm({
@@ -168,7 +171,6 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 							)}
 						</TabsList>
 					</div>
-					{/* Turned on and off from the routers list, as projects are; the page keeps only its actions. */}
 					<div className="ml-auto flex items-center gap-3">
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
@@ -191,12 +193,12 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 								</DropdownMenuItem>
 								{canUpdate && (
 									<DropdownMenuItem
-										onClick={() => setDetailsOpen(true)}
-										data-testid="model-router-edit-details-button"
+										onClick={() => setSheet({ turnOn: false })}
+										data-testid="model-router-edit-button"
 										className="cursor-pointer"
 									>
 										<Pencil className="h-4 w-4" />
-										{tmr("editDetails")}
+										{tc("edit")}
 									</DropdownMenuItem>
 								)}
 								{canDelete && (
@@ -222,6 +224,8 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 						trafficState={traffic.state}
 						trafficWindow={trafficWindow}
 						onNavigate={(next) => void setTab(next)}
+						canUpdate={canUpdate}
+						onTurnOn={() => setSheet({ turnOn: true })}
 					/>
 				</TabsContent>
 				<TabsContent value="configuration" className="flex min-h-0 flex-col overflow-hidden">
@@ -231,7 +235,7 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 					<ModelsTab router={data} canUpdate={canUpdate} providers={config.providers.all} keys={config.providers.keys} />
 				</TabsContent>
 				<TabsContent value="routing" className="flex min-h-0 flex-col overflow-hidden">
-					<RoutingTab router={data} canUpdate={canUpdate} />
+					<RoutingTab router={data} canUpdate={canUpdate} onEdit={() => setSheet({ turnOn: false })} />
 				</TabsContent>
 				{showSuggestions && (
 					<TabsContent value="suggestions" className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto">
@@ -286,7 +290,16 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 			)}
 
 			<RouterConfigurationSheets config={config} />
-			<RouterDetailsDialog open={detailsOpen} onOpenChange={setDetailsOpen} router={data} />
+			{sheet && (
+				<RouterSheet
+					router={data}
+					turnOn={sheet.turnOn}
+					onClose={() => setSheet(null)}
+					onSaved={({ turnedOn }) => {
+						if (turnedOn) void setTab("overview");
+					}}
+				/>
+			)}
 			<DeleteConfirmDialog
 				open={deleteOpen}
 				onOpenChange={setDeleteOpen}

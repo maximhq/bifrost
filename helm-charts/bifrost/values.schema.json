@@ -9367,6 +9367,11 @@
           "type": "boolean",
           "description": "Whether this client is a code mode client"
         },
+        "serverTypeOnSlug": {
+          "type": "string",
+          "enum": ["inherit", "enabled", "disabled"],
+          "description": "Code mode for this client on its own /mcp/<slug> endpoint. 'inherit' follows isCodeModeClient; 'enabled' or 'disabled' overrides it there only. /mcp, Virtual MCPs and LLM requests always follow isCodeModeClient. Renders into server_type_on_slug."
+        },
         "connectionType": {
           "type": "string",
           "enum": ["stdio", "websocket", "http", "sse", "openapi"],

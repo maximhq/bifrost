@@ -1527,7 +1527,7 @@ complexity-suggestion-run-cancel:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Cancel a phrase suggestion run
     description: |
-      Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the record returned may still read running until then.
+      Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the call waits a few seconds for that and returns the run as it ended, or, if it has not stopped by then, as it stands, still running.
     tags:
       - Routing
     security:

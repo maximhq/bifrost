@@ -1608,6 +1608,9 @@ false
 {{- if hasKey $client "isCodeModeClient" }}
 {{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
 {{- end }}
+{{- if $client.serverTypeOnSlug }}
+{{- $_ := set $cc "server_type_on_slug" $client.serverTypeOnSlug }}
+{{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
 {{- end }}
