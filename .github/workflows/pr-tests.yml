@@ -137,6 +137,7 @@ jobs:
             api.runware.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
+            console.nace.ai:443
 
       # workflow_dispatch carries no github.event.pull_request, so the PR has to be
       # looked up. Only PRs whose head branch lives in this repository are run:
@@ -229,6 +230,7 @@ jobs:
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

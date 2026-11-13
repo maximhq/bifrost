@@ -731,6 +731,18 @@ test("Azure live session rows run only in the azure partition", () => {
   assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
 });
 
+test("Nace SDK routes stay out of forks that do not carry Nace credentials", () => {
+  const source = join(WORK, "nace-ingress.json");
+  const row = (provider, path) => ({
+    name: `${provider} decision`,
+    request: { method: "POST", url: `http://localhost:8080/${path}/v1/decisions`, body: { mode: "raw", raw: JSON.stringify({ model: `${provider}/model` }) } },
+  });
+  writeFileSync(source, JSON.stringify({ info: { name: "provider isolation" }, item: [row("nace", "openai"), row("nace", "typesafe"), row("openai", "openai"), row("typesafe", "typesafe")] }));
+  assert.deepEqual(runFilter(["--provider", "nace"], { source }), ["nace decision", "nace decision"]);
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai decision"]);
+  assert.deepEqual(runFilter(["--provider", "typesafe"], { source }), ["typesafe decision"]);
+});
+
 // A Baseten model sent through the Anthropic Messages ingress names "anthropic" only in its route,
 // and a Hugging Face row routed to Baseten-hosted models ("huggingface/baseten/...") names
 // "baseten" only in its model id. Each upstream call goes to the model's own provider, so the

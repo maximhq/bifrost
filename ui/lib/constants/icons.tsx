@@ -27,6 +27,9 @@ const resolveSize = (size: IconSize): number => {
 
 // Provider Icons with theme awareness where applicable
 export const ProviderIcons = {
+	nace: ({ size = "md", className = "" }: IconProps) => (
+		<Network size={resolveSize(size)} className={className} aria-label="Nace" /> // i18n-ignore (provider name)
+	),
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

@@ -1,7 +1,7 @@
 {
   "$schema_note": "Proxy egress selection for the proxy e2e flow (tests/e2e/api/runners/proxy/run-proxy-matrix.sh), in smoke-manifest.json's format: rows are matched by (folder, name) against the augmented collection and run with `make run-provider-harness-test SMOKE=<this file> PARALLEL=0`. One pillar per provider, each the cheapest existing row that reaches that provider's live upstream. `hosts` is not read by the harness: run-proxy-matrix.sh requires every pattern (an extended regex) to appear in the proxy's access log after a cell, which is what proves the provider's traffic went through the proxy. `token_hosts` are token exchanges, which may happen only at gateway startup and be cached for the inference requests, so they also count from the cell proxy's startup traffic.",
-  "budget": 24,
-  "total_selected": 24,
+  "budget": 25,
+  "total_selected": 25,
   "pillars": [
     {
       "key": "openai",
@@ -237,6 +237,19 @@
         {
           "folder": "106. Typesafe decisions provider (typesafe-decisions)",
           "name": "/v1/decisions - mixed kinds return typed answers - typesafe/jev-1.13.0"
+        }
+      ]
+    },
+    {
+      "key": "nace",
+      "intent": "nace upstream reached through the proxy under test.",
+      "hosts": [
+        "console\\.nace\\.ai"
+      ],
+      "requests": [
+        {
+          "folder": "Nace native decisions - #9739",
+          "name": "POST /v1/decisions nace drex-v2.0 mixed questions - #9739"
         }
       ]
     },

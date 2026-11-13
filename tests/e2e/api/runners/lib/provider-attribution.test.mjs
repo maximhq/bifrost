@@ -89,6 +89,14 @@ test("a Vertex heading that also mentions Gemini stays with vertex", () => {
   );
 });
 
+test("Nace SDK routes are attributed to Nace rather than their ingress provider", () => {
+  const matchNace = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  const folder = "Nace native decisions - #9739";
+  const row = { name: "nace drex-max", request: { url: "http://localhost:8080/openai/v1/decisions" } };
+  assert.strictEqual(providerOfItem(row, [folder], matchNace), "nace");
+  assert.strictEqual(providerOfLogLine("post http://localhost:8080/openai/v1/decisions [200 ok]", folder, matchNace), "nace");
+});
+
 // Baseten rows reach the gateway through /anthropic and name OpenAI-only fields; they belong to
 // the baseten partition filter-collection.mjs forks, while Hugging Face's Baseten-hosted rows stay
 // with huggingface.

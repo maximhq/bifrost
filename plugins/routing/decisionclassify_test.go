@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/nace"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
@@ -722,4 +727,121 @@ func BenchmarkClassifyDecisionComplexity(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestNaceDecisionClassifier(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		confidence       float64
+		failure, timeout bool
+		wantTier         bool
+	}{
+		{name: "classifies", confidence: 0.9, wantTier: true},
+		{name: "min_confidence", confidence: 0.4},
+		{name: "provider_failure", failure: true},
+		{name: "timeout", timeout: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			p := decisionTestPlugin(&complexity.DecisionConfig{Provider: schemas.Nace, Model: "drex-v2.0", MinConfidence: 0.7, Timeout: 20 * time.Millisecond}, func(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				called = true
+				require.Equal(t, schemas.Nace, req.Provider)
+				require.Equal(t, "drex-v2.0", req.Model)
+				if test.timeout {
+					<-ctx.Done()
+				}
+				if test.failure || test.timeout {
+					return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "nace unavailable"}}
+				}
+				response := decisionChoiceResponse("COMPLEX")
+				response.Model = "drex-v2.0"
+				response.Answers[0].Confidence = schemas.Ptr(test.confidence)
+				return response, nil
+			})
+			proposal := p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
+			require.True(t, called)
+			if test.wantTier {
+				require.NotNil(t, proposal.Result)
+				require.Equal(t, complexity.TierComplex, proposal.Result.Tier)
+				require.Equal(t, "nace/drex-v2.0", proposal.Model)
+			} else {
+				require.Nil(t, proposal.Result)
+				require.Equal(t, complexity.MechanismSkipped, proposal.Mechanism)
+			}
+			if test.timeout {
+				require.Contains(t, proposal.LogMessage, "timed out after 20ms")
+			}
+			if test.name == "min_confidence" {
+				require.Contains(t, proposal.LogMessage, "below min_confidence=0.70")
+			}
+		})
+	}
+}
+
+// TestNaceRouterQuestionWireContract sends the router's actual question through
+// the provider and checks Drex's string-only instructions and choice criteria.
+func TestNaceRouterQuestionWireContract(t *testing.T) {
+	requests := make(chan *schemas.BifrostDecisionRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		original := <-requests
+		var body struct {
+			Questions map[string]struct {
+				Instructions any            `json:"instructions"`
+				Criteria     map[string]any `json:"criteria"`
+			} `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(422)
+			return
+		}
+		question := body.Questions[decisionComplexityQuestion]
+		instruction, ok := question.Instructions.(string)
+		if !ok {
+			w.WriteHeader(422)
+			return
+		}
+		originalQuestion := original.Questions[0]
+		expected, err := providerUtils.MarshalSortedIndent(originalQuestion.Instructions.Value(), "", "  ")
+		if !assert.NoError(t, err) || !assert.Equal(t, string(expected), instruction) || !assert.Len(t, question.Criteria, 3) {
+			w.WriteHeader(422)
+			return
+		}
+		for _, choice := range originalQuestion.Choices {
+			key, err := choice.Key()
+			if !assert.NoError(t, err) {
+				w.WriteHeader(422)
+				return
+			}
+			description := question.Criteria[key]
+			text, ok := description.(string)
+			if description != nil && !ok {
+				w.WriteHeader(422)
+				return
+			}
+			expected, err := providerUtils.MarshalSortedIndent(choice.Description.Value(), "", "  ")
+			if !assert.NoError(t, err) || !assert.Equal(t, string(expected), text) {
+				w.WriteHeader(422)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		err = json.NewEncoder(w).Encode(map[string]any{
+			"model":   "drex-v2.0",
+			"answers": map[string]any{decisionComplexityQuestion: map[string]any{"type": "choice", "choice": "COMPLEX", "confidence": 0.9, "probabilities": map[string]float64{"SIMPLE": 0.02, "MEDIUM": 0.03, "COMPLEX": 0.95}}},
+			"usage":   map[string]int{"input_tokens": 42, "output_tokens": 0},
+		})
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+	provider, err := nace.NewNaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger(), "2.5.0")
+	require.NoError(t, err)
+	plugin := decisionTestPlugin(&complexity.DecisionConfig{Provider: schemas.Nace, Model: "drex-v2.0", MinConfidence: 0.7}, func(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		requests <- req
+		return provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, req)
+	})
+	proposal := plugin.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
+	require.NotNil(t, proposal.Result, proposal.LogMessage)
+	require.Equal(t, complexity.TierComplex, proposal.Result.Tier)
+	require.Equal(t, "nace/drex-v2.0", proposal.Model)
 }

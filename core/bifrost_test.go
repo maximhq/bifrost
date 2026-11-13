@@ -596,11 +596,13 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
 	}
 
-	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
-		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
-		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+	for _, base := range []schemas.ModelProvider{schemas.Vertex, schemas.Nace} {
+		_, err = bifrost.createBaseProvider("my-"+base, &schemas.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: base},
+		})
+		if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
+			t.Fatalf("%s is not a supported base provider, got err=%v", base, err)
+		}
 	}
 }
 
@@ -9508,6 +9510,56 @@ func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
 	// An unknown name is ignored with a warning; it must not enable anything.
 	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
 	expect("update to an unknown family", "cl100k_base")
+}
+
+func TestNaceUsesBootstrapRuntimeVersion(t *testing.T) {
+	for _, version := range []string{"2.5.0", "", strings.Repeat("v", 100)} {
+		t.Run(version, func(t *testing.T) {
+			expected := strings.TrimSpace(coreVersion)
+			if version != "" {
+				expected = version
+			}
+			expected = "bifrost/" + expected
+			if len(expected) > 64 {
+				expected = expected[:64]
+			}
+			headers := make(chan string, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headers <- r.Header.Get("X-Nace-Client")
+				if r.UserAgent() != expected {
+					t.Errorf("User-Agent=%q, want %q", r.UserAgent(), expected)
+				}
+				if r.URL.Path == "/v1/models" {
+					_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-v2.0"}]}`)
+				} else {
+					_, _ = fmt.Fprint(w, `{"model":"drex-v2.0","answers":{"q":{"type":"noul","noul":0.9}}}`)
+				}
+			}))
+			defer server.Close()
+			parent := context.WithValue(context.Background(), schemas.BifrostContextKeyRuntimeVersion, version)
+			b := &Bifrost{ctx: schemas.NewBifrostContext(parent, schemas.NoDeadline), logger: NewNoOpLogger()}
+			provider, err := b.createBaseProvider(schemas.Nace, &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			key := schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
+			_, bErr := provider.Decision(ctx, key, &schemas.BifrostDecisionRequest{Provider: schemas.Nace, Model: "drex-v2.0", Input: schemas.DecisionInput{Text: schemas.Ptr("hello")}, Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Greeting?")}}})
+			if bErr != nil {
+				t.Fatal(bErr)
+			}
+			if got := <-headers; got != expected {
+				t.Errorf("decision client=%q, want %q", got, expected)
+			}
+			_, bErr = provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{})
+			if bErr != nil {
+				t.Fatal(bErr)
+			}
+			if got := <-headers; got != expected {
+				t.Errorf("model-list client=%q, want %q", got, expected)
+			}
+		})
+	}
 }
 
 // TestPatternKeyAliasRoutesAndNamesModel pins that a regex: key alias sends the expanded template upstream and sets no model name.
