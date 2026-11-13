@@ -1,7 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
-- **Decision Models in /v1/models** - `GET /v1/models` adds `decisions` to `architecture.output_modalities` for models that serve only decisions (TypeSafe, Gemini Decision, Clef, Perplexity decider, Baseten, Ollama System One, Microsoft Decision and Databricks decision models), so clients can find them without the management API. Models that also serve chat, such as `gpt-6-luna` and vLLM or SGLang models, are left unmarked
+- **Decision Models in /v1/models** - `GET /v1/models` and `GET /v1/models/{model}` add `decisions` to `architecture.output_modalities` for models that serve only decisions (TypeSafe, Gemini Decision, Clef, Perplexity decider, Baseten, Ollama System One, Microsoft Decision and Databricks decision models), so clients can find them without the management API. Models that also serve chat, such as `gpt-6-luna` and vLLM or SGLang models, are left unmarked
 
 ## 🐞 Fixed
 

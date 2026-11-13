@@ -37,8 +37,8 @@ type decisionRule struct {
 // allows decisions on a base that serves them (Typesafe, serving Laya, Nimble, or
 // Clef, OpenAI, exposing /v1/decisions, or vLLM and SGLang, serving /v1/systemone
 // for every loaded model), since its server rejects a model it does not serve. A
-// custom provider on the Gemini base serves only Gemini Decision models, as its
-// Decision gates them, since the same server serves chat models too.
+// custom provider on the Gemini base that allows decisions is gated as Gemini is,
+// since its Decision checks the datasheet and the name for custom providers too.
 //
 // Typesafe serves every model, vLLM and SGLang every model they load, and any other
 // provider a model the datasheet marks supports_decisions, or without a row the
@@ -78,8 +78,9 @@ func decisionRuleFor(config *lib.Config, provider schemas.ModelProvider, model s
 		case schemas.Typesafe:
 			rule.served, rule.dedicated = true, true
 		case schemas.Gemini:
-			rule.served = schemas.IsGeminiDecisionModel(model)
-			rule.dedicated = rule.served
+			rule.settled = false
+			rule.dedicated = schemas.IsGeminiDecisionModel(model)
+			rule.fallback = rule.dedicated
 		case schemas.OpenAI, schemas.VLLM, schemas.SGL:
 			rule.served = true
 		}
@@ -167,36 +168,45 @@ func keyAliasTarget(config *lib.Config, provider schemas.ModelProvider, model st
 
 // tagDecisionModels adds the decisions output modality to each listed model its
 // provider serves on the decisions endpoint and on nothing else (see
-// decisionRuleFor), so an OpenAI-compatible client can tell decision models from
-// chat models by architecture.output_modalities alone, as it already can for
-// OpenRouter's. A model that also serves chat is left as it is, so a client does
-// not stop offering it for chat, and so is a row that already reports the modality.
-//
-// Rows are ids of the form "<provider>/<model>". The architecture and its slice
-// are replaced rather than written through: they may alias catalog or cached
-// provider data.
+// tagDecisionModel).
 func tagDecisionModels(config *lib.Config, resp *schemas.BifrostListModelsResponse) {
 	if config == nil || resp == nil {
 		return
 	}
 	for i := range resp.Data {
-		row := &resp.Data[i]
-		if row.Architecture != nil && slices.Contains(row.Architecture.OutputModalities, decisionsModality) {
-			continue
-		}
-		provider, model, ok := strings.Cut(row.ID, "/")
-		if !ok || provider == "" || model == "" {
-			continue
-		}
-		if !decisionRuleFor(config, schemas.ModelProvider(provider), model).servesOnlyDecisions() {
-			continue
-		}
-		var arch schemas.Architecture
-		if row.Architecture != nil {
-			arch = *row.Architecture
-		}
-		modalities := make([]string, 0, len(arch.OutputModalities)+1)
-		arch.OutputModalities = append(append(modalities, arch.OutputModalities...), decisionsModality)
-		row.Architecture = &arch
+		tagDecisionModel(config, &resp.Data[i])
 	}
+}
+
+// tagDecisionModel adds the decisions output modality to a model its provider
+// serves on the decisions endpoint and on nothing else (see decisionRuleFor), so
+// an OpenAI-compatible client can tell decision models from chat models by
+// architecture.output_modalities alone, as it already can for OpenRouter's. A
+// model that also serves chat is left as it is, so a client does not stop offering
+// it for chat, and so is a model that already reports the modality.
+//
+// The id is of the form "<provider>/<model>". The architecture and its slice are
+// replaced rather than written through: they may alias catalog or cached provider
+// data.
+func tagDecisionModel(config *lib.Config, row *schemas.Model) {
+	if config == nil || row == nil {
+		return
+	}
+	if row.Architecture != nil && slices.Contains(row.Architecture.OutputModalities, decisionsModality) {
+		return
+	}
+	provider, model, ok := strings.Cut(row.ID, "/")
+	if !ok || provider == "" || model == "" {
+		return
+	}
+	if !decisionRuleFor(config, schemas.ModelProvider(provider), model).servesOnlyDecisions() {
+		return
+	}
+	var arch schemas.Architecture
+	if row.Architecture != nil {
+		arch = *row.Architecture
+	}
+	modalities := make([]string, 0, len(arch.OutputModalities)+1)
+	arch.OutputModalities = append(append(modalities, arch.OutputModalities...), decisionsModality)
+	row.Architecture = &arch
 }

@@ -576,7 +576,7 @@ func TestModelRetrieveTarget(t *testing.T) {
 // architecture a row arrived with is never written through.
 func TestTagDecisionModels(t *testing.T) {
 	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
-		if provider == schemas.Cloudflare && model == "clef-retired" {
+		if (provider == schemas.Cloudflare && model == "clef-retired") || (provider == "my-gemini" && model == "gemini-decision-retired") {
 			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(false)}
 		}
 		return nil
@@ -602,6 +602,7 @@ func TestTagDecisionModels(t *testing.T) {
 		{ID: "vllm/qwen3-8b"},
 		{ID: "my-gemini/gemini-decision-1"},
 		{ID: "my-gemini/gemini-3-flash"},
+		{ID: "my-gemini/gemini-decision-retired"},
 		{ID: "my-openai/gpt-4o"},
 	}}
 
@@ -618,6 +619,7 @@ func TestTagDecisionModels(t *testing.T) {
 		"vllm/qwen3-8b":                          nil,
 		"my-gemini/gemini-decision-1":            {"decisions"},
 		"my-gemini/gemini-3-flash":               nil,
+		"my-gemini/gemini-decision-retired":      nil,
 		"my-openai/gpt-4o":                       nil,
 	}
 	for _, row := range resp.Data {
@@ -630,4 +632,49 @@ func TestTagDecisionModels(t *testing.T) {
 	require.Equal(t, []string{"text"}, shared.OutputModalities)
 	require.Equal(t, "", shared.OutputModalities[:2][1], "the shared slice's backing array was written through")
 	require.Same(t, shared, resp.Data[2].Architecture, "an untagged row keeps the architecture it arrived with")
+}
+
+// TestModelRetrieveTagsDecisionModels pins that GET /v1/models/{model} marks a
+// decision-only model as the listing does, and leaves a chat model unmarked.
+func TestModelRetrieveTagsDecisionModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"name":"models/%s","displayName":"x"}`, strings.TrimPrefix(r.URL.Path, "/models/"))
+	}))
+	t.Cleanup(upstream.Close)
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Gemini: {
+				Keys:                     []schemas.Key{{ID: "gemini-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("gemini-provider-key"), Weight: 1}},
+				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+			},
+		},
+	}
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: log})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	handler := NewInferenceHandler(nil, client, config)
+
+	for model, want := range map[string][]string{
+		"gemini-decision-1": {"decisions"},
+		"gemini-3-flash":    nil,
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/v1/models/gemini/" + model)
+		ctx.SetUserValue("model", "gemini/"+model)
+		handler.modelRetrieve(ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var response schemas.BifrostModelRetrieveResponse
+		require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
+		require.Equal(t, "gemini/"+model, response.ID)
+		var got []string
+		if response.Architecture != nil {
+			got = response.Architecture.OutputModalities
+		}
+		require.Equal(t, want, got, model)
+	}
 }

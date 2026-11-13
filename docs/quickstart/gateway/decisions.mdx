@@ -42,16 +42,16 @@ Chat models (for example `openai/gpt-4o`) have no decisions endpoint. By default
 
 ### Finding Decision Models
 
-`GET /v1/models` marks a model that serves only decisions with `decisions` in `architecture.output_modalities`, the same marker OpenRouter uses for its decision models:
+`GET /v1/models` and `GET /v1/models/{model}` mark a model that serves only decisions with `decisions` in `architecture.output_modalities`, the same marker OpenRouter uses for its decision models. `/openai/v1/models` returns OpenAI's model shape, which has no `architecture`, so it carries no marker:
 
 ```bash
 curl -s http://localhost:8080/v1/models \
   | jq -r '.data[] | select(.architecture.output_modalities // [] | index("decisions")) | .id'
 ```
 
-A model is marked when its provider serves only decisions (TypeSafe, and a custom provider on the TypeSafe base) or when its name is in the provider's decision-model family: `clef*` on Cloudflare, `pplx-decider*` on Perplexity, `decision-models/*` on Baseten, `gemini-decision-*` on Gemini (and on a custom provider on the Gemini base), the System One families on Ollama, `Microsoft-Decision*` on Azure, `ai_decide` and System One models on Databricks, and TypeSafe models on OpenRouter. On other providers, a datasheet row marking the model `supports_decisions: false` keeps it unmarked; on TypeSafe and on custom providers on the TypeSafe or Gemini base, the marker follows the provider (and, on the Gemini base, the model name) and the datasheet is not read. A model whose provider already reports `decisions` in its output modalities is listed as reported.
+A model is marked when its provider serves only decisions (TypeSafe, and a custom provider on the TypeSafe base) or when its name is in the provider's decision-model family: `clef*` on Cloudflare, `pplx-decider*` on Perplexity, `decision-models/*` on Baseten, `gemini-decision-*` on Gemini (and on a custom provider on the Gemini base), the System One families on Ollama, `Microsoft-Decision*` on Azure, `ai_decide` and System One models on Databricks, and TypeSafe models on OpenRouter. On other providers, a datasheet row marking the model `supports_decisions: false` keeps it unmarked; on TypeSafe and on custom providers on the TypeSafe base, the marker follows the provider and the datasheet is not read. A model whose provider already reports `decisions` in its output modalities is listed as reported.
 
-A model that also serves chat is not marked, so clients that sort models by output modality keep offering it for chat: OpenAI's and Azure's `gpt-6-luna` family, every model on vLLM and SGLang, and every model of a custom provider on the OpenAI base. To list every model that answers `/v1/decisions` natively, including those, call `GET /api/models?decisions=true` (add `&provider=<name>` to narrow it to one provider).
+A model that also serves chat is not marked, so clients that sort models by output modality keep offering it for chat: OpenAI's and Azure's `gpt-6-luna` family, every model on vLLM and SGLang, and every model of a custom provider on the OpenAI base. To list every model that answers `/v1/decisions` natively, including those, call `GET /api/models?decisions=true&limit=0&include_deprecated=true` (add `&provider=<name>` to narrow it to one provider). Without `limit=0` the listing returns at most five models, and without `include_deprecated=true` it leaves deprecated models out.
 
 ## Basic Request
 
