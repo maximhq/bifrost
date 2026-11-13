@@ -192,6 +192,19 @@ export const evalDatasetsApi = baseApi.injectEndpoints({
 			invalidatesTags: (result, error, { id }) => datasetTags(id),
 		}),
 
+		// Rows curated from spans of traces pushed by observability SDKs.
+		addEvalDatasetRowsFromSpans: builder.mutation<
+			DatasetCurateResult,
+			{ id: string; spans: { project_id: string; trace_id: string; span_id: string }[]; splitId?: string }
+		>({
+			query: ({ id, spans, splitId }) => ({
+				url: `${base}/${id}/rows/from-spans`,
+				method: "POST",
+				body: { spans, split_id: splitId },
+			}),
+			invalidatesTags: (result, error, { id }) => datasetTags(id),
+		}),
+
 		addEvalDatasetRowsFromSessions: builder.mutation<DatasetCurateResult, { id: string; sessionIds: string[]; splitId?: string }>({
 			query: ({ id, sessionIds, splitId }) => ({
 				url: `${base}/${id}/rows/from-sessions`,
@@ -322,6 +335,7 @@ export const {
 	useDeleteEvalDatasetRowsMutation,
 	useLazyGetEvalDatasetRowVariablesQuery,
 	useAddEvalDatasetRowsFromLogsMutation,
+	useAddEvalDatasetRowsFromSpansMutation,
 	useAddEvalDatasetRowsFromSessionsMutation,
 	usePreviewEvalDatasetImportMutation,
 	useImportEvalDatasetCSVMutation,

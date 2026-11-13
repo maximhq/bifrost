@@ -604,6 +604,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_run_tables"}, run: migrationAddEvalsRunTables},
 	{IDs: []string{"add_evals_run_result_score_number"}, run: migrationAddEvalsRunResultScoreNumber},
 	{IDs: []string{"add_tracing_tables"}, run: migrationAddTracingTables},
+	{IDs: []string{"add_trace_project_evaluators_column"}, run: migrationAddTraceProjectEvaluatorsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17525,6 +17526,22 @@ func migrationAddTracingTables(ctx context.Context, db *gorm.DB, logger schemas.
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping the tracing tables would permanently delete projects and revoke every tracing key", migrationName)
+		},
+	})
+}
+
+// migrationAddTraceProjectEvaluatorsColumn adds evaluators_json to trace_projects: the evaluators
+// that score a project's traces as they complete. The table holds one row per project, so the
+// catalog change is instant.
+func migrationAddTraceProjectEvaluatorsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_trace_project_evaluators_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableTraceProject{}, "evaluators_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableTraceProject{}, "evaluators_json")
 		},
 	})
 }

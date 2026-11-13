@@ -668,3 +668,71 @@ func TestServiceFiles(t *testing.T) {
 	require.NoError(t, svc.Delete(ctx, view.ID))
 	assert.Empty(t, objects.objects)
 }
+
+// fakeSpans is an in-memory span reader.
+type fakeSpans map[string]*logstore.TraceSpan
+
+func (f fakeSpans) FindTraceSpans(_ context.Context, projectID string, keys []logstore.TraceSpanKey) ([]*logstore.TraceSpan, error) {
+	var found []*logstore.TraceSpan
+	for _, key := range keys {
+		if span, ok := f[projectID+"/"+key.TraceID+"/"+key.SpanID]; ok {
+			found = append(found, span)
+		}
+	}
+	return found, nil
+}
+
+// TestServiceAddFromSpans pins rows curated from pushed traces: a model call's last user message is
+// the input and the messages before it the history, any other span's input is copied whole, the
+// span's expected value fills the expected output, and a span with no content is skipped.
+func TestServiceAddFromSpans(t *testing.T) {
+	ctx := context.Background()
+	spans := fakeSpans{
+		"p1/t1/llm": {
+			ProjectID: "p1", TraceID: "t1", SpanID: "llm", Kind: logstore.TraceSpanKindLLM,
+			Input:    `[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"text","text":"capital of France?"}]}]`,
+			Output:   `[{"message":{"role":"assistant","content":"Paris"}}]`,
+			Expected: "Paris",
+		},
+		"p1/t1/task":   {ProjectID: "p1", TraceID: "t1", SpanID: "task", Kind: logstore.TraceSpanKindTask, Input: `{"query":"weather"}`, Output: "Sunny."},
+		"p1/t1/hidden": {ProjectID: "p1", TraceID: "t1", SpanID: "hidden", ContentHidden: true},
+	}
+	without := newTestService(t, nil)
+	bare, err := without.Create(ctx, DatasetInput{Name: "no-traces", Template: "qa"})
+	require.NoError(t, err)
+	_, err = without.AddFromSpans(ctx, bare.ID, []SpanRef{{ProjectID: "p1", TraceID: "t1", SpanID: "llm"}}, "", "tester")
+	require.ErrorIs(t, err, ErrNoTraceStore)
+
+	svc := newTestService(t, nil)
+	svc.SetSpanReader(spans)
+	view, err := svc.Create(ctx, DatasetInput{Name: "from-traces", Columns: []ColumnSpec{
+		{Name: "input", Type: ColumnInput}, {Name: "history", Type: ColumnConversationHistory},
+		{Name: "output", Type: ColumnOutput}, {Name: "expected", Type: ColumnExpectedOutput},
+	}})
+	require.NoError(t, err)
+	llm := SpanRef{ProjectID: "p1", TraceID: "t1", SpanID: "llm"}
+	result, err := svc.AddFromSpans(ctx, view.ID, []SpanRef{
+		llm, llm, {ProjectID: "p1", TraceID: "t1", SpanID: "task"}, {ProjectID: "p1", TraceID: "t1", SpanID: "hidden"},
+		{ProjectID: "p1", TraceID: "t1", SpanID: "missing"}, {ProjectID: "other-project", TraceID: "t1", SpanID: "llm"},
+	}, "", "tester")
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.RowsAdded, "a repeated span is added once")
+	require.Len(t, result.Skipped, 3)
+	assert.Equal(t, "t1/missing", result.Skipped[0].ID)
+	assert.Equal(t, "span not found", result.Skipped[1].Reason, "a span is only read from the project it is named under")
+	assert.Contains(t, result.Skipped[2].Reason, "no content")
+
+	cells, ok := SpanCells(spans["p1/t1/llm"], []Column{{ID: "i", Type: ColumnInput}, {ID: "h", Type: ColumnConversationHistory}, {ID: "o", Type: ColumnOutput}, {ID: "e", Type: ColumnExpectedOutput}})
+	require.True(t, ok)
+	assert.Equal(t, "capital of France?", cells["i"])
+	assert.JSONEq(t, `[{"role":"system","content":"be brief"}]`, cells["h"])
+	assert.Equal(t, "Paris", cells["o"])
+	assert.Equal(t, "Paris", cells["e"])
+	plain, ok := SpanCells(spans["p1/t1/task"], []Column{{ID: "i", Type: ColumnInput}, {ID: "o", Type: ColumnOutput}})
+	require.True(t, ok)
+	assert.Equal(t, `{"query":"weather"}`, plain["i"], "input that is not a message list is copied as it is")
+	assert.Equal(t, "Sunny.", plain["o"])
+
+	_, err = svc.AddFromSpans(ctx, view.ID, []SpanRef{{TraceID: "t1", SpanID: "llm"}}, "", "tester")
+	assert.Error(t, err, "a span must name its project")
+}

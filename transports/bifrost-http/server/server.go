@@ -366,6 +366,7 @@ type BifrostHTTPServer struct {
 	TraceIngestHandler *handlers.TraceIngestHandler
 	TraceForwarder     *traceingest.Forwarder
 	traceGRPCServer    *handlers.TraceIngestGRPCServer
+	traceEvaluator     traceingest.TraceEvaluator
 
 	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
 	// the management handler a clustered server replays relay changes through.
@@ -2857,6 +2858,14 @@ func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.Bif
 	s.startTraceIngestGRPC()
 }
 
+// wireTraceEvaluator connects trace ingest to the evals service once both exist. They are built in
+// either order, so each calls this when it is ready.
+func (s *BifrostHTTPServer) wireTraceEvaluator() {
+	if s.TraceIngest != nil && s.traceEvaluator != nil {
+		s.TraceIngest.SetTraceEvaluator(s.traceEvaluator)
+	}
+}
+
 // traceGRPCPortEnv names the port of the OTLP gRPC listener for trace ingest. The listener is off
 // unless it is set: opening a second port is something an operator opts into. 4317 is the port
 // OTLP exporters expect.
@@ -2916,6 +2925,7 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	// Replays received requests to a project's upstream vendor, after Bifrost has stored them.
 	s.TraceForwarder = traceingest.NewForwarder(nil, logger)
 	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
+	s.wireTraceEvaluator()
 	return true
 }
 

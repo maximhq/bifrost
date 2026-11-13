@@ -256,6 +256,19 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, bad, nil), name)
 	}
 
+	// Evaluator rules: refused when malformed, stored when valid, left alone by an edit that omits them.
+	for name, bad := range map[string][]map[string]any{
+		"no evaluator":   {{"sample_rate": 1}},
+		"rate above one": {{"evaluator_id": "ev-1", "sample_rate": 1.5}},
+		"listed twice":   {{"evaluator_id": "ev-1", "sample_rate": 1}, {"evaluator_id": "ev-1", "sample_rate": 0.5}},
+		"negative cap":   {{"evaluator_id": "ev-1", "sample_rate": 1, "daily_cap": -1}},
+	} {
+		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, map[string]any{"name": "agent", "evaluators": bad}, nil), name)
+	}
+	body["evaluators"] = []map[string]any{{"evaluator_id": "ev-1", "name": "faithfulness", "sample_rate": 0.25, "daily_cap": 100, "enabled": true}}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/projects/"+projectID, body, nil))
+	delete(body, "evaluators")
+
 	// An edit that sends the mask back keeps the stored credential.
 	body["description"] = "edited"
 	body["forward"].(map[string]any)["headers"] = map[string]string{"Authorization": traceForwardSecretMask}
@@ -264,6 +277,8 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer upstream-secret", stored.Forward.Headers["Authorization"])
 	assert.Equal(t, "edited", stored.Description)
+	require.Len(t, stored.Evaluators, 1, "an edit that does not send evaluators leaves the rules in place")
+	assert.Equal(t, 0.25, stored.Evaluators[0].SampleRate)
 
 	var key struct {
 		Value string `json:"value"`

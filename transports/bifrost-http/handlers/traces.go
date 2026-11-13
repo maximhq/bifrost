@@ -346,6 +346,8 @@ type traceProjectPayload struct {
 	RetentionDays *int                       `json:"retention_days"`
 	MaskingRules  []tables.TraceMaskingRule  `json:"masking_rules"`
 	Forward       *tables.TraceForwardTarget `json:"forward"`
+	// Evaluators is nil when the caller did not send the field, which leaves the stored rules alone.
+	Evaluators *[]tables.TraceEvaluatorRule `json:"evaluators"`
 }
 
 func (p *traceProjectPayload) validate() error {
@@ -366,6 +368,9 @@ var validateTraceProjectSettings = func(*traceProjectPayload) error { return nil
 func (p *traceProjectPayload) apply(project *tables.TableTraceProject) {
 	project.Name, project.Description, project.RetentionDays = p.Name, p.Description, p.RetentionDays
 	project.MaskingRules, project.Forward = p.MaskingRules, p.Forward
+	if p.Evaluators != nil {
+		project.Evaluators = *p.Evaluators
+	}
 }
 
 func (h *TracesHandler) createProject(ctx *fasthttp.RequestCtx) {

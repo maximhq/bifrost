@@ -1924,6 +1924,20 @@
 		"overCounted": "측정된 스팬({{measured}})이 계산된 오버헤드({{overhead}})를 초과해요. 업스트림 누적기가 과다 집계하고 있을 수 있어요."
 	},
 	"tracing": {
+		"evals": {
+			"addToDataset": "Add to dataset",
+			"chooseDataset": "Choose a dataset",
+			"addedToDataset": "Added {{count}} row to the dataset",
+			"skippedFromDataset": "Not added: {{reason}}",
+			"noDatasets": "There is no dataset yet. Create one under Evals.",
+			"evaluators": "Evaluators",
+			"evaluatorsHint": "Each rule runs an evaluator on traces as they complete and stores its result as a score. Evaluator model calls are ordinary gateway requests and cost tokens.",
+			"chooseEvaluator": "Choose an evaluator",
+			"sampleRate": "Sample %",
+			"dailyCap": "Daily cap",
+			"addEvaluator": "Add evaluator",
+			"removeEvaluator": "Remove evaluator"
+		},
 		"settings": {
 			"button": "Project settings",
 			"title": "Project settings",
