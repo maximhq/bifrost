@@ -322019,6 +322019,1087 @@
           ]
         }
       ]
+    },
+    {
+      "name": "342. ElevenLabs drop-in routes: text to speech and the model list on /elevenlabs, the streams on /elevenlabs_passthrough (elevenlabs route)",
+      "description": "An ElevenLabs SDK or raw HTTP client talks to Bifrost as if it were ElevenLabs by pointing its base URL at {{baseUrl}}/elevenlabs, for the endpoints Bifrost serves natively, or at {{baseUrl}}/elevenlabs_passthrough for the rest of the ElevenLabs API. The caller's key rides only in the xi-api-key header (a virtual key here, sk-bf-test-key from the harness profile; never Authorization or x-bf-vk), and the gateway sends the ElevenLabs provider key upstream in its place. On /elevenlabs the body goes upstream as the client wrote it and the answer comes back as ElevenLabs wrote it: audio bytes with ElevenLabs' Content-Type and its request-id, history-item-id and character-cost headers, and with-timestamps JSON, while GET /v1/models answers with the gateway's own model list as a bare JSON array of model_id and name; a failure of the gateway is written as {\"detail\":{\"status\",\"message\"}}. The streams (/stream and /stream/with-timestamps) have no native route and are forwarded as sent on /elevenlabs_passthrough, which reads the model from the body key model_id and returns the newline-delimited JSON chunks of stream/with-timestamps as ElevenLabs wrote them. The cases cover text to speech (unary, /with-timestamps and the two streams), the model list, ElevenLabs-only body fields (seed, voice_settings, apply_text_normalization) and query options (output_format) reaching ElevenLabs, ElevenLabs' own validation errors and unknown-voice errors reaching the client, an unknown virtual key on the unary endpoint and a malformed body. A virtual key restricted to one model and its model_blocked refusal are in the next folder. Rows whose success body is JSON that is not a chat reply (with-timestamps, the NDJSON stream, the bare model array) carry [NO-CONTENT] so the collection-level content-shape check stands down and the row asserts its own body. The 4xx pins carry [EXPECT-4XX] or an exact [EXPECT-<code>] tag. The profile does not enforce inference auth, so a request with no key at all is served rather than refused and is not pinned here. Run with PROVIDER=elevenlabs FEATURE=\"elevenlabs route\". The generation rows make small paid ElevenLabs calls only when the operator explicitly runs the live harness.",
+      "item": [
+        {
+          "name": "342.1 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} unary returns audio/mpeg with request-id, history-item-id and character-cost and never echoes the xi-api-key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech returns audio/mpeg bytes with the ElevenLabs request headers', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('audio/mpeg');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio body too small').to.be.above(1000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "  ['request-id', 'history-item-id', 'character-cost'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), 'missing ElevenLabs response header ' + h).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.expect(Number(pm.response.headers.get('character-cost')), 'character-cost is the characters billed').to.be.above(0);",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.2 elevenlabs route /elevenlabs_passthrough/v1/text-to-speech/{voice_id}/stream streams audio/mpeg with the same ElevenLabs headers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs_passthrough/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs_passthrough",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM",
+                "stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech/stream returns audio/mpeg bytes with the ElevenLabs request headers', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('audio/mpeg');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio body too small').to.be.above(1000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "  ['request-id', 'history-item-id', 'character-cost'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), 'missing ElevenLabs response header ' + h).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.expect(Number(pm.response.headers.get('character-cost')), 'character-cost is the characters billed').to.be.above(0);",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 342.3 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id}/with-timestamps returns audio_base64 with alignment and normalized_alignment JSON",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/with-timestamps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM",
+                "with-timestamps"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech/with-timestamps returns JSON with audio_base64 and a character alignment', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('json');",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.audio_base64, 'audio_base64').to.be.a('string').and.have.length.above(100);",
+                  "  pm.expect(j.alignment, 'alignment: ' + JSON.stringify(j).slice(0, 200)).to.be.an('object');",
+                  "  pm.expect(j.alignment.characters, 'alignment.characters').to.be.an('array').and.not.empty;",
+                  "  pm.expect(j.alignment.character_start_times_seconds, 'one start time per character').to.have.lengthOf(j.alignment.characters.length);",
+                  "  pm.expect(j, 'normalized_alignment').to.have.property('normalized_alignment');",
+                  "  pm.expect(pm.response.headers.get('request-id'), 'missing ElevenLabs response header request-id').to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 342.4 elevenlabs route /elevenlabs_passthrough/v1/text-to-speech/{voice_id}/stream/with-timestamps streams newline-delimited JSON chunks of audio_base64 and alignment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs_passthrough/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream/with-timestamps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs_passthrough",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM",
+                "stream",
+                "with-timestamps"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech/stream/with-timestamps streams newline-delimited JSON chunks carrying audio and alignment', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var lines = pm.response.text().split('\\n').filter(function (l) { return l.trim() !== ''; });",
+                  "  pm.expect(lines.length, 'no chunks in the stream').to.be.above(0);",
+                  "  var chunks = lines.map(function (l, i) {",
+                  "    var c;",
+                  "    try { c = JSON.parse(l); } catch (e) { pm.expect.fail('line ' + i + ' is not a JSON chunk: ' + l.slice(0, 120)); }",
+                  "    return c;",
+                  "  });",
+                  "  var withAudio = chunks.filter(function (c) { return c && typeof c.audio_base64 === 'string' && c.audio_base64.length > 0; });",
+                  "  var withAlignment = chunks.filter(function (c) { return c && c.alignment && Array.isArray(c.alignment.characters) && c.alignment.characters.length > 0; });",
+                  "  pm.expect(withAudio.length, 'no chunk carries audio_base64 in ' + lines.length + ' chunks').to.be.above(0);",
+                  "  pm.expect(withAlignment.length, 'no chunk carries an alignment in ' + lines.length + ' chunks').to.be.above(0);",
+                  "  pm.expect(pm.response.headers.get('request-id'), 'missing ElevenLabs response header request-id').to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] 342.5 elevenlabs route GET /elevenlabs/v1/models returns ElevenLabs' bare model array including eleven_v4_turbo",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the model list is the ElevenLabs bare JSON array of model objects, not a Bifrost list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(Array.isArray(j), 'body is not a bare array: ' + pm.response.text().slice(0, 200)).to.be.true;",
+                  "  var ids = j.map(function (m) { return m && m.model_id; });",
+                  "  pm.expect(ids.length, 'empty model list').to.be.above(0);",
+                  "  pm.expect(ids, 'eleven_v4_turbo missing from ' + ids.join(', ')).to.include('eleven_v4_turbo');",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.6 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} forwards seed, voice_settings and apply_text_normalization in the body and output_format=mp3_22050_32 in the query, still audio/mpeg",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\",\n  \"seed\": 42,\n  \"voice_settings\": {\n    \"stability\": 0.5,\n    \"similarity_boost\": 0.75\n  },\n  \"apply_text_normalization\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_22050_32",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ],
+              "query": [
+                {
+                  "key": "output_format",
+                  "value": "mp3_22050_32"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech with ElevenLabs-only fields and output_format=mp3_22050_32 returns audio/mpeg bytes with the ElevenLabs request headers', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('audio/mpeg');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio body too small').to.be.above(1000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "  ['request-id', 'history-item-id', 'character-cost'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), 'missing ElevenLabs response header ' + h).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.expect(Number(pm.response.headers.get('character-cost')), 'character-cost is the characters billed').to.be.above(0);",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = 'sk-bf-test-key';",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 342.7 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an out-of-range seed is rejected by ElevenLabs, so the body field reached it unchanged",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\",\n  \"seed\": 4294967296\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ElevenLabs validates the forwarded seed', function () {",
+                  "  var code = pm.response.code;",
+                  "  pm.expect(code, 'want a 4xx validation error from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(code, 'a rate limit is not a validation error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name seed: ' + pm.response.text().slice(0, 300)).to.include('seed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 342.8 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an out-of-range voice_settings.stability is rejected by ElevenLabs, so the nested body field reached it unchanged",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\",\n  \"voice_settings\": {\n    \"stability\": 7\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ElevenLabs validates the forwarded voice_settings', function () {",
+                  "  var code = pm.response.code;",
+                  "  pm.expect(code, 'want a 4xx validation error from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(code, 'a rate limit is not a validation error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name stability: ' + pm.response.text().slice(0, 300)).to.include('stability');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 342.9 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an unknown output_format query value is rejected by ElevenLabs, so the query reached it unchanged",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=bifrost_not_a_format",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ],
+              "query": [
+                {
+                  "key": "output_format",
+                  "value": "bifrost_not_a_format"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ElevenLabs validates the forwarded output_format query', function () {",
+                  "  var code = pm.response.code;",
+                  "  pm.expect(code, 'want a 4xx validation error from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(code, 'a rate limit is not a validation error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the rejection does not name output_format: ' + pm.response.text().slice(0, 300)).to.include('output_format');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 342.10 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an unknown voice is ElevenLabs' own error, relayed untouched",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/bfHarnessNoSuchVoice",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "bfHarnessNoSuchVoice"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the ElevenLabs unknown-voice error reaches the client as ElevenLabs wrote it', function () {",
+                  "  var code = pm.response.code;",
+                  "  pm.expect(code, 'want a 4xx from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(code, 'a rate limit is not an unknown-voice error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the error does not name the voice: ' + pm.response.text().slice(0, 300)).to.include('voice');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 342.11 elevenlabs route /elevenlabs_passthrough/v1/text-to-speech/{voice_id}/stream an unknown voice on the stream endpoint is ElevenLabs' own error, relayed untouched",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs_passthrough/v1/text-to-speech/bfHarnessNoSuchVoice/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs_passthrough",
+                "v1",
+                "text-to-speech",
+                "bfHarnessNoSuchVoice",
+                "stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the ElevenLabs unknown-voice error reaches a streaming client as ElevenLabs wrote it', function () {",
+                  "  var code = pm.response.code;",
+                  "  pm.expect(code, 'want a 4xx from ElevenLabs, got ' + code + ': ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(code, 'a rate limit is not an unknown-voice error: ' + pm.response.text().slice(0, 300)).to.not.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(JSON.stringify(j.detail).toLowerCase(), 'the error does not name the voice: ' + pm.response.text().slice(0, 300)).to.include('voice');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] 342.12 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} an unknown virtual key in xi-api-key is refused as an ElevenLabs error with detail.status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-harness-unknown-elevenlabs-vk"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the header is read as a virtual key and the unknown one is refused in ElevenLabs\\' error shape', function () {",
+                  "  pm.expect(pm.response.code, 'want 401, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300)).to.equal(401);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape {detail:{status,message}}: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(j, 'not the Bifrost error shape: ' + pm.response.text().slice(0, 300)).to.not.have.property('error');",
+                  "  pm.expect(j.detail.status, 'detail.status: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.detail.message, 'detail.message: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 342.13 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} a body that is not JSON is refused as an ElevenLabs invalid_request error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"text\":"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a malformed body is refused by the gateway in ElevenLabs\\' error shape', function () {",
+                  "  pm.expect(pm.response.code, 'want 400, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape {detail:{status,message}}: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(j, 'not the Bifrost error shape: ' + pm.response.text().slice(0, 300)).to.not.have.property('error');",
+                  "  pm.expect(j.detail.status, 'detail.status: ' + pm.response.text().slice(0, 300)).to.equal('invalid_request');",
+                  "  pm.expect(j.detail.message, 'detail.message: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.14 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} a provider-prefixed model_id is named for ElevenLabs without the prefix, so the call still returns audio/mpeg",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"elevenlabs/eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a provider-prefixed model_id reaches ElevenLabs as the bare model and returns audio/mpeg', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('audio/mpeg');",
+                  "  pm.expect(pm.response.stream.length, 'audio body too small').to.be.above(1000);",
+                  "  pm.expect(pm.response.headers.get('request-id'), 'missing ElevenLabs request-id header').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "343. ElevenLabs drop-in route /elevenlabs: a virtual key restricted to one model is refused in ElevenLabs' error shape (elevenlabs route governance) [SERIAL]",
+      "description": "Governance runs on the /elevenlabs route with the virtual key read from xi-api-key and the model read from the body's model_id. A run-scoped virtual key is created with the elevenlabs provider limited to eleven_v4_turbo, then deleted; no provider settings or existing keys are modified. The key runs eleven_v4_turbo (the control, a small paid ElevenLabs call), a request naming another model is refused with 403 and detail.status model_blocked before any call reaches ElevenLabs, and the same refusal on the /with-timestamps endpoint comes back as an ElevenLabs JSON error, and a call on /elevenlabs_passthrough that sends a model field but no model_id is refused, since ElevenLabs reads only model_id and would run its default model. Run with PROVIDER=elevenlabs FEATURE=\"elevenlabs route\".",
+      "item": [
+        {
+          "name": "343.1 elevenlabs route governance setup: create a virtual key limited to eleven_v4_turbo",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('elevenlabsRouteVkId');",
+                  "pm.collectionVariables.unset('elevenlabsRouteVkValue');",
+                  "pm.collectionVariables.set('elevenlabsRouteRun', String(Date.now()) + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('elevenlabs route: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var vk = {}; try { vk = pm.response.json().virtual_key || {}; } catch (e) {}",
+                  "var value = typeof vk.value === 'string' ? vk.value : ((vk.value || {}).value || '');",
+                  "pm.test('elevenlabs route: virtual key created', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+                  "if (vk.id) { pm.collectionVariables.set('elevenlabsRouteVkId', vk.id); }",
+                  "if (value) { pm.collectionVariables.set('elevenlabsRouteVkValue', value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-elevenlabs-route-{{elevenlabsRouteRun}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"elevenlabs\",\"allowed_models\":[\"eleven_v4_turbo\"],\"key_ids\":[\"*\"],\"weight\":1}]}"
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "343.2 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} the restricted virtual key in xi-api-key runs its allowed model eleven_v4_turbo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "{{elevenlabsRouteVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text-to-speech under the restricted virtual key returns audio/mpeg bytes with the ElevenLabs request headers', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('audio/mpeg');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio body too small').to.be.above(1000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "  ['request-id', 'history-item-id', 'character-cost'].forEach(function (h) {",
+                  "    pm.expect(pm.response.headers.get(h), 'missing ElevenLabs response header ' + h).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.expect(Number(pm.response.headers.get('character-cost')), 'character-cost is the characters billed').to.be.above(0);",
+                  "});",
+                  "pm.test('the virtual key is not echoed back and xi-api-key is not a response header', function () {",
+                  "  var vk = pm.collectionVariables.get('elevenlabsRouteVkValue');",
+                  "  pm.expect(vk, 'virtual key under test').to.be.a('string').and.not.empty;",
+                  "  pm.response.headers.each(function (h) {",
+                  "    pm.expect(String(h.key).toLowerCase(), 'xi-api-key echoed as a response header').to.not.equal('xi-api-key');",
+                  "    pm.expect(String(h.value), 'the virtual key is echoed in response header ' + h.key).to.not.include(vk);",
+                  "  });",
+                  "  pm.expect(pm.response.text(), 'the virtual key is echoed in the response body').to.not.include(vk);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] 343.3 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id} a model outside the virtual key's allow-list is refused with detail.status model_blocked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "{{elevenlabsRouteVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_flash_v2_5\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a model the virtual key may not run is refused in ElevenLabs\\' error shape', function () {",
+                  "  pm.expect(pm.response.code, 'want 403, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300)).to.equal(403);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape {detail:{status,message}}: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(j, 'not the Bifrost error shape: ' + pm.response.text().slice(0, 300)).to.not.have.property('error');",
+                  "  pm.expect(j.detail.status, 'detail.status: ' + pm.response.text().slice(0, 300)).to.equal('model_blocked');",
+                  "  pm.expect(j.detail.message, 'detail.message: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] 343.4 elevenlabs route /elevenlabs/v1/text-to-speech/{voice_id}/with-timestamps the same refusal on the stream endpoint is an ElevenLabs JSON error, not a stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "{{elevenlabsRouteVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model_id\": \"eleven_flash_v2_5\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/with-timestamps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM",
+                "with-timestamps"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a refused with-timestamps request is answered with an ElevenLabs error before any audio', function () {",
+                  "  pm.expect(pm.response.code, 'want 403, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300)).to.equal(403);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j, 'ElevenLabs error shape {detail:{status,message}}: ' + pm.response.text().slice(0, 300)).to.have.property('detail');",
+                  "  pm.expect(j, 'not the Bifrost error shape: ' + pm.response.text().slice(0, 300)).to.not.have.property('error');",
+                  "  pm.expect(j.detail.status, 'detail.status: ' + pm.response.text().slice(0, 300)).to.equal('model_blocked');",
+                  "  pm.expect(j.detail.message, 'detail.message: ' + pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the refusal is JSON, not audio', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.include('json');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] 343.5 elevenlabs route /elevenlabs_passthrough/v1/text-to-speech/{voice_id} a model field without model_id is refused for the restricted virtual key, since ElevenLabs reads only model_id and would run its default model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "xi-api-key",
+                "value": "{{elevenlabsRouteVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from the harness.\",\n  \"model\": \"eleven_v4_turbo\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/elevenlabs_passthrough/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "elevenlabs_passthrough",
+                "v1",
+                "text-to-speech",
+                "21m00Tcm4TlvDq8ikWAM"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a model field ElevenLabs does not read is not a model the virtual key may run', function () {",
+                  "  pm.expect(pm.response.code, 'want 403, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300)).to.equal(403);",
+                  "  pm.expect(pm.response.text().toLowerCase(), 'want the model-required refusal: ' + pm.response.text().slice(0, 300)).to.include('requires a model');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "343.6 elevenlabs route governance cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('elevenlabs route: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('elevenlabsRouteVkId'); pm.collectionVariables.unset('elevenlabsRouteVkValue'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{elevenlabsRouteVkId}}"
+          }
+        }
+      ]
     }
   ]
 }

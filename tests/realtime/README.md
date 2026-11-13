@@ -31,7 +31,7 @@ Gemini and Vertex Live also need `GEMINI_API_KEY`, and `VERTEX_PROJECT_ID` with 
 |---|---|---|
 | Gemini Live | the Gemini Developer API Live endpoint | text and audio turns, tool calls, resumption, goAway, interruption |
 | Soniox | real-time transcription (`/transcribe-websocket`) and text-to-speech (`/tts-websocket`) | endpoint detection, finalize, up to five streams, cancel, timestamps |
-| ElevenLabs | Scribe (`/v1/speech-to-text/realtime`), the text-to-dialogue socket that serves incremental speech (`/v1/text-to-dialogue/stream-input`) and agents (`/v1/convai/conversation`) | VAD and manual commits, timestamps, flush, close, an agent that echoes |
+| ElevenLabs | Scribe (`/v1/speech-to-text/realtime`), the text-to-dialogue socket that serves incremental speech (`/v1/text-to-dialogue/stream-input`), agents (`/v1/convai/conversation`) and the REST endpoints of text to speech and the model list | VAD and manual commits, timestamps, flush, close, an agent that echoes, audio and JSON answers under ElevenLabs' response headers |
 
 None of them recognises speech. The transcription fakes answer any speech with one fixed sentence (`fakeTranscript`), a word every 250 ms of it, and the text-to-speech fakes answer text with silent audio, a few characters at a time. They tell speech from silence by amplitude, so the suite's recording and the silence after it behave as they do against the real services. Each speaks the frames the provider code was written against, and the Gemini fake the wire the real service was probed to speak: JSON in binary frames, `response*` usage, goAway and the close that follows it.
 
@@ -101,7 +101,7 @@ Provider failures that cannot be produced on demand against a real provider, suc
 |---|---|
 | `turn_test.go` | healthy OpenAI turns: text replies, server-VAD turns started by speech, tool-call round trips, one row per response |
 | `nova_test.go` | Nova 2 Sonic: text and voice turns, and its fixed session configuration |
-| `elevenlabs_test.go` | ElevenLabs: Scribe transcription sessions translated to OpenAI events and logged, commits, the settings that become Scribe's query, the `bifrost.*` extension events sent only to a session that opts in, error frames and drops, agent sessions relayed, a Scribe model refused without the transcription intent, request limits, budgets, allowlists and concurrent sessions (both modes except where a fake is needed) |
+| `elevenlabs_test.go` | ElevenLabs: Scribe transcription sessions translated to OpenAI events and logged, commits, the settings that become Scribe's query, the `bifrost.*` extension events sent only to a session that opts in, error frames and drops, agent sessions relayed, a Scribe model refused without the transcription intent, request limits, budgets, allowlists and concurrent sessions (both modes except where a fake is needed); and an ElevenLabs client pointed at the gateway (`TestElevenlabs_Native*`, fake mode): every REST endpoint on the `/elevenlabs` base URL, the key in `xi-api-key`, every option reaching ElevenLabs as sent and the client's credential never, ElevenLabs-shaped refusals, limits, budgets, allowlists and the rows and cost they log |
 | `soniox_test.go` | Soniox: real-time transcription sessions translated to OpenAI events and logged, a client commit ending a segment, the words extension event sent only to a session that opts in, the settings that become the start frame, error frames and drops, an async model refused, request limits, budgets, allowlists and concurrent sessions |
 | `speechsession_test.go` | incremental speech sessions on ElevenLabs and Soniox: flushed segments spoken in order and billed by characters sent, the text and settings the provider receives, alignment, a cancel acknowledged while the session keeps speaking, ElevenLabs redialling after one, provider errors and drops, segments kept in order when the provider speaks them together, refusals before anything opens, request limits, budgets, allowlists and concurrent sessions |
 | `azure_test.go` | Azure OpenAI: text and voice turns, transcription sessions, deployment aliases, client secrets, an unknown deployment |
@@ -116,7 +116,7 @@ Provider failures that cannot be produced on demand against a real provider, suc
 | `liveclient_test.go` | the Live client of the native route: auth methods, setup, turns, audio, replies |
 | `fakelive_test.go` | the fake Gemini Live upstream of fake mode, and the sockets and helpers the other fakes share |
 | `fakesoniox_test.go` | the fake Soniox upstream: transcription and text-to-speech |
-| `fakeelevenlabs_test.go` | the fake ElevenLabs upstream: Scribe, text-to-dialogue and agents |
+| `fakeelevenlabs_test.go` | the fake ElevenLabs upstream: Scribe, text-to-dialogue, agents and REST |
 | `fake/config.json` | the gateway profile of fake mode |
 | `main_test.go` | setup and the models under test |
 | `client_test.go` | the app's socket, `dial` options, audio streaming and `openSession` |

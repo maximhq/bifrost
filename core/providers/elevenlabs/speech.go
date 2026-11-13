@@ -4,6 +4,23 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ToBifrostSpeechRequest converts the text-to-speech body an ElevenLabs client sent, and the voice its path names, to a
+// Bifrost request. The call goes upstream with the body as the client wrote it, so only what governance, logs and
+// cost read is converted: the model, the text, the voice and the language. A model with no provider prefix leaves the
+// provider to the model catalog, as for every other route.
+func (r *ElevenlabsSpeechRequest) ToBifrostSpeechRequest(voice string) *schemas.BifrostSpeechRequest {
+	provider, model := schemas.ParseModelString(r.ModelID, "")
+	return &schemas.BifrostSpeechRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    &schemas.SpeechInput{Input: r.Text},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig:  &schemas.SpeechVoiceInput{Voice: &voice},
+			LanguageCode: r.LanguageCode,
+		},
+	}
+}
+
 func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *ElevenlabsSpeechRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil

@@ -2,6 +2,7 @@ package elevenlabs_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -60,6 +61,103 @@ func TestElevenlabsListModelsWithoutCatalog(t *testing.T) {
 			}
 			if len(response.Data) != 1 || response.Data[0].ID != "elevenlabs/"+tc.model {
 				t.Fatalf("SDK without a catalog must retain the upstream-only listing, got %+v", response.Data)
+			}
+		})
+	}
+}
+
+// A text-to-speech body and the voice of its path convert to the typed request governance, logs and cost read.
+func TestElevenlabsSpeechRequestToBifrost(t *testing.T) {
+	for _, tc := range []struct {
+		name, modelID, wantModel string
+		wantProvider             schemas.ModelProvider
+	}{
+		{"a model with no prefix", "eleven_v4_turbo", "eleven_v4_turbo", ""},
+		{"a model of ElevenLabs by prefix", "elevenlabs/eleven_v4_turbo", "eleven_v4_turbo", schemas.Elevenlabs},
+		{"a model of another provider", "openai/tts-1", "tts-1", schemas.OpenAI},
+		{"no model", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			language := "hi"
+			req := (&elevenlabs.ElevenlabsSpeechRequest{Text: "hello", ModelID: tc.modelID, LanguageCode: &language}).ToBifrostSpeechRequest("voice123")
+
+			if req.Provider != tc.wantProvider || req.Model != tc.wantModel {
+				t.Fatalf("provider and model = %q %q, want %q %q", req.Provider, req.Model, tc.wantProvider, tc.wantModel)
+			}
+			if req.Input.Input != "hello" || req.Params.VoiceConfig.Voice == nil || *req.Params.VoiceConfig.Voice != "voice123" || *req.Params.LanguageCode != "hi" {
+				t.Fatalf("request = %+v %+v", req.Input, req.Params)
+			}
+		})
+	}
+}
+
+// The model list is the Bifrost list in ElevenLabs' schema, as on the other native routes: each model under the id a
+// client sends, which is the key's alias for an aliased model, with only what Bifrost knows of it. What ElevenLabs
+// itself sent is not echoed.
+func TestElevenlabsListModelsResponseIsTheBifrostList(t *testing.T) {
+	name := "Eleven v4 Turbo"
+	upstream := "eleven_multilingual_v2"
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{
+			{ID: "elevenlabs/eleven_v4_turbo", Name: &name},
+			{ID: "elevenlabs/friendly", Alias: &upstream},
+			{ID: "elevenlabs/eleven_flash_v2_5"},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{RawResponse: []any{json.RawMessage(`[{"model_id":"eleven_v4_turbo","can_do_text_to_speech":true,"languages":[{"language_id":"en","name":"English"}]}]`)}},
+	}
+
+	encoded, err := json.Marshal(elevenlabs.ToElevenlabsListModelsResponse(resp))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"model_id":"eleven_v4_turbo","name":"Eleven v4 Turbo"},{"model_id":"friendly"},{"model_id":"eleven_flash_v2_5"}]`; string(encoded) != want {
+		t.Fatalf("list = %s, want %s", encoded, want)
+	}
+	if list := elevenlabs.ToElevenlabsListModelsResponse(nil); list != nil {
+		t.Fatalf("list of no response = %+v", list)
+	}
+}
+
+// A body forwarded as the client wrote it still names the model ElevenLabs knows, which the client may have written
+// with the provider prefix or as a key's alias; the rest of the body goes as it was.
+func TestElevenlabsSpeechRawBodyNamesTheResolvedModel(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"provider prefix", `{"text":"hi","model_id":"elevenlabs/eleven_v4_turbo","seed":3}`, `{"text":"hi","model_id":"eleven_v4_turbo","seed":3}`},
+		{"key alias", `{"text":"hi","model_id":"friendly","seed":3}`, `{"text":"hi","model_id":"eleven_v4_turbo","seed":3}`},
+		{"already named", `{"text":"hi","model_id":"eleven_v4_turbo","seed":3}`, `{"text":"hi","model_id":"eleven_v4_turbo","seed":3}`},
+		{"no model", `{"text":"hi","seed":3}`, `{"text":"hi","seed":3}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				got = string(body)
+				w.Header().Set("Content-Type", "audio/mpeg")
+				_, _ = w.Write([]byte("audio-bytes"))
+			}))
+			defer server.Close()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			voice := "voice123"
+			request := &schemas.BifrostSpeechRequest{
+				Provider:       schemas.Elevenlabs,
+				Model:          "eleven_v4_turbo",
+				Input:          &schemas.SpeechInput{Input: "hi"},
+				Params:         &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}},
+				RawRequestBody: []byte(tc.body),
+			}
+
+			_, bifrostErr := passthroughProvider(t, server.URL).Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("provider-key")}, request)
+
+			if bifrostErr != nil {
+				t.Fatalf("speech failed: %+v", bifrostErr.Error)
+			}
+			if got != tc.want {
+				t.Fatalf("upstream body = %s, want %s", got, tc.want)
+			}
+			if string(request.RawRequestBody) != tc.body {
+				t.Fatalf("the client's body was changed in place: %s", request.RawRequestBody)
 			}
 		})
 	}

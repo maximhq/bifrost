@@ -481,13 +481,14 @@ type StreamConfig struct {
 type RouteConfigType string
 
 const (
-	RouteConfigTypeOpenAI    RouteConfigType = "openai"
-	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
-	RouteConfigTypeGenAI     RouteConfigType = "genai"
-	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
-	RouteConfigTypeCohere    RouteConfigType = "cohere"
-	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
-	RouteConfigTypeAzure     RouteConfigType = "azure"
+	RouteConfigTypeOpenAI     RouteConfigType = "openai"
+	RouteConfigTypeAnthropic  RouteConfigType = "anthropic"
+	RouteConfigTypeGenAI      RouteConfigType = "genai"
+	RouteConfigTypeBedrock    RouteConfigType = "bedrock"
+	RouteConfigTypeCohere     RouteConfigType = "cohere"
+	RouteConfigTypeTypesafe   RouteConfigType = "typesafe"
+	RouteConfigTypeAzure      RouteConfigType = "azure"
+	RouteConfigTypeElevenlabs RouteConfigType = "elevenlabs"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -570,6 +571,8 @@ type PassthroughConfig struct {
 	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
 	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
 	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
+
+	BodyModelKeyOnly bool // the BodyModelKey is the only body field that names the model, for an upstream that ignores "model"
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -3722,7 +3725,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
-		case "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
+		case "api-key", "x-api-key", "x-goog-api-key", "xi-api-key", "ocp-apim-subscription-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
@@ -3766,7 +3769,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 				g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 				return
 			}
-			if keyModel != "" {
+			if keyModel != "" || cfg.BodyModelKeyOnly {
 				bodyModel = keyModel
 			}
 		}

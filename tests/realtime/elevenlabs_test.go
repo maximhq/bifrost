@@ -2,12 +2,16 @@ package realtime
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // The model is what tells a Scribe transcription session from an agent session: Scribe's frames are
@@ -475,5 +479,227 @@ func TestElevenlabs_ConcurrentScribeSessionsStayApart(t *testing.T) {
 			assert.Equal(t, c.vk.ID, rows[0].VirtualKeyID)
 			assert.Contains(t, rows[0].raw.Raw, fakeTranscript, "the row holds this session's transcript")
 		})
+	}
+}
+
+// An ElevenLabs client's call, sent the way its SDK sends it: the key in xi-api-key, nothing else for auth.
+func elevenlabsCall(t *testing.T, method, path, key, body string) (*http.Response, []byte) {
+	t.Helper()
+	return elevenlabsCallOn(t, "/elevenlabs", method, path, key, body)
+}
+
+// elevenlabsCallOn is an ElevenLabs client's call under a base URL: /elevenlabs, or /elevenlabs_passthrough for the
+// endpoints Bifrost has no native route for.
+func elevenlabsCallOn(t *testing.T, base, method, path, key, body string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, gatewayURL+base+path, strings.NewReader(body))
+	require.NoError(t, err)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("xi-api-key", key)
+	}
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, data
+}
+
+// elevenlabsSpeechBody is a text-to-speech body on eleven_v4_turbo.
+func elevenlabsSpeechBody(text string) string {
+	return `{"text":` + strconv.Quote(text) + `,"model_id":"eleven_v4_turbo"}`
+}
+
+// Every text-to-speech endpoint an ElevenLabs SDK calls is relayed as it was sent, under the key's credential, and logged
+// with its model and cost: the two Bifrost serves natively on /elevenlabs, and the streams on /elevenlabs_passthrough.
+func TestElevenlabs_NativeRESTEndpointsAreRelayedAndLogged(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, suffix string
+		stream, timestamps bool
+	}{
+		{"text to speech", "/elevenlabs", "", false, false},
+		{"text to speech with timestamps", "/elevenlabs", "/with-timestamps", false, true},
+		{"text to speech stream", "/elevenlabs_passthrough", "/stream", true, false},
+		{"text to speech stream with timestamps", "/elevenlabs_passthrough", "/stream/with-timestamps", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireFake(t)
+			t.Parallel()
+			vk := createVirtualKey(t, keySpec{})
+			voice, marker := fakeLabel("")
+			path, body := "/v1/text-to-speech/"+voice+tc.suffix, elevenlabsSpeechBody("Hello from the gateway.")
+			query := "output_format=mp3_22050_32&enable_logging=false"
+
+			resp, data := elevenlabsCallOn(t, tc.base, http.MethodPost, path+"?"+query, vk.Value, body)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(data))
+			assert.NotEmpty(t, data)
+			assert.NotEmpty(t, resp.Header.Get("request-id"), "ElevenLabs' own headers reach the client")
+			assert.Equal(t, "fake-history-item", resp.Header.Get("history-item-id"))
+			assert.Equal(t, "11", resp.Header.Get("character-cost"), "the credits ElevenLabs charged, not the characters")
+			if tc.timestamps {
+				assert.Contains(t, string(data), `"audio_base64"`)
+				assert.Contains(t, string(data), `"alignment"`)
+			} else {
+				assert.Equal(t, "audio/mpeg", resp.Header.Get("Content-Type"))
+			}
+
+			call := fake.eleven.WaitREST(t, marker, 1)[0]
+			assert.Equal(t, path, call.Path())
+			assert.Equal(t, "mp3_22050_32", call.Query().Get("output_format"))
+			assert.Equal(t, "false", call.Query().Get("enable_logging"))
+			assert.JSONEq(t, body, call.Body().Raw, "the body goes upstream as the client wrote it")
+			assert.Equal(t, fakeElevenKey, call.Header("xi-api-key"), "ElevenLabs gets the provider key")
+			for name, values := range call.Headers() {
+				for _, value := range values {
+					assert.NotContains(t, value, vk.Value, "the client's virtual key must not reach ElevenLabs in %s", name)
+				}
+			}
+
+			row := waitSpeechRows(t, vk, 1)[0]
+			assert.Equal(t, "success", row.Status)
+			assert.Equal(t, "elevenlabs", row.Provider)
+			assert.Equal(t, "eleven_v4_turbo", row.Model)
+			assert.Equal(t, vk.ID, row.VirtualKeyID)
+			assert.Positive(t, row.Cost, "the model has a price per character, so the call is billed")
+		})
+	}
+}
+
+// Every field an ElevenLabs client sets reaches ElevenLabs, because the body goes upstream as it was sent and is not
+// rebuilt from the fields the gateway knows.
+func TestElevenlabs_NativeRESTForwardsEveryFieldAndOption(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	voice, marker := fakeLabel("")
+	body := `{"text":"Hello.","model_id":"eleven_v4_turbo","language_code":"hi","voice_settings":{"stability":0.3,"similarity_boost":0.8,"style":0.2,"use_speaker_boost":true,"speed":1.1},` +
+		`"pronunciation_dictionary_locators":[{"pronunciation_dictionary_id":"dict1","version_id":"v1"}],"seed":42,"previous_text":"Before.","next_text":"After.",` +
+		`"previous_request_ids":["req-a"],"apply_text_normalization":"on","apply_language_text_normalization":true,"audio_effects":{"distance":0.5}}`
+
+	resp, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice+"?output_format=pcm_16000&enable_logging=false", vk.Value, body)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(data))
+	call := fake.eleven.WaitREST(t, marker, 1)[0]
+	assert.JSONEq(t, body, call.Body().Raw)
+	assert.Equal(t, "pcm_16000", call.Query().Get("output_format"))
+	assert.Equal(t, "false", call.Query().Get("enable_logging"))
+}
+
+// A call the gateway refuses is refused in ElevenLabs' error shape, so an ElevenLabs SDK parses it, and nothing
+// reaches ElevenLabs.
+func TestElevenlabs_NativeRESTRefusalsAreElevenlabsErrors(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{elevenModels: []string{"eleven_v4_turbo"}})
+	voice, marker := fakeLabel("")
+
+	for _, tc := range []struct {
+		name, key, body string
+		status          int
+		detail          string
+	}{
+		{"no key", "", elevenlabsSpeechBody("hi"), http.StatusUnauthorized, ""},
+		{"a forged virtual key", "sk-bf-forged-" + marker, elevenlabsSpeechBody("hi"), http.StatusUnauthorized, ""},
+		{"a model the key does not allow", vk.Value, `{"text":"hi","model_id":"eleven_multilingual_v2"}`, http.StatusForbidden, "model_blocked"},
+		{"no model", vk.Value, `{"text":"hi"}`, http.StatusBadRequest, "invalid_request"},
+		{"a model key that names the model ElevenLabs does not read", vk.Value, `{"text":"hi","model":"eleven_v4_turbo"}`, http.StatusBadRequest, "invalid_request"},
+		{"a body that is not JSON", vk.Value, `{"text":`, http.StatusBadRequest, "invalid_request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, tc.key, tc.body)
+
+			assert.Equal(t, tc.status, resp.StatusCode, string(data))
+			detail := gjson.GetBytes(data, "detail")
+			require.True(t, detail.IsObject(), "ElevenLabs writes errors as {detail:{status,message}}: %s", data)
+			assert.NotEmpty(t, detail.Get("message").Str)
+			if tc.detail != "" {
+				assert.Equal(t, tc.detail, detail.Get("status").Str)
+			} else {
+				assert.NotEmpty(t, detail.Get("status").Str)
+			}
+		})
+	}
+	time.Sleep(rowSettleWindow)
+	assert.Empty(t, fake.eleven.RESTCalls(marker), "a refused call must not reach ElevenLabs")
+}
+
+// ElevenLabs' own error reaches the client untouched.
+func TestElevenlabs_NativeRESTUpstreamErrorIsRelayedAsIs(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	voice, _ := fakeLabel("error")
+
+	resp, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, vk.Value, elevenlabsSpeechBody("hi"))
+
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.JSONEq(t, `{"detail":{"status":"too_many_concurrent_requests","message":"fake: slow down"}}`, string(data))
+	assert.Equal(t, "error", waitSpeechRows(t, vk, 1)[0].Status)
+}
+
+// The key's request limit counts ElevenLabs calls like any other request.
+func TestElevenlabs_NativeRESTRequestLimitStopsTheNextCall(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{maxRequests: 1})
+	voice, _ := fakeLabel("")
+
+	first, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, vk.Value, elevenlabsSpeechBody("Say first."))
+	require.Equal(t, http.StatusOK, first.StatusCode, string(data))
+	second, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, vk.Value, elevenlabsSpeechBody("Say second."))
+
+	assert.Equal(t, http.StatusTooManyRequests, second.StatusCode)
+	assert.Equal(t, "request_limited", gjson.GetBytes(data, "detail.status").Str)
+}
+
+// A call is billed by the characters it sends, and the budget refuses the next one once it is spent.
+func TestElevenlabs_NativeRESTBudgetStopsTheNextCall(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{budgetUSD: 1e-9})
+	voice, _ := fakeLabel("")
+
+	first, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, vk.Value, elevenlabsSpeechBody("Say first."))
+	require.Equal(t, http.StatusOK, first.StatusCode, string(data))
+	row := waitSpeechRows(t, vk, 1)[0]
+	require.Positive(t, row.Cost, "the model has a price, so the call is billed")
+	waitBudgetUsage(t, vk.BudgetID, row.Cost)
+
+	second, data := elevenlabsCall(t, http.MethodPost, "/v1/text-to-speech/"+voice, vk.Value, elevenlabsSpeechBody("Say second."))
+
+	assert.Equal(t, http.StatusPaymentRequired, second.StatusCode)
+	assert.Equal(t, "budget_exceeded", gjson.GetBytes(data, "detail.status").Str)
+}
+
+// The model list is a bare array of models, which is what the ElevenLabs SDK reads.
+func TestElevenlabs_NativeRESTModelListIsABareArray(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+
+	resp, data := elevenlabsCall(t, http.MethodGet, "/v1/models", vk.Value, "")
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(data))
+	models := gjson.ParseBytes(data)
+	require.True(t, models.IsArray(), "ElevenLabs lists models as a bare array: %s", data)
+	assert.Contains(t, models.Get("#.model_id").Raw, "eleven_v4_turbo")
+}
+
+// A voice cannot name another endpoint: the call is refused, and nothing reaches ElevenLabs.
+func TestElevenlabs_NativeRESTVoiceCannotLeaveItsPath(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	for _, path := range []string{
+		"/v1/text-to-speech/..%2Fvoices",
+		"/v1/text-to-speech/%2e%2e%2Fmodels",
+		"/v1/text-to-speech/voice/other",
+	} {
+		resp, data := elevenlabsCall(t, http.MethodPost, path, vk.Value, elevenlabsSpeechBody("hi"))
+		assert.GreaterOrEqual(t, resp.StatusCode, 400, "POST %s: %s", path, data)
 	}
 }

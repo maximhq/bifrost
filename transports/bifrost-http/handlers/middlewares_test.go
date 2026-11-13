@@ -5433,6 +5433,20 @@ func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyFromHeadersXiAPIKey pins that an ElevenLabs client's xi-api-key is a virtual key only with the sk-bf- prefix.
+func TestVirtualKeyFromHeadersXiAPIKey(t *testing.T) {
+	for value, want := range map[string]string{"sk-bf-elevenlabs-vk": "sk-bf-elevenlabs-vk", "real-elevenlabs-key": ""} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("xi-api-key", value)
+		if got := virtualKeyFromHeaders(ctx); got != want {
+			t.Errorf("virtualKeyFromHeaders(xi-api-key %q) = %q, want %q", value, got, want)
+		}
+		if got := hasVirtualKeyCredential(ctx); got != (want != "") {
+			t.Errorf("hasVirtualKeyCredential(xi-api-key %q) = %v, want %v", value, got, want != "")
+		}
+	}
+}
+
 // TestLogRequestTargetRedactsLiveKeyQuery pins that the key a Gemini Live client sends as ?key= never reaches
 // the access log, that every repeat of a secret name is redacted, and that a name that only resembles one is left alone.
 func TestLogRequestTargetRedactsLiveKeyQuery(t *testing.T) {
