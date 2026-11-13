@@ -70,8 +70,6 @@ interface OverviewTabProps {
 	trafficState: MetricsState;
 	// The window those figures cover; the tier split reads the same one.
 	trafficWindow: TrafficWindow;
-	// Whether a test ran on this visit.
-	tested: boolean;
 	onNavigate: (tab: RouterTab) => void;
 }
 
@@ -81,7 +79,7 @@ interface OverviewTabProps {
 // and their cost against the week before), a setup checklist while something
 // is missing, a strip of facts that each open their tab, and one line on
 // whether the router is serving, with the way into its requests.
-export function OverviewTab({ router, traffic, trafficState, trafficWindow, tested, onNavigate }: OverviewTabProps) {
+export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNavigate }: OverviewTabProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters.overview" });
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: tmr } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
@@ -122,18 +120,9 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, test
 			actionLabel: t("setup.pickModels"),
 			onAction: () => onNavigate("models"),
 		},
-		{
-			key: "test",
-			title: t("setup.test"),
-			detail: t("setup.testDetail"),
-			done: tested,
-			actionLabel: t("setup.testAction"),
-			onAction: () => onNavigate("test"),
-		},
 	];
 	const done = steps.filter((step) => step.done).length;
-	// Testing is optional, so the card goes once everything else is done.
-	const setupComplete = steps.every((step) => step.done || step.key === "test");
+	const setupComplete = steps.every((step) => step.done);
 
 	// The status line says whether the router is serving; the figures above
 	// already carry the numbers.
