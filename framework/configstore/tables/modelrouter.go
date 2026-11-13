@@ -3,16 +3,28 @@ package tables
 import "time"
 
 // TableModelRouter stores one model router: a named complexity classifier with
-// its own phrases and settings, one column per setting (lists and maps as JSON
-// text). Each optional block (semantic, decision, llm, session, suggestions) is
-// present exactly when its anchor column is non-NULL. No column has a gorm
-// default, since zero is often a real setting; defaults come from the config's
-// normalization. The configstore package converts to and from the config type.
+// its own phrases and settings, and the routing that decides which requests it
+// takes; its per-tier models live in model_router_targets. One column per
+// setting (lists and maps as JSON text). Each optional block (semantic,
+// decision, llm, session, suggestions) is present exactly when its anchor
+// column is non-NULL. No classifier column has a gorm default, since zero is
+// often a real setting; defaults come from the config's normalization. The
+// configstore package converts to and from the config type.
 type TableModelRouter struct {
 	ID          string `gorm:"primaryKey;type:varchar(64)" json:"id"`
 	Name        string `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_router_name" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
-	Classifier  string `gorm:"type:varchar(20);not null" json:"classifier"` // the primary classifier, as in the complexity config
+	Classifier  string `gorm:"type:varchar(20);not null" json:"classifier"` // "semantic", "decision" or "llm"
+
+	// Routing: which requests the router takes, tried after the routing rules.
+	// These columns do carry defaults, each the value a router without routing
+	// gets, so they can be added to existing rows.
+	Enabled       bool    `gorm:"not null;default:false" json:"-"`
+	Scope         string  `gorm:"type:varchar(50);not null;default:'global'" json:"-"` // "global" | "team" | "customer" | "virtual_key" | "user"
+	ScopeID       *string `gorm:"type:varchar(255)" json:"-"`                          // nil for global, otherwise the entity's id
+	CelExpression string  `gorm:"type:text" json:"-"`                                  // empty takes every request in scope
+	Query         *string `gorm:"type:text" json:"-"`                                  // the dashboard's condition builder state, JSON; never evaluated
+	Priority      int     `gorm:"not null;default:0" json:"-"`                         // lower is tried first within a scope
 
 	// Deprecated lexical tier boundaries, still accepted and returned; zero reads as the default.
 	SimpleMediumBoundary  float64 `json:"-"`

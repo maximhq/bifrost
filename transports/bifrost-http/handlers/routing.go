@@ -61,6 +61,22 @@ type RoutingManager interface {
 	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
 	// DeleteComplexityGeneration removes one retired generation.
 	DeleteComplexityGeneration(ctx context.Context, namespace string) error
+	// ReloadModelRouter serves a saved model router.
+	ReloadModelRouter(ctx context.Context, id string) error
+	// ReloadModelRouterTargets serves a saved router's targets, leaving its
+	// classifiers as they are.
+	ReloadModelRouterTargets(ctx context.Context, id string) error
+	// ReloadModelRouterRouting serves a saved router's routing, leaving its
+	// classifiers and targets as they are.
+	ReloadModelRouterRouting(ctx context.Context, id string) error
+	// RemoveModelRouter stops serving a deleted router.
+	RemoveModelRouter(ctx context.Context, id string) error
+	// GetModelRouterStatus reports one router's classifier readiness;
+	// configstore.ErrNotFound for a router not served.
+	GetModelRouterStatus(ctx context.Context, id string) (complexity.SemanticStatusInfo, complexity.LLMStatusInfo, error)
+	// RetryModelRouterWarmup restarts one router's failed semantic warmup;
+	// configstore.ErrNotFound for a router not served.
+	RetryModelRouterWarmup(ctx context.Context, id string) (complexity.SemanticStatusInfo, bool, error)
 }
 
 // complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
@@ -135,6 +151,7 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
 	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
 	h.registerComplexitySuggestionRoutes(r, middlewares...)
+	h.registerModelRouterRoutes(r, middlewares...)
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.

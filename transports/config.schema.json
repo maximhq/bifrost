@@ -2385,7 +2385,7 @@
     },
     "model_routers": {
       "type": "array",
-      "description": "Named model routers, each a complexity classifier with its own phrases and settings. They are separate from governance.complexity_analyzer_config, which routing rules read complexity_tier from. Unless config.json is the source of truth, dashboard edits to sections the file has not changed are kept.",
+      "description": "Named model routers, each a complexity classifier with its own phrases and settings, the model each tier gets, and the requests it takes after the routing rules. They are separate from governance.complexity_analyzer_config, which routing rules read complexity_tier from. Unless config.json is the source of truth, dashboard edits to sections the file has not changed are kept.",
       "items": {
         "$ref": "#/$defs/model_router"
       }
@@ -7044,10 +7044,11 @@
           "type": "string",
           "enum": [
             "semantic",
-            "decision"
+            "decision",
+            "llm"
           ],
           "default": "semantic",
-          "description": "Primary complexity classifier. Defaults to semantic."
+          "description": "Primary complexity classifier: semantic, decision or llm. Defaults to semantic."
         },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
@@ -7069,6 +7070,24 @@
         "keywords"
       ],
       "allOf": [
+        {
+          "description": "The llm classifier answers with the llm block's model, so choosing it needs that block; the loader rejects it otherwise.",
+          "if": {
+            "required": [
+              "classifier"
+            ],
+            "properties": {
+              "classifier": {
+                "const": "llm"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
+        },
         {
           "if": {
             "properties": {
@@ -7092,7 +7111,10 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "decision"
+                  "enum": [
+                    "decision",
+                    "llm"
+                  ]
                 }
               }
             }
@@ -7157,7 +7179,10 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "decision"
+                  "enum": [
+                    "decision",
+                    "llm"
+                  ]
                 }
               }
             }
@@ -7199,12 +7224,15 @@
     },
     "model_router": {
       "type": "object",
-      "description": "One model router: an id, a name and a description beside the same settings as complexity_analyzer_config.",
+      "description": "One model router: an id, a name and a description beside the same settings as complexity_analyzer_config; the model each tier gets; and the routing that decides which requests it takes, after the routing rules.",
       "properties": {
         "id": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{1,64}$",
-          "description": "Stable router id."
+          "not": {
+            "const": "defaults"
+          },
+          "description": "Stable router id. `defaults` is reserved: it names the endpoint that serves a new router's defaults."
         },
         "name": {
           "type": "string",
@@ -7227,10 +7255,11 @@
           "type": "string",
           "enum": [
             "semantic",
-            "decision"
+            "decision",
+            "llm"
           ],
           "default": "semantic",
-          "description": "Primary complexity classifier. Defaults to semantic."
+          "description": "Primary complexity classifier: semantic, decision or llm. Defaults to semantic."
         },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
@@ -7246,6 +7275,16 @@
         },
         "suggestions": {
           "$ref": "#/$defs/complexity_suggestions_config"
+        },
+        "targets": {
+          "type": "array",
+          "description": "The model each tier gets. A tier with no target keeps the request's model; weights within a tier sum to 1. Omit to keep the targets set in the dashboard; an empty list clears them.",
+          "items": {
+            "$ref": "#/$defs/model_router_target"
+          }
+        },
+        "routing": {
+          "$ref": "#/$defs/model_router_routing"
         }
       },
       "required": [
@@ -7254,6 +7293,24 @@
         "keywords"
       ],
       "allOf": [
+        {
+          "description": "The llm classifier answers with the llm block's model, so choosing it needs that block; the loader rejects it otherwise.",
+          "if": {
+            "required": [
+              "classifier"
+            ],
+            "properties": {
+              "classifier": {
+                "const": "llm"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
+        },
         {
           "if": {
             "properties": {
@@ -7277,7 +7334,10 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "decision"
+                  "enum": [
+                    "decision",
+                    "llm"
+                  ]
                 }
               }
             }
@@ -7342,7 +7402,10 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "decision"
+                  "enum": [
+                    "decision",
+                    "llm"
+                  ]
                 }
               }
             }
@@ -7377,6 +7440,150 @@
             "required": [
               "llm"
             ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "model_router_target": {
+      "type": "object",
+      "description": "One model for one tier of a model router. Omitting provider or model keeps the request's value.",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": [
+            "SIMPLE",
+            "MEDIUM",
+            "COMPLEX"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target provider name (e.g., 'openai', 'azure'). Omit to use the incoming request provider"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target model name. Omit to use the incoming request model"
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional provider key ID to pin for this target. Requires provider."
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Probability weight within the tier (must be > 0). All weights in a tier must sum to 1"
+        },
+        "fallbacks": {
+          "type": "array",
+          "description": "Fallback chain used when this target is chosen. A non-empty list replaces the request's chain; omit it or send [] to keep the chain the routing rules set.",
+          "items": {
+            "$ref": "#/$defs/routing_fallback"
+          }
+        }
+      },
+      "required": [
+        "tier",
+        "weight"
+      ],
+      "$comment": "A blank provider or model is no value: the loader trims both and skips a router whose target then sets neither.",
+      "anyOf": [
+        {
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+            }
+          }
+        },
+        {
+          "required": [
+            "model"
+          ],
+          "properties": {
+            "model": {
+              "pattern": "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+            }
+          }
+        }
+      ],
+      "dependentRequired": {
+        "key_id": [
+          "provider"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "model_router_routing": {
+      "type": "object",
+      "description": "Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), by priority within a scope, and the first enabled router whose condition holds classifies the request. Omit to keep the routing set in the dashboard; a router created without it starts off, global, after the other global routers.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the router takes requests."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "global",
+            "team",
+            "customer",
+            "virtual_key"
+          ],
+          "default": "global",
+          "description": "Scope level. User-scoped routing can be set through the API only. Routing whose scope_id does not resolve is skipped at load with a warning."
+        },
+        "scope_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ID (not name) of the team, customer or virtual key. Required for non-global scopes; ignored for global."
+        },
+        "cel_expression": {
+          "type": "string",
+          "description": "Optional CEL condition over the request as the routing rules left it (model, provider, headers and so on). Empty takes every request in the scope. A condition of model == \"<name>\" lets apps ask for the router by that model name. It cannot use complexity_tier: the router decides the tier once it takes the request."
+        },
+        "query": {
+          "$ref": "#/$defs/routing_rule/properties/query"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Order within the scope; lower is tried first. Unique within the scope among model routers, separate from routing rule priorities."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "not": {
+                  "const": "global"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "scope_id"
+            ],
+            "properties": {
+              "scope_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
           }
         }
       ],

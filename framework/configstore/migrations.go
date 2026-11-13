@@ -596,6 +596,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
 	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
 	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
+	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13740,6 +13741,26 @@ func migrationAddModelRoutersTable(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping model_routers would delete every model router", migrationName)
+		},
+	})
+}
+
+// migrationAddModelRouterTargetsAndRouting creates the model routers'
+// per-tier targets and adds the routing columns, which decide the requests a
+// router takes, to model_routers. Routers start without targets and off: a
+// routing rule's complexity_tier condition is untouched, so nothing that
+// routes today changes.
+func migrationAddModelRouterTargetsAndRouting(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_targets_and_routing"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{}, &tables.TableModelRouterTarget{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_router_targets would delete every router's models", migrationName)
 		},
 	})
 }

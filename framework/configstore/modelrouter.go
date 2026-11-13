@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	maxModelRouterIDLength   = 64  // matches the id column
-	maxModelRouterNameLength = 255 // matches the name column
+	maxModelRouterIDLength   = 64         // matches the id column
+	maxModelRouterNameLength = 255        // matches the name column
+	reservedModelRouterID    = "defaults" // a route of its own beside the by-id routes
 )
 
 // ModelRouter is one named complexity classifier: its identity plus the
@@ -30,18 +31,28 @@ const (
 //
 // Routers are separate from the Complexity Router page's config, which stays
 // in governance_config and is the one routing rules read complexity_tier from.
+//
+// Targets and Routing are read with the router but written on their own, so
+// saving a classifier never changes where requests go: update and reset leave
+// both alone, and create stores only Routing, or the default routing when it
+// is nil (see defaultModelRouterRouting). A config.json entry that omits
+// either leaves the stored one as it is.
 type ModelRouter struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	ComplexityAnalyzerConfig
-	ConfigHash string `json:"-"` // hash of the config.json entry's name and description last applied
+	Targets    []tables.TableModelRouterTarget `json:"targets,omitempty"` // the model each tier gets; written by SetModelRouterTargets
+	Routing    *ModelRouterRouting             `json:"routing,omitempty"` // which requests it takes; written by SetModelRouterRouting
+	ConfigHash string                          `json:"-"`                 // hash of the config.json entry's name, description, targets and routing last applied
 }
 
 // ValidateModelRouterIdentity trims a router's id, name and description in
 // place and checks them; the store's create and update run the same check.
 // IDs are limited to letters, digits, '-' and '_' because other stores key
-// data by them (vector store namespaces, log rows), and a UUID fits.
+// data by them (vector store namespaces, log rows), and a UUID fits. The id
+// `defaults` is reserved: GET /api/routing/model-routers/defaults serves what a
+// new router starts from, so a router with that id could not be read by id.
 func ValidateModelRouterIdentity(r *ModelRouter) error {
 	r.ID = strings.TrimSpace(r.ID)
 	r.Name = strings.TrimSpace(r.Name)
@@ -51,6 +62,9 @@ func ValidateModelRouterIdentity(r *ModelRouter) error {
 	}
 	if len(r.ID) > maxModelRouterIDLength {
 		return fmt.Errorf("model router id must be at most %d characters, got %d", maxModelRouterIDLength, len(r.ID))
+	}
+	if r.ID == reservedModelRouterID {
+		return fmt.Errorf("model router id %q is reserved: GET /api/routing/model-routers/%s serves a new router's defaults", r.ID, reservedModelRouterID)
 	}
 	for _, ch := range r.ID {
 		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
@@ -67,11 +81,18 @@ func ValidateModelRouterIdentity(r *ModelRouter) error {
 }
 
 // GenerateModelRouterHash hashes the fields of a config.json router entry that
-// the per-section config hashes do not cover: its name and its description.
+// the per-section config hashes do not cover: its name, its description and,
+// when the entry declares them, its targets and its routing.
 func GenerateModelRouterHash(r ModelRouter) string {
 	hash := sha256.New()
 	writeHashField(hash, "name", strings.TrimSpace(r.Name))
 	writeHashField(hash, "description", strings.TrimSpace(r.Description))
+	if r.Targets != nil {
+		writeModelRouterTargetsHash(hash, r.Targets)
+	}
+	if r.Routing != nil {
+		writeModelRouterRoutingHash(hash, *r.Routing)
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -108,8 +129,10 @@ func unmarshalModelRouterPhrases(raw string) ([]string, error) {
 	return phrases, nil
 }
 
-// modelRouterToTable lays a router out as its row, one column per setting. It
-// does not normalize: what it is given is what the row holds.
+// modelRouterToTable lays a router out as its row, one column per setting.
+// It does not normalize: what it is given is what the row holds. A router
+// without routing gets a global scope and nothing else; targets are not part
+// of the row.
 func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 	cfg := &r.ComplexityAnalyzerConfig
 	row := &tables.TableModelRouter{
@@ -120,6 +143,12 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		SimpleMediumBoundary:  cfg.TierBoundaries.SimpleMedium,
 		MediumComplexBoundary: cfg.TierBoundaries.MediumComplex,
 		ConfigHash:            r.ConfigHash,
+		Scope:                 "global",
+	}
+	if r.Routing != nil {
+		if err := setModelRouterRoutingColumns(row, *r.Routing); err != nil {
+			return nil, err
+		}
 	}
 	var err error
 	if row.SimplePhrasesJSON, err = marshalModelRouterPhrases(cfg.Keywords.SimpleKeywords); err != nil {
@@ -195,13 +224,14 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 }
 
 // modelRouterFromTable reads a row back into a router exactly as stored, with
-// no normalization or validation. A column it cannot decode is reported as
-// ErrConfigUnreadable.
+// no normalization or validation, routing included and targets left for the
+// caller. A column it cannot decode is reported as ErrConfigUnreadable.
 func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 	r := &ModelRouter{
 		ID:          row.ID,
 		Name:        row.Name,
 		Description: row.Description,
+		Routing:     modelRouterRoutingFromRow(row),
 		ConfigHash:  row.ConfigHash,
 	}
 	cfg := &r.ComplexityAnalyzerConfig
@@ -321,15 +351,23 @@ func (s *RDBConfigStore) GetModelRouters(ctx context.Context) ([]ModelRouter, er
 	if err := s.DB().WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	targets, unreadableTargets, err := loadModelRouterTargets(ctx, s.DB())
+	if err != nil {
+		return nil, err
+	}
 	routers := make([]ModelRouter, 0, len(rows))
 	for i := range rows {
 		router, err := decodeModelRouterRow(&rows[i])
+		if err == nil {
+			err = unreadableTargets[rows[i].ID]
+		}
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Warn("skipping unreadable model router %q: %v", rows[i].ID, err)
 			}
 			continue
 		}
+		router.Targets = targets[router.ID]
 		routers = append(routers, *router)
 	}
 	return routers, nil
@@ -357,7 +395,19 @@ func (s *RDBConfigStore) getModelRouterWithDB(ctx context.Context, db *gorm.DB, 
 		}
 		return nil, err
 	}
-	return decodeModelRouterRow(&row)
+	router, err := decodeModelRouterRow(&row)
+	if err != nil {
+		return nil, err
+	}
+	targets, unreadableTargets, err := loadModelRouterTargets(ctx, db, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := unreadableTargets[id]; err != nil {
+		return nil, err
+	}
+	router.Targets = targets[id]
+	return router, nil
 }
 
 // prepareModelRouter returns a copy of router ready to store: identity
@@ -378,16 +428,22 @@ func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 	return r, nil
 }
 
-// CreateModelRouter stores a new router. A taken id or name is
-// ErrAlreadyExists.
+// CreateModelRouter stores a new router with its routing, or with the
+// default routing when it has none: off, global, and last among the global
+// routers. A taken id or name is ErrAlreadyExists, and a priority another
+// router in the scope holds is ErrModelRouterPriorityTaken. Targets are left
+// for SetModelRouterTargets.
 func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
 		return err
 	}
-	row, err := modelRouterToTable(&r)
-	if err != nil {
-		return err
+	if r.Routing != nil {
+		routing := *r.Routing
+		if err := ValidateModelRouterRouting(&routing); err != nil {
+			return err
+		}
+		r.Routing = &routing
 	}
 	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		db := txDB.WithContext(ctx)
@@ -397,6 +453,19 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 		}
 		if taken > 0 {
 			return fmt.Errorf("%w: a model router with id %q or name %q", ErrAlreadyExists, r.ID, r.Name)
+		}
+		if r.Routing == nil {
+			routing, err := defaultModelRouterRouting(ctx, txDB)
+			if err != nil {
+				return err
+			}
+			r.Routing = &routing
+		} else if err := checkModelRouterPriority(ctx, txDB, r.ID, *r.Routing); err != nil {
+			return err
+		}
+		row, err := modelRouterToTable(&r)
+		if err != nil {
+			return err
 		}
 		// The count and the insert do not share a lock, so a concurrent create
 		// of the same id or name can still lose at the unique index.
@@ -410,10 +479,10 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 	})
 }
 
-// UpdateModelRouter replaces a router's name, description and config. Section
-// hashes and the config hash the caller leaves empty keep their stored values,
-// so a UI save never erases config.json bookkeeping. The router must already
-// exist (ErrNotFound).
+// UpdateModelRouter replaces a router's name, description and config, leaving
+// its targets and routing as they are. Section hashes and the config hash the
+// caller leaves empty keep their stored values, so a UI save never erases
+// config.json bookkeeping. The router must already exist (ErrNotFound).
 func (s *RDBConfigStore) UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
@@ -441,18 +510,23 @@ func (s *RDBConfigStore) UpdateModelRouter(ctx context.Context, router *ModelRou
 	})
 }
 
-// DeleteModelRouter removes a router; ErrNotFound when there is none.
+// DeleteModelRouter removes a router and its targets; ErrNotFound when there
+// is none. The router's row is locked first, as a targets save locks it too,
+// so a concurrent save cannot leave targets behind.
 func (s *RDBConfigStore) DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error {
 	id = strings.TrimSpace(id)
 	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
-		result := txDB.WithContext(ctx).Delete(&tables.TableModelRouter{}, "id = ?", id)
-		if result.Error != nil {
-			return result.Error
+		row, err := s.lockModelRouterRow(ctx, txDB, id)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected == 0 {
+		if row == nil {
 			return ErrNotFound
 		}
-		return nil
+		if err := txDB.WithContext(ctx).Where("router_id = ?", id).Delete(&tables.TableModelRouterTarget{}).Error; err != nil {
+			return err
+		}
+		return txDB.WithContext(ctx).Delete(&tables.TableModelRouter{}, "id = ?", id).Error
 	})
 }
 
@@ -532,8 +606,9 @@ func (s *RDBConfigStore) lockModelRouterRow(ctx context.Context, txDB *gorm.DB, 
 // stored bookkeeping this version cannot decode must not stop a valid save.
 //
 // keepIdentity keeps the stored name and description, for saves that only
-// carry a config. r's config must already be normalized and validated, and
-// txDB must be a transaction.
+// carry a config. The stored routing is always kept: it is written only by
+// SetModelRouterRouting. r's config must already be normalized and validated,
+// and txDB must be a transaction.
 func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.DB, r ModelRouter, keepIdentity bool) (*ModelRouter, error) {
 	existing, err := s.lockModelRouterRow(ctx, txDB, r.ID)
 	if err != nil {
@@ -550,6 +625,7 @@ func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.D
 	} else if r.ConfigHash == "" {
 		r.ConfigHash = existing.ConfigHash
 	}
+	r.Routing = modelRouterRoutingFromRow(existing)
 	row, err := modelRouterToTable(&r)
 	if err != nil {
 		return nil, err

@@ -388,11 +388,13 @@ func (c *ComplexitySemanticConfig) Validate() error {
 	return nil
 }
 
-// Semantic fallback selection names the optional classifier invoked when semantic
-// classification produces no tier. The fallback is only used by the semantic primary.
+// The primary classifier is semantic, decision or llm. Semantic fallback
+// selection names the optional classifier invoked when semantic classification
+// produces no tier; the fallback is only used by the semantic primary.
 const (
 	ComplexityClassifierSemantic       = "semantic"
 	ComplexityClassifierDecision       = "decision"
+	ComplexityClassifierLLM            = "llm"
 	ComplexitySemanticFallbackNone     = "none"
 	ComplexitySemanticFallbackLLM      = "llm"
 	ComplexitySemanticFallbackDecision = "decision"
@@ -1197,8 +1199,10 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("keyword lists must be non-empty: %s", strings.Join(missing, ", "))
 	}
-	if c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic && c.Classifier != ComplexityClassifierDecision {
-		return fmt.Errorf("complexity classifier must be %q or %q, got %q", ComplexityClassifierSemantic, ComplexityClassifierDecision, c.Classifier)
+	switch c.Classifier {
+	case "", ComplexityClassifierSemantic, ComplexityClassifierDecision, ComplexityClassifierLLM:
+	default:
+		return fmt.Errorf("complexity classifier must be %q, %q or %q, got %q", ComplexityClassifierSemantic, ComplexityClassifierDecision, ComplexityClassifierLLM, c.Classifier)
 	}
 	if err := c.Semantic.Validate(); err != nil {
 		return err
@@ -1220,13 +1224,16 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
 		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
 	}
-	if c.SessionRoutingEnabled() && c.Semantic == nil && c.Classifier != ComplexityClassifierDecision {
+	if c.Classifier == ComplexityClassifierLLM && c.LLM == nil {
+		return fmt.Errorf("complexity classifier %q requires an llm config block", ComplexityClassifierLLM)
+	}
+	if c.SessionRoutingEnabled() && c.Semantic == nil && (c.Classifier == "" || c.Classifier == ComplexityClassifierSemantic) {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
 	if c.SuggestionsEnabled() {
 		// Suggestions capture the semantic classifier's vectors and cluster in
 		// its embedding space, so they need it to be the primary classifier.
-		if c.Semantic == nil || c.Classifier == ComplexityClassifierDecision {
+		if c.Semantic == nil || (c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic) {
 			return fmt.Errorf("complexity suggestions require the semantic classifier: a semantic config block, with classifier %q", ComplexityClassifierSemantic)
 		}
 		if c.Suggestions.Provider == "" && c.LLM == nil {

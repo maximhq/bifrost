@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testModelRouter returns a valid non-default router with a semantic block.
+// testModelRouter returns a valid router with a semantic block.
 func testModelRouter(id, name string) *ModelRouter {
 	return &ModelRouter{
 		ID:                       id,
@@ -54,6 +54,9 @@ func fillEveryField(t *testing.T, v reflect.Value, path string, seq *int) {
 		v.SetString(fmt.Sprintf("value-%d", *seq))
 	case reflect.Bool:
 		v.SetBool(true)
+	case reflect.Interface:
+		*seq++
+		v.Set(reflect.ValueOf(fmt.Sprintf("value-%d", *seq)))
 	case reflect.Int, reflect.Int64:
 		*seq++
 		v.SetInt(int64(*seq))
@@ -78,13 +81,19 @@ func fillEveryField(t *testing.T, v reflect.Value, path string, seq *int) {
 }
 
 // TestModelRouterTableRoundTripCoversEveryField pins that every field of a
-// router, its config and suggestions block included, has a column. A field
-// added to the config without one fails here instead of being silently
-// dropped on save.
+// router, its config, suggestions block and routing included, has a column. A
+// field added without one fails here instead of being silently dropped on
+// save. Targets have a table of their own, which TestModelRouterTargetsStore
+// covers.
 func TestModelRouterTableRoundTripCoversEveryField(t *testing.T) {
 	var router ModelRouter
 	seq := 0
-	fillEveryField(t, reflect.ValueOf(&router).Elem(), "ModelRouter", &seq)
+	v := reflect.ValueOf(&router).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		if name := v.Type().Field(i).Name; name != "Targets" {
+			fillEveryField(t, v.Field(i), "ModelRouter."+name, &seq)
+		}
+	}
 	router.EmbeddingFingerprint = "" // the complexity config's bookkeeping; routers do not store it
 
 	row, err := modelRouterToTable(&router)
@@ -99,7 +108,7 @@ func TestModelRouterTableRoundTripCoversEveryField(t *testing.T) {
 // must not read back as each other.
 func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 	t.Run("absent blocks stay absent", func(t *testing.T) {
-		router := ModelRouter{ID: "absent", Name: "Absent", ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{Classifier: ComplexityClassifierSemantic}}
+		router := ModelRouter{ID: "absent", Name: "Absent", ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{Classifier: ComplexityClassifierSemantic}, Routing: &ModelRouterRouting{Scope: "global"}}
 		row, err := modelRouterToTable(&router)
 		require.NoError(t, err)
 		assert.Nil(t, row.SemanticProvider)
@@ -120,7 +129,7 @@ func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 			Decision:   &ComplexityDecisionConfig{PreviousMessageCount: bifrost.Ptr(0)},
 			LLM:        &ComplexityLLMConfig{},
 			Session:    &ComplexitySessionConfig{},
-		}}
+		}, Routing: &ModelRouterRouting{Scope: "global"}}
 		row, err := modelRouterToTable(&router)
 		require.NoError(t, err)
 		back, err := modelRouterFromTable(row)
@@ -219,6 +228,7 @@ func TestModelRouterStoreCRUD(t *testing.T) {
 			"id with a slash": testModelRouter("support/team", "Support"),
 			"id too long":     testModelRouter(fmt.Sprintf("%065d", 0), "Support"),
 			"empty name":      testModelRouter("support", " "),
+			"reserved id":     testModelRouter("defaults", "Defaults"),
 		}
 		for name, router := range cases {
 			t.Run(name, func(t *testing.T) {
@@ -226,7 +236,7 @@ func TestModelRouterStoreCRUD(t *testing.T) {
 			})
 		}
 		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("b2c1a7e0-4c1f-4f7e-9a51-3f0f1d6f8b10", "Support")), "a UUID is a valid id")
-		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("default", "Default")), "no id or name is reserved")
+		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("default", "Default")), "only `defaults`, a route of its own, is reserved")
 	})
 
 	t.Run("invalid config is rejected", func(t *testing.T) {

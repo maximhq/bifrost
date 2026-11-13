@@ -2341,6 +2341,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if hasComplexityScore {
 				entry.ComplexityScore = &complexityScore
 			}
+			applyModelRoutingFields(ctx, entry)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailMetadata
 			entry.RoutingMetadataParsed = routingMetadata
@@ -2489,6 +2490,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if hasComplexityScore {
 		entry.ComplexityScore = &complexityScore
 	}
+	applyModelRoutingFields(ctx, entry)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
