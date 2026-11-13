@@ -25,7 +25,7 @@ const sortableHeader =
 	);
 
 function StatusBar({ status, title }: { status: keyof typeof StatusBarColors; title: string }) {
-	return <div title={title} className={cn("h-full min-h-[24px] w-1 rounded-sm", StatusBarColors[status])} />;
+	return <div title={title} className={cn("h-full min-h-[24px] w-1 rounded-md", StatusBarColors[status])} />;
 }
 
 const traceStatus = (trace: Trace): keyof typeof StatusBarColors =>
@@ -187,7 +187,7 @@ export function createSpanColumns(t: T): ColumnDef<TraceSpan>[] {
 				const Icon = meta.icon;
 				return (
 					<div className="flex min-w-0 items-center gap-2">
-						<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", meta.tile)}>
+						<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", meta.tile)}>
 							<Icon className="size-3.5" />
 						</span>
 						<TruncatedLabel className="text-sm font-medium">{row.original.name || row.original.span_id}</TruncatedLabel>
