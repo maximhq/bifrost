@@ -191,7 +191,7 @@ Code Mode must be enabled **per MCP client**. Once enabled, that client's tools 
   <img src="/media/ui-mcp-edit-server.png" alt="MCP Client Configuration" />
 </Frame>
 
-3. In the **Basic Information** section, toggle **Code Mode Server** to enabled
+3. In the **Server Behavior** section, toggle **Code Mode Server** to enabled
 4. Click **Save Changes**
 
 Once enabled:
@@ -283,6 +283,100 @@ mcpConfig := &schemas.MCPConfig{
     },
 }
 ```
+
+### Code Mode on a server's own endpoint
+
+Each MCP server is also served on its own endpoint, `/mcp/<slug>` (see [Direct MCP client endpoints](./virtual-mcps#direct-mcp-client-endpoints)). By default that endpoint follows **Code Mode Server**. You can set it separately, for example to keep Code Mode on the shared `/mcp` endpoint while a client that connects only to this server calls its tools directly.
+
+The setting applies only to the server's own endpoint. `/mcp`, Virtual MCP endpoints and LLM requests always follow **Code Mode Server**.
+
+| Option | `server_type_on_slug` | On `/mcp/<slug>` |
+|--------|------------------|------------------|
+| **Inherit** (default) | `inherit` | Same as **Code Mode Server** |
+| **Code Mode** | `enabled` | The four Code Mode tools |
+| **Direct tools** | `disabled` | The server's own tools, called directly |
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **MCP Gateway** in the sidebar
+2. Click on a client row to open the configuration sheet
+3. In the **Server Behavior** section, pick an option in **Code Mode behaviour on /mcp/&lt;slug&gt;**. **Inherit** shows whether it currently resolves to Enabled or Disabled.
+4. Click **Save Changes**
+
+<Frame>
+  <img src="/media/ui-mcp-slug-code-mode.png" alt="Code Mode behaviour on a server's own endpoint" />
+</Frame>
+
+When an override is set, the server's details show it as a badge.
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Code Mode on /mcp, direct tools on the server's own endpoint
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "youtube",
+    "connection_type": "http",
+    "connection_string": "http://localhost:3001/mcp",
+    "tools_to_execute": ["*"],
+    "is_code_mode_client": true,
+    "server_type_on_slug": "disabled"
+  }'
+
+# Change it later; "inherit" goes back to following is_code_mode_client
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server_type_on_slug": "inherit"
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "youtube",
+        "connection_type": "http",
+        "connection_string": "http://localhost:3001/mcp",
+        "tools_to_execute": ["*"],
+        "is_code_mode_client": true,
+        "server_type_on_slug": "disabled"
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "youtube"
+        connectionType: "http"
+        httpConfig:
+          url: "http://localhost:3001/mcp"
+        toolsToExecute: ["*"]
+        isCodeModeClient: true
+        serverTypeOnSlug: "disabled"
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+This setting only matters when Bifrost serves the server through the MCP gateway. The Go SDK has no per-server endpoint, so it always follows `IsCodeModeClient`.
+</Note>
 
 ---
 

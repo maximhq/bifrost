@@ -1809,6 +1809,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Name:                   dbClient.Name,
 					EndpointSlug:           dbClient.EndpointSlug,
 					IsCodeModeClient:       dbClient.IsCodeModeClient,
+					ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 					ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:       dbClient.ConnectionString,
 					StdioConfig:            dbClient.StdioConfig,
@@ -1877,6 +1878,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -2337,6 +2339,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Name:                   dbClient.Name,
 		EndpointSlug:           dbClient.EndpointSlug,
 		IsCodeModeClient:       dbClient.IsCodeModeClient,
+		ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 		ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:       dbClient.ConnectionString,
 		StdioConfig:            dbClient.StdioConfig,
@@ -2420,6 +2423,15 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 		return ErrNotFound
 	}
 	return nil
+}
+
+// UpdateMCPClientConfigHash moves a client's config_hash from oldHash to newHash and writes nothing else, so
+// it never overwrites a concurrent edit. It reports false when the stored hash is no longer oldHash.
+func (s *RDBConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	res := s.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).
+		Where("client_id = ? AND config_hash = ?", clientID, oldHash).
+		Update("config_hash", newHash)
+	return res.RowsAffected > 0, res.Error
 }
 
 // UpdateMCPClientDiscovery writes only the discovery columns, so a background refresh never races a
@@ -2529,6 +2541,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			Name:                   clientConfigCopy.Name,
 			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
+			ServerTypeOnSlug:       clientConfigCopy.ServerTypeOnSlug,
 			ConnectionType:         string(clientConfigCopy.ConnectionType),
 			ConnectionString:       clientConfigCopy.ConnectionString,
 			StdioConfig:            clientConfigCopy.StdioConfig,
@@ -2761,6 +2774,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		updates := map[string]interface{}{
 			"name":                       clientConfigCopy.Name,
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
+			"server_type_on_slug":        clientConfigCopy.ServerTypeOnSlug,
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
 			"prompts_to_expose_json":     promptsToExposeJSON,
@@ -7687,6 +7701,7 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.DecisionSettings = semanticRow.ConfigHashes.DecisionSettings
 	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
 	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
+	hashes.SuggestionsSettings = semanticRow.ConfigHashes.SuggestionsSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil
 }
 

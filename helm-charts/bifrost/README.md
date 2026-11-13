@@ -14,6 +14,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` to authenticate the scrape when auth is enabled. `basicAuth` inherits the Secret and keys of the active `bifrost.governance.authConfig` or `bifrost.authConfig`; rendering fails if no Secret can be resolved.
 - `serviceMonitor.enabled: true` is refused at render time when `bifrost.plugins.telemetry.config.metrics_enabled` is `false`, since `/metrics` would return `404`.
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
+- Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` (`server_type_on_slug`): code mode for the client on its own `/mcp/<slug>` only (`inherit`, `enabled` or `disabled`); `/mcp`, Virtual MCPs and LLM requests follow `isCodeModeClient`.
 
 ### 2.1.48
 
@@ -24,6 +25,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
 - `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
 - `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
+- Added `bifrost.modelRouters` (`model_routers`): named model routers, each a complexity classifier (`semantic`, `decision` or `llm`) with its own Simple, Medium and Complex phrases, the model each tier gets (`targets`), and the requests it takes after the routing rules (`routing`: `enabled`, `scope`, `scope_id`, `cel_expression`, `priority`). Routers are separate from `bifrost.governance.complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
+- `bifrost.governance.complexityAnalyzerConfig.classifier` (`governance.complexity_analyzer_config.classifier`) now also accepts `llm`. Phrase suggestions are set per model router (`bifrost.modelRouters[].suggestions`), not on the complexity analyzer config.
 
 ### 2.1.47
 

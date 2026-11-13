@@ -70,7 +70,8 @@
 			"decision": "결정 모델",
 			"llm": "LLM",
 			"skipped": "건너뜀"
-		}
+		},
+		"modelRouter": "라우터"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1228,7 +1229,10 @@
 		"exactRoundTripID": "정확한 라운드 트립 ID",
 		"nothingRecorded": "이 기간에는 기록된 내용이 없습니다.",
 		"topics": "주제",
-		"searchTopics": "주제 검색"
+		"searchTopics": "주제 검색",
+		"modelRouters": "라우터",
+		"searchModelRouters": "라우터 검색",
+		"loadFailed": "이 목록을 불러오지 못했어요."
 	},
 	"requestTypes": {
 		"chat_completion": "채팅",

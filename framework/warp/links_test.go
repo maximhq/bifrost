@@ -584,6 +584,7 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
 		"guardrail_outcomes":    {arg: []any{"blocked", "detected"}, noLink: true},
+		"model_router_ids":      {arg: []any{"support"}, want: "support"},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},
 	}
@@ -796,6 +797,7 @@ func TestWarpRankingLinksPerDimension(t *testing.T) {
 		logstore.RankingDimensionApp:                 "apps",
 		logstore.RankingDimensionUserAgent:           "user_agents",
 		logstore.RankingDimensionRoutingRule:         "routing_rule_ids",
+		logstore.RankingDimensionModelRouter:         "model_router_ids",
 		logstore.RankingDimensionRoutingEngine:       "routing_engine_used",
 		logstore.RankingDimensionSelectedKey:         "selected_key_ids",
 		logstore.RankingDimensionAlias:               "aliases",
