@@ -13,10 +13,12 @@ Bifrost serves decisions on three routes. Each one reaches **every** decision pr
 | Route | Shape | Use it from | Bare model name goes to |
 |-------|-------|-------------|-------------------------|
 | `POST /v1/decisions` | Bifrost's unified shape (this page) | `curl`, any HTTP client, the [Go SDK](/quickstart/go-sdk/decisions) | The provider a routing rule sets, or else the one configured provider that serves it (`400` when several do) |
-| `POST /openai/v1/decisions` | OpenAI's Decisions API | [OpenAI SDKs](/integrations/openai-sdk/overview#decisions-api) | `openai` when it serves the model and your virtual key allows it; otherwise as on `/v1/decisions` |
-| `POST /typesafe/v1/systemone` | TypeSafe's System One API | [TypeSafe SDK](/integrations/typesafe-sdk) | `typesafe` when it serves the model and your virtual key allows it; otherwise as on `/v1/decisions` |
+| `POST /openai/v1/decisions` | OpenAI's Decisions API | [OpenAI SDKs](/integrations/openai-sdk/overview#decisions-api) | The provider a routing rule sets; else `openai` when it serves the model and your virtual key allows it; else as on `/v1/decisions` |
+| `POST /typesafe/v1/systemone` | TypeSafe's System One API | [TypeSafe SDK](/integrations/typesafe-sdk) | The provider a routing rule sets; else `typesafe` when it serves the model and your virtual key allows it; else as on `/v1/decisions` |
 
-On `/v1/decisions`, a bare model name that more than one configured provider serves (after your virtual key's allowed providers) is not sent to any of them, since the same name can mean a different model on each provider. The request fails with `400` and the message lists the providers. Send `provider/model`, or add a [routing rule](/providers/routing-rules) that sets the provider for that model to keep using the bare name. The OpenAI and TypeSafe routes send a bare name to their own provider only while that provider is still a candidate: it serves the model and your virtual key allows it. Otherwise they pick among the remaining providers the same way `/v1/decisions` does.
+[Routing rules](/providers/routing-rules) run before Bifrost picks a provider for a bare model name, and a rule that sets the provider settles it on every route. A routing rule is the supported way to give a bare or logical model name a provider. The rest of this section applies only when no routing rule sets the provider.
+
+On `/v1/decisions`, a bare model name that more than one configured provider serves (after your virtual key's allowed providers) is not sent to any of them, since the same name can mean a different model on each provider. The request fails with `400` and the message lists the providers. Send `provider/model`, or add a routing rule that sets the provider for that model to keep using the bare name. The OpenAI and TypeSafe routes send a bare name to their own provider only while that provider is still a candidate: it serves the model and your virtual key allows it. Otherwise they pick among the remaining providers the same way `/v1/decisions` does.
 
 ## Providers
 
