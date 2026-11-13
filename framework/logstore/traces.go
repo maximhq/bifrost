@@ -118,7 +118,7 @@ type TraceSpan struct {
 
 	ParentSpanID  string  `gorm:"type:varchar(128)" json:"parent_span_id,omitempty"` // the tree parent: the first of ParentSpanIDsParsed
 	ParentSpanIDs *string `gorm:"type:text" json:"-"`
-	RowID         string  `gorm:"type:varchar(255)" json:"row_id,omitempty"`
+	RowID         string  `gorm:"type:varchar(255);index:idx_trace_spans_row_id" json:"row_id,omitempty"`
 	Source        string  `gorm:"type:varchar(32);not null" json:"source"`
 	Name          string  `gorm:"type:text" json:"name"`
 	Kind          string  `gorm:"type:varchar(32);not null;default:'unknown'" json:"kind"`
@@ -457,6 +457,7 @@ type TraceStore interface {
 	UpsertTraceSpans(ctx context.Context, spans []*TraceSpan) error
 	ListTraceSpans(ctx context.Context, projectID, traceID string) ([]*TraceSpan, error)
 	FindTraceSpans(ctx context.Context, projectID string, keys []TraceSpanKey) ([]*TraceSpan, error)
+	FindTraceSpansByRowIDs(ctx context.Context, projectID string, rowIDs []string) ([]*TraceSpan, error)
 	FindTrace(ctx context.Context, projectID, traceID string) (*Trace, error)
 	RecomputeTraceRollup(ctx context.Context, projectID, traceID string) (*Trace, error)
 	MarkTracesDirty(ctx context.Context, keys []TraceKey) error
@@ -637,6 +638,23 @@ func (s *RDBLogStore) FindTraceSpans(ctx context.Context, projectID string, keys
 		found = append(found, spans...)
 	}
 	return found, nil
+}
+
+// FindTraceSpansByRowIDs loads the spans stored under the given vendor row ids. Braintrust
+// addresses a span by its row id when it sends feedback or a comment.
+func (s *RDBLogStore) FindTraceSpansByRowIDs(ctx context.Context, projectID string, rowIDs []string) ([]*TraceSpan, error) {
+	if len(rowIDs) == 0 {
+		return nil, nil
+	}
+	var spans []*TraceSpan
+	query := s.db.WithContext(ctx).Where("row_id IN ?", rowIDs)
+	if projectID != "" {
+		query = query.Where("project_id = ?", projectID)
+	}
+	if err := query.Limit(len(rowIDs) * 2).Find(&spans).Error; err != nil {
+		return nil, err
+	}
+	return spans, nil
 }
 
 // countsTokens reports whether a span of this kind carries token usage of its own. Only model calls
