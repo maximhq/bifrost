@@ -55,7 +55,7 @@ function CodeEntry({ prefill }: { prefill: string }) {
 		setSubmitting(true);
 		setError(null);
 		try {
-			const res = await fetch(getEndpointUrl("/claude-code/device/verify"), {
+			const res = await fetch(getEndpointUrl("/gateway/claude-code/device/verify"), {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ user_code: code }),

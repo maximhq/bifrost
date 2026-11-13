@@ -652,11 +652,11 @@
                 "enabled": {
                   "type": "boolean",
                   "default": false,
-                  "description": "Serve the Claude Code gateway protocol under /claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
+                  "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
                 },
                 "managed_settings": {
                   "type": "object",
-                  "description": "Claude Code managed-settings.json document served at /claude-code/managed/settings to every signed-in client. Omit for no managed policy (the endpoint answers 404); an empty object is an empty policy."
+                  "description": "Claude Code managed-settings.json document served at /gateway/claude-code/managed/settings to every signed-in client. Omit for no managed policy (the endpoint answers 404); an empty object is an empty policy."
                 }
               },
               "additionalProperties": false,

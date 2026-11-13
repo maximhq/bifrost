@@ -20,12 +20,12 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 
 const isIssuerSet = (issuer?: SecretVar) => !!(issuer?.value?.trim() || issuer?.ref?.trim());
 
-// Claude Code is pointed at {issuer}/claude-code. Only a plain-text issuer can be
+// Claude Code is pointed at {issuer}/gateway/claude-code. Only a plain-text issuer can be
 // shown; env and vault references resolve on the server, so the caller shows the
-// translated "<issuer URL>/claude-code" template instead (fallback).
+// translated "<issuer URL>/gateway/claude-code" template instead (fallback).
 const gatewayURL = (issuer: SecretVar | undefined, fallback: string) => {
 	const value = issuer?.type === "env" || issuer?.type === "vault" ? "" : (issuer?.value ?? "").trim();
-	return value ? `${value.replace(/\/+$/, "")}/claude-code` : fallback;
+	return value ? `${value.replace(/\/+$/, "")}/gateway/claude-code` : fallback;
 };
 
 export default function ClaudeCodeView() {

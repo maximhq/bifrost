@@ -1610,7 +1610,7 @@
 		"issuerLabel": "颁发者 URL",
 		"issuerDescription": "Bifrost 的固定公共 URL。Claude Code 在 <code0/> 登录。它与 MCP OAuth 服务器使用同一个颁发者，因此修改它也会影响通过 OAuth 登录的 MCP 客户端。支持环境变量语法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
-		"gatewayURLTemplate": "<颁发者 URL>/claude-code",
+		"gatewayURLTemplate": "<颁发者 URL>/gateway/claude-code",
 		"connectTitle": "连接 Claude Code",
 		"gatewayURLLabel": "网关 URL：",
 		"connectBody": "Claude Code 只从机器级托管设置中读取网关 URL。请将以下键部署到每台开发者机器（通过 MDM 或 Claude Code 的 <code0>managed-settings.json</code0>），然后开发者运行 <code1>/login</code1>，并在 <b2>Cloud gateway</b2> 界面按 Enter：",

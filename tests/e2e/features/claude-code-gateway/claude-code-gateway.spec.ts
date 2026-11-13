@@ -40,8 +40,8 @@ test.describe('Claude Code gateway settings', () => {
     await expect(claudeCodeGatewayPage.enabledSwitch).not.toBeChecked()
     await expect(claudeCodeGatewayPage.connectInstructions).toHaveCount(0)
     await claudeCodeGatewayPage.enabledSwitch.click()
-    await expect(claudeCodeGatewayPage.gatewayURL).toHaveText('https://bifrost.example.com/claude-code')
-    await expect(claudeCodeGatewayPage.connectInstructions).toContainText('"forceLoginGatewayUrl": "https://bifrost.example.com/claude-code"')
+    await expect(claudeCodeGatewayPage.gatewayURL).toHaveText('https://bifrost.example.com/gateway/claude-code')
+    await expect(claudeCodeGatewayPage.connectInstructions).toContainText('"forceLoginGatewayUrl": "https://bifrost.example.com/gateway/claude-code"')
 
     // Malformed JSON is refused before anything is sent.
     let puts = 0
@@ -84,7 +84,7 @@ test.describe('Claude Code device sign-in page', () => {
 
   test('pre-fills the code without submitting it', async ({ page, claudeCodeGatewayPage }) => {
     let verifyCalls = 0
-    await page.route('**/claude-code/device/verify', async route => {
+    await page.route('**/gateway/claude-code/device/verify', async route => {
       verifyCalls++
       expect(route.request().postDataJSON()).toEqual({ user_code: 'BCDF-GHJK' })
       await route.fulfill({ status: 404, json: { error: { message: 'this code is not valid or has expired; run /login in Claude Code again' } } })

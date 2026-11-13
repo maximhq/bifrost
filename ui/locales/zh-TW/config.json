@@ -1639,7 +1639,7 @@
 		"issuerLabel": "簽發者 URL",
 		"issuerDescription": "Bifrost 的固定公開 URL。Claude Code 會在 <code0/> 登入。它與 MCP OAuth 伺服器使用同一個簽發者，因此變更它也會影響透過 OAuth 登入的 MCP 用戶端。支援環境變數語法（例如 <code1>env.BIFROST_ISSUER_URL</code1>）。",
 		"issuerPlaceholder": "https://bifrost.example.com 或 env.BIFROST_ISSUER_URL",
-		"gatewayURLTemplate": "<簽發者 URL>/claude-code",
+		"gatewayURLTemplate": "<簽發者 URL>/gateway/claude-code",
 		"connectTitle": "連線 Claude Code",
 		"gatewayURLLabel": "閘道 URL：",
 		"connectBody": "Claude Code 只會從機器層級的受管理設定讀取閘道 URL。請將以下金鑰部署到每台開發者電腦（透過 MDM 或 Claude Code 的 <code0>managed-settings.json</code0>），然後開發者執行 <code1>/login</code1>，並在 <b2>Cloud gateway</b2> 畫面按 Enter：",
