@@ -493,6 +493,13 @@ bifrost:
     #     claudeCode:             # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code
     #       enabled: false
     #       managedSettings: {}   # Optional Claude Code managed-settings.json pushed to signed-in clients
+    #       telemetry:            # Forward Claude Code's OTLP telemetry, stamped with the Bifrost identity
+    #         enabled: false
+    #         destinations:       # OTLP/HTTP collectors; signals go to <endpoint>/v1/{metrics,logs,traces}
+    #           - endpoint: "https://otel-collector.example.com"
+    #             headers:
+    #               authorization: "env.OTEL_COLLECTOR_TOKEN"   # values must be env. or vault. references
+    #         dropAttributes: []  # e.g. ["prompt"] to strip prompt text before forwarding
 
   # Server configuration
   server:

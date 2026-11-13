@@ -567,6 +567,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
 			return
 		}
+		if isAuthBypassed(ctx) && clientGatewayTelemetryDestinationsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
+			return
+		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
 			if uri == configstoreTables.AllowAnyRedirectURI {
 				continue
@@ -602,6 +606,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if effectiveOAuth2Config.AnyClientGatewayEnabled() &&
 		(!effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when a client gateway (oauth2_server_config.gateways) is enabled")
+		return
+	}
+	if err := effectiveOAuth2Config.ValidateClientGateways(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1836,4 +1844,32 @@ func effectiveGlobalProxyType(t network.GlobalProxyType) network.GlobalProxyType
 		return network.GlobalProxyTypeHTTP
 	}
 	return t
+}
+
+// clientGatewayTelemetryDestinationsChanged reports whether the Claude Code telemetry
+// destinations differ: any endpoint or header whose value, reference or type changed.
+func clientGatewayTelemetryDestinationsChanged(before, after *configstoreTables.OAuth2ServerConfig) bool {
+	b, a := clientGatewayTelemetryDestinations(before), clientGatewayTelemetryDestinations(after)
+	if len(b) != len(a) {
+		return true
+	}
+	for i := range b {
+		if !b[i].Endpoint.Equals(a[i].Endpoint) || len(b[i].Headers) != len(a[i].Headers) {
+			return true
+		}
+		for name, v := range b[i].Headers {
+			if w, ok := a[i].Headers[name]; !ok || !v.Equals(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func clientGatewayTelemetryDestinations(c *configstoreTables.OAuth2ServerConfig) []configstoreTables.ClientGatewayTelemetryDestination {
+	cc := c.ClaudeCodeGateway()
+	if cc == nil || cc.Telemetry == nil {
+		return nil
+	}
+	return cc.Telemetry.Destinations
 }

@@ -2,6 +2,8 @@ package tables
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -109,8 +111,74 @@ type ClientGatewaysConfig struct {
 // to every signed-in client; nil means no managed policy (the endpoint answers
 // 404), while an empty object is an empty policy.
 type ClaudeCodeGatewayConfig struct {
-	Enabled         bool           `json:"enabled"`
-	ManagedSettings map[string]any `json:"managed_settings"` // no omitempty: {} (empty policy) must survive a round trip
+	Enabled         bool                          `json:"enabled"`
+	ManagedSettings map[string]any                `json:"managed_settings"` // no omitempty: {} (empty policy) must survive a round trip
+	Telemetry       *ClientGatewayTelemetryConfig `json:"telemetry,omitempty"`
+}
+
+// ClientGatewayTelemetryConfig keeps the OTLP telemetry a client gateway's
+// clients send (metrics, logs and traces) instead of discarding it. Each export
+// is stamped with the Bifrost identity the client signed in as and forwarded
+// asynchronously to every destination. DropAttributes lists attribute keys
+// removed at every level before forwarding (for example "prompt", when clients
+// are configured to log prompt text).
+type ClientGatewayTelemetryConfig struct {
+	Enabled        bool                                `json:"enabled"`
+	Destinations   []ClientGatewayTelemetryDestination `json:"destinations,omitempty"`
+	DropAttributes []string                            `json:"drop_attributes,omitempty"`
+}
+
+// ClientGatewayTelemetryDestination is one OTLP/HTTP collector. Endpoint is the
+// collector's base URL; each signal is posted as protobuf to
+// {endpoint}/v1/{metrics|logs|traces}, as OTEL_EXPORTER_OTLP_ENDPOINT works.
+// Header values must be env. or vault. references, so no collector credential
+// is stored in the config or returned by the config API.
+type ClientGatewayTelemetryDestination struct {
+	Endpoint *schemas.SecretVar            `json:"endpoint"`
+	Headers  map[string]*schemas.SecretVar `json:"headers,omitempty"`
+}
+
+// TelemetryEnabled reports whether this gateway forwards telemetry.
+func (c *ClaudeCodeGatewayConfig) TelemetryEnabled() bool {
+	return c != nil && c.Telemetry != nil && c.Telemetry.Enabled
+}
+
+// Validate checks a telemetry block that is switched on: at least one
+// destination, every endpoint an http(s) URL once resolved, and every header
+// value an env. or vault. reference. A switched-off block is not checked, so an
+// operator can keep destinations around while forwarding is paused.
+func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+	if len(c.Destinations) == 0 {
+		return fmt.Errorf("%s.destinations must list at least one collector when telemetry is enabled", path)
+	}
+	for i, d := range c.Destinations {
+		if d.Endpoint == nil || !d.Endpoint.IsSet() {
+			return fmt.Errorf("%s.destinations[%d].endpoint is required", path, i)
+		}
+		if !d.Endpoint.IsFromSecret() {
+			u, err := url.Parse(strings.TrimSpace(d.Endpoint.GetValue()))
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("%s.destinations[%d].endpoint must be an http or https URL", path, i)
+			}
+		}
+		for name, v := range d.Headers {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("%s.destinations[%d].headers has an empty header name", path, i)
+			}
+			if v == nil || !v.IsFromSecret() {
+				return fmt.Errorf("%s.destinations[%d].headers.%s must be an env. or vault. reference, so the credential is not stored in the config", path, i, name)
+			}
+		}
+	}
+	for _, key := range c.DropAttributes {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s.drop_attributes has an empty attribute key", path)
+		}
+	}
+	return nil
 }
 
 // ClaudeCodeGateway returns the Claude Code gateway block, or nil when it is unset.
@@ -132,6 +200,52 @@ func (c *OAuth2ServerConfig) IsClaudeCodeGatewayEnabled() bool {
 // so whether IssuerURL is required on that account.
 func (c *OAuth2ServerConfig) AnyClientGatewayEnabled() bool {
 	return c.IsClaudeCodeGatewayEnabled()
+}
+
+// Redacted returns c with every client gateway telemetry credential fully
+// masked: header values, and an endpoint that comes from env or vault. The
+// references stay visible, so the dashboard can show and save them unchanged
+// (an env or vault value is re-resolved from its reference when read back).
+// The copy shares nothing mutable with c; c is returned as is when it holds no
+// telemetry.
+func (c *OAuth2ServerConfig) Redacted() *OAuth2ServerConfig {
+	cc := c.ClaudeCodeGateway()
+	if cc == nil || cc.Telemetry == nil {
+		return c
+	}
+	telemetry := *cc.Telemetry
+	telemetry.Destinations = make([]ClientGatewayTelemetryDestination, len(cc.Telemetry.Destinations))
+	for i, d := range cc.Telemetry.Destinations {
+		redacted := ClientGatewayTelemetryDestination{Endpoint: d.Endpoint}
+		if d.Endpoint.IsFromSecret() {
+			redacted.Endpoint = d.Endpoint.FullyRedacted()
+		}
+		if d.Headers != nil {
+			redacted.Headers = make(map[string]*schemas.SecretVar, len(d.Headers))
+			for name, v := range d.Headers {
+				redacted.Headers[name] = v.FullyRedacted()
+			}
+		}
+		telemetry.Destinations[i] = redacted
+	}
+	claudeCode := *cc
+	claudeCode.Telemetry = &telemetry
+	gateways := *c.Gateways
+	gateways.ClaudeCode = &claudeCode
+	out := *c
+	out.Gateways = &gateways
+	return &out
+}
+
+// ValidateClientGateways checks every client gateway block. IssuerURL is checked
+// by the callers, which word that error for their own surface.
+func (c *OAuth2ServerConfig) ValidateClientGateways() error {
+	if cc := c.ClaudeCodeGateway(); cc != nil {
+		if err := cc.Telemetry.Validate("oauth2_server_config.gateways.claude_code.telemetry"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DefaultOAuth2ServerConfig returns sensible defaults for the AS-specific settings.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
 	"math"
 	"net/url"
 	"slices"
@@ -622,6 +623,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 				hash.Write([]byte("gateways.claude_code.managed_settings:"))
 				hash.Write(settings)
 			}
+			if t := cc.Telemetry; t != nil {
+				hash.Write([]byte("gateways.claude_code.telemetry.enabled:" + strconv.FormatBool(t.Enabled)))
+				for _, d := range t.Destinations {
+					hash.Write([]byte("gateways.claude_code.telemetry.endpoint:" + secretVarHashForm(d.Endpoint)))
+					names := slices.Sorted(maps.Keys(d.Headers))
+					for _, name := range names {
+						hash.Write([]byte("gateways.claude_code.telemetry.header:" + name + "=" + secretVarHashForm(d.Headers[name])))
+					}
+				}
+				for _, key := range t.DropAttributes {
+					hash.Write([]byte("gateways.claude_code.telemetry.drop:" + key))
+				}
+			}
 		}
 	}
 
@@ -692,6 +706,7 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
 	}
+	out.OAuth2ServerConfig = c.OAuth2ServerConfig.Redacted()
 	return out
 }
 
@@ -2971,4 +2986,17 @@ func ValidatePublicBaseURL(value string) error {
 		return fmt.Errorf("must not contain userinfo, query, or fragment components")
 	}
 	return nil
+}
+
+// secretVarHashForm is the form of a SecretVar that goes into the config hash:
+// the reference for an env or vault value (so a changed environment does not
+// look like a changed config), the plain value otherwise.
+func secretVarHashForm(v *schemas.SecretVar) string {
+	if v == nil {
+		return ""
+	}
+	if v.IsFromSecret() {
+		return "ref:" + v.GetRawRef()
+	}
+	return "val:" + v.GetValue()
 }

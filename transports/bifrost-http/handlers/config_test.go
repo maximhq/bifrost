@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -643,6 +644,69 @@ func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, body.Response.StatusCode(), string(body.Response.Body()))
 	assert.False(t, cfg.ShouldSendExtraFieldsInHeaders())
 	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryDestinations pins that a caller admitted with
+// auth bypassed may resend the Claude Code telemetry destinations but not change them,
+// since a destination decides where its env or vault header values are sent.
+func TestUpdateConfig_ClientGatewayTelemetryDestinations(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "otel-token")
+	t.Setenv("BIFROST_TEST_SERVER_SECRET", "server-secret")
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	body := func(endpoint, header string, enabled bool) string {
+		return `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"managed_settings":null,"telemetry":{"enabled":` +
+			strconv.FormatBool(enabled) + `,"destinations":[{"endpoint":"` + endpoint + `","headers":{"authorization":"` + header + `"}}]}}}}}}`
+	}
+	endpoint := func() string {
+		t.Helper()
+		return cfg.ClientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0].Endpoint.GetValue()
+	}
+
+	set := putConfigCtx(body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true))
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+
+	for name, b := range map[string]string{
+		"resent unchanged": body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true),
+		"paused":           body("https://otel.example.com", "env.BIFROST_TEST_OTEL_TOKEN", false),
+	} {
+		ok := putConfigCtx(b)
+		ok.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(ok)
+		require.Equal(t, fasthttp.StatusOK, ok.Response.StatusCode(), name+": "+string(ok.Response.Body()))
+	}
+
+	for name, b := range map[string]string{
+		"new endpoint": body("https://attacker.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true),
+		"new header":   body("https://otel.example.com", "env.BIFROST_TEST_SERVER_SECRET", true),
+	} {
+		changed := putConfigCtx(b)
+		changed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(changed)
+		require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), name+": "+string(changed.Response.Body()))
+		assert.Contains(t, string(changed.Response.Body()), "telemetry destinations requires an authenticated admin session")
+		assert.Equal(t, "https://otel.example.com", endpoint(), name)
+	}
+
+	// A plain header holding the text of a reference, stored while telemetry is paused, must
+	// not let a bypassed caller swap in the real reference: the source type is compared too.
+	plain := `{"client_config":{"log_retention_days":8,"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"managed_settings":null,"telemetry":{"enabled":false,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":{"value":"env.BIFROST_TEST_SERVER_SECRET","ref":"","type":"plain"}}}]}}}}}}`
+	stored := putConfigCtx(plain)
+	h.updateConfig(stored)
+	require.Equal(t, fasthttp.StatusOK, stored.Response.StatusCode(), string(stored.Response.Body()))
+	swapped := putConfigCtx(body("https://otel.example.com", "env.BIFROST_TEST_SERVER_SECRET", true))
+	swapped.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(swapped)
+	require.Equal(t, fasthttp.StatusForbidden, swapped.Response.StatusCode(), string(swapped.Response.Body()))
+
+	admin := putConfigCtx(body("https://otel2.example.com", "env.BIFROST_TEST_OTEL_TOKEN", true))
+	h.updateConfig(admin)
+	require.Equal(t, fasthttp.StatusOK, admin.Response.StatusCode(), string(admin.Response.Body()))
+	assert.Equal(t, "https://otel2.example.com", endpoint())
 }
 
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles

@@ -1699,7 +1699,22 @@
 		"issuerRequired": "Укажите URL издателя, прежде чем включать вход из Claude Code.",
 		"invalidJSON": "Управляемые настройки должны быть корректным JSON.",
 		"notObject": "Управляемые настройки должны быть объектом JSON.",
-		"updated": "Настройки Claude Code обновлены."
+		"updated": "Настройки Claude Code обновлены.",
+		"telemetryLabel": "Пересылать телеметрию",
+		"telemetryDescription": "Claude Code отправляет в шлюз свои метрики, журналы и трассировки OpenTelemetry. Если параметр включён, Bifrost помечает каждую выгрузку удостоверением разработчика (виртуальный ключ, команда, клиент или учётная запись) и пересылает её в ваши коллекторы OTLP/HTTP. Если выключен, выгрузки отбрасываются.",
+		"collectorsLabel": "Коллекторы",
+		"collectorEndpointLabel": "Адрес коллектора",
+		"collectorHeadersLabel": "Заголовки коллектора",
+		"collectorHeadersHelp": "Значения заголовков должны быть ссылками env. или vault., чтобы учётные данные не хранились в конфигурации.",
+		"addCollector": "Добавить коллектор",
+		"removeCollector": "Удалить коллектор",
+		"dropAttributesLabel": "Удаляемые атрибуты",
+		"dropAttributesHelp": "Ключи атрибутов через запятую, которые удаляются на всех уровнях перед пересылкой, например <code0>prompt</code0>.",
+		"telemetryNoDestination": "Добавьте хотя бы один коллектор, чтобы пересылать телеметрию.",
+		"telemetryEndpointInvalid": "Адрес каждого коллектора должен быть URL http или https либо ссылкой env. или vault.",
+		"telemetryHeaderMalformed": "Укажите имя и значение для каждого заголовка коллектора.",
+		"telemetryHeaderConflict": "У одного коллектора два заголовка с одинаковым именем. Переименуйте или удалите один из них.",
+		"telemetryHeaderNotReference": "Заголовок {{name}} должен быть ссылкой env. или vault."
 	},
 	"gateways": {
 		"title": "Шлюзы",

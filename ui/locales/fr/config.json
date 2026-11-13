@@ -1651,7 +1651,22 @@
 		"issuerRequired": "Définissez l’URL de l’émetteur avant d’activer la connexion Claude Code.",
 		"invalidJSON": "Les paramètres gérés doivent être du JSON valide.",
 		"notObject": "Les paramètres gérés doivent être un objet JSON.",
-		"updated": "Paramètres Claude Code mis à jour."
+		"updated": "Paramètres Claude Code mis à jour.",
+		"telemetryLabel": "Transférer la télémétrie",
+		"telemetryDescription": "Claude Code envoie ses métriques, journaux et traces OpenTelemetry à la passerelle. Lorsque cette option est activée, Bifrost marque chaque export avec l’identité du développeur (clé virtuelle, équipe, client ou compte) et le transfère à vos collecteurs OTLP/HTTP. Lorsqu’elle est désactivée, les exports sont ignorés.",
+		"collectorsLabel": "Collecteurs",
+		"collectorEndpointLabel": "Point de terminaison du collecteur",
+		"collectorHeadersLabel": "En-têtes du collecteur",
+		"collectorHeadersHelp": "Les valeurs doivent être des références env. ou vault., afin qu’aucun identifiant ne soit stocké dans la configuration.",
+		"addCollector": "Ajouter un collecteur",
+		"removeCollector": "Supprimer le collecteur",
+		"dropAttributesLabel": "Attributs à supprimer",
+		"dropAttributesHelp": "Clés d’attribut séparées par des virgules, supprimées à tous les niveaux avant le transfert, par exemple <code0>prompt</code0>.",
+		"telemetryNoDestination": "Ajoutez au moins un collecteur pour transférer la télémétrie.",
+		"telemetryEndpointInvalid": "Chaque point de terminaison de collecteur doit être une URL http ou https, ou une référence env. ou vault.",
+		"telemetryHeaderMalformed": "Indiquez un nom et une valeur pour chaque en-tête du collecteur.",
+		"telemetryHeaderConflict": "Deux en-têtes d’un même collecteur portent le même nom. Renommez-en un ou supprimez-le.",
+		"telemetryHeaderNotReference": "L’en-tête {{name}} doit être une référence env. ou vault."
 	},
 	"gateways": {
 		"title": "Passerelles",

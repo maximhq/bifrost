@@ -1622,7 +1622,22 @@
 		"issuerRequired": "Imposta l’URL dell’emittente prima di abilitare l’accesso da Claude Code.",
 		"invalidJSON": "Le impostazioni gestite devono essere JSON valido.",
 		"notObject": "Le impostazioni gestite devono essere un oggetto JSON.",
-		"updated": "Impostazioni di Claude Code aggiornate correttamente."
+		"updated": "Impostazioni di Claude Code aggiornate correttamente.",
+		"telemetryLabel": "Inoltra la telemetria",
+		"telemetryDescription": "Claude Code invia al gateway metriche, log e tracce OpenTelemetry. Quando questa opzione è attiva, Bifrost contrassegna ogni esportazione con l’identità dello sviluppatore (chiave virtuale, team, cliente o account) e la inoltra ai tuoi collector OTLP/HTTP. Quando è disattivata, le esportazioni vengono scartate.",
+		"collectorsLabel": "Collector",
+		"collectorEndpointLabel": "Endpoint del collector",
+		"collectorHeadersLabel": "Header del collector",
+		"collectorHeadersHelp": "I valori devono essere riferimenti env. o vault., così nessuna credenziale viene salvata nella configurazione.",
+		"addCollector": "Aggiungi collector",
+		"removeCollector": "Rimuovi collector",
+		"dropAttributesLabel": "Attributi da rimuovere",
+		"dropAttributesHelp": "Chiavi di attributo separate da virgole, rimosse a ogni livello prima dell’inoltro, ad esempio <code0>prompt</code0>.",
+		"telemetryNoDestination": "Aggiungi almeno un collector per inoltrare la telemetria.",
+		"telemetryEndpointInvalid": "Ogni endpoint del collector deve essere un URL http o https, oppure un riferimento env. o vault.",
+		"telemetryHeaderMalformed": "Indica un nome e un valore per ogni header del collector.",
+		"telemetryHeaderConflict": "Due header dello stesso collector hanno lo stesso nome. Rinominane uno o rimuovilo.",
+		"telemetryHeaderNotReference": "L’header {{name}} deve essere un riferimento env. o vault."
 	},
 	"gateways": {
 		"title": "Gateway",
