@@ -1454,3 +1454,68 @@ model-router-status-retry:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+model-router-classify:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: classifyWithModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Classify statements with a model router
+    description: |
+      Classifies up to 100 statements with one model router as it is served now, and returns the complexity tier each one gets. Each statement is classified as the latest user turn of a chat request, through the same input extraction, classifier, and fallback chain as live traffic.
+
+      Nothing is saved. No session tier is read or changed, and the statements are not captured for phrase suggestions. A router whose classifier is the decision model, or that falls back to the decision model or the LLM classifier, makes one model call per statement that reaches it, billed like any routing call.
+
+      Label statements with `expected_tier` to score a dataset: the summary then reports accuracy over the labelled statements and a confusion matrix. Send a larger dataset in pages of 100.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterClassifyRequest'
+          example:
+            inputs:
+              - id: row-1
+                text: what time is it in Tokyo?
+                expected_tier: SIMPLE
+              - id: row-2
+                text: now add retries with exponential backoff to the upload client
+                previous_user_messages:
+                  - here is our S3 upload client in Go
+                expected_tier: MEDIUM
+    responses:
+      '200':
+        description: One classification per statement, in input order, and a summary
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterClassifyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        description: Classification is not available on this deployment, the routing plugin is not loaded, or classifying failed for another reason; the message says which.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'

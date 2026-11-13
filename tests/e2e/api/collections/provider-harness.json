@@ -320142,6 +320142,160 @@
           }
         }
       ]
+    },
+    {
+      "name": "328. Model router classify API: tiers for a labelled dataset (model router classify)",
+      "description": "POST /api/routing/model-routers/{router_id}/classify classifies a page of statements with a model router as it is served now and returns the tier each gets, so a router's configuration can be checked against a dataset. Each statement is classified as the latest user turn of a chat request, through the same input extraction, classifier and fallback chain as live traffic, without reading or moving a session and without capturing the statement for phrase suggestions.\n\nThe prerequest creates a temporary model router whose classifier is typesafe/jev-latest. No routing rule names it, so it routes nothing. The request classifies three labelled statements, one with a previous user turn. The test pins the wire contract: results come back in input order with id, text and the upper-cased label echoed; the decision model answered every statement with a tier and is named; correct matches tier == expected_tier; and the summary's tier counts, labelled and correct counts, accuracy and confusion matrix agree with the results. Which tier the model picks is not asserted. It then checks the refusals (404 for an unknown router, 400 for a label that is not a tier, a misspelled field, an empty page, and more than 100 statements) and deletes the router on every path. It makes three paid typesafe decision calls.",
+      "item": [
+        {
+          "name": "typesafe/jev-latest decision model router classifies a labelled page via POST /api/routing/model-routers/{id}/classify - model router classify",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: typeof body === 'string' ? body : JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "// A router no rule names, so it routes nothing; the test script deletes it on every path.",
+                  "pm.collectionVariables.set('classifyRouterId', 'harness-classify-not-created');",
+                  "var router = {",
+                  "  name: 'Harness classify ' + Date.now(),",
+                  "  classifier: 'decision',",
+                  "  keywords: { simple_keywords: ['a greeting or a one-word fact'], medium_keywords: ['write or fix one function'], complex_keywords: ['design a distributed system with tradeoffs'] },",
+                  "  decision: { provider: 'typesafe', model: 'jev-latest', timeout: '10s' }",
+                  "};",
+                  "call('POST', '/api/routing/model-routers', router, function (res, json) {",
+                  "  pm.test('setup: the temporary decision-model router is created', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  if (res && res.code === 200 && json && json.id) { pm.collectionVariables.set('classifyRouterId', json.id); }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: typeof body === 'string' ? body : JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "var ROUTER = pm.collectionVariables.get('classifyRouterId');",
+                  "var TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX'];",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('classify answers 200 with one result per statement', function () {",
+                  "  pm.expect(pm.response.code, 'classify failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(body && body.results, pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "});",
+                  "if (body && body.results && body.results.length === 3) {",
+                  "  pm.test('the router is named and its classifier is the decision model', function () {",
+                  "    pm.expect(body.router_id, pm.response.text()).to.eql(ROUTER);",
+                  "    pm.expect(body.classifier, pm.response.text()).to.eql('decision');",
+                  "  });",
+                  "  pm.test('results keep input order and echo id, text and the normalised label', function () {",
+                  "    var ids = ['greeting', 'function', 'design'];",
+                  "    var labels = ['SIMPLE', 'MEDIUM', 'COMPLEX'];",
+                  "    body.results.forEach(function (r, i) {",
+                  "      pm.expect(r.index, JSON.stringify(r)).to.eql(i);",
+                  "      pm.expect(r.id, JSON.stringify(r)).to.eql(ids[i]);",
+                  "      pm.expect(r.text, JSON.stringify(r)).to.be.a('string').and.not.empty;",
+                  "      pm.expect(r.expected_tier, JSON.stringify(r)).to.eql(labels[i]);",
+                  "      pm.expect(r.trace, JSON.stringify(r)).to.be.an('array');",
+                  "    });",
+                  "  });",
+                  "  pm.test('typesafe/jev-latest answered every statement with a tier', function () {",
+                  "    body.results.forEach(function (r) {",
+                  "      pm.expect(r.mechanism, 'no decision answer: ' + JSON.stringify(r)).to.eql('decision');",
+                  "      pm.expect(TIERS, 'not a tier: ' + JSON.stringify(r)).to.include(r.tier);",
+                  "      pm.expect(r.model, JSON.stringify(r)).to.eql('typesafe/jev-latest');",
+                  "      pm.expect(r.correct, JSON.stringify(r)).to.eql(r.tier === r.expected_tier);",
+                  "    });",
+                  "  });",
+                  "  pm.test('the summary adds up', function () {",
+                  "    var s = body.summary || {};",
+                  "    var correct = body.results.filter(function (r) { return r.correct === true; }).length;",
+                  "    pm.expect(s.total, JSON.stringify(s)).to.eql(3);",
+                  "    pm.expect(s.labeled, JSON.stringify(s)).to.eql(3);",
+                  "    pm.expect(s.correct, JSON.stringify(s)).to.eql(correct);",
+                  "    pm.expect(s.accuracy, JSON.stringify(s)).to.be.closeTo(correct / 3, 1e-9);",
+                  "    var tierSum = 0; Object.keys(s.tiers || {}).forEach(function (k) { tierSum += s.tiers[k]; });",
+                  "    pm.expect(tierSum, JSON.stringify(s)).to.eql(3);",
+                  "    pm.expect(s.tiers.UNCLASSIFIED, JSON.stringify(s)).to.eql(0);",
+                  "    var cells = 0; Object.keys(s.confusion || {}).forEach(function (e) { Object.keys(s.confusion[e]).forEach(function (g) { cells += s.confusion[e][g]; }); });",
+                  "    pm.expect(cells, JSON.stringify(s)).to.eql(3);",
+                  "  });",
+                  "}",
+                  "// Refusals, then the router is deleted whatever happened above.",
+                  "var tooMany = []; for (var i = 0; i < 101; i++) { tooMany.push({ text: 'hi' }); }",
+                  "var probes = [",
+                  "  { label: 'an unknown router is 404', path: '/api/routing/model-routers/harness-no-such-router/classify', body: { inputs: [{ text: 'hi' }] }, status: 404 },",
+                  "  { label: 'an expected_tier that is not a tier is 400', path: '/api/routing/model-routers/' + ROUTER + '/classify', body: { inputs: [{ text: 'hi', expected_tier: 'HARD' }] }, status: 400 },",
+                  "  { label: 'a misspelled field is 400, not silently dropped', path: '/api/routing/model-routers/' + ROUTER + '/classify', body: '{\"inputs\":[{\"text\":\"hi\",\"expected_teir\":\"SIMPLE\"}]}', status: 400 },",
+                  "  { label: 'an empty page is 400', path: '/api/routing/model-routers/' + ROUTER + '/classify', body: { inputs: [] }, status: 400 },",
+                  "  { label: 'a page over 100 statements is 400', path: '/api/routing/model-routers/' + ROUTER + '/classify', body: { inputs: tooMany }, status: 400 }",
+                  "];",
+                  "(function next(i) {",
+                  "  if (i >= probes.length) {",
+                  "    if (ROUTER === 'harness-classify-not-created') { return; }",
+                  "    return call('DELETE', '/api/routing/model-routers/' + ROUTER, null, function (res) {",
+                  "      pm.test('cleanup: the temporary router is deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "    });",
+                  "  }",
+                  "  var p = probes[i];",
+                  "  call('POST', p.path, p.body, function (res) {",
+                  "    pm.test('refusal: ' + p.label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(p.status); });",
+                  "    next(i + 1);",
+                  "  });",
+                  "})(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputs\": [\n    {\n      \"id\": \"greeting\",\n      \"text\": \"hi, thanks!\",\n      \"expected_tier\": \"simple\"\n    },\n    {\n      \"id\": \"function\",\n      \"text\": \"Write a Python function that reverses a singly linked list.\",\n      \"expected_tier\": \"MEDIUM\"\n    },\n    {\n      \"id\": \"design\",\n      \"text\": \"Now design the sharding, replication and failover strategy, with the tradeoffs of each option.\",\n      \"previous_user_messages\": [\n        \"We run a Postgres cluster that takes 50k writes per second across three regions.\"\n      ],\n      \"expected_tier\": \"COMPLEX\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/model-routers/{{classifyRouterId}}/classify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "model-routers",
+                "{{classifyRouterId}}",
+                "classify"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

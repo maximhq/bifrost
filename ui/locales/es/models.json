@@ -2390,6 +2390,7 @@
 				"overview": "Resumen",
 				"models": "Modelos",
 				"routing": "Enrutamiento",
+				"test": "Probar",
 				"suggestions": "Sugerencias",
 				"unsaved": "Cambios sin guardar"
 			},
@@ -2418,7 +2419,10 @@
 					"classifierPending": "Configura el clasificador para que el enrutador pueda ordenar las solicitudes.",
 					"modelsDone": "Todos los niveles tienen un modelo.",
 					"modelsPending": "Un nivel sin modelo conserva el modelo indicado en la solicitud.",
-					"pickModels": "Elegir modelos"
+					"pickModels": "Elegir modelos",
+					"test": "Probar una solicitud",
+					"testDetail": "Opcional. Revisa algunas solicitudes antes de enviar tráfico.",
+					"testAction": "Probar"
 				},
 				"facts": {
 					"notConfigured": "Aún sin configurar",
@@ -2464,6 +2468,24 @@
 				"conditionHelp": "Déjala vacía para tomar todas las solicitudes del ámbito. Compara el campo de modelo para que las apps pidan este enrutador por su nombre. El nivel no se puede usar aquí: el enrutador lo decide después de tomar la solicitud.",
 				"saved": "Enrutamiento guardado",
 				"saveFailed": "No se pudo guardar el enrutamiento: {{error}}"
+			},
+			"test": {
+				"description": "Clasifica solicitudes de ejemplo con el router tal como se sirve ahora, para comprobar qué nivel y qué modelo recibiría cada una. No se guarda nada.",
+				"placeholder": "Una solicitud por línea. Empieza una línea con SIMPLE:, MEDIUM: o COMPLEX: para comprobar el nivel que debería recibir.",
+				"run_one": "Clasificar {{count}} solicitud",
+				"run_other": "Clasificar {{count}} solicitudes",
+				"hint": "Un router con modelo de decisión o LLM hace una llamada al modelo por solicitud.",
+				"tooMany": "Clasifica como máximo {{max}} solicitudes a la vez.",
+				"failed": "La clasificación falló: {{error}}",
+				"unclassified": "Sin nivel",
+				"accuracy": "{{correct}} de {{labeled}} solicitudes etiquetadas recibieron el nivel esperado",
+				"columnStatement": "Solicitud",
+				"columnTier": "Nivel",
+				"columnHow": "Decidido por",
+				"columnRoutesTo": "Se enruta a",
+				"correct": "Nivel esperado",
+				"expected": "se esperaba {{tier}}",
+				"keepsModel": "Mantiene el modelo de la solicitud"
 			}
 		}
 	},

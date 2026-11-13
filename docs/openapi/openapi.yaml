@@ -1218,6 +1218,8 @@ paths:
     $ref: "./paths/management/routing.yaml#/model-router-status"
   /api/routing/model-routers/{router_id}/status/retry:
     $ref: "./paths/management/routing.yaml#/model-router-status-retry"
+  /api/routing/model-routers/{router_id}/classify:
+    $ref: "./paths/management/routing.yaml#/model-router-classify"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:
