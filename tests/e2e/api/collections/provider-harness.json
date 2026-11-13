@@ -321229,6 +321229,83 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Log list stop reason (#9846)",
+      "description": "The logs table can show stop reason only if GET /api/logs returns it. The list SELECT omitted stop_reason even though it was stored and filterable. Seed a small OpenAI chat completion, then poll the flat list by its exact request ID and the grouped list by model and timestamp without request_id, comparing stop_reason with the response finish_reason. Red before the list projection fix, green after; requires logging and access to management log APIs. No provider conversion changes are involved.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log list stop reason preserves finish_reason - #9846",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('log list stop reason: seed succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var expected = pm.response.json().choices[0].finish_reason;",
+                  "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('log list stop reason: seed carries finish reason and request id', function () {",
+                  "  pm.expect(expected, raw).to.be.a('string').and.not.empty;",
+                  "  pm.expect(requestId, raw).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function checkList(grouped, attempt, seed) {",
+                  "  var query = 'request_id=' + encodeURIComponent(requestId);",
+                  "  if (grouped) {",
+                  "    var timestamp = new Date(seed.timestamp).getTime();",
+                  "    query = 'models=' + encodeURIComponent(seed.model) + '&start_time=' + encodeURIComponent(new Date(timestamp - 1000).toISOString()) + '&end_time=' + encodeURIComponent(new Date(timestamp + 1000).toISOString());",
+                  "  }",
+                  "  var url = pm.variables.get('baseUrl') + '/api/logs?' + query + '&limit=100&roots_only=' + grouped;",
+                  "  pm.sendRequest({url: url, method: 'GET'}, function (err, res) {",
+                  "    pm.test('log list stop reason: list responds (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    var logs = res.json().logs || [];",
+                  "    var row = logs.filter(function (log) { return log.id === requestId; })[0];",
+                  "    // Only wait for the asynchronous writer; a terminal row missing stop_reason fails immediately.",
+                  "    if ((!row || row.status === 'processing') && attempt < 10) {",
+                  "      setTimeout(function () { checkList(grouped, attempt + 1, seed); }, 1000);",
+                  "      return;",
+                  "    }",
+                  "    pm.test('log list stop reason: persisted reason survives projection (grouped=' + grouped + ')', function () {",
+                  "      pm.expect(row, res.text()).to.be.an('object');",
+                  "      pm.expect(row.stop_reason, res.text()).to.equal(expected);",
+                  "    });",
+                  "    if (!grouped && row && row.status !== 'processing') { checkList(true, 0, row); }",
+                  "  });",
+                  "}",
+                  "checkList(false, 0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }
