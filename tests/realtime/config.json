@@ -92,6 +92,36 @@
       "network_config": {
         "default_request_timeout_in_seconds": 60
       }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "gemini",
+          "value": "env.GEMINI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["gemini-3.8-live"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
     }
   },
   "config_store": {
