@@ -521,6 +521,7 @@ type tracingKeyPayload struct {
 	VirtualKeyIDs     []string `json:"virtual_key_ids"`
 	LogContent        *bool    `json:"log_content"`
 	CanCreateProjects bool     `json:"can_create_projects"`
+	CanReadPrompts    bool     `json:"can_read_prompts"`
 	Enabled           *bool    `json:"enabled"`
 }
 
@@ -552,7 +553,7 @@ func (h *TracesHandler) validateKey(ctx context.Context, payload *tracingKeyPayl
 
 func (p *tracingKeyPayload) apply(key *tables.TableTracingKey) {
 	key.Name, key.ProjectIDs, key.DefaultProjectID, key.VirtualKeyIDs = p.Name, p.ProjectIDs, p.DefaultProjectID, p.VirtualKeyIDs
-	key.CanCreateProjects = p.CanCreateProjects
+	key.CanCreateProjects, key.CanReadPrompts = p.CanCreateProjects, p.CanReadPrompts
 	key.LogContent = p.LogContent == nil || *p.LogContent
 	key.Enabled = p.Enabled == nil || *p.Enabled
 }
