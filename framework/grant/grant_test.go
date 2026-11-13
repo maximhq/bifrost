@@ -14,7 +14,7 @@ import (
 // grantSections builds one value of each section, for tests that need something to record.
 func grantSections() (*Identity, *Access, *Limits) {
 	identity := NewIdentity(NewCredential(CredentialVirtualKey, "sk-1"), nil, nil, nil, nil, nil, nil)
-	access := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), nil, "", nil)
+	access := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), "", nil, "", nil)
 	limits := NewLimits([]schemas.Limit{{ID: "b-1", HolderKind: string(LimitHolderVirtualKey), HolderID: "vk1"}}, nil)
 	return identity, access, limits
 }
@@ -42,7 +42,7 @@ func TestGrant_WhatIsRecordedIsWhatIsRead(t *testing.T) {
 	t.Run("re-recording replaces", func(t *testing.T) {
 		// Resolution runs once per attempt, but a caller that resolves again must not end up with
 		// two answers on one request.
-		second := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk2", "Other", "anthropic")), nil, "", nil)
+		second := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk2", "Other", "anthropic")), "", nil, "", nil)
 		assert.True(t, g.SetAccess(second))
 
 		read := g.Access()

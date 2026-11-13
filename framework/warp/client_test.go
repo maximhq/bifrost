@@ -189,7 +189,7 @@ func TestWarpChatStampsIdentityOnEveryCall(t *testing.T) {
 		// grant nothing resolved yet.
 		if g := ctx.Grant(); g != nil && g.Access() == nil {
 			ctx.SetValue(schemas.BifrostContextKeyUserName, "Suresh")
-			g.SetAccess(grant.NewAccess(nil, nil, grant.Union, nil))
+			g.SetAccess(grant.NewAccess(nil, "", nil, grant.Union, nil))
 		}
 		name, _ := ctx.Value(schemas.BifrostContextKeyUserName).(string)
 		stamped = append(stamped, name)

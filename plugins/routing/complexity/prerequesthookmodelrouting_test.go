@@ -504,7 +504,7 @@ func appSessionContext(sessionID, app string) *schemas.BifrostContext {
 // grantedAccess is the access of a request a virtual key granted the given
 // providers, which is what gives a request a governance scope.
 func grantedAccess(permits ...schemas.ProviderPermit) schemas.Access {
-	return grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, permits, nil)}, nil, grant.Union, nil)
+	return grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, permits, nil)}, "", nil, grant.Union, nil)
 }
 
 // scopedRequestContext returns a request context stamped with the governance
