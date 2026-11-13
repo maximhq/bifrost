@@ -5804,3 +5804,59 @@ func BenchmarkBasePathMiddleware(b *testing.B) {
 		}
 	})
 }
+
+// encodedTraversalPath is routed by fasthttp/router as one opaque segment of
+// /api/providers/{provider}, but ctx.Path() decodes it to the whitelisted
+// /api/skills/serve/x.
+const encodedTraversalPath = "/api/providers/..%2Fskills%2Fserve%2Fx"
+
+// TestPluginRequestPathIsRawPath verifies plugins receive the raw path the router
+// dispatched on, not the decoded and normalized ctx.Path(), so a plugin deciding by
+// path cannot be fooled by an encoded traversal.
+func TestPluginRequestPathIsRawPath(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI(encodedTraversalPath)
+	if got := string(ctx.Path()); got == encodedTraversalPath {
+		t.Fatalf("test premise broken: ctx.Path() did not normalize, got %q", got)
+	}
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if req.Path != encodedTraversalPath {
+		t.Errorf("fasthttpToHTTPRequest Path = %q, want raw %q", req.Path, encodedTraversalPath)
+	}
+
+	streamReq := lib.BuildHTTPRequestFromFastHTTP(ctx)
+	defer schemas.ReleaseHTTPRequest(streamReq)
+	if streamReq.Path != encodedTraversalPath {
+		t.Errorf("BuildHTTPRequestFromFastHTTP Path = %q, want raw %q", streamReq.Path, encodedTraversalPath)
+	}
+}
+
+// TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath verifies the plugin rewrite
+// check compares like with like: an encoded path no plugin touched is not mistaken
+// for a rewrite, while a real rewrite is still refused.
+func TestApplyHTTPRequestToCtxAcceptsUnchangedEncodedPath(t *testing.T) {
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(encodedTraversalPath)
+		return ctx
+	}
+
+	ctx := newCtx()
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+	if !applyHTTPRequestToCtx(ctx, req) {
+		t.Fatalf("unchanged encoded path was treated as a rewrite, status=%d", ctx.Response.StatusCode())
+	}
+
+	ctx = newCtx()
+	req.Path = "/api/skills/serve/x"
+	if applyHTTPRequestToCtx(ctx, req) {
+		t.Fatal("a plugin rewrite to the normalized path must be refused")
+	}
+}
