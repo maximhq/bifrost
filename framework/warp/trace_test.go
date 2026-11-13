@@ -2,11 +2,9 @@ package warp
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/require"
@@ -92,7 +90,7 @@ func TestWarpGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
 	require.Equal(t, false, out["truncated_chain"])
 	require.NotEmpty(t, out["link"])
 
-	nodes, ok := out["nodes"].([]traceNode)
+	nodes, ok := out["nodes"].([]logstore.TraceNode)
 	require.True(t, ok)
 	require.Len(t, nodes, 1)
 	node := nodes[0]
@@ -140,43 +138,6 @@ func TestWarpGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
 	require.InDelta(t, 1.5, node.OverheadBreakdown[0].DurationMs, 0.0001)
 }
 
-// Storage groups plugin logs by plugin name, which erases the order in which
-// two different plugins actually logged relative to each other - and even
-// within one node, capping each plugin's own group separately could return
-// more than MaxTraceLogLines lines in total. traceFromLog must flatten across
-// plugins, sort by when each line actually happened, and only then cap once
-// for the whole node.
-func TestWarpGetRequestTracePluginLogsOrderedAcrossPluginsAndCappedNodeWide(t *testing.T) {
-	base := int64(1700000000000)
-	grouped := map[string][]schemas.PluginLogEntry{}
-	// Two plugins, 15 lines each (30 total, comfortably over MaxTraceLogLines),
-	// interleaved one millisecond apart so the merged chronological order
-	// alternates between them rather than grouping one plugin's lines first.
-	for i := range 15 {
-		grouped["alpha"] = append(grouped["alpha"], schemas.PluginLogEntry{
-			PluginName: "alpha", Level: schemas.LogLevelInfo, Message: fmt.Sprintf("alpha-%d", i),
-			Timestamp: base + int64(i*2),
-		})
-		grouped["beta"] = append(grouped["beta"], schemas.PluginLogEntry{
-			PluginName: "beta", Level: schemas.LogLevelInfo, Message: fmt.Sprintf("beta-%d", i),
-			Timestamp: base + int64(i*2) + 1,
-		})
-	}
-	raw, err := sonic.Marshal(grouped)
-	require.NoError(t, err)
-
-	node := traceFromLog(&logstore.Log{ID: "req-plugin-logs", Timestamp: time.Now(), PluginLogs: string(raw)})
-
-	require.Len(t, node.PluginLogs, MaxTraceLogLines,
-		"the cap applies once across the whole node, not once per plugin, even though neither plugin alone exceeds it")
-	for i := 0; i < MaxTraceLogLines/2; i++ {
-		require.Equal(t, "alpha", node.PluginLogs[2*i].Plugin)
-		require.Equal(t, fmt.Sprintf("alpha-%d", i), node.PluginLogs[2*i].Message)
-		require.Equal(t, "beta", node.PluginLogs[2*i+1].Plugin)
-		require.Equal(t, fmt.Sprintf("beta-%d", i), node.PluginLogs[2*i+1].Message)
-	}
-}
-
 // Passing the id of a fallback hop, not the root, must still resolve and
 // return the whole chain - the model has no way to know in advance which one
 // a pasted or previously-seen id refers to.
@@ -212,7 +173,7 @@ func TestWarpGetRequestTraceResolvesFullChainFromAnyHop(t *testing.T) {
 	require.Equal(t, 2, out["chain_length"])
 	require.Equal(t, "success", out["final_status"], "the chain's last hop succeeded, and final_status should reflect that, not the root's own status")
 
-	nodes := out["nodes"].([]traceNode)
+	nodes := out["nodes"].([]logstore.TraceNode)
 	require.Len(t, nodes, 2)
 	require.Equal(t, "req-root", nodes[0].ID)
 	require.Equal(t, "req-fallback-1", nodes[1].ID)
