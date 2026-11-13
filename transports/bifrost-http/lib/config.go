@@ -4175,6 +4175,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// row is untouched and still valid, so their ID stays a legitimate reference.
 	skippedNewVirtualKeyIDs := make(map[string]bool)
 	for i, newVirtualKey := range configData.Governance.VirtualKeys {
+		// Resolve the default before copying into the merged in-memory config.
+		// The store normalizes its own copy, which does not update this snapshot.
+		if newVirtualKey.IsActive == nil {
+			newVirtualKey.IsActive = schemas.Ptr(true)
+			configData.Governance.VirtualKeys[i].IsActive = newVirtualKey.IsActive
+		}
 		fileVKHash, err := configstore.GenerateVirtualKeyHash(newVirtualKey)
 		if err != nil {
 			logger.Warn("failed to generate virtual key hash for %s: %v", newVirtualKey.ID, err)

@@ -1,3 +1,5 @@
+[fix]: keep virtual key active defaults consistent during config sync [@Constantine3](https://github.com/Constantine3)
+
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
@@ -14,4 +16,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. Each key repair commits separately; interrupted backfills resume on the next attempt. The migration is non-rollbackable, and reads normalize NULL values written by older replicas during rolling upgrades.

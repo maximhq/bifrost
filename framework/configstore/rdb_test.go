@@ -1648,6 +1648,34 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 	assert.Equal(t, "vk-lookup", result.ID)
 }
 
+func TestUpdateVirtualKeyDefaultsIsActive(t *testing.T) {
+	for _, stored := range []bool{true, false} {
+		for _, incoming := range []*bool{nil, schemas.Ptr(true), schemas.Ptr(false)} {
+			name := "omitted"
+			if incoming != nil {
+				name = fmt.Sprint(*incoming)
+			}
+			t.Run(fmt.Sprintf("stored=%t/incoming=%s", stored, name), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				ctx := context.Background()
+				vk := &tables.TableVirtualKey{
+					ID: "active-default", Name: "active-default",
+					Value: *schemas.NewSecretVar("bfvk-active-default"), IsActive: schemas.Ptr(stored),
+				}
+				require.NoError(t, store.CreateVirtualKey(ctx, vk))
+				vk.IsActive = incoming
+				vk.Description = "updated"
+				require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+				got, err := store.GetVirtualKey(ctx, vk.ID)
+				require.NoError(t, err)
+				want := incoming == nil || *incoming
+				assert.Equal(t, &want, got.IsActive)
+				assert.Equal(t, &want, vk.IsActive, "caller must see the persisted default")
+			})
+		}
+	}
+}
+
 func TestUpdateVirtualKey(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

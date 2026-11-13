@@ -4613,6 +4613,12 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		return s.parseGormError(err)
 	}
 
+	// Select(columns) below writes nil pointers as NULL instead of applying the
+	// create-time database default. Keep updates consistent with IsActiveValue.
+	if virtualKey.IsActive == nil {
+		virtualKey.IsActive = schemas.Ptr(true)
+	}
+
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 			return s.parseGormError(err)

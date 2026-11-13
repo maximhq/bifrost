@@ -598,6 +598,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
 	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
 	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
+	{IDs: []string{"normalize_virtual_key_is_active"}, run: migrationNormalizeVirtualKeyIsActive},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17381,4 +17382,63 @@ func migrationAddComplexitySuggestionSchedulesTable(ctx context.Context, db *gor
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationNormalizeVirtualKeyIsActive repairs NULL values written by config
+// sync. NULL already means active for enforcement and hashing, so neither the
+// config hash nor updated_at should change. Explicitly disabled keys stay false.
+func migrationNormalizeVirtualKeyIsActive(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "normalize_virtual_key_is_active"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	// Commit each repair independently. An outer transaction would retain all
+	// key locks and could deadlock with config sync updating keys in file order.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db.WithContext(ctx), &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(db *gorm.DB) error {
+			// Bound retained IDs and advance past each page even if an older
+			// replica writes NULL again. AfterFind supplies the effective default
+			// for writes that arrive after this one-time backfill.
+			const pageSize = 256
+			var after string
+			firstPage := true
+			for {
+				query := db.Table("governance_virtual_keys").Where("is_active IS NULL").Order("id").Limit(pageSize)
+				if !firstPage {
+					query = query.Where("id > ?", after)
+				}
+				var ids []string
+				if err := query.Pluck("id", &ids).Error; err != nil {
+					return err
+				}
+				if len(ids) == 0 {
+					return nil
+				}
+				for _, id := range ids {
+					if err := db.Transaction(func(tx *gorm.DB) error {
+						if err := setMigrationLockTimeout(tx); err != nil {
+							return err
+						}
+						// Recheck under the row lock so a concurrent disable wins.
+						return tx.Table("governance_virtual_keys").Where("id = ? AND is_active IS NULL", id).UpdateColumn("is_active", true).Error
+					}); err != nil {
+						return err
+					}
+				}
+				after = ids[len(ids)-1]
+				firstPage = false
+			}
+		},
+		Rollback: rollbackNormalizeVirtualKeyIsActive,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func rollbackNormalizeVirtualKeyIsActive(tx *gorm.DB) error {
+	return fmt.Errorf("normalize_virtual_key_is_active is non-rollbackable: repaired NULL values cannot be distinguished from explicitly active keys")
 }
