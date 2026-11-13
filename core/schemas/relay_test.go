@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,6 +79,58 @@ func TestRelayConfigValidate(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestRelayBodyOverridesValidate(t *testing.T) {
+	raw := func(v string) json.RawMessage { return json.RawMessage(v) }
+	cases := []struct {
+		name     string
+		endpoint map[string]json.RawMessage
+		route    map[string]json.RawMessage
+		wantErr  string
+	}{
+		{"top-level boolean", map[string]json.RawMessage{"include_usage": raw("true")}, nil, ""},
+		{"nested path and any JSON value", nil, map[string]json.RawMessage{"options.depth": raw(`"advanced"`), "limits": raw(`{"max":3}`), "tags": raw(`[1,2]`), "x": raw("null")}, ""},
+		{"value must be JSON", map[string]json.RawMessage{"depth": raw("advanced")}, nil, "body_overrides[depth]: the value must be JSON"},
+		{"empty value", nil, map[string]json.RawMessage{"depth": raw("  ")}, "routes[0].body_overrides[depth]"},
+		{"empty segment", map[string]json.RawMessage{"a..b": raw("1")}, nil, "not a path of object keys"},
+		{"path syntax refused", map[string]json.RawMessage{"items.#.id": raw("1")}, nil, "not a path of object keys"},
+		{"escape refused", map[string]json.RawMessage{`a\.b`: raw("1")}, nil, "not a path of object keys"},
+		{"array index refused", map[string]json.RawMessage{"items.0": raw("1")}, nil, "read as an array index"},
+		{"case variants in one map", map[string]json.RawMessage{"include_usage": raw("true"), "Include_Usage": raw("true")}, nil, "different letter case"},
+		{"field inside a set field", nil, map[string]json.RawMessage{"options": raw("{}"), "options.depth": raw("1")}, "sets a field inside"},
+		{"route replaces the endpoint value", map[string]json.RawMessage{"include_usage": raw("true")}, map[string]json.RawMessage{"include_usage": raw("false")}, ""},
+		{"route case variant of an endpoint field", map[string]json.RawMessage{"include_usage": raw("true")}, map[string]json.RawMessage{"INCLUDE_USAGE": raw("true")}, "(with the endpoint's)"},
+		{"route field inside an endpoint field", map[string]json.RawMessage{"options": raw("{}")}, map[string]json.RawMessage{"Options.depth": raw("1")}, "sets a field inside"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &RelayConfig{BodyOverrides: tc.endpoint, Routes: []RelayRouteConfig{{Method: "POST", Path: "/search", BodyOverrides: tc.route}}}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestRelayBodyOverridesMergeAndClone(t *testing.T) {
+	endpoint := map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "depth": json.RawMessage(`"basic"`)}
+	route := map[string]json.RawMessage{"depth": json.RawMessage(`"advanced"`)}
+	merged := MergeRelayBodyOverrides(endpoint, route)
+	assert.Equal(t, map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "depth": json.RawMessage(`"advanced"`)}, merged)
+	assert.Equal(t, json.RawMessage(`"basic"`), endpoint["depth"], "the endpoint map is not modified")
+
+	src := &RelayConfig{BodyOverrides: endpoint, Routes: []RelayRouteConfig{{Method: "POST", Path: "/x", BodyOverrides: route}}}
+	dst := src.Clone()
+	require.Equal(t, src, dst)
+	dst.BodyOverrides["include_usage"][0] = 'f'
+	dst.Routes[0].BodyOverrides["depth"] = json.RawMessage("1")
+	assert.Equal(t, json.RawMessage("true"), src.BodyOverrides["include_usage"], "a clone shares no value bytes")
+	assert.Equal(t, json.RawMessage(`"advanced"`), src.Routes[0].BodyOverrides["depth"])
 }
 
 func TestRelayConfigClone(t *testing.T) {

@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"path"
@@ -188,14 +190,15 @@ func RelayUpstreamJobID(scoped string) string {
 
 // RelayRouteConfig overrides the endpoint defaults for one upstream operation.
 type RelayRouteConfig struct {
-	Method   string            `json:"method"`             // GET | POST | PUT | PATCH | DELETE | HEAD
-	Path     string            `json:"path"`               // segment glob; a trailing /** matches the prefix and everything below
-	Headers  map[string]string `json:"headers,omitempty"`  // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
-	Enabled  *bool             `json:"enabled,omitempty"`  // false: requests matching the route are refused with 404; nil is enabled
-	Billable *bool             `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
-	Stream   *bool             `json:"stream,omitempty"`   // forces the streaming or buffered handler
-	Usage    *RelayUsageConfig `json:"usage,omitempty"`    // field-by-field override of the endpoint usage mapping
-	Job      *RelayJobConfig   `json:"-"`                  // not configurable yet: async jobs are kept for a later release
+	Method        string                     `json:"method"`                   // GET | POST | PUT | PATCH | DELETE | HEAD
+	Path          string                     `json:"path"`                     // segment glob; a trailing /** matches the prefix and everything below
+	Headers       map[string]string          `json:"headers,omitempty"`        // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
+	Enabled       *bool                      `json:"enabled,omitempty"`        // false: requests matching the route are refused with 404; nil is enabled
+	Billable      *bool                      `json:"billable,omitempty"`       // false: the call is relayed but not counted or charged
+	Stream        *bool                      `json:"stream,omitempty"`         // forces the streaming or buffered handler
+	Usage         *RelayUsageConfig          `json:"usage,omitempty"`          // field-by-field override of the endpoint usage mapping
+	Job           *RelayJobConfig            `json:"-"`                        // not configurable yet: async jobs are kept for a later release
+	BodyOverrides map[string]json.RawMessage `json:"body_overrides,omitempty"` // request body fields forced on every call: dotted path to JSON value, over the endpoint's
 }
 
 // RelayConfig is one relay: a raw HTTP relay to a non-LLM API served at
@@ -203,19 +206,20 @@ type RelayRouteConfig struct {
 // pins the upstream host, prices each call with the usage mapping, and charges the result to the
 // caller's overall budgets. It is not a provider: no key selection, routing rules or model budgets.
 type RelayConfig struct {
-	Name               string                `json:"name"`                           // served at /relay/{name}; immutable once created
-	Description        string                `json:"description,omitempty"`          // free text shown in the UI
-	BaseURL            string                `json:"base_url"`                       // upstream origin and base path every request is pinned under
-	Auth               RelayAuthConfig       `json:"auth"`                           // how the credential is presented
-	Credential         *RelayCredential      `json:"credential,omitempty"`           // the one secret the endpoint signs in with; nil for auth none
-	ExtraHeaders       map[string]SecretVar  `json:"extra_headers,omitempty"`        // operator headers sent on every request; a caller cannot replace them
-	Network            *RelayNetworkConfig   `json:"network,omitempty"`              // timeouts and connection limits
-	ProxyConfig        *ProxyConfig          `json:"proxy_config,omitempty"`         // outbound proxy; nil inherits the global proxy when it is enabled for inference
-	Usage              *RelayUsageConfig     `json:"usage,omitempty"`                // endpoint-level usage mapping every route inherits
-	Streaming          *RelayStreamingConfig `json:"streaming,omitempty"`            // which requests are relayed as streams
-	Routes             []RelayRouteConfig    `json:"routes,omitempty"`               // upstream operations, first match wins
-	SkipRouteCheck     bool                  `json:"skip_route_check,omitempty"`     // relay requests matching no routes[] entry instead of refusing them with 404
-	IgnoreUpstreamCost bool                  `json:"ignore_upstream_cost,omitempty"` // drop cost_path values; the operator's fee and unit pricing still apply
+	Name               string                     `json:"name"`                           // served at /relay/{name}; immutable once created
+	Description        string                     `json:"description,omitempty"`          // free text shown in the UI
+	BaseURL            string                     `json:"base_url"`                       // upstream origin and base path every request is pinned under
+	Auth               RelayAuthConfig            `json:"auth"`                           // how the credential is presented
+	Credential         *RelayCredential           `json:"credential,omitempty"`           // the one secret the endpoint signs in with; nil for auth none
+	ExtraHeaders       map[string]SecretVar       `json:"extra_headers,omitempty"`        // operator headers sent on every request; a caller cannot replace them
+	Network            *RelayNetworkConfig        `json:"network,omitempty"`              // timeouts and connection limits
+	ProxyConfig        *ProxyConfig               `json:"proxy_config,omitempty"`         // outbound proxy; nil inherits the global proxy when it is enabled for inference
+	Usage              *RelayUsageConfig          `json:"usage,omitempty"`                // endpoint-level usage mapping every route inherits
+	Streaming          *RelayStreamingConfig      `json:"streaming,omitempty"`            // which requests are relayed as streams
+	Routes             []RelayRouteConfig         `json:"routes,omitempty"`               // upstream operations, first match wins
+	SkipRouteCheck     bool                       `json:"skip_route_check,omitempty"`     // relay requests matching no routes[] entry instead of refusing them with 404
+	IgnoreUpstreamCost bool                       `json:"ignore_upstream_cost,omitempty"` // drop cost_path values; the operator's fee and unit pricing still apply
+	BodyOverrides      map[string]json.RawMessage `json:"body_overrides,omitempty"`       // request body fields forced on every call through any route: dotted path to JSON value
 }
 
 // RelayCredential is the single secret an endpoint signs in with. Value carries the token for
@@ -398,6 +402,9 @@ func (c *RelayConfig) Validate() error {
 	if err := c.Usage.validate("usage", nil); err != nil {
 		return err
 	}
+	if err := validateBodyOverrides("body_overrides", c.BodyOverrides); err != nil {
+		return err
+	}
 	if c.Streaming != nil {
 		for i, glob := range c.Streaming.Paths {
 			if err := validateEndpointRouteGlob(glob); err != nil {
@@ -432,6 +439,16 @@ func (c *RelayConfig) Validate() error {
 		}
 		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
+		}
+		if len(route.BodyOverrides) > 0 {
+			field := fmt.Sprintf("routes[%d].body_overrides", i)
+			if err := validateBodyOverrides(field, route.BodyOverrides); err != nil {
+				return err
+			}
+			// The merged set must still be unambiguous.
+			if err := validateBodyOverrides(field+" (with the endpoint's)", MergeRelayBodyOverrides(c.BodyOverrides, route.BodyOverrides)); err != nil {
+				return err
+			}
 		}
 		if route.Job != nil {
 			if err := route.Job.validate(fmt.Sprintf("routes[%d].job", i), route, c.Usage); err != nil {
@@ -688,6 +705,7 @@ func (c *RelayConfig) Clone() *RelayConfig {
 		out.Auth.AWS = &aws
 	}
 	out.Usage = c.Usage.clone()
+	out.BodyOverrides = cloneBodyOverrides(c.BodyOverrides)
 	if c.Streaming != nil {
 		streaming := *c.Streaming
 		streaming.Paths = append([]string(nil), c.Streaming.Paths...)
@@ -726,7 +744,86 @@ func (c *RelayConfig) Clone() *RelayConfig {
 				out.Routes[i].Job = &job
 			}
 			out.Routes[i].Usage = route.Usage.clone()
+			out.Routes[i].BodyOverrides = cloneBodyOverrides(route.BodyOverrides)
 		}
 	}
 	return &out
+}
+
+// relayBodyOverrideSegmentRe is one plain object key; path syntax is refused so a path names one field.
+var relayBodyOverrideSegmentRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// RelayBodyOverridePath splits a body override path into its object keys.
+func RelayBodyOverridePath(path string) ([]string, error) {
+	segments := strings.Split(path, ".")
+	for _, segment := range segments {
+		if !relayBodyOverrideSegmentRe.MatchString(segment) {
+			return nil, fmt.Errorf("%q is not a path of object keys: each dot-separated key must be 1-128 letters, digits, '_' or '-'", path)
+		}
+		if strings.Trim(segment, "0123456789") == "" {
+			// sjson reads an all-digit segment as an array index.
+			return nil, fmt.Errorf("%q: key %q is all digits, which would be read as an array index", path, segment)
+		}
+	}
+	return segments, nil
+}
+
+// validateBodyOverrides checks paths and values, and that no field is set twice or inside another.
+func validateBodyOverrides(field string, overrides map[string]json.RawMessage) error {
+	lowered := make(map[string]string, len(overrides))
+	for path, value := range overrides {
+		if _, err := RelayBodyOverridePath(path); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if len(bytes.TrimSpace(value)) == 0 || !json.Valid(value) {
+			return fmt.Errorf("%s[%s]: the value must be JSON (a string needs quotes)", field, path)
+		}
+		lower := strings.ToLower(path)
+		if other, dup := lowered[lower]; dup {
+			return fmt.Errorf("%s: %q and %q name one field under different letter case", field, other, path)
+		}
+		lowered[lower] = path
+	}
+	for lower, path := range lowered {
+		for prefix := lower; ; {
+			i := strings.LastIndexByte(prefix, '.')
+			if i < 0 {
+				break
+			}
+			prefix = prefix[:i]
+			if parent, ok := lowered[prefix]; ok {
+				return fmt.Errorf("%s: %q sets a field inside %q, which is also set", field, path, parent)
+			}
+		}
+	}
+	return nil
+}
+
+// MergeRelayBodyOverrides returns the endpoint's fields with the route's replacing the same paths.
+func MergeRelayBodyOverrides(endpoint, route map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(route) == 0 {
+		return endpoint
+	}
+	if len(endpoint) == 0 {
+		return route
+	}
+	merged := make(map[string]json.RawMessage, len(endpoint)+len(route))
+	for path, value := range endpoint {
+		merged[path] = value
+	}
+	for path, value := range route {
+		merged[path] = value
+	}
+	return merged
+}
+
+func cloneBodyOverrides(in map[string]json.RawMessage) map[string]json.RawMessage {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(in))
+	for path, value := range in {
+		out[path] = append(json.RawMessage(nil), value...)
+	}
+	return out
 }

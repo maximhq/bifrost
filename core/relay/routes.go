@@ -38,6 +38,8 @@ type compiledRoute struct {
 	disabled bool // matched requests are refused rather than falling through to a later route
 	stream   *bool
 	usage    resolvedUsage
+	// bodyOverrides are the forced body fields, the endpoint's merged under the route's.
+	bodyOverrides []bodyOverride
 	// job, jobParams and jobInterval are set for a route that starts an upstream job: the
 	// block itself, its settlement snapshot (built once here, attached to every start response)
 	// and the seconds until the first poll.
@@ -253,6 +255,8 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 			disabled: route.Enabled != nil && !*route.Enabled,
 			stream:   route.Stream,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
+
+			bodyOverrides: compileBodyOverrides(schemas.MergeRelayBodyOverrides(cfg.BodyOverrides, route.BodyOverrides)),
 		}
 		if route.Job != nil {
 			// Validate ran on the config, so the snapshot marshals; a failure here would be a
