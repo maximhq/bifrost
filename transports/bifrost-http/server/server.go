@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/evals/datasets"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -3146,6 +3147,8 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
 	// SDK prompt fetches are served from the prompt repository.
 	s.TraceIngestHandler.SetPromptStore(s.Config.ConfigStore)
+	// SDK dataset calls create and fill evals datasets.
+	s.TraceIngestHandler.SetDatasetService(datasets.NewService(s.Config.ConfigStore, s.Config.LogsStore))
 	s.wireTraceEvaluator()
 	return true
 }
