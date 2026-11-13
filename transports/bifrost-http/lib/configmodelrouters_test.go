@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
@@ -879,4 +883,640 @@ func TestModelRouterConfigLoadConfigEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Support desk traffic", support.Description)
 	assert.Equal(t, []string{"support-simple"}, support.Keywords.SimpleKeywords)
+}
+
+// modelRouterBootModes are the two ways config.json reconciles with the store,
+// each as the prefix that opens the file.
+var modelRouterBootModes = []struct {
+	name          string
+	prefix        string
+	sourceOfTruth bool
+}{
+	{name: "split mode", prefix: `{`},
+	{name: "source of truth", prefix: `{"source_of_truth":"config.json",`, sourceOfTruth: true},
+}
+
+// bootModelRouters boots a file whose model_routers section holds entries,
+// opened by a prefix from modelRouterBootModes.
+func bootModelRouters(t *testing.T, store configstore.ConfigStore, prefix string, entries ...string) {
+	t.Helper()
+	bootFromJSON(t, store, prefix+`"model_routers":[`+strings.Join(entries, ",")+`]}`)
+}
+
+// globalRoutingJSON renders a routing block for the global requests cel holds
+// for; an empty cel takes them all.
+func globalRoutingJSON(enabled bool, cel string, priority int) string {
+	return fmt.Sprintf(`"routing":{"enabled":%t,"scope":"global","cel_expression":%q,"priority":%d}`, enabled, cel, priority)
+}
+
+// tierTargetJSON renders one target of a model router.
+func tierTargetJSON(tier, provider, model string, weight float64) string {
+	return fmt.Sprintf(`{"tier":%q,"provider":%q,"model":%q,"weight":%g}`, tier, provider, model, weight)
+}
+
+// targetsJSON renders a targets block from tierTargetJSON entries; none is an
+// explicit empty list.
+func targetsJSON(targets ...string) string {
+	return `"targets":[` + strings.Join(targets, ",") + `]`
+}
+
+// storedModelRouter reads a router that must be stored and have routing.
+func storedModelRouter(t *testing.T, store configstore.ConfigStore, id string) configstore.ModelRouter {
+	t.Helper()
+	router, err := store.GetModelRouter(context.Background(), id)
+	require.NoError(t, err, "model router %s", id)
+	require.NotNil(t, router.Routing, "model router %s has routing", id)
+	return *router
+}
+
+// storedTargetModels lists a stored router's targets as "TIER provider/model
+// weight", in the store's order: by tier, then heaviest first.
+func storedTargetModels(t *testing.T, store configstore.ConfigStore, id string) []string {
+	t.Helper()
+	router := storedModelRouter(t, store, id)
+	out := make([]string, 0, len(router.Targets))
+	for _, target := range router.Targets {
+		provider, model := "", ""
+		if target.Provider != nil {
+			provider = *target.Provider
+		}
+		if target.Model != nil {
+			model = *target.Model
+		}
+		out = append(out, fmt.Sprintf("%s %s/%s %g", target.Tier, provider, model, target.Weight))
+	}
+	return out
+}
+
+// modelRouterWriteCounter records every model router write that reaches the
+// store, so a test can pin that a boot wrote nothing.
+type modelRouterWriteCounter struct {
+	configstore.ConfigStore
+	writes []string
+}
+
+func (s *modelRouterWriteCounter) CreateModelRouter(ctx context.Context, router *configstore.ModelRouter, tx ...*gorm.DB) error {
+	s.writes = append(s.writes, "create "+router.ID)
+	return s.ConfigStore.CreateModelRouter(ctx, router, tx...)
+}
+
+func (s *modelRouterWriteCounter) UpdateModelRouter(ctx context.Context, router *configstore.ModelRouter, tx ...*gorm.DB) error {
+	s.writes = append(s.writes, "update "+router.ID)
+	return s.ConfigStore.UpdateModelRouter(ctx, router, tx...)
+}
+
+func (s *modelRouterWriteCounter) DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error {
+	s.writes = append(s.writes, "delete "+id)
+	return s.ConfigStore.DeleteModelRouter(ctx, id, tx...)
+}
+
+func (s *modelRouterWriteCounter) SetModelRouterTargets(ctx context.Context, routerID string, targets []tables.TableModelRouterTarget, tx ...*gorm.DB) error {
+	s.writes = append(s.writes, "targets "+routerID)
+	return s.ConfigStore.SetModelRouterTargets(ctx, routerID, targets, tx...)
+}
+
+func (s *modelRouterWriteCounter) SetModelRouterRouting(ctx context.Context, routerID string, routing configstore.ModelRouterRouting, tx ...*gorm.DB) error {
+	s.writes = append(s.writes, "routing "+routerID)
+	return s.ConfigStore.SetModelRouterRouting(ctx, routerID, routing, tx...)
+}
+
+func (s *modelRouterWriteCounter) SetModelRouterRoutings(ctx context.Context, changes []configstore.ModelRouterRoutingChange, tx ...*gorm.DB) error {
+	for _, change := range changes {
+		s.writes = append(s.writes, "routing "+change.RouterID)
+	}
+	return s.ConfigStore.SetModelRouterRoutings(ctx, changes, tx...)
+}
+
+// tierByTextDecision is a fake decision executor: it answers the complexity
+// question with the tier mapped to the request's latest message, and SIMPLE
+// for any other text.
+func tierByTextDecision(tiers map[string]string) routing.DecisionRequestExecutor {
+	return func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		tier := "SIMPLE"
+		for _, message := range req.Input.Messages {
+			if message.Content.Text == nil {
+				continue
+			}
+			if mapped, ok := tiers[*message.Content.Text]; ok {
+				tier = mapped
+			}
+		}
+		confidence := 0.9
+		return &schemas.BifrostDecisionResponse{
+			Model: "decision-fake",
+			Answers: []schemas.DecisionAnswer{
+				{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("complexity_tier"), Choice: &schemas.DecisionScalar{Str: &tier}, Confidence: &confidence},
+			},
+		}, nil
+	}
+}
+
+// TestModelRouterConfigFileToLiveRouting follows one config.json from the file
+// to a routed request: the file declares a routing rule and two model routers,
+// LoadConfig syncs both into the store, and a routing plugin started from that
+// store serves them. It pins the order an operator relies on: the routing rule
+// rewrites the model first, the router whose condition names the rewritten
+// model takes the request, and its target for the classified tier is the
+// final model. A router tried ahead of it whose condition names the model the
+// client asked for does not take a request the rule rewrote, although it is
+// live for the requests the rule leaves alone.
+func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
+	initTestLogger()
+	const (
+		complexText = "design a sharded cache with a write-ahead log"
+		mediumText  = "refactor this module to remove the global state"
+		simpleText  = "what does this regex match"
+	)
+	governance := `{"routing_rules":[{
+		"id":"support-alias","name":"Support alias","enabled":true,"scope":"global","priority":0,
+		"cel_expression":"model == \"assistant\"",
+		"targets":[{"provider":"openai","model":"support-assistant","weight":1}]}]}`
+	routers := `[` +
+		routerJSON("client-model", "Client model", `"classifier":"decision",`+
+			targetsJSON(tierTargetJSON("COMPLEX", "openai", "legacy-large", 1))+","+
+			globalRoutingJSON(true, `model == "assistant" || model == "legacy-assistant"`, 0), "s", "m", "c") + "," +
+		routerJSON("support", "Support", `"classifier":"decision",`+
+			targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1), tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))+","+
+			globalRoutingJSON(true, `model == "support-assistant"`, 1), "s", "m", "c") +
+		`]`
+	require.NoError(t, ValidateConfigSchema([]byte(`{"governance":`+governance+`,"model_routers":`+routers+`}`), loadLocalSchema(t)),
+		"the two sections are ones the schema accepts")
+
+	tempDir := createTempDir(t)
+	file, err := json.Marshal(makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
+	}, tempDir))
+	require.NoError(t, err)
+	file, err = sjson.SetRawBytes(file, "governance", []byte(governance))
+	require.NoError(t, err)
+	file, err = sjson.SetRawBytes(file, "model_routers", []byte(routers))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "config.json"), file, 0o644))
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { config.Close(ctx) })
+
+	plugin, err := routing.Init(ctx, nil, &testLogger{}, config.ConfigStore, routing.NewMockGovernance())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	plugin.SetDecisionRequestExecutor(tierByTextDecision(map[string]string{complexText: "COMPLEX", mediumText: "MEDIUM", simpleText: "SIMPLE"}))
+
+	type routed struct {
+		provider schemas.ModelProvider
+		model    string
+		routerID any
+		engines  []string
+	}
+	route := func(model, text string) routed {
+		t.Helper()
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+			},
+		}
+		require.NoError(t, plugin.PreRequestHook(reqCtx, req))
+		got := routed{routerID: reqCtx.Value(schemas.BifrostContextKeyModelRouterID)}
+		got.provider, got.model, _ = req.GetRequestFields()
+		got.engines, _ = reqCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
+		return got
+	}
+	ruleThenRouter := []string{schemas.RoutingEngineRoutingRule, schemas.RoutingEngineModelRouter}
+
+	got := route("assistant", complexText)
+	assert.Equal(t, routed{provider: "anthropic", model: "claude-opus", routerID: "support", engines: ruleThenRouter}, got,
+		"the rule rewrites the model, the router that names the rewritten model takes it, and its COMPLEX target is final")
+
+	got = route("assistant", simpleText)
+	assert.Equal(t, routed{provider: "openai", model: "gpt-4o-mini", routerID: "support", engines: ruleThenRouter}, got,
+		"the same router sends a SIMPLE request to its SIMPLE target")
+
+	got = route("assistant", mediumText)
+	assert.Equal(t, routed{provider: "openai", model: "support-assistant", routerID: "support", engines: ruleThenRouter}, got,
+		"a tier the router has no target for keeps the model the routing rule chose")
+
+	got = route("legacy-assistant", complexText)
+	assert.Equal(t, routed{provider: "openai", model: "legacy-large", routerID: "client-model", engines: []string{schemas.RoutingEngineModelRouter}}, got,
+		"the router that names the client's model is live for a request the rule leaves alone")
+
+	got = route("gpt-4o", complexText)
+	assert.Equal(t, routed{provider: "openai", model: "gpt-4o"}, got, "a request no rule and no router names is left as it was")
+}
+
+// TestModelRouterConfigIdempotentBoot pins that booting twice from the same
+// config.json writes nothing the second time, in split mode and with
+// config.json as the source of truth: no router, targets or routing write
+// reaches the store, and every row, updated_at and recorded hashes included,
+// is as the first boot left it. The file covers the shapes a router is
+// declared in: each classifier, a scoped and a global routing, a routing that
+// leaves its scope and priority to their defaults, targets with a fallback
+// pinned by key name, an explicit empty targets list, and neither.
+func TestModelRouterConfigIdempotentBoot(t *testing.T) {
+	initTestLogger()
+	ids := []string{"support", "billing", "triage", "general", "cleared"}
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &modelRouterWriteCounter{ConfigStore: createTestSQLiteConfigStore(t, t.TempDir())}
+			require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+				{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			}}))
+			file := mode.prefix + `"governance":{"teams":[{"id":"team-eng","name":"Engineering"}]},"model_routers":[` +
+				routerJSON("support", "Support", `"description":"Support desk traffic",`+
+					`"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},"session":{"enabled":true},`+
+					`"targets":[{"tier":"simple","provider":"openai","model":"gpt-4o-mini","weight":0.75},`+
+					`{"tier":"SIMPLE","provider":"openai","model":"gpt-4.1-nano","weight":0.25},`+
+					`{"tier":"COMPLEX","provider":"openai","model":"gpt-4o","weight":1,"fallbacks":["openai/gpt-4o-mini",{"provider":"anthropic","model":"claude-sonnet-4","provider_key_name":"Anthropic Prod"}]}],`+
+					`"routing":{"enabled":true,"scope":"team","scope_id":"team-eng","cel_expression":" model == \"support-assistant\" ","priority":0}`,
+					"support-simple", "support-medium", "support-complex") + "," +
+				routerJSON("billing", "Billing", `"classifier":"decision",`+
+					targetsJSON(tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))+","+
+					globalRoutingJSON(true, `model == "billing-assistant"`, 1), "s", "m", "c") + "," +
+				routerJSON("triage", "Triage", `"classifier":"llm","llm":{"provider":"openai","model":"gpt-4o-mini"},"routing":{"enabled":true}`, "s", "m", "c") + "," +
+				routerJSON("general", "General", "", "s", "m", "c") + "," +
+				routerJSON("cleared", "Cleared", targetsJSON(), "s", "m", "c") +
+				`]}`
+
+			bootFromJSON(t, store, file)
+			require.NotEmpty(t, store.writes, "the first boot writes the routers")
+			rows := make(map[string]tables.TableModelRouter, len(ids))
+			for _, id := range ids {
+				rows[id] = storedModelRouterRow(t, store, id)
+				assert.NotEmpty(t, rows[id].ConfigHash, "%s: the first boot records the entry's hash", id)
+			}
+			first, err := store.GetModelRouters(ctx)
+			require.NoError(t, err)
+			require.Len(t, first, len(ids))
+			assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "team", ScopeID: schemas.Ptr("team-eng"), CelExpression: `model == "support-assistant"`},
+				*storedModelRouter(t, store, "support").Routing)
+			assert.Equal(t, []string{"COMPLEX openai/gpt-4o 1", "SIMPLE openai/gpt-4o-mini 0.75", "SIMPLE openai/gpt-4.1-nano 0.25"}, storedTargetModels(t, store, "support"))
+
+			store.writes = nil
+			bootFromJSON(t, store, file)
+
+			assert.Empty(t, store.writes, "the second boot from the same file writes nothing")
+			for _, id := range ids {
+				assert.Equal(t, rows[id], storedModelRouterRow(t, store, id), "%s: the row is as the first boot left it", id)
+			}
+			second, err := store.GetModelRouters(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, first, second, "config, targets and routing are unchanged")
+		})
+	}
+}
+
+// TestModelRouterConfigEditsBetweenBoots walks one router through the edits an
+// operator makes to its config.json entry between boots, in split mode and
+// with config.json as the source of truth: new targets replace the stored
+// ones, a new condition, priority and enabled flag replace the stored routing,
+// and an explicit empty targets list clears them. Each edit leaves the part of
+// the router it does not touch, and the other router in the file, as they
+// were. Removing a router from the file deletes it only when config.json is
+// the source of truth; in split mode it stays as it was.
+func TestModelRouterConfigEditsBetweenBoots(t *testing.T) {
+	initTestLogger()
+	billing := routerJSON("billing", "Billing",
+		targetsJSON(tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))+","+globalRoutingJSON(true, `model == "billing-assistant"`, 2), "s", "m", "c")
+	support := func(targets, routing string) string {
+		return routerJSON("support", "Support", targets+","+routing, "s", "m", "c")
+	}
+	mini := targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1))
+	split := targetsJSON(
+		tierTargetJSON("SIMPLE", "openai", "gpt-4.1-nano", 0.25),
+		tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 0.75),
+		tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))
+	on := globalRoutingJSON(true, `model == "support-assistant"`, 1)
+	moved := globalRoutingJSON(false, `model == "help-assistant"`, 5)
+	onRouting := configstore.ModelRouterRouting{Enabled: true, Scope: "global", CelExpression: `model == "support-assistant"`, Priority: 1}
+	movedRouting := configstore.ModelRouterRouting{Scope: "global", CelExpression: `model == "help-assistant"`, Priority: 5}
+	splitModels := []string{"COMPLEX anthropic/claude-opus 1", "SIMPLE openai/gpt-4o-mini 0.75", "SIMPLE openai/gpt-4.1-nano 0.25"}
+
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			boot := func(entries ...string) { bootModelRouters(t, store, mode.prefix, entries...) }
+
+			boot(support(mini, on), billing)
+			require.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, "support"))
+			require.Equal(t, onRouting, *storedModelRouter(t, store, "support").Routing)
+			billingRow := storedModelRouterRow(t, store, "billing")
+
+			boot(support(split, on), billing)
+			assert.Equal(t, splitModels, storedTargetModels(t, store, "support"), "changed targets replace the stored ones")
+			assert.Equal(t, onRouting, *storedModelRouter(t, store, "support").Routing, "a targets edit leaves the routing alone")
+
+			boot(support(split, moved), billing)
+			assert.Equal(t, movedRouting, *storedModelRouter(t, store, "support").Routing, "a changed condition, priority and enabled flag replace the stored routing")
+			assert.Equal(t, splitModels, storedTargetModels(t, store, "support"), "a routing edit leaves the targets alone")
+
+			boot(support(targetsJSON(), moved), billing)
+			assert.Empty(t, storedTargetModels(t, store, "support"), "an explicit empty targets list clears them")
+			assert.Equal(t, movedRouting, *storedModelRouter(t, store, "support").Routing)
+
+			assert.Equal(t, billingRow, storedModelRouterRow(t, store, "billing"), "edits to one router write nothing to the other")
+
+			boot(support(targetsJSON(), moved))
+			if mode.sourceOfTruth {
+				requireModelRouterAbsent(t, store, "billing")
+			} else {
+				assert.Equal(t, billingRow, storedModelRouterRow(t, store, "billing"), "split mode keeps a router the file no longer declares")
+				assert.Equal(t, []string{"COMPLEX anthropic/claude-opus 1"}, storedTargetModels(t, store, "billing"))
+				assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "global", CelExpression: `model == "billing-assistant"`, Priority: 2},
+					*storedModelRouter(t, store, "billing").Routing)
+			}
+			assert.Equal(t, movedRouting, *storedModelRouter(t, store, "support").Routing, "removing one router leaves the other alone")
+		})
+	}
+}
+
+// TestModelRouterConfigSplitModeDashboardTargetsPerEntry pins that split mode
+// decides per router whether the file or the dashboard wins on targets: in one
+// boot, the entry whose targets changed in the file replaces the dashboard's
+// targets, the entry the file left as it was keeps the dashboard's, and an
+// entry that only gained a phrase merges the phrase in and keeps the
+// dashboard's targets, since targets follow the entry's own hash and not the
+// phrase lists'.
+func TestModelRouterConfigSplitModeDashboardTargetsPerEntry(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	mini := targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1))
+	nano := targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4.1-nano", 1))
+	entry := func(id, name, targets, medium string) string {
+		return routerJSON(id, name, targets, id+"-simple", medium, id+"-complex")
+	}
+	dashboardSets := func(id string) {
+		model := "claude-haiku"
+		require.NoError(t, store.SetModelRouterTargets(ctx, id, []tables.TableModelRouterTarget{{Tier: "SIMPLE", Model: &model, Weight: 1}}))
+	}
+
+	bootModelRouters(t, store, `{`,
+		entry("support", "Support", mini, "support-medium"),
+		entry("billing", "Billing", mini, "billing-medium"),
+		entry("sales", "Sales", mini, "sales-medium"))
+	for _, id := range []string{"support", "billing", "sales"} {
+		dashboardSets(id)
+	}
+
+	bootModelRouters(t, store, `{`,
+		entry("support", "Support", nano, "support-medium"),
+		entry("billing", "Billing", mini, "billing-medium"),
+		entry("sales", "Sales", mini, "sales-medium-2"))
+
+	assert.Equal(t, []string{"SIMPLE openai/gpt-4.1-nano 1"}, storedTargetModels(t, store, "support"), "the file wins once its entry's targets change")
+	assert.Equal(t, []string{"SIMPLE /claude-haiku 1"}, storedTargetModels(t, store, "billing"), "an unchanged entry keeps the dashboard's targets although another entry changed")
+	assert.Equal(t, []string{"SIMPLE /claude-haiku 1"}, storedTargetModels(t, store, "sales"), "a phrase added in the file leaves the dashboard's targets alone")
+	assert.ElementsMatch(t, []string{"sales-medium", "sales-medium-2"}, storedModelRouter(t, store, "sales").Keywords.MediumKeywords, "the added phrase is merged in")
+}
+
+// TestModelRouterConfigDuplicateName pins what an operator gets when two
+// entries share a name under different ids, which the schema cannot check:
+// names are unique across routers, so the entry declared first is kept and the
+// later one is skipped whole, on every boot, while the entries around it load
+// with the targets and routing they declare. A name a dashboard router
+// already holds is refused the same way, and that router is left as it was.
+func TestModelRouterConfigDuplicateName(t *testing.T) {
+	initTestLogger()
+	entries := []string{
+		routerJSON("support", "Support", `"description":"first",`+
+			targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1))+","+globalRoutingJSON(true, "", 1), "s", "m", "c"),
+		routerJSON("support-eu", "Support", `"description":"second",`+
+			targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4.1-nano", 1))+","+globalRoutingJSON(true, "", 2), "s", "m", "c"),
+		routerJSON("general", "General",
+			targetsJSON(tierTargetJSON("COMPLEX", "anthropic", "claude-opus", 1))+","+globalRoutingJSON(true, "", 3), "s", "m", "c"),
+	}
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			for boot := 1; boot <= 2; boot++ {
+				bootModelRouters(t, store, mode.prefix, entries...)
+
+				support := storedModelRouter(t, store, "support")
+				assert.Equal(t, "first", support.Description, "boot %d: the entry declared first keeps the name", boot)
+				assert.Equal(t, 1, support.Routing.Priority)
+				assert.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, "support"))
+				requireModelRouterAbsent(t, store, "support-eu")
+				general := storedModelRouter(t, store, "general")
+				assert.Equal(t, 3, general.Routing.Priority, "boot %d: the entry after the skipped one still loads", boot)
+				assert.True(t, general.Routing.Enabled)
+				assert.Equal(t, []string{"COMPLEX anthropic/claude-opus 1"}, storedTargetModels(t, store, "general"))
+			}
+		})
+	}
+
+	t.Run("a name a dashboard router holds", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		ctx := context.Background()
+		require.NoError(t, store.CreateModelRouter(ctx, &configstore.ModelRouter{ID: "dashboard", Name: "Support", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
+			Keywords: configstore.ComplexityEditableKeywordConfig{SimpleKeywords: []string{"dash-simple"}, MediumKeywords: []string{"dash-medium"}, ComplexKeywords: []string{"dash-complex"}},
+		}}))
+		dashboard := storedModelRouterRow(t, store, "dashboard")
+
+		bootModelRouters(t, store, `{`, entries[0], entries[2])
+
+		requireModelRouterAbsent(t, store, "support")
+		assert.Equal(t, dashboard, storedModelRouterRow(t, store, "dashboard"), "the router that holds the name is left as it was")
+		assert.Equal(t, 3, storedModelRouter(t, store, "general").Routing.Priority)
+	})
+}
+
+// TestModelRouterConfigSkipsUserScope pins that config.json cannot scope a
+// router to a user, which only the schema says: the loader skips such an
+// entry whole, as it does a scope whose entity does not exist, so a new
+// router is not created and a stored one keeps its last persisted version,
+// while the other entries in the file load.
+func TestModelRouterConfigSkipsUserScope(t *testing.T) {
+	initTestLogger()
+	userScoped := `"routing":{"enabled":true,"scope":"user","scope_id":"user-1","priority":0}`
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+
+			bootModelRouters(t, store, mode.prefix,
+				routerJSON("personal", "Personal", userScoped+","+targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1)), "s", "m", "c"),
+				routerJSON("general", "General", targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1))+","+globalRoutingJSON(true, "", 0), "s", "m", "c"))
+
+			requireModelRouterAbsent(t, store, "personal")
+			general := storedModelRouter(t, store, "general")
+			assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "global"}, *general.Routing, "the entry beside the user-scoped one loads")
+			assert.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, "general"))
+
+			bootModelRouters(t, store, mode.prefix,
+				routerJSON("general", "General desk", targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4.1-nano", 1))+","+userScoped, "s", "m", "c"))
+
+			general = storedModelRouter(t, store, "general")
+			assert.Equal(t, "General", general.Name, "a stored router keeps its last persisted version")
+			assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "global"}, *general.Routing)
+			assert.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, "general"))
+		})
+	}
+}
+
+// TestModelRouterConfigRotatesPriorities pins that three routers that rotate
+// their priorities in one config.json edit all apply, in split mode and in
+// source-of-truth mode: no router's new priority is free until another's has
+// moved, so the routing has to be checked on the state after the sync and
+// written together.
+func TestModelRouterConfigRotatesPriorities(t *testing.T) {
+	initTestLogger()
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			boot := func(a, b, c int) {
+				bootModelRouters(t, store, mode.prefix,
+					routerJSON("a", "A", globalRoutingJSON(true, "", a), "s", "m", "c"),
+					routerJSON("b", "B", globalRoutingJSON(true, "", b), "s", "m", "c"),
+					routerJSON("c", "C", globalRoutingJSON(true, "", c), "s", "m", "c"))
+			}
+			priorities := func() map[string]int {
+				out := map[string]int{}
+				for _, id := range []string{"a", "b", "c"} {
+					out[id] = storedModelRouter(t, store, id).Routing.Priority
+				}
+				return out
+			}
+
+			boot(1, 2, 3)
+			require.Equal(t, map[string]int{"a": 1, "b": 2, "c": 3}, priorities())
+
+			boot(2, 3, 1)
+			assert.Equal(t, map[string]int{"a": 2, "b": 3, "c": 1}, priorities(), "each router takes the priority the next one held")
+
+			boot(3, 1, 2)
+			assert.Equal(t, map[string]int{"a": 3, "b": 1, "c": 2}, priorities(), "a second rotation applies too")
+		})
+	}
+}
+
+// TestModelRouterConfigReassignsDroppedRoutersPriority pins one edit with
+// config.json as the source of truth: the file drops a router and gives its
+// priority to another, and declares a new router at the priority that one
+// left. The dropped router is pruned first, so both get the priority they
+// declare. In split mode the same edit leaves the dropped router stored and
+// holding its priority, so the router that asked for it keeps its last
+// persisted version.
+func TestModelRouterConfigReassignsDroppedRoutersPriority(t *testing.T) {
+	initTestLogger()
+	entry := func(id, name string, priority int) string {
+		return routerJSON(id, name, globalRoutingJSON(true, "", priority), "s", "m", "c")
+	}
+
+	t.Run("source of truth", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		prefix := `{"source_of_truth":"config.json",`
+		bootModelRouters(t, store, prefix, entry("x", "X", 1), entry("y", "Y", 2))
+
+		bootModelRouters(t, store, prefix, entry("y", "Y", 1), entry("z", "Z", 2))
+
+		requireModelRouterAbsent(t, store, "x")
+		assert.Equal(t, 1, storedModelRouter(t, store, "y").Routing.Priority, "y takes the priority the dropped router held")
+		assert.Equal(t, 2, storedModelRouter(t, store, "z").Routing.Priority, "a new router takes the priority y left")
+	})
+
+	t.Run("split mode keeps the dropped router and its priority", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootModelRouters(t, store, `{`, entry("x", "X", 1), entry("y", "Y", 2))
+
+		bootModelRouters(t, store, `{`, entry("y", "Y", 1))
+
+		assert.Equal(t, 1, storedModelRouter(t, store, "x").Routing.Priority)
+		assert.Equal(t, 2, storedModelRouter(t, store, "y").Routing.Priority, "the priority is still held, so y keeps its last persisted version")
+	})
+}
+
+// TestModelRouterConfigSkipsOnlyInvalidRouters pins a file that mixes valid
+// and invalid routers: a condition that does not compile, a condition that
+// uses complexity_tier, target weights that do not sum to 1 and an unknown
+// tier each skip their own entry, and the valid entries before, between and
+// after them load with the targets and routing they declare. An invalid entry
+// does not hold the priority it declares, so a valid one can take it.
+func TestModelRouterConfigSkipsOnlyInvalidRouters(t *testing.T) {
+	initTestLogger()
+	mini := targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 1))
+	invalid := map[string]string{
+		"bad-condition":  mini + "," + globalRoutingJSON(true, `model ==`, 1),
+		"tier-condition": mini + "," + globalRoutingJSON(true, `complexity_tier == "SIMPLE"`, 2),
+		"bad-weights": targetsJSON(tierTargetJSON("SIMPLE", "openai", "gpt-4o-mini", 0.5), tierTargetJSON("SIMPLE", "openai", "gpt-4.1-nano", 0.3)) +
+			"," + globalRoutingJSON(true, "", 3),
+		"bad-tier": targetsJSON(tierTargetJSON("HARD", "openai", "gpt-4o", 1)) + "," + globalRoutingJSON(true, "", 4),
+	}
+	valid := func(id, name string, priority int) string {
+		return routerJSON(id, name, mini+","+globalRoutingJSON(true, `model == "`+id+`"`, priority), "s", "m", "c")
+	}
+	bad := func(id string) string { return routerJSON(id, id, invalid[id], "s", "m", "c") }
+
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			ctx := context.Background()
+
+			bootModelRouters(t, store, mode.prefix,
+				valid("first", "First", 0),
+				bad("bad-condition"),
+				bad("tier-condition"),
+				valid("middle", "Middle", 1),
+				bad("bad-weights"),
+				bad("bad-tier"),
+				valid("last", "Last", 4))
+
+			for id := range invalid {
+				requireModelRouterAbsent(t, store, id)
+			}
+			routers, err := store.GetModelRouters(ctx)
+			require.NoError(t, err)
+			assert.Len(t, routers, 3, "only the valid routers are stored")
+			for id, priority := range map[string]int{"first": 0, "middle": 1, "last": 4} {
+				assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "global", CelExpression: `model == "` + id + `"`, Priority: priority},
+					*storedModelRouter(t, store, id).Routing, "%s loads with the routing it declares", id)
+				assert.Equal(t, []string{"SIMPLE openai/gpt-4o-mini 1"}, storedTargetModels(t, store, id), "%s loads with its targets", id)
+			}
+		})
+	}
+}
+
+// TestModelRouterConfigScopesToEntitiesInSameFile pins that a router can be
+// scoped to a virtual key, team or customer the same config.json declares
+// under governance: governance loads first, so the routing applies on the
+// first boot instead of waiting for a second. A priority is unique within a
+// scope and its entity, so routers in different scopes, and for different
+// teams, can all declare the same one.
+func TestModelRouterConfigScopesToEntitiesInSameFile(t *testing.T) {
+	initTestLogger()
+	scoped := func(scope, scopeID string) string {
+		return fmt.Sprintf(`"routing":{"enabled":true,"scope":%q,"scope_id":%q,"priority":0}`, scope, scopeID)
+	}
+	scopes := map[string][2]string{
+		"by-key":      {"virtual_key", "vk-support"},
+		"by-team":     {"team", "team-eng"},
+		"by-team-ops": {"team", "team-ops"},
+		"by-customer": {"customer", "cust-acme"},
+	}
+	for _, mode := range modelRouterBootModes {
+		t.Run(mode.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+
+			bootFromJSON(t, store, mode.prefix+`"governance":{`+
+				`"customers":[{"id":"cust-acme","name":"Acme"}],`+
+				`"teams":[{"id":"team-eng","name":"Engineering"},{"id":"team-ops","name":"Operations"}],`+
+				`"virtual_keys":[{"id":"vk-support","name":"support-key","value":"sk-bf-support-test"}]},`+
+				`"model_routers":[`+
+				routerJSON("by-key", "By key", scoped("virtual_key", "vk-support"), "s", "m", "c")+","+
+				routerJSON("by-team", "By team", scoped("team", "team-eng"), "s", "m", "c")+","+
+				routerJSON("by-team-ops", "By team ops", scoped("team", "team-ops"), "s", "m", "c")+","+
+				routerJSON("by-customer", "By customer", scoped("customer", "cust-acme"), "s", "m", "c")+","+
+				routerJSON("everyone", "Everyone", globalRoutingJSON(true, "", 0), "s", "m", "c")+
+				`]}`)
+
+			for id, scope := range scopes {
+				assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: scope[0], ScopeID: schemas.Ptr(scope[1])},
+					*storedModelRouter(t, store, id).Routing, "%s is scoped on the first boot", id)
+			}
+			assert.Equal(t, configstore.ModelRouterRouting{Enabled: true, Scope: "global"}, *storedModelRouter(t, store, "everyone").Routing)
+		})
+	}
 }

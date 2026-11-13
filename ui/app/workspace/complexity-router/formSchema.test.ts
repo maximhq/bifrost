@@ -24,8 +24,15 @@ import {
 import {
 	DEFAULT_DECISION_CONFIG,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
+	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
+	MAX_LLM_MESSAGE_HISTORY,
+	MAX_LLM_PROMPT_CHARACTERS,
+	MAX_SEMANTIC_MESSAGE_HISTORY,
+	MAX_SEMANTIC_PHRASE_CHARACTERS,
+	MAX_SEMANTIC_TIMEOUT_MS,
 	type AnalyzerConfig,
 	type DecisionGuidanceDefaults,
+	type ModelRouter,
 	type SuggestionTierDefaults,
 } from "@/lib/types/complexityRouter";
 import type { ModelProvider } from "@/lib/types/config";
@@ -1033,11 +1040,93 @@ describe("a model router's classifier form", () => {
 	const keywords = { simple_keywords: ["hi"], medium_keywords: ["summarize this"], complex_keywords: ["prove this"] };
 	const base = { ...DEFAULT_FORM_VALUES, keywords };
 	const embedding = { ...base.semantic, provider: "openai", embedding_model: "text-embedding-3-small" };
+	const llmModel = { ...base.llm, provider: "openai", model: "gpt-4o-mini" };
 	// The fields a submit of these values marks invalid.
 	const invalid = (values: unknown) => {
 		const parsed = analyzerConfigSchema.safeParse(values);
 		return parsed.success ? [] : [...new Set(parsed.error.issues.map((issue) => issue.path.join(".")))].sort();
 	};
+
+	test("saves with phrases alone: a classifier not set up yet is not an error", () => {
+		expect(invalid(base)).toEqual([]);
+	});
+
+	test("needs at least one phrase in each tier, and names the tier left empty", () => {
+		expect(invalid({ ...base, keywords: { ...keywords, simple_keywords: [] } })).toEqual(["keywords.simple_keywords"]);
+		expect(invalid({ ...base, keywords: { simple_keywords: [], medium_keywords: [], complex_keywords: [] } })).toEqual([
+			"keywords.complex_keywords",
+			"keywords.medium_keywords",
+			"keywords.simple_keywords",
+		]);
+	});
+
+	test("refuses the same phrase in two tiers, on the tier that repeats it, whatever its case or spacing", () => {
+		expect(invalid({ ...base, keywords: { ...keywords, complex_keywords: ["prove this", " HI "] } })).toEqual([
+			"keywords.complex_keywords",
+		]);
+		// Repeated inside one tier, the gateway keeps one; that is not an error.
+		expect(invalid({ ...base, keywords: { ...keywords, simple_keywords: ["hi", "Hi "] } })).toEqual([]);
+	});
+
+	test("holds a phrase to the length the gateway accepts", () => {
+		const phrase = (length: number) => ({ ...base, keywords: { ...keywords, medium_keywords: ["m".repeat(length)] } });
+		expect(invalid(phrase(MAX_SEMANTIC_PHRASE_CHARACTERS))).toEqual([]);
+		expect(invalid(phrase(MAX_SEMANTIC_PHRASE_CHARACTERS + 1))).toEqual(["keywords.medium_keywords"]);
+	});
+
+	test("an embedding provider and model are picked together or not at all", () => {
+		expect(invalid({ ...base, semantic: { ...base.semantic, provider: "openai" } })).toEqual(["semantic.embedding_model"]);
+		expect(invalid({ ...base, semantic: { ...base.semantic, embedding_model: "text-embedding-3-small" } })).toEqual(["semantic.provider"]);
+		expect(invalid({ ...base, semantic: { ...base.semantic, provider: "openai", embedding_model: "   " } })).toEqual([
+			"semantic.embedding_model",
+		]);
+		expect(invalid({ ...base, semantic: embedding })).toEqual([]);
+	});
+
+	test("session routing on the semantic classifier waits for its embedding model", () => {
+		expect(invalid({ ...base, session: { enabled: true } })).toEqual(["session.enabled"]);
+		expect(invalid({ ...base, session: { enabled: true }, semantic: embedding })).toEqual([]);
+	});
+
+	test("the similarity floor runs from 0 up to, but not including, 1", () => {
+		const floor = (min_similarity: number) => invalid({ ...base, semantic: { ...embedding, min_similarity } });
+		expect(floor(0)).toEqual([]);
+		expect(floor(0.99)).toEqual([]);
+		expect(floor(1)).toEqual(["semantic.min_similarity"]);
+		expect(floor(-0.01)).toEqual(["semantic.min_similarity"]);
+		// An emptied number field.
+		expect(floor(Number.NaN)).toEqual(["semantic.min_similarity"]);
+	});
+
+	test("the embedding message history is a whole number within the gateway's range", () => {
+		const history = (message_history_count: number) => invalid({ ...base, semantic: { ...embedding, message_history_count } });
+		expect(history(1)).toEqual([]);
+		expect(history(MAX_SEMANTIC_MESSAGE_HISTORY)).toEqual([]);
+		expect(history(0)).toEqual(["semantic.message_history_count"]);
+		expect(history(MAX_SEMANTIC_MESSAGE_HISTORY + 1)).toEqual(["semantic.message_history_count"]);
+		expect(history(1.5)).toEqual(["semantic.message_history_count"]);
+		expect(history(Number.NaN)).toEqual(["semantic.message_history_count"]);
+	});
+
+	test("the embedding timeout is a positive duration the gateway can hold", () => {
+		const timeout = (value: string) => invalid({ ...base, semantic: { ...embedding, timeout: value } });
+		expect(timeout("1ms")).toEqual([]);
+		expect(timeout("0.5ms")).toEqual([]);
+		expect(timeout(`${MAX_SEMANTIC_TIMEOUT_MS}ms`)).toEqual([]);
+		expect(timeout("")).toEqual(["semantic.timeout"]);
+		expect(timeout("0ms")).toEqual(["semantic.timeout"]);
+		expect(timeout("-5ms")).toEqual(["semantic.timeout"]);
+		expect(timeout("250")).toEqual(["semantic.timeout"]);
+		expect(timeout("soon")).toEqual(["semantic.timeout"]);
+		expect(timeout(`${MAX_SEMANTIC_TIMEOUT_MS + 1000}ms`)).toEqual(["semantic.timeout"]);
+	});
+
+	test("an llm fallback for the semantic classifier needs its provider and model", () => {
+		const withFallback = { ...base, semantic: { ...embedding, fallback: "llm" as const } };
+		expect(invalid(withFallback)).toEqual(["llm.model", "llm.provider"]);
+		expect(invalid({ ...withFallback, llm: { ...base.llm, provider: "openai" } })).toEqual(["llm.model"]);
+		expect(invalid({ ...withFallback, llm: llmModel })).toEqual([]);
+	});
 
 	test("an llm left half picked does not block the save while the llm is not in use", () => {
 		// Picking the llm's provider clears its model, and the llm's fields are
@@ -1049,5 +1138,141 @@ describe("a model router's classifier form", () => {
 		expect
 			.soft(invalid({ ...base, semantic: { ...embedding, fallback: "none" }, llm: halfPicked }), "semantic without a fallback")
 			.toEqual([]);
+	});
+
+	test("the llm classifier's history, timeout and prompt stay within the gateway's bounds", () => {
+		const llm = (changes: Partial<typeof llmModel>) => invalid({ ...base, classifier: "llm", llm: { ...llmModel, ...changes } });
+		expect(llm({})).toEqual([]);
+		expect(llm({ message_history_count: MAX_LLM_MESSAGE_HISTORY })).toEqual([]);
+		expect(llm({ message_history_count: MAX_LLM_MESSAGE_HISTORY + 1 })).toEqual(["llm.message_history_count"]);
+		expect(llm({ message_history_count: 0 })).toEqual(["llm.message_history_count"]);
+		expect(llm({ message_history_count: 2.5 })).toEqual(["llm.message_history_count"]);
+		expect(llm({ timeout: "0ms" })).toEqual(["llm.timeout"]);
+		expect(llm({ timeout: "" })).toEqual(["llm.timeout"]);
+		expect(llm({ prompt: "" }), "an empty prompt means the gateway's own").toEqual([]);
+		expect(llm({ prompt: "p".repeat(MAX_LLM_PROMPT_CHARACTERS) })).toEqual([]);
+		expect(llm({ prompt: "p".repeat(MAX_LLM_PROMPT_CHARACTERS + 1) })).toEqual(["llm.prompt"]);
+	});
+
+	test("the decision model accepts the ends of its history and confidence ranges", () => {
+		const decision = (changes: Partial<typeof base.decision>) =>
+			invalid({ ...base, classifier: "decision", decision: { ...base.decision, ...changes } });
+		expect(decision({})).toEqual([]);
+		expect(decision({ previous_message_count: 0 })).toEqual([]);
+		expect(decision({ previous_message_count: MAX_DECISION_PREVIOUS_MESSAGE_COUNT })).toEqual([]);
+		expect(decision({ min_confidence: 0 })).toEqual([]);
+		expect(decision({ min_confidence: 1 })).toEqual([]);
+		expect(decision({ previous_message_count: MAX_DECISION_PREVIOUS_MESSAGE_COUNT + 1, min_confidence: 1.01 })).toEqual([
+			"decision.min_confidence",
+			"decision.previous_message_count",
+		]);
+	});
+
+	test("each classifier asks for its own model, and an unknown classifier is refused", () => {
+		expect(invalid({ ...base, classifier: "decision" })).toEqual([]);
+		expect(invalid({ ...base, classifier: "llm" })).toEqual(["llm.model", "llm.provider"]);
+		expect(invalid({ ...base, classifier: "llm", llm: llmModel })).toEqual([]);
+		expect(invalid({ ...base, classifier: "telepathy" })).toEqual(["classifier"]);
+	});
+});
+
+describe("what a model router's classifier save sends", () => {
+	const keywords = { simple_keywords: ["hi"], medium_keywords: ["summarize this"], complex_keywords: ["prove this"] };
+	// What GET /routing/model-routers/defaults hands the creation wizard.
+	const builtIn: AnalyzerConfig = { classifier: "semantic", keywords };
+	// A router as the gateway returns it: identity, classifier, models and routing together.
+	const savedRouter: ModelRouter = {
+		id: "support-desk",
+		name: "Support",
+		description: "Customer tickets",
+		classifier: "semantic",
+		keywords,
+		semantic: { provider: "openai", embedding_model: "text-embedding-3-small", fallback: "llm" },
+		llm: { provider: "openai", model: "gpt-4o-mini" },
+		targets: [{ tier: "SIMPLE", provider: "openai", model: "gpt-4o-mini", weight: 1 }],
+		routing: { enabled: true, scope: "team", scope_id: "team-1", cel_expression: "model == 'gpt-4o'", priority: 3 },
+	};
+
+	test("a new router's body is its name, description and classifier: no id, no models, no routing", () => {
+		// The wizard saves nothing until its last step, then sends the classifier
+		// draft with the name and description; models and routing are set on the
+		// router's own page afterwards.
+		const payload = toAnalyzerPayload(toFormValues(builtIn), undefined);
+		expect(Object.keys(payload).sort()).toEqual(["classifier", "keywords"]);
+		const body = { ...payload, name: "Support", description: "" };
+		expect(Object.keys(body).sort()).toEqual(["classifier", "description", "keywords", "name"]);
+	});
+
+	test("a new router carries the classifier that was set up in the wizard, and only that one", () => {
+		const values = {
+			...toFormValues(builtIn),
+			classifier: "llm" as const,
+			llm: { ...DEFAULT_FORM_VALUES.llm, provider: "openai", model: "gpt-4o-mini" },
+		};
+		const payload = toAnalyzerPayload(values, undefined);
+		expect(Object.keys(payload).sort()).toEqual(["classifier", "keywords", "llm"]);
+		expect(payload.llm).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
+	});
+
+	test("a new router has nothing saved to fall back on, so a classifier left blank is left out", () => {
+		const payload = toAnalyzerPayload({ ...toFormValues(builtIn), classifier: "decision" as const }, undefined);
+		expect(payload).not.toHaveProperty("semantic");
+		expect(payload).not.toHaveProperty("llm");
+		expect(payload).not.toHaveProperty("suggestions");
+		expect(payload).not.toHaveProperty("session");
+		expect(payload.decision).toMatchObject(DEFAULT_MODEL);
+	});
+
+	test("the form never holds a saved router's name, models or routing", () => {
+		expect(Object.keys(toFormValues(savedRouter)).sort()).toEqual([
+			"classifier",
+			"decision",
+			"keywords",
+			"llm",
+			"semantic",
+			"session",
+			"suggestions",
+		]);
+	});
+
+	test("a classifier save does not write back the router's name, models or routing", () => {
+		// Each is saved on its own endpoint; a rename, a models save or the on/off
+		// switch made since this page loaded must not be undone by this one.
+		const payload = toAnalyzerPayload(toFormValues(savedRouter), savedRouter);
+		for (const field of ["id", "name", "description", "targets", "routing"]) {
+			expect(payload, field).not.toHaveProperty(field);
+		}
+		expect(payload.semantic).toMatchObject({ provider: "openai", embedding_model: "text-embedding-3-small", fallback: "llm" });
+		expect(payload.llm).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
+	});
+
+	test("a save from the page keeps the stored embedding and llm setup the form holds blank", () => {
+		// The endpoint replaces the whole classifier config, so a block the form
+		// could not fill must go back as it is stored, not be dropped.
+		const values = { ...toFormValues(savedRouter), semantic: DEFAULT_FORM_VALUES.semantic, llm: DEFAULT_FORM_VALUES.llm };
+		const payload = toAnalyzerPayload(values, savedRouter);
+		expect(payload.semantic).toEqual(savedRouter.semantic);
+		expect(payload.llm).toEqual(savedRouter.llm);
+	});
+
+	test("an llm block left half picked is not sent: the stored one is kept, and a new router sends none", () => {
+		const values = { ...toFormValues(savedRouter), llm: { ...DEFAULT_FORM_VALUES.llm, provider: "anthropic" } };
+		expect(toAnalyzerPayload(values, savedRouter).llm).toEqual(savedRouter.llm);
+		expect(toAnalyzerPayload(values, undefined)).not.toHaveProperty("llm");
+	});
+
+	test("changing the classifier of a saved router keeps its other classifiers' settings for a switch back", () => {
+		const values = { ...toFormValues(savedRouter), classifier: "decision" as const };
+		const payload = toAnalyzerPayload(values, savedRouter);
+		expect(payload.classifier).toBe("decision");
+		expect(payload.semantic).toMatchObject({ provider: "openai", embedding_model: "text-embedding-3-small" });
+		expect(payload.llm).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
+		expect(payload.decision).toMatchObject(DEFAULT_MODEL);
+	});
+
+	test("session routing is sent only while it is on", () => {
+		const values = toFormValues(savedRouter);
+		expect(toAnalyzerPayload(values, savedRouter)).not.toHaveProperty("session");
+		expect(toAnalyzerPayload({ ...values, session: { enabled: true } }, savedRouter).session).toEqual({ enabled: true });
 	});
 });

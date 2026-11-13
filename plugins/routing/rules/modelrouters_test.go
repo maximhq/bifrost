@@ -2,6 +2,7 @@ package rules
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -188,4 +189,174 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestModelRouterMatcherWalksEveryScope pins the whole scope chain, including
+// the user and customer levels: virtual key, user, team, customer, global.
+// Priorities are compared only within a scope, so the same priority in two
+// scopes never ties.
+func TestModelRouterMatcherWalksEveryScope(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	require.NoError(t, matcher.Set("global", "Global", routerRouting("global", "", 0, "")))
+	require.NoError(t, matcher.Set("customer", "Customer", routerRouting("customer", "customer-1", 0, "")))
+	require.NoError(t, matcher.Set("team", "Team", routerRouting("team", "team-1", 0, "")))
+	require.NoError(t, matcher.Set("user", "User", routerRouting("user", "user-1", 0, "")))
+	require.NoError(t, matcher.Set("vk", "VK", routerRouting("virtual_key", "vk-1", 0, "")))
+
+	everyone := GovernanceScope{VirtualKeyID: "vk-1", UserID: "user-1", TeamID: "team-1", CustomerID: "customer-1"}
+	steps := []struct {
+		drop func(scope *GovernanceScope)
+		want string
+	}{
+		{drop: func(*GovernanceScope) {}, want: "vk"},
+		{drop: func(scope *GovernanceScope) { scope.VirtualKeyID = "" }, want: "user"},
+		{drop: func(scope *GovernanceScope) { scope.UserID = "" }, want: "team"},
+		{drop: func(scope *GovernanceScope) { scope.TeamID = "" }, want: "customer"},
+		{drop: func(scope *GovernanceScope) { scope.CustomerID = "" }, want: "global"},
+	}
+	scope := everyone
+	for _, step := range steps {
+		step.drop(&scope)
+		assert.Equal(t, step.want, matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: scope}))
+	}
+
+	// A scope id is only read at its own level: a team's id never selects a
+	// customer's router, even when the two ids are the same string.
+	require.NoError(t, matcher.Set("customer", "Customer", routerRouting("customer", "shared-id", 0, "")))
+	assert.Equal(t, "global", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{TeamID: "shared-id"}}))
+	assert.Equal(t, "customer", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{CustomerID: "shared-id"}}))
+}
+
+// TestModelRouterMatcherSkipsConditionsThatFail pins what a condition that
+// fails to evaluate costs: only its own router. The request is told which
+// router was skipped, by the name it has now, and the next router is tried.
+func TestModelRouterMatcherSkipsConditionsThatFail(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	failing := routerRouting("global", "", 0, `int(headers["x-n"]) > 3`)
+	require.NoError(t, matcher.Set("fragile", "Fragile", failing))
+	require.NoError(t, matcher.Set("catch-all", "Catch all", routerRouting("global", "", 1, "")))
+	evaluation := &EvaluationContext{Model: "gpt-4o", Headers: map[string]string{"x-n": "not-a-number"}}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	id, err := matcher.Match(ctx, evaluation)
+	require.NoError(t, err, "a failing condition is not a failed match")
+	assert.Equal(t, "catch-all", id)
+	logs := ctx.GetRoutingEngineLogs()
+	require.Len(t, logs, 1)
+	assert.Equal(t, schemas.RoutingEngineModelRouter, logs[0].Engine)
+	assert.Equal(t, schemas.LogLevelWarn, logs[0].Level)
+	assert.Contains(t, logs[0].Message, "Model router 'Fragile' skipped: its condition failed to evaluate")
+
+	// A rename reaches the log with the routing it is saved beside.
+	require.NoError(t, matcher.Set("fragile", "Renamed", failing))
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err = matcher.Match(ctx, evaluation)
+	require.NoError(t, err)
+	require.Len(t, ctx.GetRoutingEngineLogs(), 1)
+	assert.Contains(t, ctx.GetRoutingEngineLogs()[0].Message, "Model router 'Renamed' skipped")
+
+	// With a value the condition can read, the same router takes the request.
+	assert.Equal(t, "fragile", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o", Headers: map[string]string{"x-n": "7"}}))
+
+	// A nil request context is tolerated: the skip is just not logged.
+	id, err = matcher.Match(nil, evaluation)
+	require.NoError(t, err)
+	assert.Equal(t, "catch-all", id)
+}
+
+// TestModelRouterMatcherReplacesARoutersRoute pins that a router only ever
+// has one route: saving its routing again, with another priority or another
+// condition, replaces the old route instead of adding a second one.
+func TestModelRouterMatcherReplacesARoutersRoute(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	require.NoError(t, matcher.Set("first", "First", routerRouting("global", "", 0, "")))
+	require.NoError(t, matcher.Set("second", "Second", routerRouting("global", "", 1, "")))
+	assert.Equal(t, "first", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}))
+
+	require.NoError(t, matcher.Set("first", "First", routerRouting("global", "", 9, "")))
+	assert.Equal(t, "second", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}), "the router moved behind the other")
+	value, _ := matcher.routes.Load(scopeKey("global", ""))
+	assert.Len(t, value.([]modelRouterRoute), 2, "a router is listed once, whatever was saved for it")
+
+	require.NoError(t, matcher.Set("second", "Second", routerRouting("global", "", 1, `model == "gpt-4o-mini"`)))
+	assert.Equal(t, "first", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}), "the old condition no longer applies")
+	assert.Equal(t, "second", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o-mini"}))
+
+	matcher.Delete("first")
+	matcher.Delete("second")
+	assert.False(t, matcher.HasRoutes(), "an emptied scope is forgotten, so the step is skipped again")
+}
+
+// TestSelectModelRouterTargetFollowsWeights pins that a tier's targets split
+// its requests by weight, not evenly: nine in ten for a 0.9 target. The
+// bounds are seven standard deviations wide, so the test does not flake.
+func TestSelectModelRouterTargetFollowsWeights(t *testing.T) {
+	targets := []configstoreTables.TableModelRouterTarget{
+		{Tier: configstoreTables.ModelRouterTierComplex, Model: bifrost.Ptr("mostly"), Weight: 0.9},
+		{Tier: configstoreTables.ModelRouterTierComplex, Model: bifrost.Ptr("rarely"), Weight: 0.1},
+		{Tier: configstoreTables.ModelRouterTierSimple, Model: bifrost.Ptr("other-tier"), Weight: 1},
+	}
+	const requests = 4000
+	picked := map[string]int{}
+	for range requests {
+		got, ok := SelectModelRouterTarget(targets, configstoreTables.ModelRouterTierComplex)
+		require.True(t, ok)
+		picked[*got.Model]++
+	}
+	assert.Zero(t, picked["other-tier"])
+	assert.InDelta(t, 0.9*requests, picked["mostly"], 0.035*requests)
+	assert.Equal(t, requests, picked["mostly"]+picked["rarely"])
+
+	_, ok := SelectModelRouterTarget(nil, configstoreTables.ModelRouterTierComplex)
+	assert.False(t, ok, "a router without targets keeps every request's model")
+}
+
+// TestModelRouterMatcherConcurrentWrites saves and removes routes while
+// requests are matched. Under -race it pins that a match never reads a slice
+// a save is writing, and that every match returns a router that exists.
+func TestModelRouterMatcherConcurrentWrites(t *testing.T) {
+	matcher := newTestModelRouterMatcher(t)
+	require.NoError(t, matcher.Set("steady", "Steady", routerRouting("global", "", 100, "")))
+	known := map[string]bool{"steady": true, "a": true, "b": true, "c": true}
+
+	stop := make(chan struct{})
+	var writers, readers sync.WaitGroup
+	for index, id := range []string{"a", "b", "c"} {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				switch i % 3 {
+				case 0:
+					_ = matcher.Set(id, id, routerRouting("global", "", index, `model == "gpt-4o"`))
+				case 1:
+					_ = matcher.Set(id, id, routerRouting("team", "team-1", index, ""))
+				default:
+					matcher.Delete(id)
+				}
+			}
+		}()
+	}
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			evaluation := &EvaluationContext{Model: "gpt-4o", Scope: GovernanceScope{TeamID: "team-1"}}
+			for range 500 {
+				id, err := matcher.Match(nil, evaluation)
+				if err != nil || !known[id] {
+					t.Errorf("matched %q, err %v", id, err)
+					return
+				}
+			}
+		}()
+	}
+	readers.Wait()
+	close(stop)
+	writers.Wait()
 }
