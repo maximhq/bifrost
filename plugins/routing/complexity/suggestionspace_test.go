@@ -31,7 +31,7 @@ func TestSuggestionSpaceReadsPhrasesAndCapturedRequests(t *testing.T) {
 	space, err := classifier.SuggestionSpace(ctx)
 	require.NoError(t, err)
 	defer space.Close()
-	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), space.CaptureNamespace)
+	assert.Equal(t, CaptureNamespace(testCaptureRouter, "openai", "test-embedding-model", testSemanticDimension, 1), space.CaptureNamespace)
 	assert.NotEmpty(t, space.Version)
 	assert.Equal(t, classifier.ServingVersion(), space.Version, "the space names the phrase bank it was taken from")
 	var texts []string
@@ -100,7 +100,7 @@ func (s *dimensionlessStore) GetAll(ctx context.Context, namespace string, queri
 // first.
 func TestSuggestionSpaceCountsBeforeTheFirstCapture(t *testing.T) {
 	store := &dimensionlessStore{VectorStore: newCaptureTestStore(t)}
-	space := &SuggestionSpace{Store: store, CaptureNamespace: CaptureNamespace("openai", "m", 2, 1), Dimension: 2}
+	space := &SuggestionSpace{Store: store, CaptureNamespace: CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1), Dimension: 2}
 	now := time.Now()
 	count, err := space.CountCaptured(context.Background(), now.Add(-time.Hour), now)
 	require.NoError(t, err)

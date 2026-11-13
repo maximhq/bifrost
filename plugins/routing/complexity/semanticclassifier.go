@@ -207,7 +207,8 @@ type SemanticClassifier struct {
 	// unused generations does not collect one still under construction.
 	claimer GenerationClaimer
 	// capture samples classified requests for phrase suggestions. Optional.
-	capture *RequestCapture
+	capture         *RequestCapture
+	captureRouterID string // see SetCaptureRouter; empty captures nothing
 	// lastCaptureNamespace is the capture namespace of the latest serving generation; see captureTarget.
 	lastCaptureNamespace string
 	// deletionDone wakes a warm that finished into a namespace still being
@@ -282,6 +283,16 @@ func (c *SemanticClassifier) SetWarmCoordinator(coordinator WarmCoordinator) {
 func (c *SemanticClassifier) SetRequestCapture(capture *RequestCapture) {
 	c.mu.Lock()
 	c.capture = capture
+	c.mu.Unlock()
+}
+
+// SetCaptureRouter names the model router this classifier serves, which its
+// capture namespaces are keyed by; with none (the Complexity Router page's
+// classifier) nothing is captured. Set before the first Configure: a
+// generation takes its namespace when it starts serving.
+func (c *SemanticClassifier) SetCaptureRouter(routerID string) {
+	c.mu.Lock()
+	c.captureRouterID = routerID
 	c.mu.Unlock()
 }
 
@@ -532,7 +543,7 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 func (c *SemanticClassifier) Serving() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return !c.closed && c.active != nil && c.active.embed != nil && c.active.captureNamespace != ""
+	return !c.closed && c.active != nil && c.active.embed != nil && c.active.semantic != nil
 }
 
 // Timeout returns the per-request embedding budget currently in force,
@@ -848,7 +859,7 @@ func (c *SemanticClassifier) runWarmupWorker() {
 				embed:     embed,
 				exemplars: semanticExemplarIndex(config, dimension),
 
-				captureNamespace: CaptureNamespace(config.Semantic.Provider, config.Semantic.EmbeddingModel, dimension, config.Semantic.MessageHistoryCount),
+				captureNamespace: CaptureNamespace(c.captureRouterID, config.Semantic.Provider, config.Semantic.EmbeddingModel, dimension, config.Semantic.MessageHistoryCount),
 			}
 			c.lastCaptureNamespace = c.active.captureNamespace
 			c.status = SemanticStatusInfo{State: SemanticStatusReady, Loaded: loaded, Total: len(semanticExemplars(config))}

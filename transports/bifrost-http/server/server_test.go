@@ -2479,7 +2479,7 @@ func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
 
 	// A captured request: its log, and its vector under the log's ID (a UUID
 	// request ID is its own point ID) in a capture namespace.
-	ns := complexity.CaptureNamespace("openai", "m", 2, 1)
+	ns := complexity.CaptureNamespace("support-router", "openai", "m", 2, 1)
 	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
 	capture := func(id string) {
 		t.Helper()
@@ -2552,7 +2552,7 @@ func TestDropCapturesOfDisabledRouting(t *testing.T) {
 		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	require.NoError(t, err)
-	ns := complexity.CaptureNamespace("openai", "m", 2, 1)
+	ns := complexity.CaptureNamespace("support-router", "openai", "m", 2, 1)
 	require.NoError(t, vs.CreateNamespace(ctx, ns, 2, nil))
 	cfg := &lib.Config{VectorStore: vs}
 	s := &BifrostHTTPServer{Config: cfg}

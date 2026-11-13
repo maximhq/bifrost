@@ -60,6 +60,9 @@ func (s uuidOnlyStore) GetChunk(ctx context.Context, namespace, id string) (vect
 	return s.VectorStore.GetChunk(ctx, namespace, id)
 }
 
+// testCaptureRouter is the model router test captures belong to.
+const testCaptureRouter = "router-under-test"
+
 func newCaptureTest(t testing.TB) *RequestCapture {
 	t.Helper()
 	c := NewRequestCapture(bifrost.NewDefaultLogger(schemas.LogLevelError))
@@ -86,16 +89,64 @@ func waitWritten(t *testing.T, c *RequestCapture, n int64) {
 }
 
 func TestCaptureNamespaceIsKeyedByEmbeddingSpace(t *testing.T) {
-	a := CaptureNamespace("openai", "text-embedding-3-small", 1536, 1)
-	assert.Equal(t, a, CaptureNamespace("openai", "text-embedding-3-small", 1536, 1))
-	assert.NotEqual(t, a, CaptureNamespace("openai", "text-embedding-3-large", 1536, 1))
-	assert.NotEqual(t, a, CaptureNamespace("openai", "text-embedding-3-small", 512, 1))
-	assert.NotEqual(t, a, CaptureNamespace("openai", "text-embedding-3-small", 1536, 3), "embedding more history is a different input")
-	assert.Equal(t, a, CaptureNamespace("openai", "text-embedding-3-small", 1536, 0), "an unset history count embeds the last message, as 1 does")
+	a := CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-small", 1536, 1)
+	assert.Equal(t, a, CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-small", 1536, 1))
+	assert.NotEqual(t, a, CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-large", 1536, 1))
+	assert.NotEqual(t, a, CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-small", 512, 1))
+	assert.NotEqual(t, a, CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-small", 1536, 3), "embedding more history is a different input")
+	assert.Equal(t, a, CaptureNamespace(testCaptureRouter, "openai", "text-embedding-3-small", 1536, 0), "an unset history count embeds the last message, as 1 does")
 	assert.True(t, strings.HasPrefix(a, CaptureNamespacePrefix+"_"))
 	// The generation registry reclaims unclaimed namespaces under the
 	// semantic prefix; capture must never be mistaken for one.
 	assert.False(t, strings.HasPrefix(a, SemanticVectorStoreNamespace))
+}
+
+// Each model router captures into namespaces of its own, so a router's runs
+// read only the requests it classified and its captures can be dropped with
+// it. Without a router there is no namespace, so nothing is captured.
+func TestCaptureNamespaceIsKeyedByRouter(t *testing.T) {
+	a := CaptureNamespace("router-a", "openai", "text-embedding-3-small", 1536, 1)
+	b := CaptureNamespace("router-b", "openai", "text-embedding-3-small", 1536, 1)
+	assert.NotEqual(t, a, b, "two routers on one embedding space capture apart")
+	assert.True(t, strings.HasPrefix(a, CaptureRouterPrefix("router-a")))
+	assert.False(t, strings.HasPrefix(b, CaptureRouterPrefix("router-a")))
+	assert.Empty(t, CaptureNamespace("", "openai", "text-embedding-3-small", 1536, 1))
+
+	key, ok := CaptureNamespaceRouterKey(a)
+	require.True(t, ok)
+	assert.Equal(t, CaptureRouterKey("router-a"), key)
+	// A namespace written before captures were per router carries no router.
+	_, ok = CaptureNamespaceRouterKey(CaptureNamespacePrefix + "_" + strings.Repeat("a", 32))
+	assert.False(t, ok)
+	_, ok = CaptureNamespaceRouterKey("SomethingElse_" + strings.Repeat("a", 16) + "_" + strings.Repeat("b", 32))
+	assert.False(t, ok)
+}
+
+// Dropping a router deletes its capture namespaces, in every embedding space
+// it used, and leaves other routers' alone.
+func TestDropRouterDeletesOnlyThatRoutersNamespaces(t *testing.T) {
+	ctx := context.Background()
+	store := newCaptureTestStore(t)
+	c := newCaptureTest(t)
+	c.Configure(&CaptureConfig{SampleRate: 1})
+	oldA := CaptureNamespace("router-a", "openai", "old", 2, 1)
+	newA := CaptureNamespace("router-a", "openai", "new", 2, 1)
+	b := CaptureNamespace("router-b", "openai", "new", 2, 1)
+	c.offer(requestCtx("r1"), store, oldA, 2, []float32{1, 0})
+	c.offer(requestCtx("r2"), store, newA, 2, []float32{1, 0})
+	c.offer(requestCtx("r3"), store, b, 2, []float32{0, 1})
+	waitWritten(t, c, 3)
+
+	require.NoError(t, c.DropRouter(ctx, store, "router-a"))
+	left, err := store.ListNamespaces(ctx, CaptureNamespacePrefix+"_")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{b}, left)
+
+	// The writer creates a dropped namespace again for the next sample.
+	c.offer(requestCtx("r4"), store, newA, 2, []float32{1, 0})
+	waitWritten(t, c, 4)
+	_, err = store.GetChunk(ctx, newA, capturePointID("r4"))
+	require.NoError(t, err)
 }
 
 func TestRequestCaptureOffCapturesNothing(t *testing.T) {
@@ -117,7 +168,7 @@ func TestRequestCaptureOffCapturesNothing(t *testing.T) {
 func TestRequestCaptureWritesVectorWithoutRoutingVerdict(t *testing.T) {
 	c := newCaptureTest(t)
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("req-1"), store, ns, 2, []float32{0.6, 0.8})
 	waitWritten(t, c, 1)
@@ -169,7 +220,7 @@ func TestRequestCaptureDropsWhenQueueIsFull(t *testing.T) {
 func TestRequestCaptureKeepsOtherEmbeddingSpacesOnWrite(t *testing.T) {
 	c := newCaptureTest(t)
 	store := newCaptureTestStore(t)
-	oldNS, newNS := CaptureNamespace("openai", "old", 2, 1), CaptureNamespace("openai", "new", 2, 1)
+	oldNS, newNS := CaptureNamespace(testCaptureRouter, "openai", "old", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "new", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("a"), store, oldNS, 2, []float32{1, 0})
 	waitWritten(t, c, 1)
@@ -190,7 +241,7 @@ func TestRequestCaptureKeepsOtherEmbeddingSpacesOnWrite(t *testing.T) {
 func TestRequestCaptureSweepCoversStaleEmbeddingSpaces(t *testing.T) {
 	c := newCaptureTest(t)
 	store := newCaptureTestStore(t)
-	oldNS, newNS := CaptureNamespace("openai", "old", 2, 1), CaptureNamespace("openai", "new", 2, 1)
+	oldNS, newNS := CaptureNamespace(testCaptureRouter, "openai", "old", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "new", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("a"), store, oldNS, 2, []float32{1, 0})
 	c.offer(requestCtx("b"), store, newNS, 2, []float32{0, 1})
@@ -211,7 +262,7 @@ func TestRequestCaptureSweepCoversStaleEmbeddingSpaces(t *testing.T) {
 func TestRequestCaptureForgetAndSweep(t *testing.T) {
 	c := newCaptureTest(t)
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	for _, id := range []string{"keep", "forget", "old"} {
 		c.offer(requestCtx(id), store, ns, 2, []float32{1, 0})
@@ -236,7 +287,7 @@ func TestRequestCaptureForgetAndSweep(t *testing.T) {
 
 	// Nothing to act on is not an error.
 	c.Forget(ctx, nil, "", []string{"x"})
-	n, err = c.Sweep(ctx, store, CaptureNamespace("openai", "never-written", 2, 1), time.Now())
+	n, err = c.Sweep(ctx, store, CaptureNamespace(testCaptureRouter, "openai", "never-written", 2, 1), time.Now())
 	assert.NoError(t, err)
 	assert.Zero(t, n)
 }
@@ -246,7 +297,7 @@ func TestRequestCaptureForgetAndSweep(t *testing.T) {
 func TestRequestCaptureSweepContinuesPastFailedNamespace(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	nsA, nsB := CaptureNamespace("openai", "a", 2, 1), CaptureNamespace("openai", "b", 2, 1)
+	nsA, nsB := CaptureNamespace(testCaptureRouter, "openai", "a", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "b", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("x"), inner, nsA, 2, []float32{1, 0})
 	c.offer(requestCtx("y"), inner, nsB, 2, []float32{0, 1})
@@ -278,7 +329,7 @@ func TestRequestCaptureSweepContinuesPastFailedNamespace(t *testing.T) {
 func TestRequestCaptureSweepCountsOnlySuccessfulDeletes(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	for _, id := range []string{"a", "b"} {
 		c.offer(requestCtx(id), inner, ns, 2, []float32{1, 0})
@@ -321,7 +372,7 @@ func (c *ceilingStore) GetAll(ctx context.Context, namespace string, queries []v
 func TestEachCapturedReadsTheWholeWindowPastAFilteredReadCeiling(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	ids := []string{"r1", "r2", "r3", "r4", "r5"}
 	for _, id := range ids {
@@ -374,7 +425,7 @@ func (vanishingStore) GetAll(_ context.Context, namespace string, _ []vectorstor
 // never reconciles suggestions against traffic it only half read, and an
 // estimate never counts half a window as all of it.
 func TestEachCapturedFailsWhenTheNamespaceGoesMidRead(t *testing.T) {
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	now := time.Now()
 	var pages int
 	err := EachCaptured(context.Background(), vanishingStore{}, ns, now.Add(-time.Hour), now.Add(time.Minute), func([]CapturedRequest) error {
@@ -516,7 +567,7 @@ func (f *flakyStore) Delete(ctx context.Context, namespace, id string) error {
 func TestRequestCaptureRecordsFailedDeletesAndRetriesThem(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	for _, id := range []string{"a", "b", "c"} {
 		c.offer(requestCtx(id), inner, ns, 2, []float32{1, 0})
@@ -592,7 +643,7 @@ func TestRequestCaptureForgetBoundsConcurrentDeletes(t *testing.T) {
 	t.Run("every delete runs, a bounded number at once", func(t *testing.T) {
 		c := newCaptureTest(t)
 		inner := newCaptureTestStore(t)
-		ns := CaptureNamespace("openai", "m", 2, 1)
+		ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 		require.NoError(t, inner.CreateNamespace(ctx, ns, 2, captureProperties))
 		for _, id := range ids {
 			require.NoError(t, inner.Add(ctx, ns, capturePointID(id), []float32{1, 0}, map[string]any{captureMetadataKind: captureMetadataKindValue}))
@@ -615,7 +666,7 @@ func TestRequestCaptureForgetBoundsConcurrentDeletes(t *testing.T) {
 	t.Run("after a failure the rest are recorded untried", func(t *testing.T) {
 		c := newCaptureTest(t)
 		inner := newCaptureTestStore(t)
-		okNS, badNS := CaptureNamespace("openai", "a", 2, 1), CaptureNamespace("openai", "b", 2, 1)
+		okNS, badNS := CaptureNamespace(testCaptureRouter, "openai", "a", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "b", 2, 1)
 		for _, ns := range []string{okNS, badNS} {
 			require.NoError(t, inner.CreateNamespace(ctx, ns, 2, captureProperties))
 		}
@@ -645,7 +696,7 @@ func TestRequestCaptureForgetBoundsConcurrentDeletes(t *testing.T) {
 func TestRequestCaptureRetryResolvesUnknownNamespace(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	oldNS, newNS := CaptureNamespace("openai", "old", 2, 1), CaptureNamespace("openai", "new", 2, 1)
+	oldNS, newNS := CaptureNamespace(testCaptureRouter, "openai", "old", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "new", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("a"), inner, oldNS, 2, []float32{1, 0})
 	c.offer(requestCtx("a"), inner, newNS, 2, []float32{0, 1})
@@ -672,11 +723,11 @@ func TestRequestCaptureRetryResolvesUnknownNamespace(t *testing.T) {
 // After an embedding-space switch a deleted log's vector still sits in the
 // old space; Forget removes it there too, and works with nothing serving.
 func TestRequestCaptureForgetCoversEveryEmbeddingSpace(t *testing.T) {
-	for _, serving := range []string{CaptureNamespace("openai", "new", 2, 1), ""} {
+	for _, serving := range []string{CaptureNamespace(testCaptureRouter, "openai", "new", 2, 1), ""} {
 		t.Run(fmt.Sprintf("serving=%q", serving), func(t *testing.T) {
 			c := newCaptureTest(t)
 			store := newCaptureTestStore(t)
-			oldNS := CaptureNamespace("openai", "old", 2, 1)
+			oldNS := CaptureNamespace(testCaptureRouter, "openai", "old", 2, 1)
 			c.Configure(&CaptureConfig{SampleRate: 1})
 			c.offer(requestCtx("gone"), store, oldNS, 2, []float32{1, 0})
 			c.offer(requestCtx("kept"), store, oldNS, 2, []float32{0, 1})
@@ -700,7 +751,7 @@ func TestRequestCaptureForgetCoversEveryEmbeddingSpace(t *testing.T) {
 func TestRequestCaptureRetryKeepsRowsOfOtherNamespaces(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	nsA, nsB := CaptureNamespace("openai", "a", 2, 1), CaptureNamespace("openai", "b", 2, 1)
+	nsA, nsB := CaptureNamespace(testCaptureRouter, "openai", "a", 2, 1), CaptureNamespace(testCaptureRouter, "openai", "b", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("x"), inner, nsA, 2, []float32{1, 0})
 	c.offer(requestCtx("x"), inner, nsB, 2, []float32{0, 1})
@@ -729,7 +780,7 @@ func TestRequestCaptureRetryKeepsRowsOfOtherNamespaces(t *testing.T) {
 func TestRequestCaptureForgetBeforeWriteSkipsSample(t *testing.T) {
 	c := newStoppedCapture()
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("gone"), store, ns, 2, []float32{1, 0})
 	c.offer(requestCtx("kept"), store, ns, 2, []float32{0, 1})
@@ -768,7 +819,7 @@ func (s *blockingAddStore) Add(ctx context.Context, namespace, id string, embedd
 func TestRequestCaptureForgetDuringWriteRemovesVector(t *testing.T) {
 	c := newCaptureTest(t)
 	inner := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	require.NoError(t, inner.CreateNamespace(context.Background(), ns, 2, captureProperties))
 	store := &blockingAddStore{VectorStore: inner, entered: make(chan struct{}), release: make(chan struct{})}
 	c.Configure(&CaptureConfig{SampleRate: 1})
@@ -803,8 +854,8 @@ func TestCapturePointIDIsStableUUID(t *testing.T) {
 func TestRequestCaptureRetrySkipsAbsentNamespace(t *testing.T) {
 	c := newCaptureTest(t)
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
-	absent := CaptureNamespace("openai", "never-written", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
+	absent := CaptureNamespace(testCaptureRouter, "openai", "never-written", 2, 1)
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	c.offer(requestCtx("later"), store, ns, 2, []float32{1, 0})
 	waitWritten(t, c, 1)
@@ -824,7 +875,7 @@ func TestRequestCaptureRetrySkipsAbsentNamespace(t *testing.T) {
 
 func TestRequestCaptureCloseDrainsQueuedSamples(t *testing.T) {
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	c := NewRequestCapture(bifrost.NewDefaultLogger(schemas.LogLevelError))
 	c.Configure(&CaptureConfig{SampleRate: 1})
 	for i := range 50 {
@@ -861,7 +912,7 @@ func (s *singlePageStore) GetAll(ctx context.Context, namespace string, queries 
 func TestCountCapturedCountsPastOnePage(t *testing.T) {
 	ctx := context.Background()
 	inner := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	require.NoError(t, inner.CreateNamespace(ctx, ns, 2, captureProperties))
 	now := time.Now()
 	const n = captureReadPage + 100

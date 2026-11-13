@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"strings"
 )
 
 // Request capture keeps a sample of the vectors the semantic classifier
@@ -122,19 +123,58 @@ type CaptureStats struct {
 // changes: vectors of the old input are not comparable with the new.
 const captureInputVersion = 1
 
-// CaptureNamespace names the capture namespace for one embedding space: the
-// embedding model, and the slice of each request it embeds. Two routers share
-// captured vectors only when both match, because only then is the vector the
-// same; a router that embeds more turns of history writes to its own space.
+// CaptureNamespace names the capture namespace of one model router in one
+// embedding space: the embedding model, and the slice of each request it
+// embeds. A router's namespaces are its own, so its suggestion runs read only
+// the requests it classified, and deleting a router drops its captures; a new
+// embedding space starts a fresh namespace, because old vectors are not
+// comparable with new ones. An empty router ID names nothing: only model
+// routers capture.
 //
 // A captured vector carries no routing verdict (tier, similarity): those are
-// one router's view of the request, they are on its log, and a suggestion run
-// recomputes them against its router's phrase bank. The underscore +
-// hexadecimal suffix is accepted by every backend.
-func CaptureNamespace(provider schemas.ModelProvider, model string, dimension, messageHistoryCount int) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "complexity-capture-v2\x00%s\x00%s\x00%d\x00%d\x00%d",
+// the router's view of the request at the time, they are on its log, and a
+// suggestion run recomputes them against the current phrase bank. The
+// underscore + hexadecimal parts are accepted by every backend.
+func CaptureNamespace(routerID string, provider schemas.ModelProvider, model string, dimension, messageHistoryCount int) string {
+	if routerID == "" {
+		return ""
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "complexity-capture-v3\x00%s\x00%s\x00%d\x00%d\x00%d",
 		provider, model, dimension, max(1, messageHistoryCount), captureInputVersion))
-	return CaptureNamespacePrefix + "_" + hex.EncodeToString(sum[:16])
+	return CaptureRouterPrefix(routerID) + hex.EncodeToString(sum[:16])
+}
+
+// CaptureRouterPrefix starts every capture namespace of one model router.
+func CaptureRouterPrefix(routerID string) string {
+	return CaptureNamespacePrefix + "_" + CaptureRouterKey(routerID) + "_"
+}
+
+// CaptureRouterKey stands for a router ID in its namespace names: a
+// fixed-width hash, since an ID can hold characters a backend refuses in a
+// name.
+func CaptureRouterKey(routerID string) string {
+	sum := sha256.Sum256([]byte("complexity-capture-router\x00" + routerID))
+	return hex.EncodeToString(sum[:8])
+}
+
+// CaptureNamespaceRouterKey returns the router key of a capture namespace,
+// and false for one that is not a router's: one written before captures were
+// per router.
+func CaptureNamespaceRouterKey(namespace string) (string, bool) {
+	rest, ok := strings.CutPrefix(namespace, CaptureNamespacePrefix+"_")
+	if !ok {
+		return "", false
+	}
+	key, space, ok := strings.Cut(rest, "_")
+	if !ok || len(key) != 16 || len(space) != 32 || !isHex(key) || !isHex(space) {
+		return "", false
+	}
+	return key, true
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 type captureItem struct {
@@ -235,7 +275,7 @@ func (c *RequestCapture) offer(ctx context.Context, store vectorstore.VectorStor
 		return
 	}
 	t := c.threshold.Load()
-	if t == 0 || store == nil || len(vector) == 0 {
+	if t == 0 || store == nil || namespace == "" || len(vector) == 0 {
 		return
 	}
 	if t != math.MaxUint64 && rand.Uint64() >= t {
@@ -665,6 +705,16 @@ func (c *RequestCapture) Sweep(ctx context.Context, store vectorstore.VectorStor
 	if err != nil {
 		return 0, err
 	}
+	return SweepCaptureNamespaces(ctx, store, namespaces, cutoff)
+}
+
+// SweepCaptureNamespaces deletes captured vectors older than cutoff in the
+// given namespaces, for an upkeep that keeps each router's captures for its
+// own lookback. A namespace that is gone is skipped.
+func SweepCaptureNamespaces(ctx context.Context, store vectorstore.VectorStore, namespaces []string, cutoff time.Time) (int, error) {
+	if store == nil {
+		return 0, nil
+	}
 	var total int
 	var errs []error
 	for _, ns := range namespaces {
@@ -696,6 +746,54 @@ func (c *RequestCapture) Sweep(ctx context.Context, store vectorstore.VectorStor
 		}
 	}
 	return total, errors.Join(errs...)
+}
+
+// ListCaptureNamespaces lists every capture namespace in store.
+func ListCaptureNamespaces(ctx context.Context, store vectorstore.VectorStore) ([]string, error) {
+	return captureNamespaces(ctx, store, "")
+}
+
+// CaptureStore returns where captured requests may be kept: store, unless it
+// is missing or Chromem (see SemanticClassifier.captureStoreLocked).
+func CaptureStore(store vectorstore.VectorStore) vectorstore.VectorStore {
+	if store == nil || isLocalChromemStore(store) {
+		return nil
+	}
+	return store
+}
+
+// MarkForgotten makes the writer drop samples of ids it still has queued,
+// whose logs were deleted, without deleting anything from the store: a
+// plugin with a capture per router marks every router's, then deletes once.
+func (c *RequestCapture) MarkForgotten(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.markForgotten(ids)
+}
+
+// DropRouter deletes every capture namespace of one model router, for a
+// router that was deleted.
+func (c *RequestCapture) DropRouter(ctx context.Context, store vectorstore.VectorStore, routerID string) error {
+	if store == nil || routerID == "" {
+		return nil
+	}
+	namespaces, err := store.ListNamespaces(ctx, CaptureRouterPrefix(routerID))
+	if err != nil {
+		return fmt.Errorf("list capture namespaces of router %s: %w", routerID, err)
+	}
+	var errs []error
+	for _, ns := range namespaces {
+		if err := store.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("drop capture namespace %s: %w", ns, err))
+		}
+	}
+	if c != nil {
+		c.mu.Lock()
+		c.ensured = false
+		c.mu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 // Stats reports what capture has done since it started.
