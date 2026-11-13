@@ -2266,7 +2266,7 @@
 				"impact": {
 					"back": "Suggerimenti",
 					"replaying": "Riproduzione delle richieste recenti con la bozza…",
-					"emptyBank": "Gli elenchi di frasi della bozza sono vuoti, quindi non c'è nulla da riprodurre.",
+					"emptyBank": "Nessuna frase è in attesa, quindi non c'è nulla da riprodurre.",
 					"failed": "Impossibile riprodurre la bozza: {{error}}",
 					"retry": "Riprova",
 					"source_one": "Riproduzione dell’ultimo {{count}} giorno · {{requests}} richieste acquisite · bozza vs attivo",

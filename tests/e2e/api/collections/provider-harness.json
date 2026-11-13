@@ -320453,11 +320453,11 @@
       ]
     },
     {
-      "name": "340. Model router suggestions: cancel a run and replay a draft's impact (suggestions impact)",
-      "description": "Two management endpoints back the reworked Suggestions tab. POST /api/routing/complexity-suggestions/runs/{run_id}/cancel stops a queued or running phrase suggestion run on whichever node runs it. POST /api/routing/complexity-suggestions/impact replays the router's captured requests against a draft phrase bank and prices what would change tier.\n\nWhether a router has suggestions to cancel or traffic to replay depends on the gateway, so both cases name a router that cannot exist and pin the endpoint contract: each route is mounted, reads ?router_id=, and answers the handler's own 404 naming the router. Before the change the cancel path matched no route and a POST to /impact reached only the GET-only /{suggestion_id} route, so both cases were red. Neither case calls a provider.",
+      "name": "346. Model router suggestions: cancel a run and replay a draft's impact (suggestions impact)",
+      "description": "Two management endpoints back the reworked Suggestions tab. POST /api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel stops a queued or running phrase suggestion run on whichever node runs it. POST /api/routing/model-routers/{router_id}/suggestions/impact replays the router's captured requests against a draft phrase bank and prices what would change tier.\n\nWhether a router has suggestions to cancel or traffic to replay depends on the gateway, so both cases name a router that cannot exist and pin the endpoint contract: each route is mounted under the router it names, reads the router from the path, and answers the handler's own 404 naming the router. Before the change the cancel path matched no route and a POST to /impact reached only the GET-only /{suggestion_id} route, so both cases were red. Neither case calls a provider.",
       "item": [
         {
-          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/complexity-suggestions/runs/{run_id}/cancel for an unknown model router - suggestions impact",
+          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel for an unknown model router - suggestions impact",
           "event": [
             {
               "listen": "test",
@@ -320480,29 +320480,26 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/routing/complexity-suggestions/runs/harness-no-such-run/cancel?router_id=harness-no-such-suggestions-router",
+              "raw": "{{baseUrl}}/api/routing/model-routers/harness-no-such-suggestions-router/suggestions/runs/harness-no-such-run/cancel",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "routing",
-                "complexity-suggestions",
+                "model-routers",
+                "harness-no-such-suggestions-router",
+                "suggestions",
                 "runs",
                 "harness-no-such-run",
                 "cancel"
               ],
-              "query": [
-                {
-                  "key": "router_id",
-                  "value": "harness-no-such-suggestions-router"
-                }
-              ]
+              "query": []
             }
           }
         },
         {
-          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/complexity-suggestions/impact for an unknown model router - suggestions impact",
+          "name": "[EXPECT-404] openai/gpt-4o-mini POST /api/routing/model-routers/{router_id}/suggestions/impact for an unknown model router - suggestions impact",
           "event": [
             {
               "listen": "test",
@@ -320530,21 +320527,19 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/routing/complexity-suggestions/impact?router_id=harness-no-such-suggestions-router&window=7d",
+              "raw": "{{baseUrl}}/api/routing/model-routers/harness-no-such-suggestions-router/suggestions/impact?window=7d",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "routing",
-                "complexity-suggestions",
+                "model-routers",
+                "harness-no-such-suggestions-router",
+                "suggestions",
                 "impact"
               ],
               "query": [
-                {
-                  "key": "router_id",
-                  "value": "harness-no-such-suggestions-router"
-                },
                 {
                   "key": "window",
                   "value": "7d"
@@ -320553,7 +320548,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"phrases\":[{\"tier\":\"SIMPLE\",\"text\":\"where is my refund\"}]}",
+              "raw": "{\"phrases\":{\"SIMPLE\":[\"where is my refund\"]}}",
               "options": {
                 "raw": {
                   "language": "json"

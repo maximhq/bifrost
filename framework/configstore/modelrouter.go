@@ -538,6 +538,52 @@ func (s *RDBConfigStore) UpdateModelRouter(ctx context.Context, router *ModelRou
 	})
 }
 
+// EditModelRouter applies edit to the stored router while its row is locked,
+// and saves the result, so an edit built on what is stored cannot overwrite a
+// save that lands in between, as reading, editing and calling
+// UpdateModelRouter can. edit reports whether it changed anything; when it did
+// not, nothing is written and the stored router is returned. The stored
+// routing and targets are kept. ErrNotFound when there is no router, and
+// ErrConfigUnreadable when its stored config cannot be read.
+func (s *RDBConfigStore) EditModelRouter(ctx context.Context, id string, edit func(*ModelRouter) (bool, error)) (*ModelRouter, error) {
+	if edit == nil {
+		return nil, fmt.Errorf("model router edit is nil")
+	}
+	id = strings.TrimSpace(id)
+	var result *ModelRouter
+	err := s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		row, err := s.lockModelRouterRow(ctx, txDB, id)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			return ErrNotFound
+		}
+		existing, err := decodeModelRouterRow(row)
+		if err != nil {
+			return err
+		}
+		changed, err := edit(existing)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			result = existing
+			return nil
+		}
+		r, err := prepareModelRouter(existing)
+		if err != nil {
+			return err
+		}
+		result, err = s.saveModelRouterWithTx(ctx, txDB, r, false)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // DeleteModelRouter removes a router and its targets; ErrNotFound when there
 // is none. The router's row is locked first, as a targets save locks it too,
 // so a concurrent save cannot leave targets behind.

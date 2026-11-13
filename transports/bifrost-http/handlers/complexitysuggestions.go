@@ -49,11 +49,6 @@ type ComplexitySuggestionManager interface {
 	ComplexitySuggestionImpact(ctx context.Context, routerID string, window time.Duration, draft []complexity.SuggestionPhrase, draftMinSimilarity *float64) (ComplexitySuggestionImpactReport, error)
 }
 
-// defaultComplexitySuggestionRouter is the router suggestions belong to when
-// a request names none: the only one a gateway has until it can define
-// several.
-const defaultComplexitySuggestionRouter = "default"
-
 const (
 	defaultComplexitySuggestionRunsLimit = 20
 	maxComplexitySuggestionRunsLimit     = 200
@@ -148,20 +143,23 @@ type complexitySuggestionRunsResponse struct {
 }
 
 // registerComplexitySuggestionRoutes registers the phrase-suggestion
-// endpoints. They are new, so they have no /api/governance alias.
+// endpoints, under the model router they are for. They are new, so they have
+// no /api/governance alias.
 func (h *RoutingHandler) registerComplexitySuggestionRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handle := func(method, path string, handler fasthttp.RequestHandler) {
 		r.Handle(method, path, lib.ChainMiddlewares(handler, middlewares...))
 	}
-	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions", h.listComplexitySuggestions)
-	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/test", h.testComplexitySuggestionPhrases)
-	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs", h.listComplexitySuggestionRuns)
-	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/runs/estimate", h.estimateComplexitySuggestionRun)
-	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs", h.startComplexitySuggestionRun)
-	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/runs/{run_id}/cancel", h.cancelComplexitySuggestionRun)
-	handle(fasthttp.MethodPost, "/api/routing/complexity-suggestions/impact", h.complexitySuggestionImpact)
-	handle(fasthttp.MethodGet, "/api/routing/complexity-suggestions/{suggestion_id}", h.getComplexitySuggestion)
-	handle(fasthttp.MethodPut, "/api/routing/complexity-suggestions/{suggestion_id}/status", h.updateComplexitySuggestionStatus)
+	const base = "/api/routing/model-routers/{router_id}/suggestions"
+	handle(fasthttp.MethodGet, base, h.listComplexitySuggestions)
+	handle(fasthttp.MethodPost, base+"/test", h.testComplexitySuggestionPhrases)
+	handle(fasthttp.MethodGet, base+"/runs", h.listComplexitySuggestionRuns)
+	handle(fasthttp.MethodGet, base+"/runs/estimate", h.estimateComplexitySuggestionRun)
+	handle(fasthttp.MethodPost, base+"/runs", h.startComplexitySuggestionRun)
+	handle(fasthttp.MethodPost, base+"/runs/{run_id}/cancel", h.cancelComplexitySuggestionRun)
+	handle(fasthttp.MethodPost, base+"/impact", h.complexitySuggestionImpact)
+	handle(fasthttp.MethodGet, base+"/{suggestion_id}", h.getComplexitySuggestion)
+	handle(fasthttp.MethodPut, base+"/{suggestion_id}/status", h.updateComplexitySuggestionStatus)
+	handle(fasthttp.MethodPost, "/api/routing/model-routers/{router_id}/phrases", h.addModelRouterPhrases)
 }
 
 // suggestionManager returns the suggestion manager and its store, or answers
@@ -184,14 +182,11 @@ func (h *RoutingHandler) suggestionManager(ctx *fasthttp.RequestCtx) (Complexity
 	return manager, store, true
 }
 
-// suggestionRouterID reads the router a request is about (?router_id=,
-// default the gateway's one router) and its current version, or answers 404
-// for a router that does not exist.
+// suggestionRouterID reads the model router a request is about, from its
+// path, and its current version, or answers 404 for a router that does not
+// exist.
 func (h *RoutingHandler) suggestionRouterID(ctx *fasthttp.RequestCtx, manager ComplexitySuggestionManager) (string, string, bool) {
-	routerID := strings.TrimSpace(string(ctx.QueryArgs().Peek("router_id")))
-	if routerID == "" {
-		routerID = defaultComplexitySuggestionRouter
-	}
+	routerID := pathID(ctx, "router_id")
 	version, ok := manager.ComplexitySuggestionRouter(routerID)
 	if !ok {
 		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", routerID))
@@ -612,10 +607,11 @@ func (h *RoutingHandler) cancelComplexitySuggestionRun(ctx *fasthttp.RequestCtx)
 	SendJSON(ctx, run)
 }
 
-// complexitySuggestionImpactRequest is a draft phrase bank to replay: every
-// phrase it would serve, by tier.
+// complexitySuggestionImpactRequest is phrases to try, by tier (SIMPLE,
+// MEDIUM, COMPLEX): they are added to the router's saved phrases for one
+// replay, and nothing is saved.
 type complexitySuggestionImpactRequest struct {
-	Phrases []complexitySuggestionTestPhrase `json:"phrases"`
+	Phrases map[string][]string `json:"phrases"`
 	// MinSimilarity is the floor the draft would save, when the draft changes
 	// it; omitted replays the draft at the serving floor.
 	MinSimilarity *float64 `json:"min_similarity,omitempty"`
@@ -643,22 +639,23 @@ func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
-	if len(req.Phrases) == 0 || len(req.Phrases) > suggestrun.MaxImpactPhrases {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a draft bank holds between 1 and %d phrases", suggestrun.MaxImpactPhrases))
-		return
-	}
 	if m := req.MinSimilarity; m != nil && (math.IsNaN(*m) || *m < 0 || *m >= 1) {
 		SendError(ctx, fasthttp.StatusBadRequest, "min_similarity must be at least 0 and less than 1")
 		return
 	}
-	draft := make([]complexity.SuggestionPhrase, len(req.Phrases))
-	for i, p := range req.Phrases {
-		draft[i] = complexity.SuggestionPhrase{Tier: strings.ToUpper(strings.TrimSpace(p.Tier)), Text: strings.TrimSpace(p.Text)}
-		// The bank's own limit, checked before anything is embedded.
-		if n := utf8.RuneCountInString(draft[i].Text); n > configstore.MaxComplexitySemanticPhraseCharacters {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("phrase %d is %d characters; a phrase can be at most %d", i+1, n, configstore.MaxComplexitySemanticPhraseCharacters))
-			return
-		}
+	router, ok := h.loadModelRouterForPhrases(ctx, routerID)
+	if !ok {
+		return
+	}
+	keywords, appended, err := complexity.AppendPhrases(router.Keywords, req.Phrases)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	draft := complexity.BankPhrases(keywords)
+	if len(draft) > suggestrun.MaxImpactPhrases {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a draft bank holds at most %d phrases", suggestrun.MaxImpactPhrases))
+		return
 	}
 	report, err := manager.ComplexitySuggestionImpact(ctx, routerID, window, draft, req.MinSimilarity)
 	switch {
@@ -675,8 +672,189 @@ func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
 		// could not be read.
 		SendError(ctx, fasthttp.StatusBadGateway, err.Error())
 	default:
-		SendJSON(ctx, report)
+		SendJSON(ctx, complexitySuggestionImpactResponse{ComplexitySuggestionImpactReport: report, PhraseAppend: appended})
 	}
+}
+
+// complexitySuggestionImpactResponse is a replay's report with what the
+// phrases tried did: added to the draft, or skipped as already there.
+type complexitySuggestionImpactResponse struct {
+	ComplexitySuggestionImpactReport
+	complexity.PhraseAppend
+}
+
+// addModelRouterPhrasesRequest is phrases to add to a router's phrase bank,
+// by tier, and the suggestions they came from, which are marked accepted.
+type addModelRouterPhrasesRequest struct {
+	Phrases       map[string][]string `json:"phrases"`
+	SuggestionIDs []string            `json:"suggestion_ids,omitempty"`
+}
+
+// addModelRouterPhrasesResponse is the router as saved, what was added or
+// skipped, and the suggestions marked accepted.
+type addModelRouterPhrasesResponse struct {
+	Router *configstore.ModelRouter `json:"router"`
+	complexity.PhraseAppend
+	Accepted []string `json:"accepted"`
+}
+
+// addModelRouterPhrases appends phrases to a model router's saved phrase
+// bank and serves it, the one suggestion API that changes routing. A phrase
+// its tier already holds is skipped; one another tier holds, or a bank past
+// its limit, refuses the request and saves nothing. Suggestions named must be
+// this router's and still open, or nothing is saved. The append is made to
+// the router as stored, under its row lock, so it never overwrites a save
+// that landed since it was read. The router is served again even when every
+// phrase was already there, so a retry after a failed reload still reaches
+// it. Once the phrases are saved the suggestions are marked accepted; one a
+// run superseded meanwhile, or whose status cannot be written, is left out of
+// the accepted list rather than failing a save already made.
+func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
+	routerID := pathID(ctx, "router_id")
+	var req addModelRouterPhrasesRequest
+	if !decodeStrictJSON(ctx, &req) {
+		return
+	}
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+	var suggestions []logstore.ComplexitySuggestion
+	var store logstore.ComplexitySuggestionStore
+	if ids := uniqueTrimmed(req.SuggestionIDs); len(ids) > 0 {
+		var ok bool
+		if _, store, ok = h.suggestionManager(ctx); !ok {
+			return
+		}
+		rows, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: routerID, IDs: ids})
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read suggestions: %v", err))
+			return
+		}
+		found := make(map[string]logstore.ComplexitySuggestion, len(rows))
+		for _, row := range rows {
+			found[row.ID] = row
+		}
+		for _, id := range ids {
+			row, exists := found[id]
+			if !exists {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("suggestion %q not found for model router %q", id, routerID))
+				return
+			}
+			if !complexitySuggestionTransitionAllowed(row.Status, logstore.ComplexitySuggestionStatusAccepted) {
+				SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("suggestion %q is %s, not open", id, row.Status))
+				return
+			}
+			suggestions = append(suggestions, row)
+		}
+	}
+	var appended complexity.PhraseAppend
+	var before configstore.ModelRouter
+	var refusal *phraseAppendRefusal
+	edited, err := h.configStore.EditModelRouter(ctx, routerID, func(router *configstore.ModelRouter) (bool, error) {
+		before = *router
+		keywords, result, err := complexity.AppendPhrases(router.Keywords, req.Phrases)
+		if err != nil {
+			refusal = &phraseAppendRefusal{status: fasthttp.StatusBadRequest, err: err}
+			return false, refusal
+		}
+		appended = result
+		if len(result.Added) == 0 {
+			return false, nil
+		}
+		router.Keywords = keywords
+		normalized, err := complexity.ValidateAndNormalize(&router.ComplexityAnalyzerConfig)
+		if err != nil {
+			refusal = &phraseAppendRefusal{status: fasthttp.StatusBadRequest, err: err}
+			return false, refusal
+		}
+		if err := h.routingManager.ValidateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+			status := fasthttp.StatusBadRequest
+			if errors.Is(err, ErrRoutingPluginUnavailable) {
+				status = fasthttp.StatusInternalServerError
+			}
+			refusal = &phraseAppendRefusal{status: status, err: err}
+			return false, refusal
+		}
+		router.ComplexityAnalyzerConfig = *normalized
+		return true, nil
+	})
+	switch {
+	case refusal != nil:
+		SendError(ctx, refusal.status, refusal.err.Error())
+		return
+	case err != nil:
+		sendModelRouterLoadError(ctx, routerID, err)
+		return
+	}
+	if len(appended.Added) > 0 {
+		// Recorded once the phrases are saved, before anything that could
+		// still fail: the save stands either way.
+		lib.RecordAuditChange(ctx, "model_router.phrases_added", "model_router", before.ID, before.Name, &before, edited)
+	}
+	if !h.reloadModelRouter(ctx, routerID) {
+		return
+	}
+	saved, err := h.configStore.GetModelRouter(ctx, routerID)
+	if err != nil {
+		sendModelRouterLoadError(ctx, routerID, err)
+		return
+	}
+	accepted := []string{}
+	for _, row := range suggestions {
+		resolved := time.Now().UTC()
+		moved, err := store.UpdateComplexitySuggestionStatus(ctx, row.ID, row.Status, logstore.ComplexitySuggestionStatusAccepted, &resolved)
+		if err != nil {
+			logger.Warn("model router %s: phrases saved, but suggestion %s could not be marked accepted: %v", routerID, row.ID, err)
+			continue
+		}
+		if !moved {
+			continue // a run superseded it meanwhile; left as the run left it
+		}
+		accepted = append(accepted, row.ID)
+		lib.RecordAuditChange(ctx, "model_routing_suggestion."+logstore.ComplexitySuggestionStatusAccepted, "model_routing_suggestion", row.ID, strings.Join(row.Phrases(), ", "),
+			map[string]any{"status": row.Status}, map[string]any{"status": logstore.ComplexitySuggestionStatusAccepted})
+	}
+	SendJSON(ctx, addModelRouterPhrasesResponse{Router: saved, PhraseAppend: appended, Accepted: accepted})
+}
+
+// phraseAppendRefusal is a phrase add the router's config refuses, with the
+// status it is answered with.
+type phraseAppendRefusal struct {
+	status int
+	err    error
+}
+
+func (r *phraseAppendRefusal) Error() string { return r.err.Error() }
+
+// uniqueTrimmed returns ids trimmed, without blanks or repeats, in order.
+func uniqueTrimmed(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if _, dup := seen[id]; id == "" || dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// loadModelRouterForPhrases reads a router's saved config, whose phrases an
+// impact check or an add builds on, answering the error otherwise.
+func (h *RoutingHandler) loadModelRouterForPhrases(ctx *fasthttp.RequestCtx, routerID string) (*configstore.ModelRouter, bool) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return nil, false
+	}
+	router, err := h.configStore.GetModelRouter(ctx, routerID)
+	if err != nil {
+		sendModelRouterLoadError(ctx, routerID, err)
+		return nil, false
+	}
+	return router, true
 }
 
 // loadComplexitySuggestion reads the suggestion named in the path, with its

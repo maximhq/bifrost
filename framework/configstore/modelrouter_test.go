@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -416,4 +417,49 @@ func TestMigrationAddModelRouterSuggestionTierColumns(t *testing.T) {
 	assert.True(t, back.Suggestions.Enabled)
 	assert.Equal(t, 14, back.Suggestions.LookbackDays)
 	assert.Nil(t, back.Suggestions.Tier, "no tier block was saved, so none reads back")
+}
+
+// EditModelRouter edits the router as stored when it runs, under its row
+// lock: two edits that each add a phrase both land, where reading, editing
+// and saving apart would let the second overwrite the first. An edit that
+// changes nothing writes nothing.
+func TestEditModelRouterBuildsOnTheStoredRouter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+	stale, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+
+	add := func(phrase string) func(*ModelRouter) (bool, error) {
+		return func(r *ModelRouter) (bool, error) {
+			r.Keywords.SimpleKeywords = append(r.Keywords.SimpleKeywords, phrase)
+			return true, nil
+		}
+	}
+	_, err = store.EditModelRouter(ctx, "support", add("first added"))
+	require.NoError(t, err)
+	// A second edit started from the same read as the first still sees it.
+	_, err = store.EditModelRouter(ctx, "support", add("second added"))
+	require.NoError(t, err)
+	got, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, append(append([]string{}, stale.Keywords.SimpleKeywords...), "first added", "second added"), got.Keywords.SimpleKeywords)
+
+	var row tables.TableModelRouter
+	require.NoError(t, store.DB().First(&row, "id = ?", "support").Error)
+	unchanged, err := store.EditModelRouter(ctx, "support", func(*ModelRouter) (bool, error) { return false, nil })
+	require.NoError(t, err)
+	assert.Equal(t, got.Keywords, unchanged.Keywords)
+	var after tables.TableModelRouter
+	require.NoError(t, store.DB().First(&after, "id = ?", "support").Error)
+	assert.True(t, row.UpdatedAt.Equal(after.UpdatedAt), "nothing is written for an edit that changed nothing")
+
+	refused := errors.New("refused")
+	_, err = store.EditModelRouter(ctx, "support", func(r *ModelRouter) (bool, error) {
+		r.Keywords.SimpleKeywords = nil
+		return false, refused
+	})
+	require.ErrorIs(t, err, refused)
+	_, err = store.EditModelRouter(ctx, "missing", add("x"))
+	require.ErrorIs(t, err, ErrNotFound)
 }

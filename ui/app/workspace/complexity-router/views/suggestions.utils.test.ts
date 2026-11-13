@@ -4,7 +4,7 @@ import {
 	addPhrases,
 	availableWindows,
 	categoryCounts,
-	draftBank,
+	stagedAdditions,
 	filterSuggestions,
 	newPhrases,
 	proposedTier,
@@ -195,11 +195,14 @@ describe("runs", () => {
 	});
 });
 
-describe("draft bank", () => {
-	test("every non-blank phrase with its tier", () => {
-		expect(draftBank({ simple_keywords: ["a", " "], medium_keywords: [], complex_keywords: ["c"] })).toEqual([
-			{ tier: "SIMPLE", text: "a" },
-			{ tier: "COMPLEX", text: "c" },
-		]);
+describe("staged additions", () => {
+	test("the staged phrases by tier, trimmed, blanks left out", () => {
+		expect(
+			stagedAdditions([
+				{ id: "s1", tier: "SIMPLE", phrases: ["a", " "] },
+				{ id: "s2", tier: "COMPLEX", phrases: [" c "] },
+				{ id: "s3", tier: "SIMPLE", phrases: ["b"] },
+			]),
+		).toEqual({ SIMPLE: ["a", "b"], COMPLEX: ["c"] });
 	});
 });
