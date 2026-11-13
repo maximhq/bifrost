@@ -2841,11 +2841,29 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 			}
 		}
-		if bifrostReq.Params.Text != nil {
-			if bifrostReq.Params.Text.Format != nil {
-				// Bedrock structured output goes through the synthetic `bf_so_*`
-				// tool path for all models, including Anthropic. We capture the
-				// tool here and defer injection until after normal tool/tool_choice
+		if bifrostReq.Params.Text != nil && bifrostReq.Params.Text.Format != nil {
+			// Verified Claude models take structured output natively as
+			// output_config.format in additionalModelRequestFields: the model's
+			// decoding is constrained, and no synthetic tool competes with the
+			// caller's tools or needs a forced tool_choice.
+			var outputFormat json.RawMessage
+			native := false
+			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && anthropic.DefaultSupportsNativeStructuredOutput(caps.Model()) {
+				schema, err := textFormatSchema(bifrostReq.Params.Text)
+				if err != nil {
+					return nil, err
+				}
+				outputFormat, native = nativeAnthropicOutputFormat(schema)
+			}
+			if native {
+				if bedrockReq.AdditionalModelRequestFields == nil {
+					bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+				}
+				setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+			} else {
+				// Other models, and schemas output_config.format can't carry, go
+				// through the synthetic `bf_so_*` tool path. We capture the tool
+				// here and defer injection until after normal tool/tool_choice
 				// conversion so the forced structured-output tool choice is not
 				// overwritten.
 				responseFormatTool, _, err := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)

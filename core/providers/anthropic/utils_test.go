@@ -2891,6 +2891,60 @@ func TestIsHaiku5Plus(t *testing.T) {
 	}
 }
 
+// TestDefaultSupportsNativeStructuredOutput pins which Claude models get
+// output_config.format natively: the ones verified through Bedrock Converse.
+// Everything else, including later 5.x releases, keeps the synthetic
+// structured-output tool.
+func TestDefaultSupportsNativeStructuredOutput(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-opus-5-5", true},
+		{"eu.anthropic.claude-opus-5-5", true},
+		{"global.anthropic.claude-opus-5-5", true},
+		{"claude-opus-5.5", true},
+		{"claude-opus-5-5@default", true},
+		{"claude-opus-5", true},
+		{"eu.anthropic.claude-opus-5", true},
+		{"claude-opus-5-20260301", true},
+		{"anthropic.claude-opus-5-v1:0", true},
+		{"anthropic.claude-opus-4-7-v1:0", true},
+		{"eu.anthropic.claude-opus-4-7", true},
+		{"eu.anthropic.claude-opus-4-6-v1", true},
+		{"claude-sonnet-5", true},
+		{"eu.anthropic.claude-sonnet-5", true},
+		{"claude-sonnet-4-6", true},
+		{"eu.anthropic.claude-sonnet-4-6", true},
+		// Not verified yet, so they keep the synthetic tool.
+		{"claude-opus-5-6", false},
+		{"claude-sonnet-5-5", false},
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-5-20251101", false},
+		{"eu.anthropic.claude-sonnet-4-5-20250929-v1:0", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-haiku-5-5", false},
+		{"claude-fable-5-1", false},
+		{"claude-mythos-5", false},
+		// No native structured output.
+		{"claude-opus-4-1-20250805", false},
+		{"anthropic.claude-opus-4-20250514-v1:0", false},
+		{"anthropic.claude-sonnet-4-20250514-v1:0", false},
+		{"anthropic.claude-3-7-sonnet-20250219-v1:0", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"", false},
+		{"amazon.nova-pro-v1:0", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := DefaultSupportsNativeStructuredOutput(tt.model); got != tt.expected {
+				t.Errorf("DefaultSupportsNativeStructuredOutput(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
 // surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
 // effort, mid-conversation system). The "opus-5" substring must NOT match

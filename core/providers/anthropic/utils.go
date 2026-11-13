@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1771,6 +1772,35 @@ func DefaultSupportsNativeEffort(model string) bool {
 			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
 			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
 			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
+	}
+	if strings.Contains(m, "sonnet") {
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	}
+	return false
+}
+
+// nativeStructuredOutputGen5Pattern matches exactly Claude Opus 5, Opus 5.5 and
+// Sonnet 5 in their bare, Bedrock, Vertex and date-suffixed forms, and no later
+// 5.x release: the version is followed by the end of the id, a date, a Bedrock
+// "-v" suffix or a separator such as "@" or ":".
+var nativeStructuredOutputGen5Pattern = regexp.MustCompile(`(?:opus-5(?:[-.]5)?|sonnet-5)(?:$|[^-.0-9]|-[0-9]{8}|-v[0-9])`)
+
+// DefaultSupportsNativeStructuredOutput reports whether a structured-output
+// schema goes to the model natively as output_config.format. It covers the
+// Claude models this has been verified on through Bedrock Converse: Opus 4.6,
+// Opus 4.7, Opus 5, Opus 5.5, Sonnet 4.6 and Sonnet 5. Every other model keeps a
+// synthetic structured-output tool until it is verified, including models
+// Anthropic documents as supporting structured outputs.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+func DefaultSupportsNativeStructuredOutput(model string) bool {
+	m := strings.ToLower(model)
+	if nativeStructuredOutputGen5Pattern.MatchString(m) {
+		return true
+	}
+	if strings.Contains(m, "opus") {
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7")
 	}
 	if strings.Contains(m, "sonnet") {
 		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
@@ -4561,6 +4591,100 @@ func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
 	}
 
 	return body
+}
+
+// CloseObjectSchemasRaw sets additionalProperties false on every object schema
+// that leaves it unset, at any depth: output_config.format rejects an object
+// without it, nested ones included. It reports false, and returns the schema
+// unchanged, when closing would reject replies the caller's schema allows:
+//   - any schema, typed "object" or not, sets additionalProperties to true or a
+//     schema, which output_config.format rejects too;
+//   - an object to close declares no properties, so closing it would allow
+//     only {};
+//   - an object to close has anyOf, oneOf or allOf branches, so closing it
+//     would forbid keys the branches define.
+//
+// An object that already sets additionalProperties false is kept as written.
+// It visits the same subschemas as NormalizeSchemaForAnthropicRaw.
+func CloseObjectSchemasRaw(schema json.RawMessage) (json.RawMessage, bool) {
+	node := gjson.ParseBytes(schema)
+	if !node.IsObject() {
+		return schema, true
+	}
+
+	body := append([]byte(nil), schema...)
+
+	// A node can declare additionalProperties without type "object", so an
+	// open value falls back whatever the node's type.
+	additional := node.Get("additionalProperties")
+	if additional.Exists() && additional.Type != gjson.False {
+		return schema, false
+	}
+	if node.Get("type").String() == "object" && !additional.Exists() {
+		if !declaresProperties(node) || hasCompositionBranches(node) {
+			return schema, false
+		}
+		body, _ = sjson.SetBytes(body, "additionalProperties", false)
+	}
+
+	for _, key := range []string{"properties", "definitions", "$defs"} {
+		children := node.Get(key)
+		if !children.IsObject() {
+			continue
+		}
+		closedChildren := []byte("{}")
+		ok := true
+		children.ForEach(func(name, child gjson.Result) bool {
+			var closed json.RawMessage
+			closed, ok = CloseObjectSchemasRaw(json.RawMessage(child.Raw))
+			closedChildren, _ = sjson.SetRawBytes(closedChildren, sjsonEscapeKey(name.String()), closed)
+			return ok
+		})
+		if !ok {
+			return schema, false
+		}
+		body, _ = sjson.SetRawBytes(body, sjsonEscapeKey(key), closedChildren)
+	}
+
+	if items := node.Get("items"); items.IsObject() {
+		closed, ok := CloseObjectSchemasRaw(json.RawMessage(items.Raw))
+		if !ok {
+			return schema, false
+		}
+		body, _ = sjson.SetRawBytes(body, "items", closed)
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		branches := node.Get(key)
+		if !branches.IsArray() {
+			continue
+		}
+		closedBranches := []byte("[]")
+		for i, branch := range branches.Array() {
+			closed, ok := CloseObjectSchemasRaw(json.RawMessage(branch.Raw))
+			if !ok {
+				return schema, false
+			}
+			closedBranches, _ = sjson.SetRawBytes(closedBranches, fmt.Sprintf("%d", i), closed)
+		}
+		body, _ = sjson.SetRawBytes(body, key, closedBranches)
+	}
+
+	return body, true
+}
+
+func declaresProperties(node gjson.Result) bool {
+	properties := node.Get("properties")
+	return properties.IsObject() && len(properties.Map()) > 0
+}
+
+func hasCompositionBranches(node gjson.Result) bool {
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if node.Get(key).Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.
