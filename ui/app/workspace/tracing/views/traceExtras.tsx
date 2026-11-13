@@ -1,12 +1,15 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
 	getErrorMessage,
+	useAddEvalDatasetRowsFromSpansMutation,
 	useAddTraceCommentMutation,
 	useDeleteTraceCommentMutation,
 	useDeleteTraceScoreMutation,
+	useGetEvalDatasetsQuery,
 	useSaveTraceScoreMutation,
 } from "@/lib/store";
 import type { TraceDetail, TraceSpan } from "@/lib/types/traces";
@@ -15,6 +18,54 @@ import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+
+/** Copies one span into an evals dataset as a row: its input, output, history and expected value. */
+function AddToDataset({ span }: { span: TraceSpan }) {
+	const { t } = useTranslation("observability");
+	const { data } = useGetEvalDatasetsQuery({ limit: 100 });
+	const [addRows, { isLoading }] = useAddEvalDatasetRowsFromSpansMutation();
+	const [datasetId, setDatasetId] = useState("");
+	const datasets = data?.datasets ?? [];
+
+	const submit = async () => {
+		try {
+			const result = await addRows({
+				id: datasetId,
+				spans: [{ project_id: span.project_id, trace_id: span.trace_id, span_id: span.span_id }],
+			}).unwrap();
+			if (result.rows_added > 0) toast.success(t("tracing.evals.addedToDataset", { count: result.rows_added }));
+			else toast.error(t("tracing.evals.skippedFromDataset", { reason: result.skipped?.[0]?.reason ?? "" }));
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	if (datasets.length === 0) return <p className="text-muted-foreground text-xs">{t("tracing.evals.noDatasets")}</p>;
+	return (
+		<div className="flex items-center gap-2" data-testid="trace-add-to-dataset">
+			<Select value={datasetId} onValueChange={setDatasetId}>
+				<SelectTrigger className="w-64" data-testid="trace-add-to-dataset-select">
+					<SelectValue placeholder={t("tracing.evals.chooseDataset")} />
+				</SelectTrigger>
+				<SelectContent>
+					{datasets.map((dataset) => (
+						<SelectItem key={dataset.id} value={dataset.id}>
+							{dataset.name}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+			<Button
+				variant="outline"
+				data-testid="trace-add-to-dataset-button"
+				disabled={!datasetId || isLoading || span.content_hidden}
+				onClick={submit}
+			>
+				{t("tracing.evals.addToDataset")}
+			</Button>
+		</div>
+	);
+}
 
 /** Scores on one span: what SDKs and evaluators sent, and what reviewers added. A reviewer can add and remove their own. */
 function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
@@ -56,6 +107,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 
 	return (
 		<div className="space-y-4" data-testid="trace-review-tab">
+			<AddToDataset span={span} />
 			{scores.length === 0 && <p className="text-muted-foreground text-sm">{t("tracing.review.noScores")}</p>}
 			<div className="divide-y rounded-md border empty:hidden">
 				{scores.map((score) => (

@@ -97,6 +97,7 @@ type Service struct {
 	store Store
 	logs  LogReader
 	files FileStore
+	spans SpanReader
 }
 
 // SetFileStore gives the service a place to keep uploaded files. Without one, files

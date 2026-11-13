@@ -336,3 +336,86 @@ func TestRetentionAndRateLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 7), *spans[0].ExpiresAt, time.Minute)
 }
+
+// fakeEvaluator scores every trace 0.9 and counts its calls.
+type fakeEvaluator struct {
+	mu    sync.Mutex
+	calls []map[string]string
+}
+
+func (f *fakeEvaluator) EvaluateTrace(_ context.Context, _ string, variables map[string]string) (*TraceEvaluation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, variables)
+	return &TraceEvaluation{Value: new(0.9), Reasoning: "grounded"}, nil
+}
+
+func (f *fakeEvaluator) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// TestEvaluatorRulesScoreACompletedTraceOnce pins online evaluation: a rule scores a trace when it
+// completes, never while it is still arriving, never twice, never outside its sample, and never
+// past its daily cap. The result is a score on the trace, written by the evaluator.
+func TestEvaluatorRulesScoreACompletedTraceOnce(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, Config{})
+	evaluator := &fakeEvaluator{}
+	env.service.SetTraceEvaluator(evaluator)
+	env.project.Evaluators = []tables.TraceEvaluatorRule{
+		{EvaluatorID: "ev-faithful", Name: "faithfulness", SampleRate: 1, DailyCap: 2, Enabled: true},
+		{EvaluatorID: "ev-off", SampleRate: 1, Enabled: false},
+		{EvaluatorID: "ev-never", SampleRate: 0, Enabled: true},
+	}
+	ingest := func(traceID string, end *time.Time) {
+		require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{{TraceID: traceID, SpanID: "root", Name: "run", Kind: logstore.TraceSpanKindTask, StartTime: at(0), EndTime: end, Input: "question", Output: "answer", Expected: "answer"}}))
+		require.NoError(t, env.service.FlushRollups(ctx))
+	}
+
+	ingest("running", nil)
+	time.Sleep(50 * time.Millisecond)
+	assert.Zero(t, evaluator.count(), "a trace that is still arriving is not scored")
+
+	ingest("t1", at(500))
+	require.Eventually(t, func() bool {
+		scores, _ := env.store.ListTraceScores(ctx, "p1", "t1")
+		return len(scores) == 1
+	}, 3*time.Second, 10*time.Millisecond)
+	scores, err := env.store.ListTraceScores(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, "faithfulness", scores[0].Name)
+	assert.Equal(t, logstore.TraceAuthorEvaluator, scores[0].Source)
+	assert.Equal(t, 0.9, *scores[0].Value)
+	assert.Equal(t, "grounded", scores[0].Comment)
+	evaluator.mu.Lock()
+	assert.Equal(t, map[string]string{"input": "question", "output": "answer", "expected_output": "answer"}, evaluator.calls[0])
+	evaluator.mu.Unlock()
+
+	// The score marks the trace dirty; the rollup that follows must not score it again.
+	require.NoError(t, env.service.FlushRollups(ctx))
+	require.NoError(t, env.service.FlushRollups(ctx))
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, evaluator.count(), "a trace is scored once per rule")
+	trace, err := env.store.FindTrace(ctx, "p1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, 0.9, trace.ScoresParsed["faithfulness"])
+
+	ingest("t2", at(500))
+	require.Eventually(t, func() bool { return evaluator.count() == 2 }, 3*time.Second, 10*time.Millisecond)
+	ingest("t3", at(500))
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 2, evaluator.count(), "the daily cap stops the third trace")
+
+	assert.True(t, sampled("any", "ev", 1))
+	assert.False(t, sampled("any", "ev", 0))
+	assert.Equal(t, sampled("trace-a", "ev", 0.5), sampled("trace-a", "ev", 0.5), "a trace is in the sample or out of it for good")
+	in := 0
+	for i := range 2000 {
+		if sampled(string(rune('a'+i%26))+string(rune('a'+i/26%26))+string(rune('a'+i/676)), "ev", 0.25) {
+			in++
+		}
+	}
+	assert.InDelta(t, 500, in, 120, "the sample is close to its rate")
+}

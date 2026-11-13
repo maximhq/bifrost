@@ -94,7 +94,11 @@ func (s *BifrostHTTPServer) setupEvals(ctx context.Context) (*handlers.EvalsHand
 		return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, nil)), runsHandler
 	}
 	s.evals = &evalsRuntime{runner: runner, queue: q}
-	return handlers.NewEvalsHandler(evals.NewService(s.Config.ConfigStore, engine, runner)), runsHandler
+	evaluators := evals.NewService(s.Config.ConfigStore, engine, runner)
+	// Tracing projects can run evaluators on their traces as they complete.
+	s.traceEvaluator = handlers.NewTraceEvaluator(evaluators)
+	s.wireTraceEvaluator()
+	return handlers.NewEvalsHandler(evaluators), runsHandler
 }
 
 // newEvalsQueue returns the queue evaluations run on: backed by the log store when one
@@ -200,6 +204,10 @@ func (s *BifrostHTTPServer) setupEvalDatasets() *handlers.EvalsDatasetsHandler {
 		logs = s.Config.LogsStore
 	}
 	service := datasets.NewService(s.Config.ConfigStore, logs)
+	if s.Config.LogsStore != nil {
+		// Rows can be curated from spans of pushed traces too.
+		service.SetSpanReader(s.Config.LogsStore)
+	}
 	// Uploaded files go to the object store when the gateway has one. Without it
 	// they are kept in the config database, with a size cap.
 	if s.Config.ObjectStore != nil {
