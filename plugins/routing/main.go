@@ -280,7 +280,6 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
 	applyRouterConfig(p.complexityRuntime(), resolved)
-	p.configureComplexityCapture(resolved)
 	return nil
 }
 
