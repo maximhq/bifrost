@@ -382,16 +382,7 @@
               "enterprise/rbac",
               "enterprise/data-access-control",
               "enterprise/view-as-user",
-              {
-                "group": "Workload Identity",
-                "icon": "fingerprint",
-                "pages": [
-                  "enterprise/workload-identity/overview",
-                  "enterprise/workload-identity/entra",
-                  "enterprise/workload-identity/aws",
-                  "enterprise/workload-identity/oidc"
-                ]
-              },
+              "enterprise/workload-identity/overview",
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -2759,6 +2750,26 @@
     {
       "source": "/enterprise/setting-up-entra",
       "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/workload-identity/entra",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/azure",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/aws",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/oidc",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/trusted-issuers",
+      "destination": "/enterprise/workload-identity/overview"
     },
     {
       "source": "/enterprise/setting-up-zitadel",
