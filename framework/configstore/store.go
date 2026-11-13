@@ -1100,6 +1100,13 @@ type ConfigStore interface {
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
+	// Phrase-suggestion schedule state: the next run of a router's schedule,
+	// claimed by one node when due. On the interface rather than read off the
+	// concrete store, so a store that wraps it keeps the shared schedule.
+	GetComplexitySuggestionSchedule(ctx context.Context, routerID string) (*tables.TableComplexitySuggestionSchedule, error)
+	SetComplexitySuggestionSchedule(ctx context.Context, routerID, scheduleHash string, nextRunAt time.Time, readVersion *int64) (bool, error)
+	ClaimComplexitySuggestionRun(ctx context.Context, routerID string, version int64, dueAt, nextRunAt time.Time, runID string) (bool, error)
+
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
 	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)

@@ -49,6 +49,15 @@ func captureTestConfig(suggestions *configstore.ComplexitySuggestionsConfig) *co
 // embedded one, so the plugin gets an in-memory Chromem store as that.
 func newCapturePlugin(t *testing.T, suggestions *configstore.ComplexitySuggestionsConfig) *RoutingPlugin {
 	t.Helper()
+	return newCapturePluginWithStore(t, suggestions, true)
+}
+
+// sharedTestStore stands in for a shared vector store in tests: Chromem
+// underneath, but not of Chromem's type, which capture refuses.
+type sharedTestStore struct{ vectorstore.VectorStore }
+
+func newCapturePluginWithStore(t *testing.T, suggestions *configstore.ComplexitySuggestionsConfig, shared bool) *RoutingPlugin {
+	t.Helper()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	p := &RoutingPlugin{logger: logger, semanticClassifier: complexity.NewSemanticClassifier(context.Background(), logger)}
 	p.semanticClassifier.SetEmbeddingFunc(captureTestEmbedding)
@@ -56,6 +65,9 @@ func newCapturePlugin(t *testing.T, suggestions *configstore.ComplexitySuggestio
 		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
 	}, logger)
 	require.NoError(t, err)
+	if shared {
+		store = &sharedTestStore{store}
+	}
 	p.SetComplexityVectorStore(store)
 	p.startComplexityCapture(context.Background(), time.Hour, time.Hour)
 	t.Cleanup(func() { _ = p.Cleanup() })
