@@ -374,7 +374,7 @@
 		"maxDepthHelp": "Profundidade máxima para a execução do agente MCP.",
 		"refreshIntervalHelp": "Com que frequência atualizar as listas de ferramentas dos servidores MCP. Defina 0 para usar o predefinido de 10 minutos.",
 		"disableAutoToolInjectionHelp": "Quando ativado, as ferramentas MCP não são automaticamente incluídas em cada pedido. As ferramentas só são injetadas quando especificadas explicitamente via cabeçalhos de pedido (<code0>x-bf-mcp-include-tools</code0>) e ainda têm de ser permitidas pela configuração MCP da chave virtual.",
-		"tempTokenHelp": "Quando ativado, as ligações OAuth MCP por utilizador podem incluir um token com âmbito de curta duração para que alguém sem sessão ativa no painel Bifrost possa concluir o fluxo. Mantenha desativado para exigir autenticação normal do painel.",
+		"tempTokenHelp": "Quando ativado, as ligações OAuth MCP por utilizador e as ligações de início de sessão do Claude Code podem incluir um token com âmbito de curta duração para que alguém sem sessão ativa no painel Bifrost possa concluir o fluxo. Mantenha desativado para exigir autenticação normal do painel.",
 		"bindingHelp": "Como as ferramentas são expostas no VFS: ao nível do servidor (todas as ferramentas por servidor) ou ao nível da ferramenta (ferramentas individuais).",
 		"externalClientUrlHelp": "Sobrepor o URL base público do Bifrost quando corre atrás de um proxy inverso. <b0>Deixe em branco para derivar o URL</b0> a partir do cabeçalho <code1>Host</code1> recebido. Usado como o <code2>redirect_uri</code2> que o Bifrost regista junto de fornecedores OAuth a montante quando atua como cliente de um servidor MCP (ex.: Notion ou Jira redirecionam o browser para <code3>&lt;URL&gt;/api/oauth/callback</code3> após o início de sessão). Suporta sintaxe de variável de ambiente (ex.:  <code4>env.BIFROST_EXTERNAL_URL</code4>). Atrás de um prefixo de URL (server.base_path), inclua o prefixo, por exemplo https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Os fornecedores OAuth a montante bloqueiam o <code0>redirect_uri</code0> ao que foi registado inicialmente, pelo que os clientes MCP que já concluíram OAuth falharão com <em1>\"Invalid redirect URI\"</em1>. Para recuperar, limpe as credenciais de cliente OAuth armazenadas dos servidores MCP afetados e volte a autorizar para o Bifrost voltar a executar o Dynamic Client Registration com o novo URL.",
@@ -1648,6 +1648,8 @@
 		"urlTemplate": "<URL do emissor>/gateway/<cliente>",
 		"accessTokenTtlLabel": "Validade do token de acesso (minutos)",
 		"accessTokenTtlDescription": "Por quanto tempo o token de acesso de cada login continua válido (padrão 10, mínimo 1). Sair ou revogar um login impede a renovação, mas o token de acesso já emitido continua funcionando até expirar. Para cortar o acesso imediatamente, desative a chave virtual ou o usuário. Esta configuração é compartilhada com o MCP OAuth.",
-		"accessTokenTtlInvalid": "A validade do token de acesso deve ser de pelo menos 1 minuto."
+		"accessTokenTtlInvalid": "A validade do token de acesso deve ser de pelo menos 1 minuto.",
+		"allowTempTokenLabel": "Permitir ligações de autenticação com token temporário",
+		"allowTempTokenDescription": "Quando ativado, as ligações OAuth MCP por utilizador e as ligações de início de sessão do Claude Code podem incluir um token com âmbito de curta duração para que alguém sem sessão ativa no painel Bifrost possa concluir o fluxo. Mantenha desativado para exigir autenticação normal do painel."
 	}
 }

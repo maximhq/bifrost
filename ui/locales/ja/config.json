@@ -374,7 +374,7 @@
 		"maxDepthHelp": "MCP エージェント実行の最大深度。",
 		"refreshIntervalHelp": "MCP サーバーからツール一覧を更新する間隔。0 でデフォルトの 10 分を使います。",
 		"disableAutoToolInjectionHelp": "有効時、MCP ツールはすべてのリクエストに自動追加されません。リクエストヘッダー（<code0>x-bf-mcp-include-tools</code0>）で明示指定されたときだけ注入され、仮想キーの MCP 構成で許可されている必要もあります。",
-		"tempTokenHelp": "有効時、ユーザーごとの MCP OAuth リンクに短命スコープトークンを含め、Bifrost ダッシュボード未ログインでもフロー完了できます。無効のままにすると通常のダッシュボード認証が必要です。",
+		"tempTokenHelp": "有効時、ユーザーごとの MCP OAuth リンクと Claude Code のサインインリンクに短命スコープトークンを含め、Bifrost ダッシュボード未ログインでもフロー完了できます。無効のままにすると通常のダッシュボード認証が必要です。",
 		"bindingHelp": "VFS でのツール公開方法：サーバーレベル（サーバー単位ですべて）またはツールレベル（個別ツール）。",
 		"externalClientUrlHelp": "リバースプロキシ背後で Bifrost の公開ベース URL を上書きします。<b0>空欄だと受信 <code1>Host</code1> ヘッダーから導出</b0>。MCP サーバーへのクライアントとして動作するとき、上流 OAuth プロバイダーへ登録する <code2>redirect_uri</code2> に使います（例：Notion や Jira はログイン後に <code3>&lt;URL&gt;/api/oauth/callback</code3> へリダイレクト）。環境変数構文可（例：<code4>env.BIFROST_EXTERNAL_URL</code4>）。 URL プレフィックス（server.base_path）配下で動作する場合は、https://host/bifrost のようにプレフィックスを含めてください。",
 		"externalClientUrlWarningHelp": "上流 OAuth プロバイダーは最初に登録した <code0>redirect_uri</code0> に固定するため、既に OAuth 完了した MCP クライアントは <em1>\"Invalid redirect URI\"</em1> で失敗します。復旧には対象 MCP サーバーの保存済み OAuth クライアント資格情報を消し、再認可して新しい URL で Dynamic Client Registration をやり直します。",
@@ -1667,6 +1667,8 @@
 		"urlTemplate": "<発行者 URL>/gateway/<クライアント>",
 		"accessTokenTtlLabel": "アクセストークンの有効期間（分）",
 		"accessTokenTtlDescription": "各サインインのアクセストークンが有効な期間です（既定値 10、最小 1）。サインアウトやサインインの取り消しで更新は止まりますが、すでに発行されたアクセストークンは期限切れまで使えます。すぐにアクセスを止めるには、仮想キーまたはユーザーを無効にしてください。この設定は MCP OAuth と共有されます。",
-		"accessTokenTtlInvalid": "アクセストークンの有効期間は 1 分以上で指定してください。"
+		"accessTokenTtlInvalid": "アクセストークンの有効期間は 1 分以上で指定してください。",
+		"allowTempTokenLabel": "一時トークン認証リンクを許可",
+		"allowTempTokenDescription": "有効時、ユーザーごとの MCP OAuth リンクと Claude Code のサインインリンクに短命スコープトークンを含め、Bifrost ダッシュボード未ログインでもフロー完了できます。無効のままにすると通常のダッシュボード認証が必要です。"
 	}
 }

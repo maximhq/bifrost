@@ -374,7 +374,7 @@
 		"maxDepthHelp": "MCP Agent 执行的最大深度。",
 		"refreshIntervalHelp": "从 MCP 服务器刷新工具列表的间隔。设为 0 时使用默认值 10 分钟。",
 		"disableAutoToolInjectionHelp": "启用后，不再自动为每个请求添加 MCP 工具。只有通过请求头（<code0>x-bf-mcp-include-tools</code0>）显式指定时才会注入工具，且这些工具仍须得到虚拟密钥 MCP 配置的允许。",
-		"tempTokenHelp": "启用后，用户的 MCP OAuth 链接可包含权限范围受限的短期令牌，让尚未登录 Bifrost 仪表盘的用户也能完成认证流程。保持关闭则要求用户先通过常规仪表盘认证。",
+		"tempTokenHelp": "启用后，用户的 MCP OAuth 链接和 Claude Code 登录链接可包含权限范围受限的短期令牌，让尚未登录 Bifrost 仪表盘的用户也能完成认证流程。保持关闭则要求用户先通过常规仪表盘认证。",
 		"bindingHelp": "设置工具在 VFS 中的组织方式：按服务器组织（每台服务器的所有工具放在一起），或按工具组织（每个工具单独存放）。",
 		"externalClientUrlHelp": "当 Bifrost 部署在反向代理后方时，可覆盖其公共基础 URL。<b0>留空则根据传入的 <code1>Host</code1> 请求头推导 URL</b0>。Bifrost 作为 MCP 服务器的客户端时，会将此地址作为 <code2>redirect_uri</code2> 注册到上游 OAuth 提供商（例如 Notion 或 Jira 在登录后会将浏览器重定向到 <code3>&lt;URL&gt;/api/oauth/callback</code3>）。支持环境变量语法（例如 <code4>env.BIFROST_EXTERNAL_URL</code4>）。 若部署在 URL 前缀（server.base_path）之下，请包含该前缀，例如 https://host/bifrost。",
 		"externalClientUrlWarningHelp": "上游 OAuth 提供商会将 <code0>redirect_uri</code0> 固定为最初注册的地址，因此已完成 OAuth 认证的 MCP 客户端将出现 <em1>“Invalid redirect URI”</em1> 错误。要恢复连接，请清除受影响 MCP 服务器已保存的 OAuth 客户端凭据并重新授权，让 Bifrost 使用新 URL 再次执行 Dynamic Client Registration。",
@@ -1643,6 +1643,8 @@
 		"urlTemplate": "<颁发者 URL>/gateway/<客户端>",
 		"accessTokenTtlLabel": "访问令牌有效期（分钟）",
 		"accessTokenTtlDescription": "每次登录的访问令牌保持有效的时长（默认 10，最小 1）。退出登录或撤销登录会停止刷新，但已签发的访问令牌在过期前仍可使用。要立即切断访问，请停用虚拟密钥或该用户。此设置与 MCP OAuth 共用。",
-		"accessTokenTtlInvalid": "访问令牌有效期不能少于 1 分钟。"
+		"accessTokenTtlInvalid": "访问令牌有效期不能少于 1 分钟。",
+		"allowTempTokenLabel": "允许临时令牌认证链接",
+		"allowTempTokenDescription": "启用后，用户的 MCP OAuth 链接和 Claude Code 登录链接可包含权限范围受限的短期令牌，让尚未登录 Bifrost 仪表盘的用户也能完成认证流程。保持关闭则要求用户先通过常规仪表盘认证。"
 	}
 }

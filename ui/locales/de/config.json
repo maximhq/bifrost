@@ -374,7 +374,7 @@
 		"maxDepthHelp": "Maximale Tiefe für die Ausführung von MCP-Agenten.",
 		"refreshIntervalHelp": "Wie oft Tool-Listen von MCP-Servern aktualisiert werden sollen. Auf 0 setzen, um den Standardwert von 10 Minuten zu verwenden.",
 		"disableAutoToolInjectionHelp": "Wenn aktiviert, werden MCP-Tools nicht automatisch in jede Anfrage eingebunden. Tools werden nur eingefügt, wenn sie explizit über Anfrage-Header (<code0>x-bf-mcp-include-tools</code0>) angegeben werden, und müssen weiterhin durch die MCP-Konfiguration des virtuellen Schlüssels erlaubt sein.",
-		"tempTokenHelp": "Wenn aktiviert, können benutzerbezogene MCP-OAuth-Links ein kurzlebiges, berechtigungsbeschränktes Token enthalten, sodass jemand ohne aktive Bifrost-Dashboard-Sitzung den Ablauf abschließen kann. Deaktiviert lassen, um die normale Dashboard-Authentifizierung zu verlangen.",
+		"tempTokenHelp": "Wenn aktiviert, können benutzerbezogene MCP-OAuth-Links und Claude-Code-Anmeldelinks ein kurzlebiges, berechtigungsbeschränktes Token enthalten, sodass jemand ohne aktive Bifrost-Dashboard-Sitzung den Ablauf abschließen kann. Deaktiviert lassen, um die normale Dashboard-Authentifizierung zu verlangen.",
 		"bindingHelp": "Wie Tools im VFS bereitgestellt werden: Auf Serverebene (alle Tools pro Server) oder auf Tool-Ebene (einzelne Tools).",
 		"externalClientUrlHelp": "Überschreibe die öffentliche Basis-URL von Bifrost, wenn es hinter einem Reverse-Proxy läuft. <b0>Leer lassen, um die URL</b0> aus dem eingehenden <code1>Host</code1>-Header abzuleiten. Wird als <code2>redirect_uri</code2> verwendet, die Bifrost bei Upstream-OAuth-Anbietern registriert, wenn es als Client für einen MCP-Server agiert (z. B. leiten Notion oder Jira den Browser nach dem Login zu <code3>&lt;URL&gt;/api/oauth/callback</code3> weiter). Unterstützt Umgebungsvariablen-Syntax (z. B. <code4>env.BIFROST_EXTERNAL_URL</code4>). Hinter einem URL-Präfix (server.base_path) muss das Präfix enthalten sein, z. B. https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Upstream-OAuth-Anbieter binden den <code0>redirect_uri</code0> an das, was ursprünglich registriert wurde, sodass MCP-Clients, die OAuth bereits abgeschlossen haben, mit <em1>\"Invalid redirect URI\"</em1> fehlschlagen. Um dies zu beheben, lösche die gespeicherten OAuth-Client-Anmeldedaten für die betroffenen MCP-Server und autorisiere sie erneut, damit Bifrost die dynamische Client-Registrierung (DCR) mit der neuen URL erneut ausführt.",
@@ -1677,6 +1677,8 @@
 		"urlTemplate": "<Issuer-URL>/gateway/<Client>",
 		"accessTokenTtlLabel": "Lebensdauer des Zugriffstokens (Minuten)",
 		"accessTokenTtlDescription": "Wie lange das Zugriffstoken einer Anmeldung gültig bleibt (Standard 10, mindestens 1). Abmelden oder Widerrufen einer Anmeldung verhindert die nächste Aktualisierung, das bereits ausgestellte Zugriffstoken funktioniert aber bis zu seinem Ablauf weiter. Um den Zugriff sofort zu sperren, deaktiviere den virtuellen Schlüssel oder den Benutzer. Diese Einstellung wird mit MCP OAuth geteilt.",
-		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss mindestens 1 Minute betragen."
+		"accessTokenTtlInvalid": "Die Lebensdauer des Zugriffstokens muss mindestens 1 Minute betragen.",
+		"allowTempTokenLabel": "Temporäre Token-Authentifizierungs-Links erlauben",
+		"allowTempTokenDescription": "Wenn aktiviert, können benutzerbezogene MCP-OAuth-Links und Claude-Code-Anmeldelinks ein kurzlebiges, berechtigungsbeschränktes Token enthalten, sodass jemand ohne aktive Bifrost-Dashboard-Sitzung den Ablauf abschließen kann. Deaktiviert lassen, um die normale Dashboard-Authentifizierung zu verlangen."
 	}
 }

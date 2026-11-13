@@ -314,6 +314,8 @@ The developer then runs `/login` in Claude Code, presses Enter on the **Cloud ga
    - **Virtual key**: paste a Bifrost virtual key. Requests then run under that key's budgets, rate limits and model access.
    - **Signed-in account**: available when an identity provider is configured (Enterprise).
    - **Anonymous session**: only offered to a signed-in dashboard user while *Enforce authentication on inference* is off.
+
+   If the developer did not start this sign-in, or the code does not match their terminal, they select **This wasn't me - deny**. Claude Code's next poll is refused with `access_denied` and the sign-in ends at once instead of waiting for the code to expire.
 3. The browser confirms the sign-in, and Claude Code receives its token.
 
 Claude Code never receives the virtual key itself. It gets a signed token bound to the key (audience `https://bifrost.example.com/gateway/claude-code`, so it is refused on `/mcp`), which Bifrost resolves back to the key on every request. Access tokens last for the configured `access_token_ttl` (10 minutes by default, set under **Settings → Gateways** and shared with MCP OAuth), and Claude Code refreshes them silently.
@@ -321,6 +323,14 @@ Claude Code never receives the virtual key itself. It gets a signed token bound 
 <Note>
 Deactivating or deleting the key, or deactivating the user, cuts the session off on the next request: Bifrost re-checks the identity on every call. Revoking the grant under **OAuth grants**, or signing out with `/logout`, stops the session from refreshing, but the access token Claude Code already holds keeps working until it expires, for up to the `access_token_ttl` in effect when it was issued. To cut a session off immediately, deactivate the key or the user. Lowering `access_token_ttl` shortens the window only for tokens issued after the change, including on refresh.
 </Note>
+
+### Who can approve a sign-in
+
+By default only someone signed in to the Bifrost dashboard can approve a sign-in, so every approval is tied to a Bifrost account. With an identity provider (Enterprise), the consent page sends a signed-out developer through SSO first, so this needs no extra setup.
+
+When developers sign in with a virtual key and have **no** Bifrost dashboard account (the usual OSS setup), turn on **Allow Temp Token Auth Links** under **Settings → Gateways**. The sign-in link then carries a short-lived token, valid only for that one sign-in, that lets them approve it with their key. It is the same setting as `client.mcp_enable_temp_token_auth` on the MCP page, so it also applies to MCP OAuth consent and MCP per-user headers pages. Anonymous sessions still require a signed-in dashboard user.
+
+On an OSS deployment with no admin account yet, or with dashboard authentication disabled, the setup lock refuses the consent page until dashboard authentication is enabled, whatever this setting says.
 
 ### Models, managed settings and telemetry
 
