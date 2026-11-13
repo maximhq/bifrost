@@ -4,6 +4,7 @@ import {
 	CLOUDFLARE_DECISION_MODEL,
 	DATABRICKS_DECISION_MODEL,
 	DEFAULT_DECISION_MODEL,
+	GEMINI_DECISION_MODEL,
 	NACE_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODEL,
@@ -67,9 +68,10 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
 // (Microsoft-Decision-1), Databricks (ai_decide, System One), vLLM and SGLang (every
 // model they load), OpenAI or a custom provider built on it (their decision models,
-// such as gpt-6-luna), or a custom provider built on the Typesafe base (Laya, Nimble,
-// Clef). Other providers would only emulate decisions through chat, so decision-model
-// pickers never offer them.
+// such as gpt-6-luna), Gemini or a custom provider built on it (gemini-decision-1),
+// or a custom provider built on the Typesafe base (Laya, Nimble, Clef). Other
+// providers would only emulate decisions through chat, so decision-model pickers
+// never offer them.
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" ||
@@ -83,6 +85,7 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "vllm" ||
 		provider.name === "sgl" ||
 		isOpenAIDecisionProvider(provider) ||
+		isGeminiDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
 }
@@ -91,6 +94,13 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 // Only the models the datasheet marks as decision models are offered on it.
 export function isOpenAIDecisionProvider(provider: ModelProvider | undefined): boolean {
 	return provider?.name === "openai" || provider?.custom_provider_config?.base_provider_type === "openai";
+}
+
+// isGeminiDecisionProvider reports Gemini or a custom provider built on it.
+// Only its Gemini Decision models are offered, as the gateway serves decisions on
+// no other Gemini model.
+export function isGeminiDecisionProvider(provider: ModelProvider | undefined): boolean {
+	return provider?.name === "gemini" || provider?.custom_provider_config?.base_provider_type === "gemini";
 }
 
 // selfHostedModelGroups is the checkpoint list offered for a self-hosted provider
@@ -103,8 +113,8 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 
 // defaultDecisionModel is the model a newly selected provider starts on: Jev's
 // latest alias (named per provider), Clef Flash on Cloudflare, Azure's and
-// Databricks' decision models, OpenAI's decision
-// model (a custom OpenAI-based provider starts empty, as only its listing says
+// Databricks' decision models, OpenAI's and Gemini's decision
+// models (a custom provider built on either starts empty, as only its listing says
 // what it serves), the Clef model a custom provider's Cloudflare URL serves, or
 // the first checkpoint of the model a self-hosted provider is named after (Laya
 // starts on english). A provider whose name says nothing starts empty, since only
@@ -120,7 +130,8 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
 	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
-	if (isOpenAIDecisionProvider(provider)) return "";
+	if (provider?.name === "gemini") return GEMINI_DECISION_MODEL;
+	if (isOpenAIDecisionProvider(provider) || isGeminiDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
 }
 
@@ -132,5 +143,6 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 // is one.
 export function listsDecisionModels(provider: ModelProvider | undefined, providerName: string): boolean {
 	if (provider ? isOpenAIDecisionProvider(provider) : providerName === "openai") return true;
+	if (provider ? isGeminiDecisionProvider(provider) : providerName === "gemini") return true;
 	return ["nace", "openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "vllm", "sgl"].includes(providerName);
 }

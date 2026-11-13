@@ -702,7 +702,7 @@ Databricks keys carry a workspace URL and, optionally, an OAuth machine-to-machi
 </Tab>
 <Tab title="OAuth M2M (Service Principal)">
 
-Leave `value` unset. Bifrost mints and refreshes tokens from the workspace OIDC endpoint.
+Leave `value` unset. Bifrost mints and refreshes tokens from the workspace OIDC endpoint. It requests `all-apis` unless you set `scopes`, which a secret created with scopes needs. See [OAuth scopes](/providers/supported-providers/databricks#oauth-scopes).
 
 ```json
 {
