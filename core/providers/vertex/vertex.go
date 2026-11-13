@@ -4937,13 +4937,6 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	// Model calls stay on v1 as they always have; other resources (interactions) use the client's version.
-	apiVersion := "v1"
-	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
-		apiVersion = req.APIVersion
-	}
-	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
-
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
 	path := req.Path
 	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
@@ -4965,6 +4958,7 @@ func (provider *VertexProvider) Passthrough(
 		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
 	}
 
+	baseURL := getVertexAPIBaseURL(keyRegion, vertexPassthroughAPIVersion(req.APIVersion, path, keyRegion))
 	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
@@ -5104,12 +5098,6 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	apiVersion := "v1"
-	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
-		apiVersion = req.APIVersion
-	}
-	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
-
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
 	path := req.Path
 	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
@@ -5130,6 +5118,7 @@ func (provider *VertexProvider) PassthroughStream(
 		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
 	}
 
+	baseURL := getVertexAPIBaseURL(keyRegion, vertexPassthroughAPIVersion(req.APIVersion, path, keyRegion))
 	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
