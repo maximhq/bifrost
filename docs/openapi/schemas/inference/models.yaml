@@ -80,8 +80,10 @@ Architecture:
       type: array
       description: >-
         What the model outputs (for example `text`, `image`, `embeddings`).
-        `decisions` marks a model that serves only decisions on `/v1/decisions`;
-        a model that serves both chat and decisions does not carry it.
+        Bifrost adds `decisions` only to a model that serves only decisions on
+        `/v1/decisions`; it does not add it to a model that serves both chat and
+        decisions. A `decisions` entry the upstream provider already reports is
+        passed through as is, without that check.
       items:
         type: string
 
