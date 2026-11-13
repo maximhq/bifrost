@@ -249,6 +249,7 @@
             "gemini-3.1-pro-preview",
             "gemini-3-flash-preview",
             "gemini-4-argon",
+            "gemini-4-hydrogen",
             "claude-opus-5-5",
             "claude-sonnet-5-5"
           ]
@@ -288,7 +289,8 @@
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
             "gemini-3-flash-preview",
-            "gemini-4-argon"
+            "gemini-4-argon",
+            "gemini-4-hydrogen"
           ]
         }
       ],

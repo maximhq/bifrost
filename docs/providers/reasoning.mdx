@@ -23,6 +23,7 @@ Bifrost normalizes all provider-specific reasoning formats to a consistent OpenA
 | Bedrock (Anthropic) | `thinking` | Content blocks | **1024 tokens** | `enabled` only | ✅ |
 | Gemini 2.5+ | `thinking_config` | `thought` parts | 1024 | Budget-only | ✅ |
 | Gemini 3.0+ | `thinking_config` | `thought` parts | 1024 | `minimal`, `low`, `medium`, `high` + Budget | ✅ |
+| Gemini 4 | `thinking_config` | `thought` parts | N/A | `low`, `medium`, `high` (+ `xhigh` on Gemini 4 Hydrogen), level only | ✅ |
 
 ---
 
@@ -655,6 +656,18 @@ effort: "medium" → thinkingLevel: "medium"
 // For "gemini-3.0-pro" (Pro model)
 effort: "medium" → thinkingLevel: "high"  // Converted up
 ```
+
+#### Gemini 4 Thinking Levels
+
+Gemini 4 models accept only `thinkingLevel` and cannot turn thinking off, so a `reasoning.max_tokens` budget is sent as the nearest level (`0` and up to 1024 → `"low"`, up to 8192 → `"medium"`, larger → `"high"`; `-1` sends no level and leaves it to the model default). No Gemini 4 model accepts `"minimal"`. Gemini 4 Hydrogen adds an `"xhigh"` level above `"high"`.
+
+| Bifrost Effort | `gemini-4-hydrogen` | `gemini-4-carbon`, `gemini-4-argon` |
+|----------------|---------------------|-------------------------------------|
+| `"none"`, `"minimal"` | `"low"` | `"low"` |
+| `"low"` | `"low"` | `"low"` |
+| `"medium"` | `"medium"` | `"medium"` |
+| `"high"` | `"high"` | `"high"` |
+| `"xhigh"`, `"max"` | `"xhigh"` | `"high"` |
 
 #### Special Values
 
