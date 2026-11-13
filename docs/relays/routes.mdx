@@ -6,11 +6,12 @@ icon: "route"
 
 A **route** is one operation of the API that callers may use: a method and a path, such as `POST /search`. A relay only forwards calls that match one of its routes. Anything else is refused with `404`, so callers can reach exactly what you listed and nothing more.
 
-Each route also decides three things for the calls that match it:
+Each route also decides four things for the calls that match it:
 
 - whether the call is **charged** (see [Which calls are charged](#which-calls-are-charged))
 - whether the reply is **streamed** (see [Streaming](#streaming))
 - whether it uses a **different price** from the rest of the relay (see [Pricing](./pricing#price-one-route-differently))
+- which fields are **forced into the request body** (see [Force fields in the request body](#force-fields-in-the-request-body))
 
 <Frame>
   <img src="/media/relays/ui-routes-table.png" alt="The route table of the web-search relay" />
@@ -73,6 +74,7 @@ This gives the `web-search` relay four routes: search, extract, read a result, a
 | `billable` | No | Whether a successful call is charged. Default `true` for `POST`, `false` for the rest. |
 | `stream` | No | `true` always streams, `false` never streams. Leave it out for **Auto**. |
 | `usage` | No | A different price for this route. See [Pricing](./pricing#price-one-route-differently). |
+| `body_overrides` | No | Fields forced into every request body. See [Force fields in the request body](#force-fields-in-the-request-body). |
 
 </Tab>
 <Tab title="Helm">
@@ -217,6 +219,122 @@ How header matching works:
 - A call that sends the same header twice with different capitalization (`X-Amz-Target` and `x-amz-target`) is refused with `400`.
 
 Some headers are removed before the route check, so a route can never match on them: credential headers (`Authorization`, `x-api-key` and similar), Bifrost's own `x-bf-*` headers, `Host`, `Content-Length` and connection headers.
+
+---
+
+## Force fields in the request body
+
+Some APIs only report usage, or only behave the way you want, when the request asks for it. Tavily, for example, puts the credits a call used in its reply only when the request carries `"include_usage": true`. If callers can leave that out, the relay has no credits to [price](./pricing#where-units-come-from). **Body overrides** set such fields on every call, whatever the caller sent.
+
+You can set them on the relay, for every call, and on a route, for the calls that match it. On a route, a field with the same path as one on the relay replaces the relay's value.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+For every call through the relay:
+
+1. Open the relay, select **Edit Relay Config**, and open the **Advanced** tab.
+2. Under **Body Overrides**, enter the **Name** (`include_usage`) and the **Value** (`true`).
+3. Select **Save Advanced Configuration**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-relay-body-overrides.png"
+    alt="The Advanced tab with Body Overrides setting include_usage to true"
+    style={{ maxHeight: "560px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+For one route:
+
+1. Open the route, or select **Add Route**.
+2. Under **Body Overrides**, enter each field. Fields the relay already sets are listed below the table.
+3. Select **Save Route**. The route table marks the route with **sets body**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-route-body-overrides.png"
+    alt="The route sheet with Body Overrides setting search_depth to advanced, and include_usage listed as set by the relay"
+    style={{ maxHeight: "600px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+The value is JSON: `true`, `5`, `null`, `{"max": 3}`, or text in quotes such as `"advanced"`. A bare word like `advanced` is refused.
+
+</Tab>
+<Tab title="config.json">
+
+This `web-search` relay asks for usage on every call, and its search route always runs an advanced search:
+
+```json
+{
+  "relays": [
+    {
+      "name": "web-search",
+      "base_url": "https://api.tavily.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.TAVILY_API_KEY" },
+      "usage": { "units_path": "usage.credits", "cost_per_unit": 0.008 },
+      "body_overrides": { "include_usage": true },
+      "routes": [
+        { "method": "POST", "path": "/search", "body_overrides": { "search_depth": "advanced" } },
+        { "method": "POST", "path": "/extract" }
+      ]
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+The same relay under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: web-search
+      base_url: "https://api.tavily.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.TAVILY_API_KEY"
+      usage:
+        units_path: usage.credits
+        cost_per_unit: 0.008
+      body_overrides:
+        include_usage: true
+      routes:
+        - method: POST
+          path: /search
+          body_overrides:
+            search_depth: advanced
+        - method: POST
+          path: /extract
+```
+
+</Tab>
+</Tabs>
+
+Each key is a path of object keys joined by dots. `options.depth` sets `depth` inside `options`, and creates `options` if the call has none. A key is letters, digits, `_` or `-`, and cannot be only digits, so a path never points into a list.
+
+What the API receives, with `include_usage: true` set:
+
+| The caller sends | The API receives |
+| --- | --- |
+| `{"query": "x"}` | `{"query": "x", "include_usage": true}` |
+| `{"query": "x", "include_usage": false}` | `{"query": "x", "include_usage": true}` |
+| `{"query": "x", "include_usage": true}` | The body unchanged |
+| No body on `POST`, `PUT` or `PATCH` | `{"include_usage": true}`, sent as `application/json` |
+| No body on `GET`, `HEAD` or `DELETE` | No body |
+
+A call is refused with `400`, before it reaches the API, when Bifrost cannot guarantee the fields:
+
+- The body is not a JSON object: form data, plain text, or a JSON list.
+- The body names a forced field twice, such as `"include_usage"` written two times, or under different letter case, such as `"Include_Usage"`. Many APIs read the last copy or ignore case, so the caller's value could win.
+- The body holds something other than an object where the path continues, such as `"options": 5` for `options.depth`.
+
+Compressed bodies (`Content-Encoding: gzip`, `br`, `deflate` or `zstd`) work: Bifrost decompresses every request before it reaches a relay. The fields are set before anything else reads the body, so the [price](./pricing), the Relay Logs row and the API all see the body that was sent.
 
 ---
 
