@@ -604,6 +604,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_bifrost_url_and_bifrost_mcp_columns"}, run: migrationAddClientConfigBifrostURLAndBifrostMCPColumns},
 	{IDs: []string{"add_framework_config_openapi_url_column"}, run: migrationAddFrameworkConfigOpenAPIURLColumn},
 	{IDs: []string{"add_warp_management_writes_column"}, run: migrationAddWarpManagementWritesColumn},
+	{IDs: []string{"add_client_config_entity_access_profile_mode_column"}, run: migrationAddClientConfigEntityAccessProfileModeColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17566,6 +17567,33 @@ func migrationAddFrameworkConfigOpenAPIURLColumn(ctx context.Context, db *gorm.D
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "OpenAPIURL")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigEntityAccessProfileModeColumn adds entity_access_profile_mode to
+// config_client. It defaults to "union", so an upgrade keeps team, business unit and customer
+// access profiles adding to a caller's access, as they did before the setting existed.
+func migrationAddClientConfigEntityAccessProfileModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_entity_access_profile_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "entity_access_profile_mode")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "entity_access_profile_mode")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
