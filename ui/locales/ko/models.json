@@ -2488,18 +2488,13 @@
 			"title": "라우터",
 			"pageDescription": "요청을 복잡도별로 분류하고 각 티어를 자체 모델로 보냅니다.",
 			"newRouter": "새 라우터",
-			"editDetails": "세부 정보 편집",
 			"viewLogs": "로그 보기",
-			"editDetailsTitle": "라우터 세부 정보 편집",
 			"actionsAria": "라우터 {{name}} 작업",
-			"editDetailsDescription": "이 라우터가 표시되는 모든 곳에 나타나는 이름과 설명이에요.",
 			"namePlaceholder": "예: 엔지니어링 어시스턴트",
 			"descriptionLabel": "설명",
 			"descriptionPlaceholder": "이 라우터의 용도",
 			"createRouter": "라우터 만들기",
 			"created": "라우터를 만들었어요",
-			"detailsSaved": "라우터 세부 정보를 저장했어요",
-			"detailsSaveFailed": "라우터 세부 정보를 저장하지 못했어요: {{error}}",
 			"columnName": "이름",
 			"columnRequests": "요청 · 7일",
 			"columnActive": "활성",
@@ -2561,13 +2556,14 @@
 				},
 				"status": {
 					"offTitle": "이 라우터는 꺼져 있습니다",
-					"offDetail": "라우터 목록에서 켜세요.",
+					"offDetail": "켜면 라우팅과 일치하는 요청을 처리하기 시작합니다.",
 					"onTitle": "이 라우터는 켜져 있습니다",
 					"noTrafficTitle": "여기로 라우팅된 트래픽이 없습니다",
 					"noTrafficDetail": "최근 7일 동안 이 라우터의 라우팅과 일치한 요청이 없습니다.",
 					"servingTitle": "요청을 맡고 있습니다",
 					"servingDetail": "라우팅과 일치하는 요청은 분류되어 해당 티어의 모델로 전송됩니다.",
-					"viewRequests": "요청 보기"
+					"viewRequests": "요청 보기",
+					"turnOn": "켜기"
 				}
 			},
 			"models": {
@@ -2580,17 +2576,22 @@
 				"weightPositive": "모든 가중치는 0보다 커야 해요.",
 				"weightsMustSum": "이 계층의 가중치 합계는 1이어야 해요(현재 {{total}})."
 			},
+			"sheet": {
+				"title": "라우터 편집",
+				"description": "이름과 설명, 켜짐 여부, 처리할 요청을 설정합니다.",
+				"enabledLabel": "라우터 켜기",
+				"enabledHelp": "꺼져 있는 동안 라우터는 요청을 처리하지 않습니다.",
+				"saved": "라우터를 저장했습니다",
+				"saveFailed": "라우터를 저장하지 못했습니다: {{error}}"
+			},
 			"routing": {
 				"description": "이 라우터가 맡을 요청을 선택하세요.",
 				"orderNote": "라우팅 규칙이 먼저 실행되므로 라우터는 규칙이 처리한 뒤의 요청을 봅니다. 조건에 맞는 첫 번째 라우터가 요청을 맡습니다(범위가 가장 좁은 것부터, 그다음 우선순위가 가장 낮은 것부터).",
-				"sheetTitle": "라우팅 편집",
 				"everyRequest": "범위 내 모든 요청",
 				"priorityHelp": "범위 내에서 값이 낮을수록 먼저 시도됩니다. 라우터의 우선순위는 라우팅 규칙의 우선순위와 별개입니다.",
 				"priorityInvalid": "0부터 1000까지의 정수를 입력하세요.",
 				"conditionLabel": "조건",
-				"conditionHelp": "비워 두면 범위 내 모든 요청을 맡습니다. 모델 필드를 조건으로 쓰면 앱이 이 라우터를 이름으로 요청할 수 있습니다. 티어는 여기서 사용할 수 없습니다. 라우터가 요청을 맡은 뒤에 티어를 정합니다.",
-				"saved": "라우팅을 저장했습니다",
-				"saveFailed": "라우팅을 저장하지 못했습니다: {{error}}"
+				"conditionHelp": "비워 두면 범위 내 모든 요청을 맡습니다. 모델 필드를 조건으로 쓰면 앱이 이 라우터를 이름으로 요청할 수 있습니다. 티어는 여기서 사용할 수 없습니다. 라우터가 요청을 맡은 뒤에 티어를 정합니다."
 			}
 		}
 	},

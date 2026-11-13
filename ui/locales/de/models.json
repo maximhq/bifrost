@@ -2490,18 +2490,13 @@
 			"title": "Router",
 			"pageDescription": "Anfragen nach Komplexität einstufen und jede Stufe an ihr eigenes Modell senden.",
 			"newRouter": "Neuer Router",
-			"editDetails": "Details bearbeiten",
 			"viewLogs": "Logs anzeigen",
-			"editDetailsTitle": "Router-Details bearbeiten",
 			"actionsAria": "Aktionen für Router {{name}}",
-			"editDetailsDescription": "Name und Beschreibung, die überall angezeigt werden, wo dieser Router aufgeführt ist.",
 			"namePlaceholder": "z. B. Engineering-Assistent",
 			"descriptionLabel": "Beschreibung",
 			"descriptionPlaceholder": "Wofür dieser Router gedacht ist",
 			"createRouter": "Router erstellen",
 			"created": "Router erstellt",
-			"detailsSaved": "Router-Details gespeichert",
-			"detailsSaveFailed": "Die Router-Details konnten nicht gespeichert werden: {{error}}",
 			"columnName": "Name",
 			"columnRequests": "Anfragen · 7 T.",
 			"columnActive": "Aktiv",
@@ -2563,13 +2558,14 @@
 				},
 				"status": {
 					"offTitle": "Dieser Router ist ausgeschaltet",
-					"offDetail": "Schalten Sie ihn in der Router-Liste ein.",
+					"offDetail": "Schalten Sie ihn ein, damit er die Anfragen übernimmt, auf die sein Routing passt.",
 					"onTitle": "Dieser Router ist eingeschaltet",
 					"noTrafficTitle": "Hierher wird kein Traffic geleitet",
 					"noTrafficDetail": "In den letzten 7 Tagen passte keine Anfrage auf das Routing dieses Routers.",
 					"servingTitle": "Übernimmt Anfragen",
 					"servingDetail": "Anfragen, auf die sein Routing passt, werden eingestuft und an das Modell ihrer Stufe gesendet.",
-					"viewRequests": "Anfragen ansehen"
+					"viewRequests": "Anfragen ansehen",
+					"turnOn": "Einschalten"
 				}
 			},
 			"models": {
@@ -2582,17 +2578,22 @@
 				"weightPositive": "Jede Gewichtung muss größer als 0 sein.",
 				"weightsMustSum": "Die Gewichtungen in dieser Stufe müssen in der Summe 1 ergeben (aktuell {{total}})."
 			},
+			"sheet": {
+				"title": "Router bearbeiten",
+				"description": "Name und Beschreibung, ob er eingeschaltet ist und welche Anfragen er übernimmt.",
+				"enabledLabel": "Router einschalten",
+				"enabledHelp": "Solange er ausgeschaltet ist, übernimmt der Router keine Anfragen.",
+				"saved": "Router gespeichert",
+				"saveFailed": "Der Router konnte nicht gespeichert werden: {{error}}"
+			},
 			"routing": {
 				"description": "Legen Sie fest, welche Anfragen dieser Router übernimmt.",
 				"orderNote": "Routing-Regeln laufen zuerst, daher sehen Router jede Anfrage so, wie die Regeln sie hinterlassen haben. Der erste passende Router übernimmt sie: engster Geltungsbereich zuerst, dann niedrigste Priorität.",
-				"sheetTitle": "Routing bearbeiten",
 				"everyRequest": "Jede Anfrage im Geltungsbereich",
 				"priorityHelp": "Niedrigere Werte werden innerhalb eines Geltungsbereichs zuerst versucht. Router haben eigene Prioritäten, getrennt von Routing-Regeln.",
 				"priorityInvalid": "Geben Sie eine ganze Zahl von 0 bis 1000 ein.",
 				"conditionLabel": "Bedingung",
-				"conditionHelp": "Leer lassen, um jede Anfrage im Geltungsbereich zu übernehmen. Prüfen Sie das Feld Modell, damit Apps diesen Router per Namen anfordern können. Die Stufe kann hier nicht verwendet werden: Der Router legt sie fest, nachdem er die Anfrage übernommen hat.",
-				"saved": "Routing gespeichert",
-				"saveFailed": "Routing konnte nicht gespeichert werden: {{error}}"
+				"conditionHelp": "Leer lassen, um jede Anfrage im Geltungsbereich zu übernehmen. Prüfen Sie das Feld Modell, damit Apps diesen Router per Namen anfordern können. Die Stufe kann hier nicht verwendet werden: Der Router legt sie fest, nachdem er die Anfrage übernommen hat."
 			}
 		}
 	},

@@ -2488,18 +2488,13 @@
 			"title": "路由器",
 			"pageDescription": "依複雜度將請求分類，並將每個層級傳送到各自的模型。",
 			"newRouter": "新增路由器",
-			"editDetails": "編輯詳細資料",
 			"viewLogs": "檢視日誌",
-			"editDetailsTitle": "編輯路由器詳細資料",
 			"actionsAria": "路由器 {{name}} 的操作",
-			"editDetailsDescription": "在列出此路由器的所有位置顯示的名稱和描述。",
 			"namePlaceholder": "例如：工程助理",
 			"descriptionLabel": "描述",
 			"descriptionPlaceholder": "此路由器的用途",
 			"createRouter": "建立路由器",
 			"created": "路由器已建立",
-			"detailsSaved": "路由器詳細資料已儲存",
-			"detailsSaveFailed": "無法儲存路由器詳細資料：{{error}}",
 			"columnName": "名稱",
 			"columnRequests": "請求 · 7 天",
 			"columnActive": "啟用",
@@ -2561,13 +2556,14 @@
 				},
 				"status": {
 					"offTitle": "此路由器已關閉",
-					"offDetail": "請在路由器列表中開啟它。",
+					"offDetail": "開啟後，它將開始處理與其路由相符的請求。",
 					"onTitle": "此路由器已開啟",
 					"noTrafficTitle": "沒有流量路由到這裡",
 					"noTrafficDetail": "過去 7 天內沒有請求與此路由器的路由相符。",
 					"servingTitle": "正在接手請求",
 					"servingDetail": "與其路由相符的請求會被分類，並傳送到對應層級的模型。",
-					"viewRequests": "檢視請求"
+					"viewRequests": "檢視請求",
+					"turnOn": "開啟"
 				}
 			},
 			"models": {
@@ -2580,17 +2576,22 @@
 				"weightPositive": "每個權重都必須大於 0。",
 				"weightsMustSum": "此層級中的權重之和必須為 1（目前為 {{total}}）。"
 			},
+			"sheet": {
+				"title": "編輯路由器",
+				"description": "名稱和說明、是否開啟，以及它處理哪些請求。",
+				"enabledLabel": "開啟路由器",
+				"enabledHelp": "關閉期間，路由器不會處理任何請求。",
+				"saved": "路由器已儲存",
+				"saveFailed": "無法儲存路由器：{{error}}"
+			},
 			"routing": {
 				"description": "選擇此路由器要接手哪些請求。",
 				"orderNote": "路由規則會先執行，因此路由器看到的是規則處理後的請求。第一個符合的路由器會接手請求：先依範圍由窄到寬，再依優先順序由低到高。",
-				"sheetTitle": "編輯路由",
 				"everyRequest": "範圍內的所有請求",
 				"priorityHelp": "在同一範圍內，數值越低越先嘗試。路由器的優先順序獨立於路由規則的優先順序。",
 				"priorityInvalid": "請輸入 0 到 1000 之間的整數。",
 				"conditionLabel": "條件",
-				"conditionHelp": "留空則接手範圍內的所有請求。比對模型欄位可讓應用程式依名稱請求此路由器。此處不能使用層級：路由器在接手請求後才決定層級。",
-				"saved": "路由已儲存",
-				"saveFailed": "無法儲存路由：{{error}}"
+				"conditionHelp": "留空則接手範圍內的所有請求。比對模型欄位可讓應用程式依名稱請求此路由器。此處不能使用層級：路由器在接手請求後才決定層級。"
 			}
 		}
 	},

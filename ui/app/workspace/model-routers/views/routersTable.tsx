@@ -21,7 +21,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { DeleteConfirmDialog, RowActionsMenu } from "./formParts";
 import { classifierSummary } from "./overviewTab";
-import RouterDetailsDialog from "./routerDetailsDialog";
+import { RouterSheet } from "./routerSheet";
 import { matchesRouterSearch } from "./routersTable.utils";
 import { routerRequests, type RouterTrafficRead } from "./useRouterTraffic";
 
@@ -69,9 +69,11 @@ export function RoutersTable({ traffic, onOpenRouter, onCreate }: RoutersTablePr
 	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
 	const { data, isLoading, error, refetch } = useGetModelRoutersQuery();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
-	const [editing, setEditing] = useState<ModelRouter | null>(null);
+	// Held by id, so the sheet always compares against the router as last read.
+	const [editingId, setEditingId] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState<ModelRouter | null>(null);
 	const routers = data?.routers ?? [];
+	const editing = editingId ? routers.find((router) => router.id === editingId) : undefined;
 	// Kept in the URL, as the projects list keeps its search.
 	const [search, setSearch] = useQueryState("search", parseAsString.withDefault(""));
 	const shown = useMemo(() => (data?.routers ?? []).filter((router) => matchesRouterSearch(router, search)), [data, search]);
@@ -206,7 +208,7 @@ export function RoutersTable({ traffic, onOpenRouter, onCreate }: RoutersTablePr
 													ariaLabel={t("actionsAria", { name: router.name })}
 													canUpdate={canUpdate}
 													canDelete={canDelete}
-													onEdit={() => setEditing(router)}
+													onEdit={() => setEditingId(router.id)}
 													onDelete={() => setDeleting(router)}
 												/>
 											</div>
@@ -219,7 +221,7 @@ export function RoutersTable({ traffic, onOpenRouter, onCreate }: RoutersTablePr
 				</Table>
 			</div>
 
-			{editing && <RouterDetailsDialog open onOpenChange={(open) => !open && setEditing(null)} router={editing} />}
+			{editing && <RouterSheet key={editing.id} router={editing} onClose={() => setEditingId(null)} />}
 			<DeleteConfirmDialog
 				open={deleting !== null}
 				onOpenChange={(open) => !open && setDeleting(null)}
