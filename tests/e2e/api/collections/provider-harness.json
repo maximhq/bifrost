@@ -277972,6 +277972,96 @@
               }
             }
           ]
+        },
+        {
+          "name": "257.6 OpenAI ChatGPT Codex passthrough websocket upgrade without a ChatGPT token [EXPECT-426]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              },
+              {
+                "key": "Sec-WebSocket-Version",
+                "value": "13"
+              },
+              {
+                "key": "Sec-WebSocket-Key",
+                "value": "dGhlIHNhbXBsZSBub25jZQ=="
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-synthetic-not-a-chatgpt-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"A Codex WebSocket upgrade without a ChatGPT token is refused with 426 so Codex moves to HTTP\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(426);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.7 OpenAI ChatGPT Codex passthrough responses GET without upgrade [EXPECT-405]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-synthetic-not-a-chatgpt-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"A GET on the Codex responses route that is not a WebSocket upgrade keeps the 405\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(405);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
