@@ -39,10 +39,17 @@ function completedJob(spend: { embedding_tokens?: number; embedding_cost?: numbe
   }
 }
 
+// The settings page opens a one-time notice about Warp's configuration tools
+// for an enabled Warp; acknowledged up front so it does not cover the form.
+async function acknowledgeMCPNotice(page: Page) {
+  await page.addInitScript(() => localStorage.setItem('bifrost.warpBifrostMCPNoticeSeen', '1'))
+}
+
 // The warp flag is shared server state that other suites toggle in parallel,
 // and it only gates the UI. Turning it on in this page's view of the flags
 // leaves the server's copy alone, so no suite races another over it.
 async function mockWarpBackfill(page: Page, job: object) {
+  await acknowledgeMCPNotice(page)
   await page.route('**/api/feature-flags', async (route) => {
     if (route.request().method() !== 'GET') return route.continue()
     const response = await route.fetch()
@@ -116,6 +123,7 @@ test.describe('Warp backfill status and the embedding space', () => {
 // on screen as a finished backfill of rows the new space never indexed.
 test.describe('Warp backfill status after the embedding space is saved over', () => {
   test('drops a run whose terminal status lands after its space was replaced', async ({ page }) => {
+    await acknowledgeMCPNotice(page)
     const runningJob = {
       id: 'warp-backfill-2',
       status: 'running',
@@ -175,6 +183,7 @@ test.describe('Warp backfill status after the embedding space is saved over', ()
 // starts at 0.5. A saved value is the operator's and is shown as saved.
 test.describe('Warp semantic search threshold', () => {
   test('shows 0.5 when none is saved, and a saved value unchanged', async ({ page }) => {
+    await acknowledgeMCPNotice(page)
     await page.route('**/api/feature-flags', async (route) => {
       if (route.request().method() !== 'GET') return route.continue()
       const response = await route.fetch()
