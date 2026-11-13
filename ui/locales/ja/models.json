@@ -2165,6 +2165,8 @@
 				},
 				"estimateFailed": "実行を見積もれませんでした: {{error}}",
 				"estimateEmpty": "この期間にはまだリクエストが取得されていません。",
+				"estimateBackfill_one": "提案を有効にする前の {{count}} 件のリクエストを、まずログから埋め込みます。",
+				"estimateBackfill_other": "提案を有効にする前の {{count}} 件のリクエストを、まずログから埋め込みます。",
 				"captureUnavailableEmbedded": "提案には、Weaviate、Qdrant、Redis、Pinecone などの共有ベクトルストアが必要です。このゲートウェイのベクトルストアは Chromem で、ベクトルを各ゲートウェイのメモリに保持するため、提案用のリクエストは取得されません。",
 				"captureUnavailableNone": "提案には、取得したリクエストを保持する Weaviate、Qdrant、Redis、Pinecone などの共有ベクトルストアが必要です。構成されていないため、提案用のリクエストは取得されません。",
 				"runInBackground": "ゲートウェイ内のバックグラウンドで、リクエストの経路の外で実行されます。",
@@ -2179,6 +2181,7 @@
 				"cancelRun": "キャンセル",
 				"runProgressAria": "実行の進捗",
 				"stage": {
+					"backfilling": "以前のリクエストをログから埋め込み中…",
 					"queued": "ワーカーが実行を受け取るのを待っています…",
 					"reading": "キャプチャしたリクエストを読み込んでいます…",
 					"clustering": "類似したリクエストをグループ化しています…",

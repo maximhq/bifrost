@@ -2167,6 +2167,8 @@
 				},
 				"estimateFailed": "Could not estimate the run: {{error}}",
 				"estimateEmpty": "No requests have been captured in this window yet.",
+				"estimateBackfill_one": "{{count}} earlier request, from before suggestions were on, is embedded from its log first.",
+				"estimateBackfill_other": "{{count}} earlier requests, from before suggestions were on, are embedded from their logs first.",
 				"captureUnavailableEmbedded": "Suggestions need a shared vector store such as Weaviate, Qdrant, Redis or Pinecone. This gateway's vector store is Chromem, which keeps vectors in each gateway's own memory, so requests are not captured for suggestions.",
 				"captureUnavailableNone": "Suggestions need a shared vector store such as Weaviate, Qdrant, Redis or Pinecone to keep captured requests in. None is configured, so requests are not captured for suggestions.",
 				"runInBackground": "Runs in the background inside your gateway, outside the request path.",
@@ -2181,6 +2183,7 @@
 				"cancelRun": "Cancel",
 				"runProgressAria": "Run progress",
 				"stage": {
+					"backfilling": "Embedding earlier requests from their logs…",
 					"queued": "Waiting for a worker to pick up the run…",
 					"reading": "Reading captured requests…",
 					"clustering": "Grouping similar requests…",

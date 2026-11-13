@@ -144,6 +144,11 @@ type Settings struct {
 	// when the run's context ended: a cancelled run is recorded as cancelled
 	// rather than failed. Nil records every early end as a failure.
 	Cancelled func(ctx context.Context) bool
+	// Backfill, when set, fills the window with the requests the router took
+	// before it captured them, from their logs, and reports how many it
+	// added. It runs first, as the run's backfilling stage, so the run reads
+	// a complete window.
+	Backfill func(ctx context.Context, from, to time.Time) (int, error)
 }
 
 // progressSteps is how many progress writes the suggesting stage makes at
@@ -152,11 +157,12 @@ const progressSteps = 10
 
 // Result is what a run did beyond its record.
 type Result struct {
-	Run       logstore.ComplexitySuggestionRun
-	Clustered int // requests in the clustered sample
-	Assigned  int // requests counted into clusters after it
-	Unmatched int // requests after the sample that matched no cluster
-	Skipped   int // requests past the assignment bound, not counted
+	Run        logstore.ComplexitySuggestionRun
+	Clustered  int // requests in the clustered sample
+	Assigned   int // requests counted into clusters after it
+	Unmatched  int // requests after the sample that matched no cluster
+	Skipped    int // requests past the assignment bound, not counted
+	Backfilled int // requests embedded from their logs before the run read the window
 }
 
 // PromptHash identifies the prompts a run used, so a suggestion can be traced
@@ -253,6 +259,17 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		return Result{}, complexity.ErrNoServingGeneration
 	}
 	var result Result
+	if s.Backfill != nil {
+		run.Stage = logstore.ComplexitySuggestionRunStageBackfilling
+		if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
+			return result, fmt.Errorf("record suggestion run progress: %w", err)
+		}
+		n, err := s.Backfill(ctx, from, to)
+		if err != nil {
+			return result, fmt.Errorf("backfill the window from logs: %w", err)
+		}
+		result.Backfilled = n
+	}
 	run.Stage = logstore.ComplexitySuggestionRunStageReading
 	if err := store.UpsertComplexitySuggestionRun(ctx, run); err != nil {
 		return result, fmt.Errorf("record suggestion run progress: %w", err)
@@ -718,6 +735,10 @@ type Estimate struct {
 	// (two phrase attempts and one tier decision), and at most
 	// MaxSuggestedClusters clusters are sent.
 	MaxModelCalls int `json:"max_model_calls"`
+	// Backfill is how many of the window's requests the run would first embed
+	// from their logs, because they came before the router captured them; they
+	// are counted in Requests.
+	Backfill int `json:"backfill,omitempty"`
 }
 
 // EstimateRun sizes a run of these settings over requests requests. The

@@ -88222,6 +88222,7 @@
                         "stage": {
                           "type": "string",
                           "enum": [
+                            "backfilling",
                             "reading",
                             "clustering",
                             "suggesting",
@@ -88696,6 +88697,7 @@
                           "stage": {
                             "type": "string",
                             "enum": [
+                              "backfilling",
                               "reading",
                               "clustering",
                               "suggesting",
@@ -88976,7 +88978,7 @@
                   "properties": {
                     "requests": {
                       "type": "integer",
-                      "description": "Captured requests in the window."
+                      "description": "Requests in the window, captured and to be backfilled."
                     },
                     "clustered": {
                       "type": "integer",
@@ -88993,6 +88995,10 @@
                     "max_model_calls": {
                       "type": "integer",
                       "description": "The most suggestion-model calls the run could make."
+                    },
+                    "backfill": {
+                      "type": "integer",
+                      "description": "Requests in the window from before the router captured them, which the run embeds from their logs first (up to the run's clustering budget); counted in requests. Omitted when none."
                     }
                   }
                 }
@@ -89125,6 +89131,7 @@
                     "stage": {
                       "type": "string",
                       "enum": [
+                        "backfilling",
                         "reading",
                         "clustering",
                         "suggesting",

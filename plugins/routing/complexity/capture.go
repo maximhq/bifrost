@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"slices"
 	"strconv"
 	"sync"
@@ -265,6 +264,122 @@ func (c *RequestCapture) Enabled() bool {
 	return c != nil && c.threshold.Load() != 0
 }
 
+// sampledAt reports whether a request falls in the sample a threshold cuts.
+// The draw is a hash of the request ID, not a random number, so the same
+// request is always in or out of a router's sample: a suggestion run's
+// backfill from logs then picks exactly the requests live capture would
+// have, and fills the gaps of a window without sampling it twice. FNV-1a,
+// finished with SplitMix64 so IDs that differ only in their last characters
+// still spread evenly, without allocating on the request path.
+func sampledAt(requestID string, t uint64) bool {
+	if t == math.MaxUint64 {
+		return true
+	}
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(requestID); i++ {
+		h ^= uint64(requestID[i])
+		h *= 1099511628211
+	}
+	h ^= h >> 30
+	h *= 0xbf58476d1ce4e5b9
+	h ^= h >> 27
+	h *= 0x94d049bb133111eb
+	h ^= h >> 31
+	return h < t
+}
+
+// CaptureSampled reports whether live capture at rate would keep the request,
+// for a backfill that must pick the same requests.
+func CaptureSampled(requestID string, rate float64) bool {
+	if rate <= 0 || math.IsNaN(rate) {
+		return false
+	}
+	if rate >= 1 {
+		return sampledAt(requestID, math.MaxUint64)
+	}
+	return sampledAt(requestID, uint64(rate*float64(math.MaxUint64)))
+}
+
+// HoldForBackfill marks requests a backfill is about to read and write as
+// pending, as a queued live sample is, so a Forget that runs while their
+// backfill is in flight is applied to it: WriteBackfilled skips a request
+// forgotten before its write, and deletes one forgotten while it was being
+// written. Hold before the request's text is read, and give every held
+// request back through WriteBackfilled or ReleaseBackfill.
+func (c *RequestCapture) HoldForBackfill(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	for _, id := range ids {
+		c.pending[id]++
+	}
+}
+
+// ReleaseBackfill gives back held requests the backfill will not write.
+func (c *RequestCapture) ReleaseBackfill(ids []string) {
+	if c == nil {
+		return
+	}
+	for _, id := range ids {
+		c.donePending(id)
+	}
+}
+
+// WriteBackfilled stores the vectors of requests embedded after the fact from
+// their logs, under the same point IDs and metadata live capture uses, so a
+// later backfill or a live write of the same request overwrites rather than
+// doubles it. Each request is stamped with when it was logged, which is what
+// windows and the age sweep read. Every request must have been held with
+// HoldForBackfill; each is given back here, whether or not it was written, so
+// a request whose log was deleted in the meantime leaves no vector behind.
+func (c *RequestCapture) WriteBackfilled(ctx context.Context, store vectorstore.VectorStore, namespace string, dimension int, requests []CapturedRequest) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	if c == nil {
+		return errors.New("no request capture to backfill into")
+	}
+	written := 0
+	defer func() {
+		for _, r := range requests[written:] {
+			c.donePending(r.LogID)
+		}
+	}()
+	if store == nil || namespace == "" {
+		return nil
+	}
+	if err := c.ensure(ctx, store, namespace, dimension); err != nil {
+		return err
+	}
+	for i, r := range requests {
+		if c.isForgotten(r.LogID) {
+			written = i + 1
+			c.donePending(r.LogID)
+			c.forgotten.Add(1)
+			continue
+		}
+		err := store.Add(ctx, namespace, capturePointID(r.LogID), r.Vector, map[string]any{
+			captureMetadataKind:      captureMetadataKindValue,
+			captureMetadataTimestamp: r.At.Unix(),
+			captureMetadataLogID:     r.LogID,
+		})
+		if err != nil {
+			c.mu.Lock()
+			c.ensured = false
+			c.mu.Unlock()
+			return fmt.Errorf("add backfilled vector: %w", err)
+		}
+		written = i + 1
+		if c.donePending(r.LogID) {
+			c.undo(captureItem{id: r.LogID, store: store, namespace: namespace})
+			c.forgotten.Add(1)
+		}
+	}
+	return nil
+}
+
 // offer is called on the request path once a request has been classified. It
 // never blocks and never allocates on its own: off is one atomic load, and a
 // sampled request costs a random draw, a context lookup and a channel send.
@@ -278,11 +393,8 @@ func (c *RequestCapture) offer(ctx context.Context, store vectorstore.VectorStor
 	if t == 0 || store == nil || namespace == "" || len(vector) == 0 {
 		return
 	}
-	if t != math.MaxUint64 && rand.Uint64() >= t {
-		return
-	}
 	id, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
-	if id == "" {
+	if id == "" || !sampledAt(id, t) {
 		return
 	}
 	item := captureItem{id: id, vector: vector, store: store, namespace: namespace, dimension: dimension, at: time.Now().Unix()}

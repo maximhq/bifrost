@@ -91,6 +91,12 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 						<p className="text-muted-foreground text-xs" data-testid="complexity-suggestions-run-estimate" aria-live="polite">
 							{t("estimateEmpty")}
 						</p>
+					) : estimated && (estimate.backfill ?? 0) > 0 ? (
+						// A first run over a window from before suggestions were on
+						// embeds those requests first, so say so before it starts.
+						<p className="text-muted-foreground text-xs" data-testid="complexity-suggestions-run-backfill" aria-live="polite">
+							{t("estimateBackfill", { count: estimate.backfill })}
+						</p>
 					) : null}
 				</div>
 				<DialogFooter className="gap-2">

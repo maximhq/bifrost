@@ -2167,6 +2167,8 @@
 				},
 				"estimateFailed": "Impossible d’estimer l’exécution : {{error}}",
 				"estimateEmpty": "Aucune requête n'a encore été capturée sur cette période.",
+				"estimateBackfill_one": "{{count}} requête antérieure à l'activation des suggestions est d'abord intégrée depuis son journal.",
+				"estimateBackfill_other": "{{count}} requêtes antérieures à l'activation des suggestions sont d'abord intégrées depuis leurs journaux.",
 				"captureUnavailableEmbedded": "Les suggestions nécessitent un stockage vectoriel partagé comme Weaviate, Qdrant, Redis ou Pinecone. Le stockage vectoriel de cette passerelle est Chromem, qui conserve les vecteurs dans la mémoire de chaque passerelle : aucune requête n'est donc capturée pour les suggestions.",
 				"captureUnavailableNone": "Les suggestions nécessitent un stockage vectoriel partagé comme Weaviate, Qdrant, Redis ou Pinecone pour conserver les requêtes capturées. Aucun n'est configuré : aucune requête n'est donc capturée pour les suggestions.",
 				"runInBackground": "S’exécute en arrière-plan dans votre gateway, hors du chemin des requêtes.",
@@ -2181,6 +2183,7 @@
 				"cancelRun": "Annuler",
 				"runProgressAria": "Progression de l’exécution",
 				"stage": {
+					"backfilling": "Intégration des requêtes antérieures depuis leurs journaux…",
 					"queued": "En attente qu’un worker prenne en charge l’exécution…",
 					"reading": "Lecture des requêtes capturées…",
 					"clustering": "Regroupement des requêtes similaires…",

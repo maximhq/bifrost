@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -547,6 +548,60 @@ func TestListComplexityReplayUsage(t *testing.T) {
 	none, err := store.ListComplexityReplayUsage(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, none)
+}
+
+// A suggestion run's backfill pages through the requests one model router
+// took in its window: root logs only (a fallback attempt is not a second
+// request), never another router's, oldest first, and a page boundary between
+// rows that share a timestamp neither skips nor repeats one.
+func TestEachComplexityRouterLog(t *testing.T) {
+	store, err := newSqliteLogStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "routerlogs.db")}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	ctx := context.Background()
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	support, other := "support", "other"
+	add := func(id string, at time.Time, router *string, parent *string) {
+		t.Helper()
+		require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: at, CreatedAt: at, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ModelRouterID: router, ParentRequestID: parent}))
+	}
+	add("before", base.Add(-time.Hour), &support, nil)
+	for _, id := range []string{"a", "b", "c"} {
+		add(id, base, &support, nil) // three rows on one timestamp
+	}
+	self := "e"
+	add("e", base.Add(30*time.Second), &support, &self) // a root that names itself as parent
+	add("d", base.Add(time.Minute), &support, nil)
+	parent := "d"
+	add("d-fallback", base.Add(time.Minute), &support, &parent)
+	add("theirs", base.Add(time.Minute), &other, nil)
+	add("unrouted", base.Add(time.Minute), nil, nil)
+	add("after", base.Add(2*time.Hour), &support, nil)
+	// A request logged with content logging off has no text to read back, so it
+	// is never a candidate: kept in, it would be tried again on every pass.
+	hiddenAt := base.Add(45 * time.Second)
+	require.NoError(t, store.Create(ctx, &Log{ID: "hidden", Timestamp: hiddenAt, CreatedAt: hiddenAt, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success", ModelRouterID: &support, ContentHidden: true}))
+
+	saved := complexityRouterLogPage
+	complexityRouterLogPage = 2 // the boundary falls inside the shared timestamp
+	t.Cleanup(func() { complexityRouterLogPage = saved })
+
+	var ids []string
+	pages := 0
+	require.NoError(t, store.EachComplexityRouterLog(ctx, support, base, base.Add(time.Hour), func(page []ComplexityRouterLog) error {
+		pages++
+		for _, row := range page {
+			ids = append(ids, row.ID)
+			assert.False(t, row.Timestamp.IsZero())
+		}
+		return nil
+	}))
+	assert.Equal(t, []string{"a", "b", "c", "e", "d"}, ids)
+	assert.GreaterOrEqual(t, pages, 2)
+
+	stop := errors.New("stop")
+	err = store.EachComplexityRouterLog(ctx, support, base, base.Add(time.Hour), func([]ComplexityRouterLog) error { return stop })
+	assert.ErrorIs(t, err, stop, "it stops at fn's first error")
 }
 
 // A run's status moves only from the statuses named: a cancel of a run that

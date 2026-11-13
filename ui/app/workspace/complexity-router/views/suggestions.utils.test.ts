@@ -150,6 +150,10 @@ describe("runs", () => {
 		expect(runInProgress(run({ status: "queued" }))).toBe(true);
 		expect(runInProgress(run({ status: "cancelled" }))).toBe(false);
 		expect(runProgress(run({ status: "queued" }))).toBe(0);
+		expect(runProgress(run({ status: "running", stage: "backfilling" }))).toBeGreaterThan(0);
+		expect(runProgress(run({ status: "running", stage: "backfilling" }))).toBeLessThan(
+			runProgress(run({ status: "running", stage: "reading" })),
+		);
 		expect(runProgress(run({ status: "running", stage: "reading" }))).toBeCloseTo(0.05);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 10, clusters_done: 5 }))).toBeCloseTo(0.6);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 0, clusters_done: 0 }))).toBeCloseTo(0.3);

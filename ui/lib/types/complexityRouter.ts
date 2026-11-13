@@ -671,7 +671,7 @@ export interface Suggestion {
 // phrase matches.
 export const UNMATCHED_TIER = "none";
 
-export const SUGGESTION_RUN_STAGES = ["reading", "clustering", "suggesting", "saving"] as const;
+export const SUGGESTION_RUN_STAGES = ["backfilling", "reading", "clustering", "suggesting", "saving"] as const;
 export type SuggestionRunStage = (typeof SUGGESTION_RUN_STAGES)[number];
 
 export interface SuggestionRun {
@@ -809,6 +809,10 @@ export interface SuggestionRunEstimate {
 	assigned: number;
 	skipped: number;
 	max_model_calls: number;
+	// How many of the window's requests a run would first embed from their
+	// logs, because they came before the router captured them; counted in
+	// requests.
+	backfill?: number;
 }
 
 /** One model for one tier of a model router. Omitting provider or model keeps the request's value. */

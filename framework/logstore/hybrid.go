@@ -3065,3 +3065,9 @@ func (h *HybridLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows
 func (h *HybridLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error) {
 	return h.inner.ListComplexityReplayUsage(ctx, logIDs)
 }
+
+// EachComplexityRouterLog pages the requests a model router took; IDs and
+// timestamps live in the index store.
+func (h *HybridLogStore) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error {
+	return h.inner.EachComplexityRouterLog(ctx, routerID, from, to, fn)
+}

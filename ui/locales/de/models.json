@@ -2167,6 +2167,8 @@
 				},
 				"estimateFailed": "Der Lauf konnte nicht geschätzt werden: {{error}}",
 				"estimateEmpty": "In diesem Zeitraum wurden noch keine Anfragen erfasst.",
+				"estimateBackfill_one": "{{count}} frühere Anfrage aus der Zeit vor den Vorschlägen wird zuerst aus ihrem Log eingebettet.",
+				"estimateBackfill_other": "{{count}} frühere Anfragen aus der Zeit vor den Vorschlägen werden zuerst aus ihren Logs eingebettet.",
 				"captureUnavailableEmbedded": "Vorschläge brauchen einen gemeinsamen Vektorspeicher wie Weaviate, Qdrant, Redis oder Pinecone. Der Vektorspeicher dieses Gateways ist Chromem, das Vektoren im Arbeitsspeicher jedes einzelnen Gateways hält, daher werden keine Anfragen für Vorschläge erfasst.",
 				"captureUnavailableNone": "Vorschläge brauchen einen gemeinsamen Vektorspeicher wie Weaviate, Qdrant, Redis oder Pinecone, um erfasste Anfragen aufzubewahren. Es ist keiner konfiguriert, daher werden keine Anfragen für Vorschläge erfasst.",
 				"runInBackground": "Läuft im Hintergrund in Ihrem Gateway, außerhalb des Anfragepfads.",
@@ -2181,6 +2183,7 @@
 				"cancelRun": "Abbrechen",
 				"runProgressAria": "Fortschritt des Laufs",
 				"stage": {
+					"backfilling": "Frühere Anfragen werden aus ihren Logs eingebettet…",
 					"queued": "Warten, bis ein Worker den Lauf übernimmt…",
 					"reading": "Erfasste Anfragen werden gelesen…",
 					"clustering": "Ähnliche Anfragen werden gruppiert…",
