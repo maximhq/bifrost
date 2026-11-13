@@ -2575,3 +2575,69 @@ func TestDropCapturesOfDisabledRouting(t *testing.T) {
 
 	(&BifrostHTTPServer{Config: &lib.Config{}}).dropCapturesOfDisabledRouting(ctx) // no vector store: nothing to do
 }
+
+// A drain that outlasts the cleanup budget must not eat into it: cleanup starts
+// only after drain returns, gets a live context, and is waited for (#9634).
+func TestDrainThenCleanup_BudgetStartsAfterDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 30 * time.Second
+		var drained atomic.Bool
+		drain := func() {
+			time.Sleep(timeout + 5*time.Second) // a long SSE stream still being drained
+			drained.Store(true)
+		}
+		var startedAfterDrain, ctxLiveAtStart, ctxLiveAtEnd, finished bool
+		cleanup := func(ctx context.Context) {
+			startedAfterDrain = drained.Load()
+			ctxLiveAtStart = ctx.Err() == nil
+			time.Sleep(timeout - time.Second) // cleanup that needs most of its own budget
+			ctxLiveAtEnd = ctx.Err() == nil
+			finished = true
+		}
+
+		start := time.Now()
+		completed := drainThenCleanup(drain, cleanup, timeout)
+
+		assert.True(t, completed, "cleanup that fits in its own budget must be reported as completed")
+		assert.True(t, finished, "drainThenCleanup must wait for cleanup to finish")
+		assert.True(t, startedAfterDrain, "cleanup must start only after drain returns")
+		assert.True(t, ctxLiveAtStart, "cleanup must not start with an expired context")
+		assert.True(t, ctxLiveAtEnd, "drain time must not be taken from the cleanup budget")
+		assert.Equal(t, 2*timeout+4*time.Second, time.Since(start))
+	})
+}
+
+// Cleanup that overruns its own budget is still reported as timed out, measured
+// from the end of drain rather than from the start of shutdown.
+func TestDrainThenCleanup_TimesOutWhenCleanupOverruns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 30 * time.Second
+		const drainFor = 10 * time.Second
+		release := make(chan struct{})
+		var cleanupCtxErr error
+		cleanup := func(ctx context.Context) {
+			<-ctx.Done()
+			cleanupCtxErr = ctx.Err()
+			<-release // a step that ignores its context and keeps running
+		}
+
+		start := time.Now()
+		completed := drainThenCleanup(func() { time.Sleep(drainFor) }, cleanup, timeout)
+
+		assert.False(t, completed, "cleanup that overruns its budget must be reported as timed out")
+		assert.Equal(t, drainFor+timeout, time.Since(start), "the budget starts when drain returns")
+		close(release)
+		synctest.Wait()
+		assert.ErrorIs(t, cleanupCtxErr, context.DeadlineExceeded)
+	})
+}
+
+// Fast cleanup is reported as completed without waiting for the budget to run out.
+func TestDrainThenCleanup_ReturnsAsSoonAsCleanupFinishes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		completed := drainThenCleanup(func() {}, func(context.Context) { time.Sleep(time.Second) }, 30*time.Second)
+		assert.True(t, completed)
+		assert.Equal(t, time.Second, time.Since(start))
+	})
+}
