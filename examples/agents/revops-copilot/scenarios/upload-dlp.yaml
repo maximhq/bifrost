@@ -1,0 +1,10 @@
+description: Upload content containing a credential. The MCP input rule (secrets detection) blocks the call before Drive sees it. Replace <aws-key> and <aws-secret> with a test credential before running.
+surface: 7-mcp-tool-guardrail
+kind: mcp_call
+tool: ${DRIVE_UPLOAD_TOOL}
+args:
+  name: leaked-credentials.txt
+  mimeType: text/plain
+  content: "aws_access_key_id=<aws-key> aws_secret_access_key=<aws-secret>"
+expect:
+  surface: 7-mcp-tool-guardrail

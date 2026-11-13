@@ -1,0 +1,7 @@
+description: Call a Drive tool that is not granted to the identity (e.g. delete or share). Set DRIVE_BLOCKED_TOOL to its exposed name from the drive MCP client's tool list (MCP Servers -> drive), e.g. drive-delete_file; `make preflight` cannot show it, because drive-publisher excludes it.
+surface: 6-mcp-tool-authorization
+kind: mcp_call
+tool: ${DRIVE_BLOCKED_TOOL}
+args: {}
+expect:
+  surface: 6-mcp-tool-authorization

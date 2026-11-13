@@ -1,0 +1,8 @@
+description: The LLM output rule runs Model Armor on the response in monitor mode. The call succeeds; PASS needs the monitor's finding on the job's LLM log (guardrail_debug.detections, enforced false), which Bifrost writes a few seconds after the response.
+surface: 8-llm-output-guardrail
+kind: llm
+requires: [BIFROST_ADMIN_TOKEN]
+prompt: Write one sentence describing a customer support quarter, and include the sample contact jane.doe@example.com.
+expect:
+  allowed: true
+  output_detection: true

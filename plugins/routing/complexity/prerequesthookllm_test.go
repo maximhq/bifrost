@@ -335,3 +335,38 @@ func TestPreRequestHook_DormantLLMBlockNeverRuns(t *testing.T) {
 	require.False(t, chatCalled, "a dormant llm block must not classify")
 	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 }
+
+// TestPreRequestHook_LLMClassifierIsPrimary pins the llm classifier chosen as
+// the router's own classifier: it answers every request, with no semantic
+// block or embedding calls behind it, and a non-answer publishes no tier.
+func TestPreRequestHook_LLMClassifierIsPrimary(t *testing.T) {
+	analyzerConfig := llmFallbackAnalyzerTestConfig()
+	analyzerConfig.Classifier = complexity.ClassifierLLM
+	analyzerConfig.Semantic = nil
+	plugin := llmFallbackTestPlugin(t, analyzerConfig)
+
+	calls := 0
+	answer := `{"tier": "COMPLEX"}`
+	plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		calls++
+		require.Equal(t, "test-classifier-model", req.Model)
+		return llmClassifierChatResponse(answer), nil
+	})
+
+	req := llmComplexityChatRequest("prove the scheduler is deadlock-free")
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
+	_, modelOut, _ := req.GetRequestFields()
+	require.Equal(t, "gpt-4o-mini", modelOut, "the complex tier's routing rule applied")
+	require.Equal(t, 1, calls)
+	require.Equal(t, complexity.MechanismLLM, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Equal(t, complexity.TierComplex, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+
+	answer = "not a tier"
+	bfCtx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req = llmComplexityChatRequest("prove the scheduler is deadlock-free")
+	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
+	_, modelOut, _ = req.GetRequestFields()
+	require.Equal(t, "gpt-4o", modelOut, "no tier, so the complexity rule does not match")
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+}
