@@ -33,6 +33,10 @@ const (
 	discoveryDefaultLimit  = 8
 	discoveryMaxLimit      = 20
 	discoveryMaxQueryRunes = 2048
+	// discoveryMaxToolsPerFile bounds the tool names listed for one server
+	// file at server binding; the rest are summarized as "+N more". The file
+	// itself lists them all.
+	discoveryMaxToolsPerFile = 8
 
 	// Bounds on what is sent to an external ranker.
 	discoveryMaxRankCandidates   = 32
@@ -487,7 +491,11 @@ func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, items []disco
 	for _, f := range files {
 		var notes []string
 		if bindingLevel == schemas.CodeModeBindingLevelServer {
-			notes = append(notes, "tools: "+strings.Join(f.tools, ", "))
+			tools := f.tools
+			if len(tools) > discoveryMaxToolsPerFile {
+				tools = append(tools[:discoveryMaxToolsPerFile:discoveryMaxToolsPerFile], fmt.Sprintf("+%d more", len(f.tools)-discoveryMaxToolsPerFile))
+			}
+			notes = append(notes, "tools: "+strings.Join(tools, ", "))
 		}
 		if scores != nil {
 			notes = append(notes, fmt.Sprintf("relevance=%.2f", f.relevance))

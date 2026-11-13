@@ -340,7 +340,7 @@ servers/slack/send_message.pyi
 servers/slack/search_messages.pyi
 ```
 
-By default Bifrost ranks tools lexically: words of the query found in a server or tool name count most, words found in a tool's description or parameter names count less, and a query that names a tool (`slack.send_message` or its file path) returns that tool. At server binding level each server file is listed once, with the matching tool names.
+By default Bifrost ranks tools lexically: words of the query found in a server or tool name count most, words found in a tool's description or parameter names count less, and a query that names a tool (`slack.send_message` or its file path) returns that tool. At server binding level each server file is listed once, with up to 8 of the matching tool names and a `+N more` count for the rest.
 
 Ranking only reorders and shortens the listing the caller already gets. The shortlist holds only tools the caller can see in the complete listing (including the virtual key filter described above), ranking never runs a tool, and it does not change what `executeToolCode` may call.
 
