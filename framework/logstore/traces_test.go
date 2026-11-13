@@ -416,3 +416,129 @@ func TestTraceUploadBytesLiveOnTheRowWithoutAnObjectStore(t *testing.T) {
 	assert.Equal(t, TraceUploadStatusDone, upload.Status)
 	assert.ErrorIs(t, store.SaveTraceUploadBytes(ctx, "missing", []byte("x")), ErrNotFound)
 }
+
+// seedTraceRollups stores three rolled-up traces across two projects for the read-side tests.
+func seedTraceRollups(t *testing.T, store *RDBLogStore) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	seed := func(project, trace string, offset time.Duration, mutate func(root, llm *TraceSpan)) {
+		start := base.Add(offset)
+		end := start.Add(2 * time.Second)
+		root := &TraceSpan{ProjectID: project, TraceID: trace, SpanID: "root", Source: TraceSourceBraintrust, Name: "agent " + trace, Kind: TraceSpanKindTask, StartTime: start, EndTime: &end, Input: "hello " + trace, SessionID: "sess-1", UserID: "u1", Environment: "prod", TagsParsed: []string{"nightly"}}
+		llm := &TraceSpan{ProjectID: project, TraceID: trace, SpanID: "llm", ParentSpanIDsParsed: []string{"root"}, Source: TraceSourceBraintrust, Name: "chat", Kind: TraceSpanKindLLM, Model: "gpt-4o", StartTime: start, EndTime: &end, PromptTokens: 80, CompletionTokens: 20, TotalTokens: 100, Cost: new(0.01), SessionID: "sess-1"}
+		if mutate != nil {
+			mutate(root, llm)
+		}
+		require.NoError(t, store.UpsertTraceSpans(ctx, []*TraceSpan{root, llm}))
+		_, err := store.RecomputeTraceRollup(ctx, project, trace)
+		require.NoError(t, err)
+	}
+	seed("p1", "t1", 0, nil)
+	seed("p1", "t2", time.Hour, func(root, llm *TraceSpan) {
+		llm.Status, llm.Error = TraceSpanStatusError, "rate limited"
+		llm.LinkSnapshotParsed = &TraceLinkSnapshot{TotalTokens: 300, PromptTokens: 250, CompletionTokens: 50, Cost: new(0.05)}
+		root.SessionID, llm.SessionID, root.TagsParsed = "sess-2", "sess-2", nil
+	})
+	seed("p2", "t3", 2*time.Hour, func(root, llm *TraceSpan) {
+		root.Source, llm.Source, root.SessionID, llm.SessionID = TraceSourceLangfuse, TraceSourceLangfuse, "", ""
+		llm.Cost, llm.Model = nil, "house-model"
+	})
+	return base
+}
+
+// TestSearchTracesFiltersSortsAndPages pins the trace list.
+func TestSearchTracesFiltersSortsAndPages(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	base := seedTraceRollups(t, store)
+
+	all, err := store.SearchTraces(ctx, TraceFilters{}, PaginationOptions{Limit: 2})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), all.Pagination.TotalCount)
+	require.Len(t, all.Traces, 2)
+	assert.Equal(t, "t3", all.Traces[0].TraceID, "newest first")
+
+	for name, tc := range map[string]struct {
+		filters TraceFilters
+		want    []string
+	}{
+		"project":     {TraceFilters{ProjectIDs: []string{"p1"}}, []string{"t2", "t1"}},
+		"source":      {TraceFilters{Sources: []string{TraceSourceLangfuse}}, []string{"t3"}},
+		"errors":      {TraceFilters{Status: TraceSpanStatusError}, []string{"t2"}},
+		"no errors":   {TraceFilters{Status: TraceSpanStatusOK}, []string{"t3", "t1"}},
+		"session":     {TraceFilters{SessionID: "sess-2"}, []string{"t2"}},
+		"tag":         {TraceFilters{Tags: []string{"nightly"}}, []string{"t3", "t1"}},
+		"search":      {TraceFilters{Search: "HELLO T1"}, []string{"t1"}},
+		"like escape": {TraceFilters{Search: "%"}, nil},
+		"time range":  {TraceFilters{StartTime: new(base.Add(30 * time.Minute)), EndTime: new(base.Add(90 * time.Minute))}, []string{"t2"}},
+		"min tokens":  {TraceFilters{MinTokens: new(200)}, []string{"t2"}},
+	} {
+		result, err := store.SearchTraces(ctx, tc.filters, PaginationOptions{})
+		require.NoError(t, err, name)
+		var got []string
+		for _, trace := range result.Traces {
+			got = append(got, trace.TraceID)
+		}
+		assert.Equal(t, tc.want, got, name)
+	}
+
+	byCost, err := store.SearchTraces(ctx, TraceFilters{ProjectIDs: []string{"p1"}}, PaginationOptions{SortBy: "cost", Order: "asc"})
+	require.NoError(t, err)
+	assert.Equal(t, "t1", byCost.Traces[0].TraceID)
+
+	spans, err := store.SearchTraceSpans(ctx, TraceFilters{Kinds: []string{TraceSpanKindLLM}, Models: []string{"gpt-4o"}}, PaginationOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), spans.Pagination.TotalCount)
+}
+
+// TestTraceStatsCountEachCallOnce pins the overview: a linked call is summed with the gateway's
+// numbers, and the link share and unpriced count are reported.
+func TestTraceStatsCountEachCallOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	base := seedTraceRollups(t, store)
+
+	stats, err := store.GetTraceStats(ctx, TraceFilters{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), stats.TraceCount)
+	assert.Equal(t, int64(6), stats.SpanCount)
+	assert.Equal(t, int64(3), stats.LLMSpanCount)
+	assert.Equal(t, int64(1), stats.LinkedSpanCount)
+	assert.Equal(t, int64(1), stats.ErrorTraceCount)
+	assert.Equal(t, int64(500), stats.TotalTokens, "100 + 300 from the gateway snapshot + 100")
+	assert.InDelta(t, 0.06, stats.TotalCost, 1e-9)
+	assert.Equal(t, int64(1), stats.UnpricedSpanCount)
+	assert.InDelta(t, 2000, stats.AvgDurationMs, 1e-6)
+
+	histogram, err := store.GetTraceHistogram(ctx, TraceFilters{StartTime: &base, EndTime: new(base.Add(3 * time.Hour))}, 3600)
+	require.NoError(t, err)
+	require.Len(t, histogram.Buckets, 4, "empty buckets inside the range are zero-filled")
+	assert.Equal(t, int64(1), histogram.Buckets[0].Count)
+	assert.Equal(t, int64(1), histogram.Buckets[1].Errors)
+	assert.Zero(t, histogram.Buckets[3].Count)
+
+	bySource, err := store.GetTraceBreakdown(ctx, TraceFilters{}, "source")
+	require.NoError(t, err)
+	require.Len(t, bySource, 2)
+	assert.Equal(t, TraceSourceBraintrust, bySource[0].Key)
+	assert.Equal(t, int64(2), bySource[0].TraceCount)
+	_, err = store.GetTraceBreakdown(ctx, TraceFilters{}, "name; drop table traces")
+	assert.Error(t, err)
+
+	sessions, err := store.SearchTraceSessions(ctx, TraceFilters{}, PaginationOptions{})
+	require.NoError(t, err)
+	require.Len(t, sessions.Sessions, 2, "a trace with no session id is not a session")
+	assert.Equal(t, "sess-2", sessions.Sessions[0].SessionID, "most recently active first")
+	assert.Equal(t, int64(2), sessions.Pagination.TotalCount)
+
+	filterData, err := store.GetTraceFilterData(ctx, []string{"p1"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{TraceSourceBraintrust}, filterData.Sources)
+	assert.Equal(t, []string{"gpt-4o"}, filterData.Models)
+	assert.Equal(t, []string{TraceSpanKindLLM, TraceSpanKindTask}, filterData.Kinds)
+
+	keys, err := store.ListProjectTraceKeys(ctx, "p1", 10)
+	require.NoError(t, err)
+	assert.Len(t, keys, 2)
+}
