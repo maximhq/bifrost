@@ -239,3 +239,62 @@ force-sync-pricing:
           application/json:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+config-metadata:
+  post:
+    operationId: updateConfigMetadata
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update configuration metadata
+    description: |
+      Merges a JSON object of key/value pairs into the client configuration's metadata
+      blob. Keys with a null value are removed. Intended for UI and admin preferences
+      such as onboarding state and dismissed tooltips.
+    tags:
+      - Configuration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            minProperties: 1
+            additionalProperties: true
+            description: Keys to set; a null value removes the key.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Metadata updated successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                  example: true
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: No client configuration exists yet to attach metadata to
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Config store not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
