@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"github.com/maximhq/bifrost/framework/traceingest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -250,4 +251,28 @@ func TestBraintrustDatasetRowsNeedAPrincipalThatMayStoreThem(t *testing.T) {
 	spans := `{"rows":[{"id":"row-1","project_id":"p1","span_id":"s1","root_span_id":"s1","span_attributes":{"name":"task","type":"task"},"metrics":{"start":1700000000,"end":1700000001}}],"api_version":2}`
 	resp = env.do(fasthttp.MethodPost, "/tracing/braintrust/logs3", braintrustAuth(), []byte(spans))
 	assert.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
+}
+
+// BenchmarkBraintrustLogs3 measures one acknowledged logs3 flush through the router: a task row and
+// a model-call row of a new trace, as the SDK sends them.
+func BenchmarkBraintrustLogs3(b *testing.B) {
+	env := newTraceIngestTestEnv(b)
+	auth := braintrustAuth()
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		i++
+		id := strconv.Itoa(i)
+		body := `{"rows":[
+			{"id":"row-root-` + id + `","span_id":"root-` + id + `","root_span_id":"root-` + id + `","project_id":"p1","span_attributes":{"name":"agent","type":"task"},
+			 "input":{"question":"capital of France?"},"output":{"answer":"Paris"},"metrics":{"start":1700000000,"end":1700000002},"tags":["demo"],"scores":{"correct":1}},
+			{"id":"row-llm-` + id + `","span_id":"llm-` + id + `","root_span_id":"root-` + id + `","span_parents":["root-` + id + `"],"project_id":"p1","span_attributes":{"name":"Chat Completion","type":"llm"},
+			 "input":[{"role":"user","content":"capital of France?"}],"output":[{"message":{"role":"assistant","content":"Paris"}}],
+			 "metadata":{"model":"gpt-4o"},"metrics":{"start":1700000000.5,"end":1700000001.5,"prompt_tokens":12,"completion_tokens":5,"tokens":17}}
+		],"api_version":2}`
+		resp := env.do(fasthttp.MethodPost, "/tracing/braintrust/logs3", auth, []byte(body))
+		if resp.Response.StatusCode() != fasthttp.StatusOK {
+			b.Fatal(string(resp.Response.Body()))
+		}
+	}
 }
