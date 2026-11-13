@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity/suggestrun"
 )
 
 // maxComplexitySuggestionTexts bounds the logs one text read opens: a
@@ -101,4 +102,52 @@ func (s *BifrostHTTPServer) registerComplexitySuggestionsJob(runner *sidekiq.Run
 		return routingPlugin.RunComplexitySuggestionsJob(ctx, job, progress)
 	})
 	runner.RegisterSummarizer(routing.ComplexitySuggestionsJobKind, routing.SummarizeComplexitySuggestionsJob)
+}
+
+// ComplexitySuggestionStore is where phrase suggestions and their runs are
+// kept, or nil when the deployment has no log store.
+func (s *BifrostHTTPServer) ComplexitySuggestionStore() logstore.ComplexitySuggestionStore {
+	if s.Config == nil || s.Config.LogsStore == nil {
+		return nil
+	}
+	return s.Config.LogsStore
+}
+
+// ComplexitySuggestionTexts reads the request text of example logs within the
+// caller's access scope, as the router embedded them.
+func (s *BifrostHTTPServer) ComplexitySuggestionTexts(ctx context.Context, logIDs []string) (map[string]string, error) {
+	if s.Config == nil || s.Config.LogsStore == nil {
+		return map[string]string{}, nil
+	}
+	historyCount := 1
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		historyCount = routingPlugin.ComplexitySuggestionMessageHistoryCount()
+	}
+	return complexitySuggestionTexts(s.Config.LogsStore)(ctx, logIDs, historyCount)
+}
+
+// RoutingPluginLoaded reports whether the routing plugin is loaded.
+func (s *BifrostHTTPServer) RoutingPluginLoaded() bool {
+	_, err := s.getRoutingPlugin()
+	return err == nil
+}
+
+// StartComplexitySuggestionRun starts a suggestion run outside the schedule.
+// Without a routing plugin it fails with handlers.ErrRoutingPluginUnavailable:
+// the server is missing a part, which is not the same as suggestions being off.
+func (s *BifrostHTTPServer) StartComplexitySuggestionRun(ctx context.Context) (string, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return "", err
+	}
+	return routingPlugin.StartComplexitySuggestionRunNow(ctx)
+}
+
+// TestComplexitySuggestionPhrases routes examples with and without phrases.
+func (s *BifrostHTTPServer) TestComplexitySuggestionPhrases(ctx context.Context, phrases []complexity.SuggestionPhrase, examples []suggestrun.TestExample) (suggestrun.PhraseTest, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return suggestrun.PhraseTest{}, complexity.ErrNoServingGeneration
+	}
+	return routingPlugin.TestComplexitySuggestionPhrases(ctx, phrases, examples)
 }

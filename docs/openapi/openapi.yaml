@@ -1190,6 +1190,16 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity-generations"
   /api/routing/complexity-analyzer-generations/{namespace}:
     $ref: "./paths/management/routing.yaml#/complexity-generation-delete"
+  /api/routing/complexity-suggestions:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestions"
+  /api/routing/complexity-suggestions/test:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-test"
+  /api/routing/complexity-suggestions/runs:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-runs"
+  /api/routing/complexity-suggestions/{suggestion_id}:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion"
+  /api/routing/complexity-suggestions/{suggestion_id}/status:
+    $ref: "./paths/management/routing.yaml#/complexity-suggestion-status"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:

@@ -404,6 +404,8 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		return status.State == SemanticStatusWarming && status.ServingPrevious
 	}, time.Second, 10*time.Millisecond)
 
+	assert.True(t, classifier.Serving(), "F1 still serves while F2 warms")
+
 	// F1 remains queryable while the first F2 embedding is deliberately blocked.
 	duringWarmup, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
@@ -442,6 +444,8 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		return status.State == SemanticStatusFailed && status.ServingPrevious
 	}, time.Second, 10*time.Millisecond)
 
+	assert.True(t, classifier.Serving(), "F2 still serves after F3 failed")
+
 	// A failed F3 keeps both the F2 namespace and F2 embedding configuration.
 	afterFailure, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
@@ -459,6 +463,18 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 		[]string{semanticMarkerID(v3Fingerprint)},
 	)
 	require.ErrorIs(t, err, vectorstore.ErrNotFound, "a failed private generation must be discarded")
+}
+
+// Serving is false until a generation has warmed, and once the classifier
+// is closed.
+func TestSemanticClassifierServing(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	assert.False(t, classifier.Serving(), "nothing has warmed")
+	ready := readySemanticClassifier(t)
+	assert.True(t, ready.Serving())
+	require.NoError(t, ready.Close())
+	assert.False(t, ready.Serving(), "a closed classifier serves nothing")
+	require.NoError(t, classifier.Close())
 }
 
 func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *testing.T) {

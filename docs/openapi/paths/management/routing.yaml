@@ -571,3 +571,332 @@ complexity-reset-legacy:
     operationId: resetComplexityAnalyzerConfigLegacy
     x-bifrost-successor: '/api/routing/complexity-analyzer-config/reset'
     x-bifrost-removal: following-major-release
+
+complexity-suggestions:
+  get:
+    operationId: listComplexitySuggestions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List phrase suggestions
+    description: |
+      Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the complexity analyzer config.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: status
+        in: query
+        required: false
+        description: Comma-separated statuses to list (open, accepted, dismissed, superseded); default open.
+        schema:
+          type: string
+          example: open,dismissed
+      - name: limit
+        in: query
+        required: false
+        description: Page size; default 100, at most 500.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+      - name: offset
+        in: query
+        required: false
+        description: Suggestions to skip, in list order; default 0.
+        schema:
+          type: integer
+          minimum: 0
+    responses:
+      '200':
+        description: Suggestions retrieved
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionsList'
+      '400':
+        description: Unknown status, or a limit or offset out of range
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion:
+  get:
+    operationId: getComplexitySuggestion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a phrase suggestion with its examples
+    description: |
+      Returns one suggestion and the text of the requests it was written from, read from their logs within the caller's access scope. An example whose log was deleted, hides its content, or is outside the caller's access is listed without text.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Suggestion retrieved
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionDetail'
+      '404':
+        description: Suggestion not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-status:
+  put:
+    operationId: updateComplexitySuggestionStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Accept, dismiss or reopen a phrase suggestion
+    description: |
+      Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank (staged and saved with the complexity analyzer config). Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionStatusUpdate'
+    responses:
+      '200':
+        description: Status updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestion'
+      '400':
+        description: Invalid request body, or a status that does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: Suggestion not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The suggestion cannot move to that status from its current one, or it changed since it was read (another decision, or a run superseded it)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-test:
+  post:
+    operationId: testComplexitySuggestionPhrases
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Test phrases against routed requests
+    description: |
+      Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityPhraseTestRequest'
+    responses:
+      '200':
+        description: Phrases tested
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityPhraseTest'
+      '400':
+        description: No phrases, too many, a phrase without text or a valid tier, or a phrase over 2,000 characters
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: Suggestion not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '502':
+        description: The embedding provider failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-runs:
+  get:
+    operationId: listComplexitySuggestionRuns
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List phrase suggestion runs
+    description: |
+      Lists suggestion runs newest first, scheduled and manual, with what each read, created, refreshed and superseded, what its model calls cost, and why it failed if it did. The latest 200 runs are kept.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
+    responses:
+      '200':
+        description: Runs retrieved
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                runs:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRun'
+                next_run_at:
+                  type: string
+                  format: date-time
+      '400':
+        description: Invalid limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+  post:
+    operationId: startComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start a phrase suggestion run now
+    description: |
+      Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '202':
+        description: Run started
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                run_id:
+                  type: string
+      '409':
+        description: Suggestions are off, or a run is already queued or running
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the semantic router has no warmed phrase bank to suggest against yet
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'

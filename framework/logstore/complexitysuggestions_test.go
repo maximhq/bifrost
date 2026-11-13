@@ -222,6 +222,57 @@ func TestComplexityVectorDeletes(t *testing.T) {
 	})
 }
 
+// A run reads the suggestions, spends minutes asking the model, then writes
+// its outcome. A decision the user makes in between must survive the run's
+// write; a run's write that lands first leaves the user's decision to apply
+// on what it wrote. New suggestions are inserted either way.
+func TestReconcileComplexitySuggestionsKeepsDecisionsMadeDuringARun(t *testing.T) {
+	forEachComplexitySuggestionStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		read := testComplexitySuggestion(t, "decided", 10, []float32{1, 0})
+		require.NoError(t, store.UpsertComplexitySuggestions(ctx, []ComplexitySuggestion{read}))
+		status := func(id string) string {
+			rows, err := store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{IDs: []string{id}, OmitCentroids: true})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			return rows[0].Status
+		}
+
+		// The user accepts after the run read it open.
+		resolved := time.Now().UTC()
+		moved, err := store.UpdateComplexitySuggestionStatus(ctx, "decided", ComplexitySuggestionStatusOpen, ComplexitySuggestionStatusAccepted, &resolved)
+		require.NoError(t, err)
+		require.True(t, moved)
+		superseded := read
+		superseded.Status, superseded.ResolvedAt = ComplexitySuggestionStatusSuperseded, &resolved
+		fresh := testComplexitySuggestion(t, "fresh", 5, []float32{0, 1})
+		skipped, err := store.ReconcileComplexitySuggestions(ctx, []ComplexitySuggestionWrite{
+			{Suggestion: superseded, From: ComplexitySuggestionStatusOpen},
+			{Suggestion: fresh},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"decided"}, skipped)
+		assert.Equal(t, ComplexitySuggestionStatusAccepted, status("decided"), "the accept made during the run stands")
+		assert.Equal(t, ComplexitySuggestionStatusOpen, status("fresh"), "a new suggestion is still written")
+
+		// The run's write lands first: it refreshes an open suggestion, and
+		// the user's decision on it, read at open, then applies.
+		refreshed := fresh
+		refreshed.RequestCount = 9
+		skipped, err = store.ReconcileComplexitySuggestions(ctx, []ComplexitySuggestionWrite{{Suggestion: refreshed, From: ComplexitySuggestionStatusOpen}})
+		require.NoError(t, err)
+		assert.Empty(t, skipped)
+		rows, err := store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{IDs: []string{"fresh"}, OmitCentroids: true})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.EqualValues(t, 9, rows[0].RequestCount)
+		moved, err = store.UpdateComplexitySuggestionStatus(ctx, "fresh", ComplexitySuggestionStatusOpen, ComplexitySuggestionStatusDismissed, &resolved)
+		require.NoError(t, err)
+		assert.True(t, moved)
+		assert.Equal(t, ComplexitySuggestionStatusDismissed, status("fresh"))
+	})
+}
+
 // One log can be pending in several capture namespaces. Each is its own row:
 // recording the second does not replace the first, and clearing one leaves
 // the other for its retry.
@@ -241,6 +292,58 @@ func TestComplexityVectorDeletesAreKeyedByLogAndNamespace(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
 		assert.Equal(t, b.Namespace, rows[0].Namespace, "the other namespace's row stays")
+	})
+}
+
+// The list pages in its order and filters by status; the counts cover every
+// status whatever the list selected; and a decision moves a suggestion only
+// from the status it was read at.
+func TestComplexitySuggestionsPagingCountsAndConditionalStatus(t *testing.T) {
+	forEachComplexitySuggestionStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		a := testComplexitySuggestion(t, "a", 30, []float32{1, 0})
+		b := testComplexitySuggestion(t, "b", 20, []float32{0, 1})
+		c := testComplexitySuggestion(t, "c", 10, []float32{1, 1})
+		c.Status = ComplexitySuggestionStatusDismissed
+		require.NoError(t, store.UpsertComplexitySuggestions(ctx, []ComplexitySuggestion{a, b, c}))
+
+		page, err := store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{Statuses: []string{ComplexitySuggestionStatusOpen}, Limit: 1, OmitCentroids: true})
+		require.NoError(t, err)
+		require.Len(t, page, 1)
+		assert.Equal(t, "a", page[0].ID, "largest first")
+		page, err = store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{Statuses: []string{ComplexitySuggestionStatusOpen}, Limit: 1, Offset: 1, OmitCentroids: true})
+		require.NoError(t, err)
+		require.Len(t, page, 1)
+		assert.Equal(t, "b", page[0].ID)
+
+		counts, err := store.CountComplexitySuggestionsByStatus(ctx, ComplexitySuggestionFilter{Statuses: []string{ComplexitySuggestionStatusOpen}, Limit: 1})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int{ComplexitySuggestionStatusOpen: 2, ComplexitySuggestionStatusDismissed: 1}, counts)
+
+		resolved := time.Now().UTC()
+		moved, err := store.UpdateComplexitySuggestionStatus(ctx, "a", ComplexitySuggestionStatusOpen, ComplexitySuggestionStatusAccepted, &resolved)
+		require.NoError(t, err)
+		assert.True(t, moved)
+		moved, err = store.UpdateComplexitySuggestionStatus(ctx, "a", ComplexitySuggestionStatusOpen, ComplexitySuggestionStatusDismissed, &resolved)
+		require.NoError(t, err)
+		assert.False(t, moved, "a decision read at open loses once another moved it")
+		moved, err = store.UpdateComplexitySuggestionStatus(ctx, "missing", ComplexitySuggestionStatusOpen, ComplexitySuggestionStatusAccepted, &resolved)
+		require.NoError(t, err)
+		assert.False(t, moved)
+
+		rows, err := store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{IDs: []string{"a"}})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, ComplexitySuggestionStatusAccepted, rows[0].Status)
+		require.NotNil(t, rows[0].ResolvedAt)
+		assert.NotEmpty(t, rows[0].Centroid, "the centroid is kept for the next run's match")
+
+		moved, err = store.UpdateComplexitySuggestionStatus(ctx, "a", ComplexitySuggestionStatusAccepted, ComplexitySuggestionStatusOpen, nil)
+		require.NoError(t, err)
+		assert.True(t, moved)
+		rows, err = store.ListComplexitySuggestions(ctx, ComplexitySuggestionFilter{IDs: []string{"a"}})
+		require.NoError(t, err)
+		assert.Nil(t, rows[0].ResolvedAt, "reopening clears when it was resolved")
 	})
 }
 

@@ -39,6 +39,8 @@ func captureTestConfig(suggestions *configstore.ComplexitySuggestionsConfig) *co
 			Provider: "openai", EmbeddingModel: "test-embedding-model", Timeout: time.Second,
 			VectorStore: configstore.ComplexitySemanticVectorStoreEmbedded,
 		},
+		// Enabled suggestions need a model; with none of their own they use this.
+		LLM:         &complexity.LLMConfig{Provider: "openai", Model: "gpt-4.1-mini", Timeout: time.Second},
 		Suggestions: suggestions,
 	}
 }

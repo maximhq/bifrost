@@ -2987,9 +2987,25 @@ func (h *HybridLogStore) UpsertComplexitySuggestions(ctx context.Context, sugges
 	return h.inner.UpsertComplexitySuggestions(ctx, suggestions)
 }
 
+// ReconcileComplexitySuggestions writes a run's outcome without overwriting a
+// decision made since the run read the rows.
+func (h *HybridLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	return h.inner.ReconcileComplexitySuggestions(ctx, writes)
+}
+
 // ListComplexitySuggestions returns the selected suggestions.
 func (h *HybridLogStore) ListComplexitySuggestions(ctx context.Context, filter ComplexitySuggestionFilter) ([]ComplexitySuggestion, error) {
 	return h.inner.ListComplexitySuggestions(ctx, filter)
+}
+
+// CountComplexitySuggestionsByStatus counts suggestions per status.
+func (h *HybridLogStore) CountComplexitySuggestionsByStatus(ctx context.Context, filter ComplexitySuggestionFilter) (map[string]int, error) {
+	return h.inner.CountComplexitySuggestionsByStatus(ctx, filter)
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionStatus(ctx, id, from, to, resolvedAt)
 }
 
 // DeleteComplexitySuggestions removes suggestions outright.
