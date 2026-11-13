@@ -990,7 +990,7 @@ func forwardedProtoIsHTTPS(value []byte) bool {
 func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest {
 	req := schemas.AcquireHTTPRequest()
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
