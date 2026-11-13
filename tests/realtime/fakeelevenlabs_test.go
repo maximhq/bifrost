@@ -2,7 +2,9 @@ package realtime
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,7 +20,8 @@ import (
 
 // fakeEleven stands in for ElevenLabs in fake mode, on the fake listener: Scribe's real-time transcription socket
 // (/v1/speech-to-text/realtime), the text-to-dialogue socket that serves incremental speech
-// (/v1/text-to-dialogue/stream-input) and the conversational agent socket (/v1/convai/conversation). Like the
+// (/v1/text-to-dialogue/stream-input), the conversational agent socket (/v1/convai/conversation) and the REST
+// endpoints of text to speech and the model list. Like the
 // Soniox fake, it understands no speech: Scribe answers any speech with fakeTranscript, and the text socket
 // answers text with silent audio.
 //
@@ -26,13 +29,16 @@ import (
 // marker and directive, as "fake-<marker>" or "fake-<marker>-drop" or "fake-<marker>-error". The text socket reads
 // them from its voice, in the same form, and the agent socket from its agent id, which must start with
 // "fake-agent" or ElevenLabs closes the session with its own code 3000, as it does for an agent it does not know.
+// A REST call reads them from the voice, in the same form.
 type fakeEleven struct {
 	mu     sync.Mutex
 	scribe []*elevenScribe
 	tts    []*elevenTTS
 	agents []*elevenAgent
+	rest   []*elevenREST
 
 	authRefusals atomic.Int64
+	restSeq      atomic.Int64
 }
 
 const (
@@ -46,6 +52,8 @@ func newFakeEleven(mux *http.ServeMux) *fakeEleven {
 	mux.HandleFunc("/v1/speech-to-text/realtime", f.serveScribe)
 	mux.HandleFunc("/v1/text-to-dialogue/stream-input", f.serveTTS)
 	mux.HandleFunc("/v1/convai/conversation", f.serveAgent)
+	mux.HandleFunc("/v1/text-to-speech/", f.serveREST)
+	mux.HandleFunc("/v1/models", f.serveREST)
 	return f
 }
 
@@ -101,6 +109,7 @@ func (s *elevenScribe) Query() url.Values { return s.query }
 
 // Header is a header of the upgrade request the gateway made.
 func (s *elevenScribe) Header(name string) string { return s.header.Get(name) }
+
 
 // AudioBytes is the audio the gateway has forwarded.
 func (s *elevenScribe) AudioBytes() int {
@@ -584,4 +593,139 @@ func fakeLabel(directive string) (label, marker string) {
 		label += "-" + directive
 	}
 	return label, marker
+}
+
+// REST.
+
+// elevenREST is one REST call the gateway made.
+type elevenREST struct {
+	method string
+	path   string
+	query  url.Values
+	header http.Header
+	body   []byte
+}
+
+// Path is the path the gateway called, without the query.
+func (c *elevenREST) Path() string { return c.path }
+
+// Query is the query string the gateway called with.
+func (c *elevenREST) Query() url.Values { return c.query }
+
+// Header is a header of the request the gateway made.
+func (c *elevenREST) Header(name string) string { return c.header.Get(name) }
+
+// Headers is every header of the request the gateway made.
+func (c *elevenREST) Headers() http.Header { return c.header }
+
+// Body is the body the gateway sent.
+func (c *elevenREST) Body() gjson.Result { return gjson.ParseBytes(c.body) }
+
+// voice is the voice a call speaks with, the one in its path.
+func (c *elevenREST) voice() string {
+	rest, ok := strings.CutPrefix(c.path, "/v1/text-to-speech/")
+	if !ok {
+		return ""
+	}
+	voice, _, _ := strings.Cut(rest, "/")
+	return voice
+}
+
+// RESTCalls lists the REST calls whose voice carries a marker, in the order they arrived.
+func (f *fakeEleven) RESTCalls(marker string) []*elevenREST {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var calls []*elevenREST
+	for _, c := range f.rest {
+		if got, _ := elevenMarker(c.voice()); got == marker {
+			calls = append(calls, c)
+		}
+	}
+	return calls
+}
+
+// WaitREST returns the REST calls whose voice carries a marker, once there are n of them.
+func (f *fakeEleven) WaitREST(t *testing.T, marker string, n int) []*elevenREST {
+	t.Helper()
+	deadline := time.Now().Add(frameTimeout)
+	for {
+		calls := f.RESTCalls(marker)
+		if len(calls) >= n {
+			return calls
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d upstream elevenlabs REST calls with marker %q within %s, want %d", len(calls), marker, frameTimeout, n)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// serveREST answers text to speech and the model list the way ElevenLabs does: audio under the
+// headers it sends, JSON for with-timestamps, and the same in chunks for the streams.
+func (f *fakeEleven) serveREST(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	call := &elevenREST{method: r.Method, path: r.URL.Path, query: r.URL.Query(), header: r.Header.Clone(), body: body}
+	f.mu.Lock()
+	f.rest = append(f.rest, call)
+	f.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if !f.authorized(r) {
+		f.authRefusals.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":{"status":"invalid_api_key","message":"Invalid API key"}}`))
+		return
+	}
+	if r.URL.Path == "/v1/models" {
+		_, _ = w.Write([]byte(`[{"model_id":"eleven_v4_turbo","name":"Eleven v4 Turbo","can_do_text_to_speech":true},{"model_id":"eleven_multilingual_v2","name":"Eleven Multilingual v2","can_do_text_to_speech":true}]`))
+		return
+	}
+	if _, directive := elevenMarker(call.voice()); directive == "error" {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"detail":{"status":"too_many_concurrent_requests","message":"fake: slow down"}}`))
+		return
+	}
+	if model := gjson.GetBytes(body, "model_id").Str; model != fakeElevenTTSNew && model != "eleven_multilingual_v2" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail":{"status":"model_not_found","message":"fake: unknown model ` + model + `"}}`))
+		return
+	}
+
+	chars := len([]rune(gjson.GetBytes(body, "text").Str))
+	for _, input := range gjson.GetBytes(body, "inputs").Array() {
+		chars += len([]rune(input.Get("text").Str))
+	}
+	w.Header().Set("request-id", fmt.Sprintf("fake-request-%d", f.restSeq.Add(1)))
+	w.Header().Set("history-item-id", "fake-history-item")
+	w.Header().Set("character-cost", strconv.Itoa(chars/2)) // credits, as ElevenLabs reports them, not characters
+	w.Header().Set("x-trace-id", "fake-trace")
+	audio := make([]byte, 3200)
+	withTimestamps := strings.HasSuffix(r.URL.Path, "/with-timestamps")
+	chunk := func(part []byte) []byte {
+		body := map[string]any{
+			"audio_base64": base64.StdEncoding.EncodeToString(part),
+			"alignment":    map[string]any{"characters": []string{"h", "i"}, "character_start_times_seconds": []float64{0, 0.1}, "character_end_times_seconds": []float64{0.1, 0.2}},
+		}
+		encoded, _ := json.Marshal(body)
+		return encoded
+	}
+	switch {
+	case strings.Contains(r.URL.Path, "/stream") && withTimestamps:
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write(append(chunk(audio[:1000]), '\n'))
+			w.(http.Flusher).Flush()
+		}
+	case strings.Contains(r.URL.Path, "/stream"):
+		w.Header().Set("Content-Type", "audio/mpeg")
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write(audio[:1000])
+			w.(http.Flusher).Flush()
+		}
+	case withTimestamps:
+		_, _ = w.Write(chunk(audio))
+	default:
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write(audio)
+	}
 }

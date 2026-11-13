@@ -324,22 +324,22 @@ func (d *ElevenlabsErrorDetail) UnmarshalJSON(data []byte) error {
 // MODEL TYPES
 type ElevenlabsModel struct {
 	ModelID                            string               `json:"model_id"`
-	Name                               string               `json:"name"`
-	Description                        string               `json:"description"`
-	ServesProVoices                    bool                 `json:"serves_pro_voices"`
-	TokenCostFactor                    float64              `json:"token_cost_factor"`
-	CanBeFinetuned                     bool                 `json:"can_be_finetuned"`
-	CanDoTextToSpeech                  bool                 `json:"can_do_text_to_speech"`
-	CanDoVoiceConversion               bool                 `json:"can_do_voice_conversion"`
-	CanUseStyle                        bool                 `json:"can_use_style"`
-	CanUseSpeakerBoost                 bool                 `json:"can_use_speaker_boost"`
-	Languages                          []ElevenlabsLanguage `json:"languages"`
-	RequiresAlphaAccess                bool                 `json:"requires_alpha_access"`
-	MaxCharactersRequestFreeUser       int                  `json:"max_characters_request_free_user"`
-	MaxCharactersRequestSubscribedUser int                  `json:"max_characters_request_subscribed_user"`
-	MaxTextLengthPerRequest            int                  `json:"maximum_text_length_per_request"`
-	ModelRates                         ElevenlabsModelRate  `json:"model_rates"`
-	ConcurrencyGroup                   string               `json:"concurrency_group"`
+	Name                               string               `json:"name,omitempty"`
+	Description                        string               `json:"description,omitempty"`
+	ServesProVoices                    bool                 `json:"serves_pro_voices,omitempty"`
+	TokenCostFactor                    float64              `json:"token_cost_factor,omitempty"`
+	CanBeFinetuned                     bool                 `json:"can_be_finetuned,omitempty"`
+	CanDoTextToSpeech                  bool                 `json:"can_do_text_to_speech,omitempty"`
+	CanDoVoiceConversion               bool                 `json:"can_do_voice_conversion,omitempty"`
+	CanUseStyle                        bool                 `json:"can_use_style,omitempty"`
+	CanUseSpeakerBoost                 bool                 `json:"can_use_speaker_boost,omitempty"`
+	Languages                          []ElevenlabsLanguage `json:"languages,omitempty"`
+	RequiresAlphaAccess                bool                 `json:"requires_alpha_access,omitempty"`
+	MaxCharactersRequestFreeUser       int                  `json:"max_characters_request_free_user,omitempty"`
+	MaxCharactersRequestSubscribedUser int                  `json:"max_characters_request_subscribed_user,omitempty"`
+	MaxTextLengthPerRequest            int                  `json:"maximum_text_length_per_request,omitempty"`
+	ModelRates                         *ElevenlabsModelRate `json:"model_rates,omitempty"`
+	ConcurrencyGroup                   string               `json:"concurrency_group,omitempty"`
 }
 
 type ElevenlabsLanguage struct {
