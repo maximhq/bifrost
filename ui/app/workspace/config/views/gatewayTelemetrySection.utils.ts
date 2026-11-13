@@ -1,11 +1,12 @@
 import type { ClientGatewayTelemetry } from "@/lib/types/config";
 import type { SecretVar } from "@/lib/types/schemas";
 
-// One collector as edited in the form. headers holds one "name: value" per line.
+// One collector as edited in the form; headers maps each name to its env or vault reference.
 export interface TelemetryDestinationDraft {
 	id: string;
 	endpoint: string;
-	headers: string;
+	headers: Record<string, SecretVar>;
+	headerConflict?: boolean; // the headers table holds a rename onto a name another row already has
 }
 
 // The telemetry section's form state. dropAttributes is a comma-separated list.
@@ -27,6 +28,7 @@ export type TelemetryDraftError =
 	| { kind: "noDestination" }
 	| { kind: "endpointInvalid" }
 	| { kind: "headerMalformed" }
+	| { kind: "headerConflict" }
 	| { kind: "headerNotReference"; name: string };
 
 let nextDestinationId = 0;
@@ -46,6 +48,15 @@ export function secretVarText(v?: SecretVar | string): string {
 	return v.value ?? "";
 }
 
+// headerSecretVar turns a stored header value into what the headers table edits: an env or vault
+// value keeps only its reference (the server sends its resolved value redacted).
+export function headerSecretVar(v?: SecretVar | string): SecretVar {
+	const text = secretVarText(v);
+	if (text.startsWith("env.")) return { value: "", ref: text, type: "env" };
+	if (text.startsWith("vault.")) return { value: "", ref: text, type: "vault" };
+	return { value: text, ref: "" };
+}
+
 // telemetryDraftFromConfig builds the form state from the stored block.
 export function telemetryDraftFromConfig(telemetry?: ClientGatewayTelemetry): TelemetryDraft {
 	return {
@@ -53,9 +64,7 @@ export function telemetryDraftFromConfig(telemetry?: ClientGatewayTelemetry): Te
 		destinations: (telemetry?.destinations ?? []).map((d) => ({
 			id: newDestinationId(),
 			endpoint: secretVarText(d.endpoint),
-			headers: Object.entries(d.headers ?? {})
-				.map(([name, value]) => `${name}: ${secretVarText(value)}`)
-				.join("\n"),
+			headers: Object.fromEntries(Object.entries(d.headers ?? {}).map(([name, value]) => [name, headerSecretVar(value)])),
 		})),
 		dropAttributes: (telemetry?.drop_attributes ?? []).join(", "),
 	};
@@ -66,7 +75,13 @@ export function telemetryDraftFromConfig(telemetry?: ClientGatewayTelemetry): Te
 export function telemetryDraftKey(draft: TelemetryDraft): string {
 	return JSON.stringify({
 		enabled: draft.enabled,
-		destinations: draft.destinations.map((d) => [d.endpoint.trim(), d.headers.trim()]),
+		destinations: draft.destinations.map((d) => [
+			d.endpoint.trim(),
+			Object.entries(d.headers)
+				.map(([name, value]) => [name.trim(), secretVarText(value).trim()])
+				.filter(([name, value]) => name || value)
+				.sort(),
+		]),
 		dropAttributes: splitList(draft.dropAttributes),
 	});
 }
@@ -95,15 +110,15 @@ const isReference = (value: string) => value.startsWith("env.") || value.startsW
 export function telemetryPayloadFromDraft(draft: TelemetryDraft): { telemetry?: TelemetryPayload; error?: TelemetryDraftError } {
 	const destinations: TelemetryPayload["destinations"] = [];
 	for (const row of draft.destinations) {
+		if (row.headerConflict) return { error: { kind: "headerConflict" } };
 		const endpoint = row.endpoint.trim();
 		if (!endpoint) continue;
 		if (!isReference(endpoint) && !isHttpURL(endpoint)) return { error: { kind: "endpointInvalid" } };
 		const headers: Record<string, string> = {};
-		for (const line of row.headers.split("\n")) {
-			if (!line.trim()) continue;
-			const sep = line.indexOf(":");
-			const name = sep > 0 ? line.slice(0, sep).trim() : "";
-			const value = sep > 0 ? line.slice(sep + 1).trim() : "";
+		for (const [rawName, rawValue] of Object.entries(row.headers)) {
+			const name = rawName.trim();
+			const value = secretVarText(rawValue).trim();
+			if (!name && !value) continue;
 			if (!name || !value) return { error: { kind: "headerMalformed" } };
 			if (!isReference(value)) return { error: { kind: "headerNotReference", name } };
 			headers[name] = value;

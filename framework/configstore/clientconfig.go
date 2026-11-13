@@ -655,15 +655,18 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			}
 			if t := cc.Telemetry; t != nil {
 				hash.Write([]byte("gateways.claude_code.telemetry.enabled:" + strconv.FormatBool(t.Enabled)))
+				// Length-prefixed, so where one value ends is unambiguous: concatenated, a value
+				// containing the next field's text hashed like two shorter values.
 				for _, d := range t.Destinations {
-					hash.Write([]byte("gateways.claude_code.telemetry.endpoint:" + secretVarHashForm(d.Endpoint)))
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.endpoint:", secretVarHashForm(d.Endpoint))
 					names := slices.Sorted(maps.Keys(d.Headers))
 					for _, name := range names {
-						hash.Write([]byte("gateways.claude_code.telemetry.header:" + name + "=" + secretVarHashForm(d.Headers[name])))
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.name:", name)
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.value:", secretVarHashForm(d.Headers[name]))
 					}
 				}
 				for _, key := range t.DropAttributes {
-					hash.Write([]byte("gateways.claude_code.telemetry.drop:" + key))
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.drop:", key)
 				}
 			}
 		}

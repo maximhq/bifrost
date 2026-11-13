@@ -17,7 +17,8 @@ export class ClaudeCodeGatewayPage extends BasePage {
   readonly telemetrySwitch: Locator
   readonly telemetryAddBtn: Locator
   readonly telemetryEndpointInput: Locator
-  readonly telemetryHeadersInput: Locator
+  readonly telemetryHeaderNameInput: Locator
+  readonly telemetryHeaderValueInput: Locator
   readonly telemetryDropInput: Locator
 
   constructor(page: Page) {
@@ -36,7 +37,8 @@ export class ClaudeCodeGatewayPage extends BasePage {
     this.telemetrySwitch = page.getByTestId('claude-code-telemetry-switch')
     this.telemetryAddBtn = page.getByTestId('claude-code-telemetry-add-btn')
     this.telemetryEndpointInput = page.getByTestId('claude-code-telemetry-endpoint-input')
-    this.telemetryHeadersInput = page.getByTestId('claude-code-telemetry-headers-input')
+    this.telemetryHeaderNameInput = page.getByTestId('claude-code-telemetry-header-0-name-0')
+    this.telemetryHeaderValueInput = page.getByTestId('claude-code-telemetry-header-0-value-0')
     this.telemetryDropInput = page.getByTestId('claude-code-telemetry-drop-input')
   }
 

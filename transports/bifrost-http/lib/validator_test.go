@@ -505,6 +505,25 @@ func TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations pins that enabled telemetry
+// needs at least one destination, as the config validator does; disabled telemetry needs none.
+func TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations(t *testing.T) {
+	cfg := func(telemetry string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "telemetry": ` + telemetry + `}}}}}`)
+	}
+	for _, invalid := range []string{`{"enabled": true}`, `{"enabled": true, "destinations": []}`} {
+		if err := ValidateConfigSchema(cfg(invalid), loadLocalSchema(t)); err == nil {
+			t.Errorf("telemetry %s must be rejected", invalid)
+		}
+	}
+	for _, valid := range []string{`{"enabled": false}`, `{"enabled": true, "destinations": [{"endpoint": "https://otel.example.com"}]}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("telemetry %s must be valid, got: %v", valid, err)
+		}
+	}
+}
+
 func TestValidateConfigSchema_InvalidMinimum(t *testing.T) {
 	// initial_pool_size has minimum: 1
 	invalidConfig := `{
