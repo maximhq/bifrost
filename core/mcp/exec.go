@@ -7,6 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/internal/mcpvouch"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -29,6 +30,7 @@ var mcpRequestPool = sync.Pool{
 func resetMCPRequest(req *schemas.BifrostMCPRequest) {
 	req.RequestType = ""
 	req.ClientName = ""
+	req.OutboundToken = ""
 	req.BifrostMCPPingRequest = nil
 	req.BifrostMCPListToolsRequest = nil
 	req.BifrostMCPExecuteToolRequest = nil
@@ -107,7 +109,7 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
 		// MCP clients before any auth or transport work.
-		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
+		state, callCtx, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
 		if prepErr != nil {
 			return nil, prepErr
 		}
@@ -120,7 +122,7 @@ func (m *MCPManager) executeToolWithHooks(
 			executionConfig = state.ExecutionConfig
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig)
+		result, opErr := m.toolsManager.ExecuteTool(callCtx, preReq, conn, executionConfig)
 		if opErr != nil {
 			return nil, opErr
 		}
@@ -148,10 +150,10 @@ func (m *MCPManager) executeToolWithHooks(
 // Errors here mean the call should NOT run — neither the envelope plugin
 // gate nor the wire op. Typed errors (e.g. *MCPUserOAuthRequiredError)
 // propagate so the caller can stamp BifrostError.ExtraFields.
-func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.MCPClientState, *client.Client, func(), error) {
+func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.MCPClientState, *schemas.BifrostContext, *client.Client, func(), error) {
 	toolName := request.GetToolName()
 	if toolName == "" {
-		return nil, nil, nil, fmt.Errorf("tool call missing function name")
+		return nil, nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
 	// Code-mode tools have no upstream client — skip client lookup. A narrowed request is refused
@@ -159,18 +161,18 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
 		if requestNarrowed(ctx) && !m.codeModeClientReachable(ctx) {
-			return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
+			return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
 		}
-		return nil, nil, func() {}, nil
+		return nil, ctx, nil, func() {}, nil
 	}
 
 	state, discovery := m.GetClientForTool(ctx, toolName)
 	if state == nil {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
 	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	toolMeta := discovery.GetTools()[toolName].MCP
 	// Marked before the app-only refusal, so a refused call's log says why.
@@ -183,7 +185,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		}
 	}
 	if !AppToolsAllowed(ctx) && !toolMeta.ModelVisible() {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
+		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (it is only callable from an MCP App)", toolName)
 	}
 	// NeedsReauth is the one hard gate left besides Disabled: the credential
 	// is confirmed permanently dead (see connectToMCPClient's typed
@@ -206,13 +208,30 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	// (see failConnectAttempt) and still gets tool calls attempted normally;
 	// it self-heals to Healthy on the checker's next successful pass.
 	if state.State == schemas.MCPConnectionStateNeedsReauth {
-		return nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
+		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
 	}
-	conn, release, err := m.AcquireClientConn(ctx, state)
+	var token string
+	if state.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO {
+		var tokenErr error
+		token, tokenErr = utils.ResolveOutboundToken(ctx, m.toolsManager.getOutboundTokenProvider(), clientName, request.OutboundToken, m.logger)
+		if tokenErr != nil {
+			return nil, nil, nil, nil, tokenErr
+		}
+	}
+	if token == "" {
+		conn, release, err := m.AcquireClientConn(ctx, state)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		return state, ctx, conn, release, nil
+	}
+	callCtx, releaseToken := utils.WithCallToken(ctx, token)
+	conn, release, err := m.AcquireClientConn(callCtx, state)
 	if err != nil {
-		return nil, nil, nil, err
+		releaseToken()
+		return nil, nil, nil, nil, err
 	}
-	return state, conn, release, nil
+	return state, callCtx, conn, func() { release(); releaseToken() }, nil
 }
 
 // requestNarrowed reports whether the request carries an include list (virtual key, slug or
