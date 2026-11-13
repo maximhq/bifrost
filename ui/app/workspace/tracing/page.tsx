@@ -4,6 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import {
+	useGetTraceExperimentsQuery,
 	useGetTraceHistogramQuery,
 	useGetTraceProjectsQuery,
 	useGetTraceSessionsQuery,
@@ -20,7 +21,7 @@ import { ConnectPanel } from "./views/connectPanel";
 import { ProjectSettings } from "./views/projectSettings";
 import { SOURCE_LABELS } from "./views/format";
 import { TraceOverview } from "./views/traceOverview";
-import { Pager, SessionsTable, SpansTable, TracesTable } from "./views/tracesTable";
+import { ExperimentsTable, Pager, SessionsTable, SpansTable, TracesTable } from "./views/tracesTable";
 import { TraceViewer } from "./views/traceViewer";
 import { renderTraceSpanExtras } from "./views/traceExtras";
 
@@ -98,6 +99,10 @@ export default function TracingPage() {
 	const traces = useGetTracesQuery({ filters, pagination }, { skip: url.view !== "traces", ...live });
 	const spans = useGetTraceSpansQuery({ filters, pagination }, { skip: url.view !== "spans", ...live });
 	const sessions = useGetTraceSessionsQuery({ filters, pagination }, { skip: url.view !== "sessions", ...live });
+	const experiments = useGetTraceExperimentsQuery(
+		{ projectIds: projectId ? [projectId] : undefined },
+		{ skip: url.view !== "experiments", ...live },
+	);
 	const stats = useGetTraceStatsQuery(filters, live);
 	const histogram = useGetTraceHistogramQuery({ filters, bucketSizeSeconds: bucketFor(rangeSeconds) }, live);
 
@@ -229,7 +234,24 @@ export default function TracingPage() {
 						<TabsTrigger value="sessions" data-testid="tracing-sessions-tab">
 							{t("tracing.tabs.sessions")}
 						</TabsTrigger>
+						<TabsTrigger value="experiments" data-testid="tracing-experiments-tab">
+							{t("tracing.tabs.experiments")}
+						</TabsTrigger>
 					</TabsList>
+					{url.experiment && (
+						<div className="text-muted-foreground flex items-center gap-2 pt-2 text-xs">
+							{t("tracing.experiments.filtered", { experiment: url.experiment })}
+							<Button
+								variant="link"
+								size="sm"
+								className="h-auto p-0 text-xs"
+								data-testid="tracing-clear-experiment-button"
+								onClick={() => setFilter({ experiment: "" })}
+							>
+								{t("tracing.clear")}
+							</Button>
+						</div>
+					)}
 					{url.session && (
 						<div className="text-muted-foreground flex items-center gap-2 pt-2 text-xs">
 							{t("tracing.sessions.filtered", { session: url.session })}
@@ -288,6 +310,23 @@ export default function TracingPage() {
 							}
 						/>
 						<Pager pagination={sessions.data?.pagination ?? pagination} onPage={(offset) => setUrl({ offset })} />
+					</TabsContent>
+					<TabsContent value="experiments" className="min-h-0 flex-1 overflow-auto">
+						<p className="text-muted-foreground pb-2 text-xs">{t("tracing.experiments.hint")}</p>
+						<ExperimentsTable
+							experiments={experiments.data?.experiments ?? []}
+							onOpen={(experiment) =>
+								setUrl({
+									view: "traces",
+									experiment: experiment.id,
+									project: experiment.project_id,
+									range: "30d",
+									offset: 0,
+									sort_by: "timestamp",
+									order: "desc",
+								})
+							}
+						/>
 					</TabsContent>
 				</Tabs>
 			)}

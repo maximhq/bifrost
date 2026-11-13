@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { Trace, TracePagination, TraceSession, TraceSpan } from "@/lib/types/traces";
+import type { Trace, TraceExperiment, TracePagination, TraceSession, TraceSpan } from "@/lib/types/traces";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -224,6 +224,70 @@ export function SessionsTable({ sessions, onOpen }: { sessions: TraceSession[]; 
 						<TableCell className="text-right tabular-nums">{formatCost(session.total_cost)}</TableCell>
 						<TableCell className="text-muted-foreground text-xs whitespace-nowrap">
 							{new Date(session.last_seen).toLocaleString()}
+						</TableCell>
+					</TableRow>
+				))}
+			</TableBody>
+		</Table>
+	);
+}
+/** Experiments registered by SDKs: Braintrust experiments and Langfuse dataset runs, each with the mean of its scores. */
+export function ExperimentsTable({
+	experiments,
+	onOpen,
+}: {
+	experiments: TraceExperiment[];
+	onOpen: (experiment: TraceExperiment) => void;
+}) {
+	const { t } = useTranslation("observability");
+	return (
+		<Table data-testid="trace-experiments-table">
+			<TableHeader>
+				<TableRow>
+					<TableHead>{t("tracing.columns.name")}</TableHead>
+					<TableHead>{t("tracing.columns.source")}</TableHead>
+					<TableHead>{t("tracing.columns.scores")}</TableHead>
+					<TableHead className="text-right">{t("tracing.overview.traces")}</TableHead>
+					<TableHead className="text-right">{t("tracing.columns.tokens")}</TableHead>
+					<TableHead className="text-right">{t("tracing.columns.cost")}</TableHead>
+					<TableHead className="text-right">{t("tracing.overview.avgDuration")}</TableHead>
+					<TableHead>{t("tracing.columns.timestamp")}</TableHead>
+				</TableRow>
+			</TableHeader>
+			<TableBody>
+				{experiments.map((experiment) => (
+					<TableRow
+						key={`${experiment.project_id}/${experiment.id}`}
+						data-testid={`trace-experiments-row-${experiment.id}`}
+						className="cursor-pointer"
+						onClick={() => onOpen(experiment)}
+					>
+						<TableCell className="max-w-[260px]">
+							<div className="flex items-center gap-1.5">
+								{experiment.summary.error_count > 0 && <AlertCircle className="text-destructive h-3.5 w-3.5 shrink-0" />}
+								<span className="truncate font-medium">{experiment.name}</span>
+							</div>
+							{experiment.dataset_name && <div className="text-muted-foreground truncate text-xs">{experiment.dataset_name}</div>}
+						</TableCell>
+						<TableCell className="text-xs">{SOURCE_LABELS[experiment.source] ?? experiment.source}</TableCell>
+						<TableCell>
+							<div className="flex flex-wrap gap-1">
+								{Object.entries(experiment.summary.scores ?? {}).map(([name, value]) => (
+									<Badge key={name} variant="outline" className="gap-1 tabular-nums">
+										{name} {value.toFixed(2)}
+									</Badge>
+								))}
+							</div>
+						</TableCell>
+						<TableCell className="text-right tabular-nums">
+							{experiment.summary.trace_count}
+							{experiment.summary.truncated ? "+" : ""}
+						</TableCell>
+						<TableCell className="text-right tabular-nums">{formatTokens(experiment.summary.total_tokens)}</TableCell>
+						<TableCell className="text-right tabular-nums">{formatCost(experiment.summary.total_cost)}</TableCell>
+						<TableCell className="text-right tabular-nums">{formatDuration(experiment.summary.avg_duration_ms)}</TableCell>
+						<TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+							{new Date(experiment.created_at).toLocaleString()}
 						</TableCell>
 					</TableRow>
 				))}
