@@ -803,6 +803,14 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 	return true, nil
 }
 
+// suggestionCancelSettleWait bounds how long a cancel waits for a running
+// run's handler to record that it stopped, polling every
+// suggestionCancelSettlePoll; past it, the record is returned as it stands.
+var (
+	suggestionCancelSettleWait = 3 * time.Second
+	suggestionCancelSettlePoll = 25 * time.Millisecond
+)
+
 // ErrUnknownComplexitySuggestionRun is a cancel for a run the router does not
 // have.
 var ErrUnknownComplexitySuggestionRun = errors.New("no such phrase suggestion run")
@@ -853,7 +861,7 @@ func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, route
 		cs.inlineMu.Unlock()
 	}
 	if handlerRecords {
-		return run, nil
+		return awaitSuggestionRunEnd(ctx, store, routerID, run), nil
 	}
 	// Written on a context of its own: the job is already cancelled, so a
 	// caller that went away must not leave the run reading queued. The write
@@ -883,6 +891,34 @@ func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, route
 		return run, ErrComplexitySuggestionRunEnded
 	}
 	return run, nil
+}
+
+// awaitSuggestionRunEnd waits, up to suggestionCancelSettleWait, for a
+// cancelled run's handler to record that it stopped, and returns the record:
+// the handler's outcome once written, or the latest progress read when the
+// wait or the caller's context runs out first.
+func awaitSuggestionRunEnd(ctx context.Context, store suggestrun.Store, routerID string, run logstore.ComplexitySuggestionRun) logstore.ComplexitySuggestionRun {
+	// The reads share the bound, so a stalled one cannot hold the cancel past
+	// it when the caller set no deadline.
+	ctx, cancel := context.WithTimeout(ctx, suggestionCancelSettleWait)
+	defer cancel()
+	poll := time.NewTicker(suggestionCancelSettlePoll)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return run
+		case <-poll.C:
+		}
+		runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID, IDs: []string{run.ID}}, 1)
+		if err != nil || len(runs) == 0 {
+			continue
+		}
+		run = runs[0]
+		if run.Status != logstore.ComplexitySuggestionRunQueued && run.Status != logstore.ComplexitySuggestionRunRunning {
+			return run
+		}
+	}
 }
 
 // suggestionRunCancelled reports whether a user cancelled a run: through
