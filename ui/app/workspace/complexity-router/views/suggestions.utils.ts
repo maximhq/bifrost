@@ -164,6 +164,8 @@ export function runInProgress(run: Pick<SuggestionRun, "status"> | undefined): b
 export function runProgress(run: Pick<SuggestionRun, "status" | "stage" | "clusters_asked" | "clusters_done">): number {
 	if (run.status === "queued") return 0;
 	switch (run.stage) {
+		case "backfilling":
+			return 0.02;
 		case "reading":
 			return 0.05;
 		case "clustering":

@@ -2165,6 +2165,8 @@
 				},
 				"estimateFailed": "無法估算本次執行：{{error}}",
 				"estimateEmpty": "此時段內尚未擷取任何請求。",
+				"estimateBackfill_one": "啟用建議之前的 {{count}} 個請求會先從其日誌中嵌入。",
+				"estimateBackfill_other": "啟用建議之前的 {{count}} 個請求會先從其日誌中嵌入。",
 				"captureUnavailableEmbedded": "建議功能需要共用向量儲存，例如 Weaviate、Qdrant、Redis 或 Pinecone。此閘道的向量儲存是 Chromem，它將向量保存在每個閘道自身的記憶體中，因此不會為建議擷取請求。",
 				"captureUnavailableNone": "建議功能需要共用向量儲存（例如 Weaviate、Qdrant、Redis 或 Pinecone）來保存擷取的請求。目前未設定，因此不會為建議擷取請求。",
 				"runInBackground": "在你的閘道內於背景執行，不在請求路徑上。",
@@ -2179,6 +2181,7 @@
 				"cancelRun": "取消",
 				"runProgressAria": "執行進度",
 				"stage": {
+					"backfilling": "正在從日誌嵌入較早的請求…",
 					"queued": "正在等待工作程序接手執行…",
 					"reading": "正在讀取擷取的請求…",
 					"clustering": "正在將相似的請求分組…",

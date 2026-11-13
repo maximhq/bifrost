@@ -2165,6 +2165,8 @@
 				},
 				"estimateFailed": "실행을 추정할 수 없습니다: {{error}}",
 				"estimateEmpty": "이 기간에는 아직 수집된 요청이 없습니다.",
+				"estimateBackfill_one": "제안을 켜기 전의 요청 {{count}}개를 먼저 로그에서 임베딩합니다.",
+				"estimateBackfill_other": "제안을 켜기 전의 요청 {{count}}개를 먼저 로그에서 임베딩합니다.",
 				"captureUnavailableEmbedded": "제안에는 Weaviate, Qdrant, Redis, Pinecone 같은 공유 벡터 저장소가 필요합니다. 이 게이트웨이의 벡터 저장소는 각 게이트웨이의 메모리에 벡터를 보관하는 Chromem이므로 제안용 요청이 수집되지 않습니다.",
 				"captureUnavailableNone": "제안에는 수집한 요청을 보관할 Weaviate, Qdrant, Redis, Pinecone 같은 공유 벡터 저장소가 필요합니다. 구성된 저장소가 없으므로 제안용 요청이 수집되지 않습니다.",
 				"runInBackground": "게이트웨이 안에서 요청 경로 밖의 백그라운드로 실행됩니다.",
@@ -2179,6 +2181,7 @@
 				"cancelRun": "취소",
 				"runProgressAria": "실행 진행률",
 				"stage": {
+					"backfilling": "이전 요청을 로그에서 임베딩하는 중…",
 					"queued": "워커가 실행을 가져가기를 기다리는 중…",
 					"reading": "캡처된 요청을 읽는 중…",
 					"clustering": "유사한 요청을 그룹화하는 중…",

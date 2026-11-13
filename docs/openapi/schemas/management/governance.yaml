@@ -3582,7 +3582,7 @@ ComplexitySuggestionRun:
       description: cancelled runs were stopped by a user; what they had written is kept.
     stage:
       type: string
-      enum: [reading, clustering, suggesting, saving]
+      enum: [backfilling, reading, clustering, suggesting, saving]
       description: How far a running run got; absent once it ends.
     embedding_signature:
       type: string
@@ -3804,7 +3804,7 @@ ComplexitySuggestionRunEstimate:
   properties:
     requests:
       type: integer
-      description: Captured requests in the window.
+      description: Requests in the window, captured and to be backfilled.
     clustered:
       type: integer
       description: Size of the sample of the window the run would cluster, up to its clustering budget.
@@ -3817,6 +3817,9 @@ ComplexitySuggestionRunEstimate:
     max_model_calls:
       type: integer
       description: The most suggestion-model calls the run could make.
+    backfill:
+      type: integer
+      description: Requests in the window from before the router captured them, which the run embeds from their logs first (up to the run's clustering budget); counted in requests. Omitted when none.
 
 ModelRouter:
   type: object

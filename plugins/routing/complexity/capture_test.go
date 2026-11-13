@@ -195,11 +195,57 @@ func TestRequestCaptureSamplesAtConfiguredRate(t *testing.T) {
 	c.Configure(&CaptureConfig{SampleRate: 0.25})
 	store := newCaptureTestStore(t)
 	const n = 4000
-	for range n {
-		c.offer(requestCtx("r"), store, "ns", 2, []float32{1, 0})
+	for i := range n {
+		c.offer(requestCtx(fmt.Sprintf("r-%d", i)), store, "ns", 2, []float32{1, 0})
 	}
 	got := c.Stats().Queued + c.Stats().Dropped
 	assert.InDelta(t, n/4, got, n/20, "sampled %d of %d at rate 0.25", got, n)
+}
+
+// The sample is a function of the request ID: a request is always in or out
+// at a given rate, as a backfill from logs computes it, and a request in at a
+// lower rate stays in at a higher one.
+func TestCaptureSampleIsDeterministicByRequest(t *testing.T) {
+	c := newStoppedCapture()
+	c.Configure(&CaptureConfig{SampleRate: 0.3})
+	store := newCaptureTestStore(t)
+	var wantIn int
+	for i := range 2000 {
+		id := fmt.Sprintf("11111111-2222-4333-8444-%012d", i)
+		in := CaptureSampled(id, 0.3)
+		assert.Equal(t, in, CaptureSampled(id, 0.3), "the same request gets the same draw")
+		if in {
+			wantIn++
+			assert.True(t, CaptureSampled(id, 0.6), "%s in at 0.3 stays in at 0.6", id)
+		}
+		c.offer(requestCtx(id), store, "ns", 2, []float32{1, 0})
+	}
+	assert.EqualValues(t, wantIn, c.Stats().Queued+c.Stats().Dropped, "live capture keeps exactly the requests CaptureSampled picks")
+	assert.InDelta(t, 600, wantIn, 100)
+	assert.False(t, CaptureSampled("any", 0))
+	assert.True(t, CaptureSampled("any", 1))
+}
+
+// A backfilled request is stored where live capture would have put it, under
+// its log's time, so writing it again replaces it.
+func TestWriteBackfilledStoresUnderTheLogTime(t *testing.T) {
+	ctx := context.Background()
+	c := newCaptureTest(t)
+	store := newCaptureTestStore(t)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
+	logged := time.Now().Add(-3 * 24 * time.Hour).Truncate(time.Second)
+	req := CapturedRequest{LogID: "req-1", Vector: []float32{1, 0}, At: logged}
+	require.NoError(t, c.WriteBackfilled(ctx, store, ns, 2, []CapturedRequest{req}))
+	require.NoError(t, c.WriteBackfilled(ctx, store, ns, 2, []CapturedRequest{req}), "writing it again replaces it")
+
+	var got []CapturedRequest
+	require.NoError(t, EachCaptured(ctx, store, ns, logged.Add(-time.Minute), logged.Add(time.Minute), func(page []CapturedRequest) error {
+		got = append(got, page...)
+		return nil
+	}))
+	require.Len(t, got, 1)
+	assert.Equal(t, "req-1", got[0].LogID)
+	assert.True(t, got[0].At.Equal(logged), "stamped with the log's time, not the backfill's")
 }
 
 func TestRequestCaptureDropsWhenQueueIsFull(t *testing.T) {
