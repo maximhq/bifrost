@@ -391,7 +391,7 @@ func isValidAudioBase64Payload(data string) bool {
 
 // geminiThinkingLevels is the thinkingLevel ladder ordered from least to most
 // thinking. Source: https://ai.google.dev/api/generate-content#ThinkingLevel
-var geminiThinkingLevels = []string{"minimal", "low", "medium", "high"}
+var geminiThinkingLevels = []string{"minimal", "low", "medium", "high", "xhigh"}
 
 // geminiThinkingLevelSupport records which rungs of that ladder each model actually
 // implements. The sets are not uniform across the Gemini 3 family - gemini-3.7-flash
@@ -405,6 +405,7 @@ var geminiThinkingLevelSupport = []struct {
 	prefix string
 	levels []string
 }{
+	{"gemini-4-hydrogen", []string{"low", "medium", "high", "xhigh"}},
 	{"gemini-4-argon", []string{"low", "medium", "high"}},
 	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
 	{"gemini-3.1-flash-lite", []string{"minimal", "low", "medium", "high"}},
@@ -680,6 +681,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters(p
 				effort = "medium"
 			case "high":
 				effort = "high"
+			case "xhigh":
+				effort = "xhigh"
 			default:
 				effort = "medium"
 			}
