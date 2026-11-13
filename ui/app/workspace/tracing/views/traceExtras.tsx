@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -18,6 +19,11 @@ import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+
+/** A section heading in the span detail pane, styled like the Input and Output headings. */
+function SectionHeading({ children }: { children: React.ReactNode }) {
+	return <h4 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{children}</h4>;
+}
 
 /** Copies one span into an evals dataset as a row: its input, output, history and expected value. */
 function AddToDataset({ span }: { span: TraceSpan }) {
@@ -40,30 +46,40 @@ function AddToDataset({ span }: { span: TraceSpan }) {
 		}
 	};
 
-	if (datasets.length === 0) return <p className="text-muted-foreground text-xs">{t("tracing.evals.noDatasets")}</p>;
 	return (
-		<div className="flex items-center gap-2" data-testid="trace-add-to-dataset">
-			<Select value={datasetId} onValueChange={setDatasetId}>
-				<SelectTrigger className="w-64" data-testid="trace-add-to-dataset-select">
-					<SelectValue placeholder={t("tracing.evals.chooseDataset")} />
-				</SelectTrigger>
-				<SelectContent>
-					{datasets.map((dataset) => (
-						<SelectItem key={dataset.id} value={dataset.id}>
-							{dataset.name}
-						</SelectItem>
-					))}
-				</SelectContent>
-			</Select>
-			<Button
-				variant="outline"
-				data-testid="trace-add-to-dataset-button"
-				disabled={!datasetId || isLoading || span.content_hidden}
-				onClick={submit}
-			>
-				{t("tracing.evals.addToDataset")}
-			</Button>
-		</div>
+		<section className="space-y-2" data-testid="trace-add-to-dataset">
+			<SectionHeading>{t("tracing.evals.datasetHeading")}</SectionHeading>
+			{datasets.length === 0 ? (
+				<p className="text-muted-foreground text-sm">{t("tracing.evals.noDatasets")}</p>
+			) : (
+				<>
+					<p className="text-muted-foreground text-xs">{t("tracing.evals.datasetHint")}</p>
+					<div className="flex items-center gap-2">
+						<Select value={datasetId} onValueChange={setDatasetId}>
+							<SelectTrigger className="h-9 w-full max-w-sm" data-testid="trace-add-to-dataset-select">
+								<SelectValue placeholder={t("tracing.evals.chooseDataset")} />
+							</SelectTrigger>
+							<SelectContent>
+								{datasets.map((dataset) => (
+									<SelectItem key={dataset.id} value={dataset.id}>
+										{dataset.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<Button
+							variant="outline"
+							className="h-9 px-3"
+							data-testid="trace-add-to-dataset-button"
+							disabled={!datasetId || isLoading || span.content_hidden}
+							onClick={submit}
+						>
+							{t("tracing.evals.addToDataset")}
+						</Button>
+					</div>
+				</>
+			)}
+		</section>
 	);
 }
 
@@ -82,10 +98,14 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 		evaluator: t("tracing.review.sourceEvaluator"),
 		human: t("tracing.review.sourceHuman"),
 	};
+	const canSubmit = !isLoading && name.trim() !== "" && value.trim() !== "";
+	const fieldId = (field: string) => `trace-review-${span.span_id}-${field}`;
 
-	const submit = async () => {
+	const submit = async (event: React.FormEvent) => {
+		event.preventDefault();
+		if (!canSubmit) return;
 		const trimmed = value.trim();
-		const numeric = trimmed !== "" && !Number.isNaN(Number(trimmed));
+		const numeric = !Number.isNaN(Number(trimmed));
 		try {
 			await saveScore({
 				projectId: span.project_id,
@@ -106,59 +126,94 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 	};
 
 	return (
-		<div className="space-y-4" data-testid="trace-review-tab">
-			<AddToDataset span={span} />
-			{scores.length === 0 && <p className="text-muted-foreground text-sm">{t("tracing.review.noScores")}</p>}
-			<div className="divide-y rounded-md border empty:hidden">
-				{scores.map((score) => (
-					<div key={score.id} className="flex items-center gap-2 px-3 py-2 text-sm" data-testid={`trace-review-score-${score.id}`}>
-						<span className="font-medium">{score.name}</span>
-						<span className="tabular-nums">{score.value !== undefined && score.value !== null ? score.value : score.string_value}</span>
-						<Badge variant="outline">{sourceLabel[score.source] ?? score.source}</Badge>
-						{score.author && <span className="text-muted-foreground text-xs">{t("tracing.review.by", { author: score.author })}</span>}
-						{score.comment && <span className="text-muted-foreground truncate text-xs">{score.comment}</span>}
-						{score.source === "human" && (
-							<Button
-								variant="ghost"
-								size="icon"
-								className="ml-auto"
-								aria-label={t("tracing.review.deleteScore")}
-								data-testid={`trace-review-score-delete-button-${score.id}`}
-								onClick={() =>
-									deleteScore({ projectId: span.project_id, traceId: span.trace_id, id: score.id })
-										.unwrap()
-										.catch((error) => toast.error(getErrorMessage(error)))
-								}
+		<div className="space-y-6" data-testid="trace-review-tab">
+			<section className="space-y-2">
+				<SectionHeading>{t("tracing.review.scoresHeading")}</SectionHeading>
+				{scores.length === 0 ? (
+					<p className="text-muted-foreground text-sm">{t("tracing.review.noScores")}</p>
+				) : (
+					<div className="divide-y rounded-sm border">
+						{scores.map((score) => (
+							<div
+								key={score.id}
+								className="flex min-h-11 items-center gap-3 px-3 py-2 text-sm"
+								data-testid={`trace-review-score-${score.id}`}
 							>
-								<Trash2 className="h-4 w-4" />
-							</Button>
-						)}
+								<span className="font-medium">{score.name}</span>
+								<span className="font-mono tabular-nums">
+									{score.value !== undefined && score.value !== null ? score.value : score.string_value}
+								</span>
+								<Badge variant="outline">{sourceLabel[score.source] ?? score.source}</Badge>
+								<span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+									{[score.comment, score.author && t("tracing.review.by", { author: score.author })].filter(Boolean).join(" · ")}
+								</span>
+								{score.source === "human" && (
+									<Button
+										variant="ghost"
+										size="icon"
+										className="size-7"
+										aria-label={t("tracing.review.deleteScore")}
+										data-testid={`trace-review-score-delete-button-${score.id}`}
+										onClick={() =>
+											deleteScore({ projectId: span.project_id, traceId: span.trace_id, id: score.id })
+												.unwrap()
+												.catch((error) => toast.error(getErrorMessage(error)))
+										}
+									>
+										<Trash2 className="h-4 w-4" />
+									</Button>
+								)}
+							</div>
+						))}
 					</div>
-				))}
-			</div>
-			<div className="grid gap-2 md:grid-cols-[1fr_1fr_2fr_auto]">
-				<Input
-					data-testid="trace-review-score-name-input"
-					placeholder={t("tracing.review.scoreName")}
-					value={name}
-					onChange={(event) => setName(event.target.value)}
-				/>
-				<Input
-					data-testid="trace-review-score-value-input"
-					placeholder={t("tracing.review.scoreValue")}
-					value={value}
-					onChange={(event) => setValue(event.target.value)}
-				/>
-				<Input
-					data-testid="trace-review-score-note-input"
-					placeholder={t("tracing.review.note")}
-					value={note}
-					onChange={(event) => setNote(event.target.value)}
-				/>
-				<Button data-testid="trace-review-score-add-button" disabled={isLoading || !name.trim() || !value.trim()} onClick={submit}>
-					{t("tracing.review.addScore")}
-				</Button>
-			</div>
+				)}
+			</section>
+
+			<section className="space-y-2">
+				<SectionHeading>{t("tracing.review.addScoreHeading")}</SectionHeading>
+				<form className="space-y-3 rounded-sm border p-4" onSubmit={submit} data-testid="trace-review-score-form">
+					<div className="grid gap-3 sm:grid-cols-2">
+						<div className="space-y-1.5">
+							<Label htmlFor={fieldId("name")}>{t("tracing.review.scoreName")}</Label>
+							<Input
+								id={fieldId("name")}
+								data-testid="trace-review-score-name-input"
+								placeholder={t("tracing.review.namePlaceholder")}
+								value={name}
+								onChange={(event) => setName(event.target.value)}
+							/>
+						</div>
+						<div className="space-y-1.5">
+							<Label htmlFor={fieldId("value")}>{t("tracing.review.scoreValue")}</Label>
+							<Input
+								id={fieldId("value")}
+								data-testid="trace-review-score-value-input"
+								placeholder={t("tracing.review.valuePlaceholder")}
+								value={value}
+								onChange={(event) => setValue(event.target.value)}
+							/>
+						</div>
+					</div>
+					<div className="space-y-1.5">
+						<Label htmlFor={fieldId("note")}>{t("tracing.review.note")}</Label>
+						<Input
+							id={fieldId("note")}
+							data-testid="trace-review-score-note-input"
+							placeholder={t("tracing.review.notePlaceholder")}
+							value={note}
+							onChange={(event) => setNote(event.target.value)}
+						/>
+					</div>
+					<div className="flex items-center justify-between gap-3">
+						<p className="text-muted-foreground text-xs">{t("tracing.review.valueHint")}</p>
+						<Button type="submit" className="h-9 shrink-0 px-3" data-testid="trace-review-score-add-button" disabled={!canSubmit}>
+							{t("tracing.review.addScore")}
+						</Button>
+					</div>
+				</form>
+			</section>
+
+			<AddToDataset span={span} />
 		</div>
 	);
 }
@@ -215,9 +270,11 @@ function ActivityTab({ detail, span }: { detail: TraceDetail; span: TraceSpan })
 				value={text}
 				onChange={(event) => setText(event.target.value)}
 			/>
-			<Button data-testid="trace-activity-comment-add-button" disabled={isLoading || !text.trim()} onClick={submit}>
-				{t("tracing.review.addComment")}
-			</Button>
+			<div className="flex justify-end">
+				<Button className="h-9 px-3" data-testid="trace-activity-comment-add-button" disabled={isLoading || !text.trim()} onClick={submit}>
+					{t("tracing.review.addComment")}
+				</Button>
+			</div>
 		</div>
 	);
 }
