@@ -27444,6 +27444,7 @@ func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
 
 func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 	SetLogger(&testLogger{})
+	t.Setenv(envCodeModeDiscoveryRankerDecisionModel, "")
 	fileWith := func(ranker *schemas.MCPCodeModeDiscoveryRanker) *schemas.MCPConfig {
 		return &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{CodeModeDiscoveryRanker: ranker}}
 	}
@@ -27491,6 +27492,9 @@ func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 			{URL: "/rank"},
 			{URL: "https://ranker.example/rank", TimeoutSeconds: 31},
 			{URL: "https://ranker.example/rank", TimeoutSeconds: -1},
+			{DecisionModel: "gpt-5-nano"},
+			{DecisionModel: "openai/gpt-5-nano", Fallbacks: []string{"gpt-5-mini"}},
+			{DecisionModel: "openai/gpt-5-nano", URL: "https://ranker.example/rank"},
 		} {
 			t.Setenv(envCodeModeDiscoveryRankerURL, "")
 			mcpCfg := &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{}}
@@ -27498,6 +27502,51 @@ func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 			if mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
 				t.Fatalf("expected %+v to be rejected", ranker)
 			}
+		}
+	})
+
+	t.Run("decision model from the file", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{DecisionModel: " openai/gpt-5-nano ", Fallbacks: []string{"anthropic/claude-haiku"}, TimeoutSeconds: 4}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.DecisionModel != "openai/gpt-5-nano" || len(got.Fallbacks) != 1 || got.TimeoutSeconds != 4 || got.URL != "" {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+	})
+
+	t.Run("environment decision model replaces a file url", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		t.Setenv(envCodeModeDiscoveryRankerDecisionModel, "openai/gpt-5-nano")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker", TimeoutSeconds: 4}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.DecisionModel != "openai/gpt-5-nano" || got.URL != "" || got.TokenFile != "" || got.TimeoutSeconds != 4 {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+	})
+
+	t.Run("environment url replaces a file decision model", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "https://ranker.example/rank")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "openai/gpt-5-nano", Fallbacks: []string{"anthropic/claude-haiku"}}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://ranker.example/rank" || got.DecisionModel != "" || got.Fallbacks != nil {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+	})
+
+	t.Run("environment url and decision model conflict", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "https://ranker.example/rank")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		t.Setenv(envCodeModeDiscoveryRankerDecisionModel, "openai/gpt-5-nano")
+		mcpCfg := &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{}}
+		applyCodeModeDiscoveryRanker(mcpCfg, nil)
+		if got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker; got != nil {
+			t.Fatalf("expected the conflict to be rejected, got %+v", got)
 		}
 	})
 }

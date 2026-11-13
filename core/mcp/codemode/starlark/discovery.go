@@ -34,9 +34,8 @@ const (
 	discoveryMaxLimit      = 20
 	discoveryMaxQueryRunes = 2048
 
-	// Bounds on what is sent to an external ranker.
+	// Bounds on what is sent to a ranker.
 	discoveryMaxRankCandidates   = 32
-	discoveryLexicalRankSlots    = 24
 	discoveryMaxDescriptionRunes = 512
 	discoveryMaxParameters       = 32
 	discoveryMaxParameterRunes   = 128
@@ -261,23 +260,24 @@ func scoreDiscovery(items []discoveryTool, query string) []discoveryTool {
 	return ranked
 }
 
-// rankCandidates picks what is sent to the external ranker: everything when
-// the catalogue is small, otherwise the best lexical matches plus one tool from
-// each server not yet represented, so a match with no shared words can still
-// be found.
-func rankCandidates(ranked []discoveryTool) []discoveryTool {
-	if len(ranked) <= discoveryMaxRankCandidates {
+// rankCandidates picks what is sent to a ranker that takes at most
+// maxCandidates: everything when the catalogue is small, otherwise the best
+// lexical matches in three quarters of the slots plus one tool from each server
+// not yet represented, so a match with no shared words can still be found.
+func rankCandidates(ranked []discoveryTool, maxCandidates int) []discoveryTool {
+	if len(ranked) <= maxCandidates {
 		return ranked
 	}
-	selected := append(make([]discoveryTool, 0, discoveryMaxRankCandidates), ranked[:discoveryLexicalRankSlots]...)
+	lexicalSlots := maxCandidates - maxCandidates/4
+	selected := append(make([]discoveryTool, 0, maxCandidates), ranked[:lexicalSlots]...)
 	picked := map[string]bool{}
 	servers := map[string]bool{}
 	for _, item := range selected {
 		picked[item.candidate.ID] = true
 		servers[item.candidate.Server] = true
 	}
-	for _, item := range ranked[discoveryLexicalRankSlots:] {
-		if len(selected) == discoveryMaxRankCandidates {
+	for _, item := range ranked[lexicalSlots:] {
+		if len(selected) == maxCandidates {
 			break
 		}
 		if !servers[item.candidate.Server] {
@@ -286,8 +286,8 @@ func rankCandidates(ranked []discoveryTool) []discoveryTool {
 			servers[item.candidate.Server] = true
 		}
 	}
-	for _, item := range ranked[discoveryLexicalRankSlots:] {
-		if len(selected) == discoveryMaxRankCandidates {
+	for _, item := range ranked[lexicalSlots:] {
+		if len(selected) == maxCandidates {
 			break
 		}
 		if !picked[item.candidate.ID] {
@@ -373,12 +373,13 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 		return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, matched, nil, limit, header), false)
 	}
 
-	ranker := s.discoveryRanker.Load()
-	if ranker == nil {
+	rankerRef := s.discoveryRanker.Load()
+	if rankerRef == nil {
 		return lexical(""), nil
 	}
+	ranker := *rankerRef
 
-	candidates := rankCandidates(ranked)
+	candidates := rankCandidates(ranked, ranker.maxCandidates())
 	req := discoveryRankRequest{
 		Version:    discoveryRankVersion,
 		Revision:   revision,
@@ -501,6 +502,15 @@ func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, items []disco
 	return strings.Join(lines, "\n")
 }
 
+// toolRanker ranks listToolFiles candidates: an operator-configured HTTP
+// ranker or a decision model. Both answer in the external ranker contract, so
+// one validation and one shortlist serve both.
+type toolRanker interface {
+	rank(ctx context.Context, input discoveryRankRequest) (discoveryRankResponse, error)
+	// maxCandidates bounds the candidates one request may carry.
+	maxCandidates() int
+}
+
 // httpDiscoveryRanker calls an operator-configured HTTP ranker. The endpoint
 // and credentials come only from configuration, never from the query.
 type httpDiscoveryRanker struct {
@@ -510,13 +520,16 @@ type httpDiscoveryRanker struct {
 	client    *http.Client
 }
 
-// storeDiscoveryRanker publishes the external ranker. nil keeps the current
-// one, an empty URL removes it, and an invalid config is ignored.
+func (r *httpDiscoveryRanker) maxCandidates() int { return discoveryMaxRankCandidates }
+
+// storeDiscoveryRanker publishes the ranker. nil keeps the current one, a
+// config with neither a URL nor a decision model removes it, and an invalid
+// config is ignored.
 func (s *StarlarkCodeMode) storeDiscoveryRanker(config *schemas.MCPCodeModeDiscoveryRanker) {
 	if config == nil {
 		return
 	}
-	if config.URL == "" {
+	if !config.Enabled() {
 		s.discoveryRanker.Store(nil)
 		return
 	}
@@ -524,16 +537,22 @@ func (s *StarlarkCodeMode) storeDiscoveryRanker(config *schemas.MCPCodeModeDisco
 		s.logger.Warn("%s ignoring invalid code mode discovery ranker: %v", codemcp.CodeModeLogPrefix, err)
 		return
 	}
-	s.discoveryRanker.Store(&httpDiscoveryRanker{
-		endpoint:  config.URL,
-		tokenFile: config.TokenFile,
-		timeout:   config.Timeout(),
-		client: &http.Client{
-			// A redirect is answered as a failure rather than followed, so the
-			// catalogue and token only ever reach the configured endpoint.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
-	})
+	var ranker toolRanker
+	if config.DecisionModel != "" {
+		ranker = newDecisionDiscoveryRanker(*config, &s.decisionRequest)
+	} else {
+		ranker = &httpDiscoveryRanker{
+			endpoint:  config.URL,
+			tokenFile: config.TokenFile,
+			timeout:   config.Timeout(),
+			client: &http.Client{
+				// A redirect is answered as a failure rather than followed, so the
+				// catalogue and token only ever reach the configured endpoint.
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			},
+		}
+	}
+	s.discoveryRanker.Store(&ranker)
 }
 
 // rank sends one ranking request, bounded by the configured timeout.

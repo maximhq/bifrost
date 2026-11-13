@@ -258,6 +258,20 @@ func useRanker(t *testing.T, mode *StarlarkCodeMode, ranker schemas.MCPCodeModeD
 	}
 }
 
+// httpRankerOf returns the installed HTTP ranker.
+func httpRankerOf(t *testing.T, mode *StarlarkCodeMode) *httpDiscoveryRanker {
+	t.Helper()
+	ref := mode.discoveryRanker.Load()
+	if ref == nil {
+		t.Fatal("no ranker is installed")
+	}
+	ranker, ok := (*ref).(*httpDiscoveryRanker)
+	if !ok {
+		t.Fatalf("installed ranker is %T, not the HTTP ranker", *ref)
+	}
+	return ranker
+}
+
 func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("secret-token\n"), 0o600); err != nil {
@@ -377,7 +391,7 @@ func TestListToolFilesExternalRankerTimeoutFallsBack(t *testing.T) {
 	defer close(release)
 	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
 	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
-	mode.discoveryRanker.Load().timeout = 50 * time.Millisecond
+	httpRankerOf(t, mode).timeout = 50 * time.Millisecond
 
 	start := time.Now()
 	out := listToolFiles(t, mode, `{"query":"create an issue"}`)
@@ -483,7 +497,7 @@ func TestRankCandidatesKeepsEveryServer(t *testing.T) {
 		server := fmt.Sprintf("small%d", i)
 		items = append(items, discoveryTool{candidate: discoveryCandidate{ID: "servers/" + server + "/t.pyi", Server: server}})
 	}
-	selected := rankCandidates(items)
+	selected := rankCandidates(items, discoveryMaxRankCandidates)
 	if len(selected) != discoveryMaxRankCandidates {
 		t.Fatalf("expected %d candidates, got %d", discoveryMaxRankCandidates, len(selected))
 	}
@@ -510,13 +524,13 @@ func TestDiscoveryRankerConfigUpdates(t *testing.T) {
 		t.Fatal("no ranker is configured by default")
 	}
 	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:1/rank", TimeoutSeconds: 3})
-	if got := mode.discoveryRanker.Load().timeout; got != 3*time.Second {
+	if got := httpRankerOf(t, mode).timeout; got != 3*time.Second {
 		t.Fatalf("expected 3s timeout, got %v", got)
 	}
 	// An invalid update keeps the current ranker; nil leaves it; an empty URL removes it.
 	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{URL: "ftp://x"}})
 	mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelTool})
-	if got := mode.discoveryRanker.Load(); got == nil || got.endpoint != "http://127.0.0.1:1/rank" {
+	if got := httpRankerOf(t, mode); got.endpoint != "http://127.0.0.1:1/rank" {
 		t.Fatalf("ranker changed unexpectedly: %+v", got)
 	}
 	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{}})

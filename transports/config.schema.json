@@ -11034,7 +11034,7 @@
         },
         "code_mode_discovery_ranker": {
           "type": "object",
-          "description": "Optional external HTTP ranker for listToolFiles(query=...). Bifrost POSTs the query and the tools the caller can already see, and falls back to its built-in lexical ranking on any failure. Read at startup only; BIFROST_CODE_MODE_DISCOVERY_RANKER_URL and BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE override url and token_file.",
+          "description": "Optional ranker for listToolFiles(query=...): an external HTTP ranker (url) or a decision model asked through Bifrost's decision API (decision_model), not both. Bifrost falls back to its built-in lexical ranking on any failure. Read at startup only; BIFROST_CODE_MODE_DISCOVERY_RANKER_URL, BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE and BIFROST_CODE_MODE_DISCOVERY_RANKER_DECISION_MODEL override url, token_file and decision_model.",
           "additionalProperties": false,
           "properties": {
             "url": {
@@ -11044,6 +11044,19 @@
             "token_file": {
               "type": "string",
               "description": "Optional file holding a bearer token for the ranker, read on every request."
+            },
+            "decision_model": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/\\S.*$",
+              "description": "Decision model that ranks the tools instead of an external URL, as provider/model (e.g. openai/gpt-5-nano). Cannot be combined with url or token_file."
+            },
+            "fallbacks": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^/\\s]+/\\S.*$"
+              },
+              "description": "Fallback decision models, as provider/model, tried in order when decision_model fails. Requires decision_model."
             },
             "timeout_seconds": {
               "type": "integer",

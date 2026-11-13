@@ -3123,11 +3123,12 @@ func createFileMCPClient(ctx context.Context, store configstore.ConfigStore, cli
 
 // Environment overrides for mcp.tool_manager_config.code_mode_discovery_ranker.
 const (
-	envCodeModeDiscoveryRankerURL       = "BIFROST_CODE_MODE_DISCOVERY_RANKER_URL"
-	envCodeModeDiscoveryRankerTokenFile = "BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE"
+	envCodeModeDiscoveryRankerURL           = "BIFROST_CODE_MODE_DISCOVERY_RANKER_URL"
+	envCodeModeDiscoveryRankerTokenFile     = "BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE"
+	envCodeModeDiscoveryRankerDecisionModel = "BIFROST_CODE_MODE_DISCOVERY_RANKER_DECISION_MODEL"
 )
 
-// applyCodeModeDiscoveryRanker sets the external listToolFiles ranker on the MCP
+// applyCodeModeDiscoveryRanker sets the listToolFiles ranker on the MCP
 // config handed to Bifrost. It is deployment configuration, read from
 // config.json and the environment on every start and never stored in the config
 // store, so only whoever runs the gateway can point it at an endpoint.
@@ -3146,20 +3147,35 @@ func applyCodeModeDiscoveryRanker(mcpCfg, fileCfg *schemas.MCPConfig) {
 }
 
 // resolveCodeModeDiscoveryRanker merges the file setting with its environment
-// overrides. It returns nil when no URL is set or the result is invalid.
+// overrides. A URL from the environment replaces a decision model from the
+// file and a decision model from the environment replaces a URL and token
+// file from the file; both from the environment conflict. It returns nil when
+// neither a URL nor a decision model is set or the result is invalid.
 func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCodeModeDiscoveryRanker {
 	var ranker schemas.MCPCodeModeDiscoveryRanker
 	if fileCfg != nil && fileCfg.ToolManagerConfig != nil && fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
 		ranker = *fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker
 	}
-	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL)); value != "" {
-		ranker.URL = value
+	envURL := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL))
+	envDecisionModel := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerDecisionModel))
+	if envURL != "" {
+		ranker.URL = envURL
+		if envDecisionModel == "" {
+			ranker.DecisionModel, ranker.Fallbacks = "", nil
+		}
+	}
+	if envDecisionModel != "" {
+		ranker.DecisionModel = envDecisionModel
+		if envURL == "" {
+			ranker.URL, ranker.TokenFile = "", ""
+		}
 	}
 	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerTokenFile)); value != "" {
 		ranker.TokenFile = value
 	}
 	ranker.URL = strings.TrimSpace(ranker.URL)
-	if ranker.URL == "" {
+	ranker.DecisionModel = strings.TrimSpace(ranker.DecisionModel)
+	if !ranker.Enabled() {
 		return nil
 	}
 	if err := ranker.Validate(); err != nil {

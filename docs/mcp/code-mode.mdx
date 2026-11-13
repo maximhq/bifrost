@@ -410,6 +410,45 @@ The environment variables `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` and `BIFROST_
 - The shortlist lists candidates with a relevance above 0, highest first, up to `limit`.
 - `sufficient` is optional: the ranker's estimate, from 0 to 1, that the candidates cover the request. Below 0.5 the shortlist tells the model to fall back to the complete listing.
 
+#### Decision-model ranker
+
+To rank by meaning without running a ranking service, point the ranker at a decision model instead of a URL. Bifrost asks the model through its own [decision API](/quickstart/gateway/decisions) and turns the answer into the same ranking the external ranker returns, so the shortlist, the `sufficient` hint and the lexical fallback work the same way.
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "code_mode_discovery_ranker": {
+        "decision_model": "openai/gpt-5-nano",
+        "fallbacks": ["typesafe/system-one"],
+        "timeout_seconds": 5
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `decision_model` | The model that ranks the tools, as `provider/model`. The provider prefix is required. Cannot be combined with `url` or `token_file`; a config that sets both is rejected at startup with a warning, and the built-in ranking is used. |
+| `fallbacks` | Optional. Models tried in order when `decision_model` fails, each as `provider/model`. Requires `decision_model`. |
+| `timeout_seconds` | Optional. Bound on the whole decision call, fallbacks included, 1 to 30 seconds. Defaults to 5. |
+
+`BIFROST_CODE_MODE_DISCOVERY_RANKER_DECISION_MODEL` overrides `decision_model` and replaces a `url` and `token_file` set in `config.json`; `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` likewise replaces a `decision_model` set in the file. Setting both variables is rejected.
+
+Each query that is not an exact tool reference sends one decision request with two questions, with the query as the input:
+
+- A `choice` question with one choice per candidate tool, keyed by its file path and described by `server/name`, the start of its description and its parameter names. Each choice's probability becomes that tool's relevance. When the model reports no probabilities, only the chosen tool is ranked, at the answer's confidence (or 1 when none is reported).
+- A `predicate` question asking whether the candidate tools cover the request. Its probability becomes `sufficient`.
+
+At most 26 candidates are sent, the tightest choice limit among the decision providers (some vLLM-served models take one option per letter), chosen the same way as for the external ranker.
+
+<Note>
+**Latency and cost.** Every ranked query that is not an exact tool reference makes one decision call, and its answer is not cached, so each such `listToolFiles` call waits for the model and pays for its input: the query plus a short description of up to 26 tools. When the call fails, times out or returns an answer that does not pass validation, the lexical shortlist is returned instead.
+
+The ranker's calls are internal requests, like the complexity router's classifier calls: they skip the plugin pipeline, so governance, routing rules and request logs do not see them. They are not charged to the caller's virtual key or budget; the deployment pays for them through the configured provider keys.
+</Note>
+
 ### 2. readToolFile
 
 Reads a virtual `.pyi` file to get compact Python function signatures for tools.

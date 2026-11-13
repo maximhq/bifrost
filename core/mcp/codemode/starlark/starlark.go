@@ -22,8 +22,10 @@ type StarlarkCodeMode struct {
 	bindingLevel         atomic.Value // schemas.CodeModeBindingLevel
 	toolExecutionTimeout atomic.Value // time.Duration
 	limits               atomic.Pointer[schemas.MCPCodeModeLimits]
-	// Optional external ranker for listToolFiles queries; nil uses lexical ranking only
-	discoveryRanker atomic.Pointer[httpDiscoveryRanker]
+	// Optional ranker for listToolFiles queries; nil uses lexical ranking only
+	discoveryRanker atomic.Pointer[toolRanker]
+	// Bifrost's decision API, set by core for the decision-model ranker
+	decisionRequest atomic.Pointer[DecisionRequestFunc]
 
 	// Dependencies
 	clientManager         mcp.ClientManager
@@ -90,6 +92,19 @@ func (s *StarlarkCodeMode) SetDependencies(deps *mcp.CodeModeDependencies) {
 		s.fetchNewRequestIDFunc = deps.FetchNewRequestIDFunc
 		s.credStore = deps.CredentialStore
 	}
+}
+
+// SetDecisionRequestFunc gives the decision-model discovery ranker its way to
+// call Bifrost's decision API. Core sets it when it creates the code mode; it is
+// not part of CodeModeConfig or CodeModeDependencies because neither the config
+// updates nor the MCP manager have a handle on the Bifrost client. Until it is
+// set, a decision-model ranker falls back to lexical ranking.
+func (s *StarlarkCodeMode) SetDecisionRequestFunc(decide DecisionRequestFunc) {
+	if decide == nil {
+		s.decisionRequest.Store(nil)
+		return
+	}
+	s.decisionRequest.Store(&decide)
 }
 
 // GetTools returns the code mode meta-tools for Starlark execution.

@@ -58,8 +58,9 @@ type CodeModeConfig struct {
 	// Limits bounds each execution; nil keeps the current limits
 	Limits *schemas.MCPCodeModeLimits
 
-	// DiscoveryRanker is the optional external ranker for listToolFiles queries;
-	// nil keeps the current ranker and an empty URL disables it
+	// DiscoveryRanker is the optional HTTP or decision-model ranker for
+	// listToolFiles queries; nil keeps the current ranker, and one with neither
+	// a URL nor a decision model disables it
 	DiscoveryRanker *schemas.MCPCodeModeDiscoveryRanker
 }
 

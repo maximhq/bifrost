@@ -106,6 +106,17 @@ func TestMCPCodeModeDiscoveryRankerValidate(t *testing.T) {
 		{"token over loopback http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank", TokenFile: "/run/secrets/ranker"}, false},
 		{"plain http without token", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank"}, false},
 		{"token over non-loopback http", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank", TokenFile: "/run/secrets/ranker"}, true},
+		{"decision model", MCPCodeModeDiscoveryRanker{DecisionModel: "openai/gpt-5-nano"}, false},
+		{"decision model with fallbacks", MCPCodeModeDiscoveryRanker{DecisionModel: "typesafe/system-one", Fallbacks: []string{"openai/gpt-5-nano", "my-custom/model/v2"}}, false},
+		{"decision model without provider", MCPCodeModeDiscoveryRanker{DecisionModel: "gpt-5-nano"}, true},
+		{"decision model with empty provider", MCPCodeModeDiscoveryRanker{DecisionModel: "/gpt-5-nano"}, true},
+		{"decision model with empty model", MCPCodeModeDiscoveryRanker{DecisionModel: "openai/"}, true},
+		{"decision model with padding", MCPCodeModeDiscoveryRanker{DecisionModel: " openai/gpt-5-nano"}, true},
+		{"fallback without provider", MCPCodeModeDiscoveryRanker{DecisionModel: "openai/gpt-5-nano", Fallbacks: []string{"gpt-5-mini"}}, true},
+		{"fallbacks without decision model", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", Fallbacks: []string{"openai/gpt-5-nano"}}, true},
+		{"decision model and url", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", DecisionModel: "openai/gpt-5-nano"}, true},
+		{"decision model and token file", MCPCodeModeDiscoveryRanker{TokenFile: "/run/secrets/ranker", DecisionModel: "openai/gpt-5-nano"}, true},
+		{"decision model timeout above maximum", MCPCodeModeDiscoveryRanker{DecisionModel: "openai/gpt-5-nano", TimeoutSeconds: 31}, true},
 	} {
 		if err := tc.ranker.Validate(); (err != nil) != tc.wantErr {
 			t.Fatalf("%s: Validate() = %v, wantErr %v", tc.name, err, tc.wantErr)
