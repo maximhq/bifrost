@@ -564,12 +564,13 @@ type PassthroughConfig struct {
 	UpstreamURL      string                                                             // optional upstream base URL override
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
-	AllowedRoutes []PassthroughRoute
-	StreamingPath func(method, path string) bool   // optional: decides which requests stream, replacing the generic markers
-	ModelFreePath func(method, path string) bool   // optional: requests that run no model, so model allowlists are skipped
-	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
-	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
-	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
+	AllowedRoutes  []PassthroughRoute
+	WebSocketPaths []string                         // optional: stripped paths that serve Responses WebSocket mode on a GET upgrade
+	StreamingPath  func(method, path string) bool   // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath  func(method, path string) bool   // optional: requests that run no model, so model allowlists are skipped
+	PathModel      func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
+	BodyModelKey   func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
+	NoPathModel    func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -620,10 +621,11 @@ type GenericRouter struct {
 	handlerStore      lib.HandlerStore // Config provider for the router
 	routes            []RouteConfig    // List of route configurations
 	passthroughCfg    *PassthroughConfig
-	logger            schemas.Logger    // Logger for the router
-	largePayloadHook  LargePayloadHook  // Optional: enterprise hook for large payload detection
-	largeResponseHook LargeResponseHook // Optional: enterprise hook for large response scanning
-	accessResolver    AccessResolver    // What a request may reach, for the models listing. Nil lists as before.
+	passthroughWS     PassthroughWebSocketHandler // Optional: serves upgrades on passthroughCfg.WebSocketPaths
+	logger            schemas.Logger              // Logger for the router
+	largePayloadHook  LargePayloadHook            // Optional: enterprise hook for large payload detection
+	largeResponseHook LargeResponseHook           // Optional: enterprise hook for large response scanning
+	accessResolver    AccessResolver              // What a request may reach, for the models listing. Nil lists as before.
 }
 
 type modelCatalogProvider interface {
@@ -732,6 +734,14 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			// Restricted mode: only the explicitly allowed method+path pairs are forwarded.
 			for _, allowed := range g.passthroughCfg.AllowedRoutes {
 				r.Handle(strings.ToUpper(allowed.Method), allowed.Path, catchAll)
+			}
+			// A WebSocket path is reached by a GET upgrade, which no allowed route lists.
+			for _, prefix := range g.passthroughCfg.StripPrefix {
+				for _, wsPath := range g.passthroughCfg.WebSocketPaths {
+					if !g.passthroughCfg.forwards(fasthttp.MethodGet, prefix+wsPath) {
+						r.GET(prefix+wsPath, catchAll)
+					}
+				}
 			}
 			// The dashboard owns GET /{filepath:*}, so an unlisted GET under the prefix needs a
 			// route of its own or it is answered with the dashboard shell and a 200.
@@ -3692,25 +3702,30 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 // UpstreamURL override never receives it. An empty override means the provider's
 // operator-configured BaseURL, which carries the same trust as its stored keys.
 func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders map[string]string, provider schemas.ModelProvider, authHeader string, upstreamURL string) {
-	if authHeader == "" {
-		return
-	}
-	if upstreamURL != "" && !strings.HasPrefix(strings.ToLower(upstreamURL), "https://") {
-		return
-	}
-	forward := false
-	switch provider {
-	case schemas.Anthropic:
-		forward = isAnthropicOAuthBearer(authHeader)
-	case schemas.OpenAI:
-		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
-		forward = upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
-	}
-	if !forward {
+	if !passthroughForwardsCallerAuth(provider, authHeader, upstreamURL) {
 		return
 	}
 	safeHeaders["authorization"] = authHeader
 	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+}
+
+// passthroughForwardsCallerAuth reports whether the caller's Authorization header is the upstream
+// credential for this provider and upstream, under the rules applyPassthroughCallerAuth documents.
+func passthroughForwardsCallerAuth(provider schemas.ModelProvider, authHeader string, upstreamURL string) bool {
+	if authHeader == "" {
+		return false
+	}
+	if upstreamURL != "" && !strings.HasPrefix(strings.ToLower(upstreamURL), "https://") {
+		return false
+	}
+	switch provider {
+	case schemas.Anthropic:
+		return isAnthropicOAuthBearer(authHeader)
+	case schemas.OpenAI:
+		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
+		return upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
+	}
+	return false
 }
 
 func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
@@ -3796,6 +3811,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 			status = fasthttp.StatusForbidden
 		}
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), status))
+		return
+	}
+
+	if len(cfg.WebSocketPaths) > 0 && ctx.IsGet() && cfg.servesWebSocket(path) &&
+		g.handlePassthroughWebSocket(ctx, provider, baseProvider, path, apiVersion, callerAuth, safeHeaders) {
 		return
 	}
 

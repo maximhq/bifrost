@@ -128,6 +128,7 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 			{Method: fasthttp.MethodGet, Path: "/chatgpt_passthrough/backend-api/codex/models"},
 			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
 		},
+		WebSocketPaths: []string{"/backend-api/codex/responses"},
 	})
 }
 

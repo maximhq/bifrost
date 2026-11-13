@@ -1222,6 +1222,60 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}
 }
 
+// passthroughBodyRewriter is a plugin that replaces a passthrough request's body in PreLLMHook.
+type passthroughBodyRewriter struct{ body []byte }
+
+func (passthroughBodyRewriter) GetName() string { return "passthrough-body-rewriter" }
+func (passthroughBodyRewriter) Cleanup() error  { return nil }
+func (passthroughBodyRewriter) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p passthroughBodyRewriter) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req.PassthroughRequest != nil {
+		req.PassthroughRequest.Body = p.body
+	}
+	return req, nil, nil
+}
+func (passthroughBodyRewriter) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// A transport that sends the request upstream itself must send what the pre-hooks left, not what
+// it handed them: a plugin that redacts a passthrough body rewrites it in PreLLMHook.
+func TestRunStreamPreHooks_ReturnsTheRequestPreHooksLeft(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account:    NewMockAccount(),
+		LLMPlugins: []schemas.LLMPlugin{passthroughBodyRewriter{body: []byte(`{"input":"[redacted]"}`)}},
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	hooks, bifrostErr := client.RunStreamPreHooks(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughStreamRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.5",
+			Method:   "POST",
+			Path:     "/v1/responses",
+			Body:     []byte(`{"input":"secret"}`),
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+	}
+	defer hooks.Cleanup()
+	if hooks.Request == nil || hooks.Request.PassthroughRequest == nil {
+		t.Fatal("hooks.Request must carry the request the pre-hooks left")
+	}
+	if got := string(hooks.Request.PassthroughRequest.Body); got != `{"input":"[redacted]"}` {
+		t.Fatalf("hooks.Request body = %s, want the plugin's rewrite", got)
+	}
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex
