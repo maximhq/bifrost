@@ -3118,7 +3118,7 @@ func TestGenerateClientConfigHash_ClaudeCodeGateway(t *testing.T) {
 			InitialPoolSize:    100,
 			LogRetentionDays:   30,
 			MCPServerAuthMode:  tables.MCPServerAuthModeBoth,
-			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), ClaudeCodeGateway: cc},
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), Gateways: &tables.ClientGatewaysConfig{ClaudeCode: cc}},
 		}
 	}
 	hashOf := func(cc *tables.ClaudeCodeGatewayConfig) string {
@@ -3151,10 +3151,10 @@ func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
 		MCPServerAuthMode:    tables.MCPServerAuthModeBoth,
 		OAuth2ServerConfig: &tables.OAuth2ServerConfig{
 			IssuerURL: schemas.NewSecretVar("https://bifrost.test"),
-			ClaudeCodeGateway: &tables.ClaudeCodeGatewayConfig{
+			Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
 				Enabled:         true,
 				ManagedSettings: map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}},
-			},
+			}},
 		},
 	}
 	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
@@ -3162,7 +3162,16 @@ func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result.OAuth2ServerConfig)
 	assert.True(t, result.OAuth2ServerConfig.IsClaudeCodeGatewayEnabled())
-	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway.ManagedSettings)
+	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+
+	// An empty policy is a policy: {} must come back as {}, not as "no policy".
+	cfg.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway())
+	assert.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+	assert.Empty(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
 }
 
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {

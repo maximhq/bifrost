@@ -1689,9 +1689,6 @@
 		"description": "Разрешите разработчикам входить в Bifrost из Claude Code командой <code0>/login</code0>, а не настраивать виртуальный ключ вручную.",
 		"enableLabel": "Включить вход из Claude Code",
 		"enableDescription": "Разработчик выбирает <b0>Cloud gateway</b0> в <code1>/login</code1>, подтверждает код в браузере и выбирает удостоверение: виртуальный ключ, свою учётную запись или анонимный сеанс, если аутентификация для инференса не обязательна. Затем запросы выполняются от имени этого удостоверения с его бюджетами, ограничениями частоты и доступом к моделям. Входы отображаются в разделе разрешений OAuth, где их можно отозвать.",
-		"issuerLabel": "URL издателя",
-		"issuerDescription": "Постоянный публичный URL Bifrost. Claude Code входит по адресу <code0/>. Это тот же издатель, что использует сервер MCP OAuth, поэтому его изменение затронет и клиентов MCP, вошедших через OAuth. Поддерживается синтаксис переменных окружения (например, <code1>env.BIFROST_ISSUER_URL</code1>).",
-		"issuerPlaceholder": "https://bifrost.example.com или env.BIFROST_ISSUER_URL",
 		"gatewayURLTemplate": "<URL издателя>/gateway/claude-code",
 		"connectTitle": "Подключение Claude Code",
 		"gatewayURLLabel": "URL шлюза:",
@@ -1703,5 +1700,13 @@
 		"invalidJSON": "Управляемые настройки должны быть корректным JSON.",
 		"notObject": "Управляемые настройки должны быть объектом JSON.",
 		"updated": "Настройки Claude Code обновлены."
+	},
+	"gateways": {
+		"title": "Шлюзы",
+		"description": "Разрешите клиентам для разработки входить в Bifrost через собственный <code0>/login</code0> вместо вручную настроенного виртуального ключа. У каждого клиента свой URL, а его запросы выполняются от имени виртуального ключа или учётной записи, выбранных разработчиком.",
+		"issuerLabel": "URL издателя",
+		"issuerDescription": "Постоянный публичный URL Bifrost. Каждый шлюз доступен по адресу <code0/>. Это тот же издатель, что использует сервер MCP OAuth, поэтому его изменение затронет и клиентов MCP, вошедших через OAuth. Поддерживается синтаксис переменных окружения (например, <code1>env.BIFROST_ISSUER_URL</code1>).",
+		"issuerPlaceholder": "https://bifrost.example.com или env.BIFROST_ISSUER_URL",
+		"urlTemplate": "<URL издателя>/gateway/<клиент>"
 	}
 }

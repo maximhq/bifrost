@@ -626,7 +626,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or claude_code_gateway.enabled is true (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -646,25 +646,32 @@
               "default": false,
               "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
             },
-            "claude_code_gateway": {
+            "gateways": {
               "type": "object",
               "properties": {
-                "enabled": {
-                  "type": "boolean",
-                  "default": false,
-                  "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
-                },
-                "managed_settings": {
+                "claude_code": {
                   "type": "object",
-                  "description": "Claude Code managed-settings.json document served at /gateway/claude-code/managed/settings to every signed-in client. Omit for no managed policy (the endpoint answers 404); an empty object is an empty policy."
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
+                    },
+                    "managed_settings": {
+                      "type": ["object", "null"],
+                      "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Claude Code gateway at <issuer_url>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in, Anthropic Messages inference, managed settings and telemetry."
                 }
               },
               "additionalProperties": false,
-              "description": "Claude Code gateway sign-in served by this authorization server."
+              "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. A client signs in with its own /login flow through the OAuth consent page instead of a hand-configured virtual key. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url."
             }
           },
           "additionalProperties": false,
-          "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for the Claude Code gateway (when claude_code_gateway.enabled is true)."
+          "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways)."
         }
       },
       "additionalProperties": false,
@@ -701,19 +708,26 @@
             "properties": {
               "oauth2_server_config": {
                 "properties": {
-                  "claude_code_gateway": {
+                  "gateways": {
                     "properties": {
-                      "enabled": {
-                        "const": true
+                      "claude_code": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "enabled"
+                        ]
                       }
                     },
                     "required": [
-                      "enabled"
+                      "claude_code"
                     ]
                   }
                 },
                 "required": [
-                  "claude_code_gateway"
+                  "gateways"
                 ]
               }
             },

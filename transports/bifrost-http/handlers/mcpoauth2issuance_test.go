@@ -1022,9 +1022,9 @@ func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	for name, body := range map[string]string{
-		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"claude_code_gateway":{"enabled":true}}}}`,
-		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","claude_code_gateway":{"enabled":true}}}}`,
-		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","claude_code_gateway":{"enabled":true}}}}`,
+		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","gateways":{"claude_code":{"enabled":true}}}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := &lib.Config{
@@ -1035,7 +1035,7 @@ func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
 			ctx := putConfigCtx(body)
 			h.updateConfig(ctx)
 			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-			assert.Contains(t, string(ctx.Response.Body()), "claude_code_gateway")
+			assert.Contains(t, string(ctx.Response.Body()), "oauth2_server_config.gateways")
 		})
 	}
 }

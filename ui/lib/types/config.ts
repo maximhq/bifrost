@@ -986,10 +986,13 @@ export interface CoreConfig {
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
-		claude_code_gateway?: {
-			enabled?: boolean;
-			// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
-			managed_settings?: Record<string, unknown>;
+		// Client gateways, one block per coding client, served under /gateway/<client>.
+		gateways?: {
+			claude_code?: {
+				enabled?: boolean;
+				// Claude Code managed-settings.json served at /gateway/claude-code/managed/settings; absent = no managed policy.
+				managed_settings?: Record<string, unknown>;
+			};
 		};
 	};
 }

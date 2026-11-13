@@ -482,16 +482,17 @@ bifrost:
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
-    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and the Claude Code gateway (when claudeCodeGateway.enabled)
+    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and client gateways (gateways.<client>.enabled)
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when claudeCodeGateway.enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when any client gateway is enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
-    #   claudeCodeGateway:        # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code; needs issuerUrl, any mcpServerAuthMode
-    #     enabled: false
-    #     managedSettings: {}     # Optional Claude Code managed-settings.json pushed to signed-in clients
+    #   gateways:                 # Client gateways at <issuerUrl>/gateway/<client>; each needs issuerUrl, any mcpServerAuthMode
+    #     claudeCode:             # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code
+    #       enabled: false
+    #       managedSettings: {}   # Optional Claude Code managed-settings.json pushed to signed-in clients
 
   # Server configuration
   server:
