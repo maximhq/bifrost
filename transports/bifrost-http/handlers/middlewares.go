@@ -171,7 +171,96 @@ func webSocketPeer(conn *ws.Conn) (remote string) {
 // base-path middleware is added outermost only when server.base_path is
 // configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router)))))
+	return RequestBodyMiddleware(config)(BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))))
+}
+
+// drainRequestBodyStream discards what the handler left unread of a streamed request body, so the
+// connection can serve another request. The stream ends at the request's Content-Length, so this
+// reads at most that much, through io.Discard's pooled buffer; a fully read body costs one read
+// that returns EOF. It reports false when the body could not be drained, including a stream that
+// something else already released, since what that left unread is unknown.
+func drainRequestBodyStream(ctx *fasthttp.RequestCtx) bool {
+	stream := ctx.RequestBodyStream()
+	if stream == nil {
+		return false
+	}
+	_, err := io.Copy(io.Discard, stream)
+	return err == nil
+}
+
+// RequestBodyMiddleware enforces the request body limit and decides which bodies stay streamed
+// when the server streams request bodies (fasthttp StreamRequestBody, which the gateway turns on
+// so multipart uploads are not buffered). On a server that does not stream it does nothing.
+//
+// Only a plain multipart upload of known length stays a stream: the handler parses it from the
+// connection with an 8 KB in-memory limit, so files go straight to temp files. fasthttp's own
+// parse while reading the request buffered the first 16 MB of every file (~64 MB allocated per
+// upload) before spilling. Every other body is read here into the request's pooled buffer, which
+// leaves the request exactly as a buffering server would: no body stream, Body() in memory. Code
+// that reads a body stream as a large payload (GenAI request-type detection, streaming
+// decompression) therefore sees no change.
+//
+// A streaming server does not reject a body over MaxRequestBodySize (it streams it instead), so
+// the limit is enforced here with the same 413 the server's error handler sends: from
+// Content-Length, or while reading a chunked body.
+//
+// A streaming server also does not drain a body the handler left unread: the rest of it stays on
+// the keep-alive connection and is parsed as the next request. An upload answered before its form
+// is read (an auth failure, a rate limit) is therefore drained here after the handler, at most its
+// Content-Length, which is within the limit: a buffering server read it all before the handler, so
+// the client still gets the response and keeps the connection. A refused oversized body is not
+// drained; the response closes the connection, as the buffering server's 413 did.
+func RequestBodyMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	limit := requestBodyCap(config)
+	tooLarge := lib.RequestErrorHandler(limit>>20, func(format string, args ...any) {
+		if logger != nil {
+			logger.Warn(format, args...)
+		}
+	})
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !ctx.Request.IsBodyStream() {
+				next(ctx)
+				return
+			}
+			contentLength := ctx.Request.Header.ContentLength()
+			if contentLength > limit {
+				tooLarge(ctx, fasthttp.ErrBodyTooLarge)
+				ctx.SetConnectionClose()
+				return
+			}
+			if contentLength >= 0 && len(ctx.Request.Header.MultipartFormBoundary()) > 0 && len(ctx.Request.Header.ContentEncoding()) == 0 {
+				next(ctx)
+				if !drainRequestBodyStream(ctx) {
+					ctx.SetConnectionClose()
+				}
+				return
+			}
+			if contentLength < 0 {
+				// Chunked: read at most one byte past the limit, so an oversized body is
+				// refused without being held.
+				body, err := io.ReadAll(io.LimitReader(ctx.RequestBodyStream(), int64(limit)+1))
+				if err != nil {
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to read request body: %v", err))
+					ctx.SetConnectionClose()
+					return
+				}
+				if len(body) > limit {
+					tooLarge(ctx, fasthttp.ErrBodyTooLarge)
+					ctx.SetConnectionClose()
+					return
+				}
+				ctx.Request.SetBodyRaw(body)
+			} else if body := ctx.Request.Body(); len(body) != contentLength {
+				// Body() reads the stream into the pooled body buffer; a short read means
+				// the connection failed mid-body.
+				SendError(ctx, fasthttp.StatusBadRequest, "failed to read request body: incomplete body")
+				ctx.SetConnectionClose()
+				return
+			}
+			next(ctx)
+		}
+	}
 }
 
 // BasePathRootHandler wraps a server's root handler with the base-path strip
