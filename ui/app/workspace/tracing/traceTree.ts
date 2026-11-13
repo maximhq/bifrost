@@ -59,12 +59,14 @@ export function buildTraceTree(spans: TraceSpan[], showHTTP = false): TraceTree 
 		nodes.set(span.span_id, { span, depth: 0, children: [], offset: 0, width: 0, orphan: false, subtreeTokens: 0, subtreeCost: 0 });
 
 	const roots: TraceTreeNode[] = [];
+	const parentOf = new Map<TraceTreeNode, TraceTreeNode>();
 	for (const span of visible) {
 		const node = nodes.get(span.span_id)!;
 		const parent = shownParent(span);
 		const parentNode = parent.id && parent.id !== span.span_id ? nodes.get(parent.id) : undefined;
 		if (parentNode) {
 			parentNode.children.push(node);
+			parentOf.set(node, parentNode);
 		} else {
 			node.orphan = parent.missing;
 			roots.push(node);
@@ -99,6 +101,15 @@ export function buildTraceTree(spans: TraceSpan[], showHTTP = false): TraceTree 
 	roots.sort(byStart);
 	const seen = new Set<string>();
 	for (const root of roots) visit(root, 0, seen);
+	// Spans whose parent ids form a cycle are reached from no root. The earliest span of each such
+	// group loses its parent edge and becomes a root, so the group is shown and the tree has no cycle.
+	for (const node of [...nodes.values()].sort(byStart)) {
+		if (seen.has(node.span.span_id)) continue;
+		const parent = parentOf.get(node);
+		if (parent) parent.children = parent.children.filter((child) => child !== node);
+		roots.push(node);
+		visit(node, 0, seen);
+	}
 	return { roots, rows, startMs, durationMs };
 }
 
@@ -164,13 +175,35 @@ export function messagesOf(value: unknown): { role: string; text: string; conten
 		// A spoken reply (OpenAI audio output, realtime turns) has no content: its text is the
 		// transcript and its file is the audio object.
 		const audio = record.audio && typeof record.audio === "object" ? (record.audio as Record<string, unknown>) : undefined;
-		const content = record.content ?? record.contents ?? record.parts ?? (audio ? { audio } : undefined);
-		const text =
-			contentText(record.content ?? record.contents ?? record.parts) || (typeof audio?.transcript === "string" ? audio.transcript : "");
-		const hasFile = typeof content === "object" && content !== null && collectAttachments("", (c) => c.walk(content, "input")).length > 0;
+		const base = record.content ?? record.contents ?? record.parts;
+		// Sibling audio is kept beside whatever content the message has, empty or text.
+		const content = audio ? (base === undefined || base === null ? { audio } : [base, { audio }]) : base;
+		const text = contentText(base) || (typeof audio?.transcript === "string" ? audio.transcript : "");
+		// String content can be a file too: a data URL or a Langfuse media token.
+		const hasFile = content !== undefined && content !== null && collectAttachments("", (c) => c.walk(content, "input")).length > 0;
 		if (role && (text || hasFile)) messages.push({ role, text, content });
 	}
 	return messages;
+}
+
+/**
+ * Whether messagesOf reads every item of a message list. A turn it skips (an assistant turn that only
+ * calls a tool, a part it cannot show) means the parsed view alone would hide part of the payload.
+ */
+export function isCompleteMessageList(value: unknown): boolean {
+	let parsed = value;
+	if (typeof value === "string") {
+		try {
+			parsed = JSON.parse(value);
+		} catch {
+			return false;
+		}
+	}
+	if (parsed && !Array.isArray(parsed) && typeof parsed === "object") {
+		const record = parsed as Record<string, unknown>;
+		parsed = record.messages ?? record.input ?? record.choices ?? parsed;
+	}
+	return Array.isArray(parsed) && parsed.length > 0 && messagesOf(value).length === parsed.length;
 }
 
 /**
@@ -180,15 +213,21 @@ export function messagesOf(value: unknown): { role: string; text: string; conten
 export function buildThread(spans: TraceSpan[]): ThreadMessage[] {
 	const calls = spans.filter((span) => span.kind === "llm").sort((a, b) => startOf(a) - startOf(b));
 	const thread: ThreadMessage[] = [];
-	const seen = new Set<string>();
+	// A message is history when this call has repeated it no more times than the thread already
+	// holds it. Counting occurrences, not unique texts, keeps a turn sent again later ("hi" twice).
+	const inThread = new Map<string, number>();
+	let inCall = new Map<string, number>();
 	const add = (role: string, text: string, call: TraceSpan, content?: unknown) => {
 		const attachments = content === undefined ? [] : collectAttachments(call.project_id, (c) => c.walk(content, "input"));
 		const key = `${role}\u0000${text}\u0000${attachments.map((a) => a.uploadId ?? a.src).join(",")}`;
-		if (seen.has(key)) return;
-		seen.add(key);
+		const occurrence = (inCall.get(key) ?? 0) + 1;
+		inCall.set(key, occurrence);
+		if (occurrence <= (inThread.get(key) ?? 0)) return;
+		inThread.set(key, occurrence);
 		thread.push({ role, text, spanId: call.span_id, model: call.link_snapshot?.model || call.model, at: call.start_time, attachments });
 	};
 	for (const call of calls) {
+		inCall = new Map();
 		for (const message of messagesOf(call.input)) add(message.role, message.text, call, message.content);
 		const replies = messagesOf(call.output);
 		if (replies.length > 0) {
@@ -240,6 +279,9 @@ const EXTENSION_TYPES: Record<string, string> = {
 	webm: "video/webm",
 	pdf: "application/pdf",
 };
+
+// The formats OpenAI audio parts carry. An object with data and some other format is not audio.
+const AUDIO_FORMATS = new Set(["wav", "mp3", "flac", "opus", "aac", "ogg", "webm", "m4a", "pcm16", "pcm", "g711_ulaw", "g711_alaw"]);
 
 function typeFromURL(url: string): string {
 	const extension = url.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
@@ -348,12 +390,20 @@ function collectAttachments(projectId: string, fill: (collector: AttachmentColle
 			});
 			return;
 		}
-		// OpenAI audio: an input_audio part {data, format} and a spoken reply {data, transcript}.
-		if (str("data") && (str("format") || "transcript" in node)) {
+		// OpenAI audio: an input_audio part {data, format} and a spoken reply {data, transcript}. Other
+		// objects with data and format (a CSV export, say) are not audio and are walked on.
+		if (str("data") && ("transcript" in node || AUDIO_FORMATS.has(str("format")))) {
 			const format = str("format") || "wav";
 			const contentType = format === "mp3" ? "audio/mpeg" : `audio/${format}`;
 			add({ kind: "inline", field, contentType, src: `data:${contentType};base64,${str("data")}`, name: nameFor(field, contentType) });
 			return;
+		}
+		// OpenInference keeps a call's audio in flat attributes: audio.url and audio.mime_type.
+		const flatAudio = str("audio.url");
+		if (flatAudio) {
+			const contentType = str("audio.mime_type") || typeFromURL(flatAudio) || "audio/*";
+			if (flatAudio.startsWith("data:")) add({ kind: "inline", field, contentType, src: flatAudio, name: nameFor(field, contentType) });
+			else if (/^https?:\/\//.test(flatAudio)) add({ kind: "url", field, contentType, src: flatAudio, name: nameFor(field, contentType) });
 		}
 		// A generated image returned as base64 (image generation and edits).
 		if (str("b64_json")) {
@@ -361,11 +411,12 @@ function collectAttachments(projectId: string, fill: (collector: AttachmentColle
 			add({ kind: "inline", field, contentType, src: `data:${contentType};base64,${str("b64_json")}`, name: nameFor(field, contentType) });
 			return;
 		}
-		// A URL in a field that names a file: OTel uri parts, image_url, OpenInference image.url.
-		for (const key of ["uri", "url"]) {
+		// A URL in a field that names a file: OTel uri parts, image_url (a string in the Responses API,
+		// an object holding url in Chat Completions), OpenInference image.url.
+		for (const key of ["uri", "url", "image_url"]) {
 			const url = str(key);
 			if (/^https?:\/\//.test(url)) {
-				const contentType = declaredType || typeFromURL(url);
+				const contentType = declaredType || typeFromURL(url) || (key === "image_url" ? "image/*" : "");
 				if (contentType) add({ kind: "url", field, contentType, src: url, name: str("filename") || nameFor(field, contentType) });
 			}
 		}
@@ -387,4 +438,51 @@ export function shouldPollTrace(trace: { in_progress: boolean; updated_at?: stri
 	if (!trace || trace.in_progress) return true;
 	if (!trace.updated_at) return false;
 	return nowMs - new Date(trace.updated_at).getTime() < TRACE_SETTLE_MS;
+}
+/** One audio part of a conversation, in the order the conversation plays. */
+export interface AudioTrack {
+	attachment: SpanAttachment;
+	messageIndex: number;
+	role: string;
+}
+
+/** Every audio part of a thread in message order: what "play conversation" plays, one after another. */
+export function audioTracks(messages: ThreadMessage[]): AudioTrack[] {
+	const tracks: AudioTrack[] = [];
+	messages.forEach((message, messageIndex) => {
+		for (const attachment of message.attachments) {
+			if (attachment.contentType.startsWith("audio/")) tracks.push({ attachment, messageIndex, role: message.role });
+		}
+	});
+	return tracks;
+}
+/** What a form field holds after its save returns: cleared when it still holds what was sent, kept when the user typed on. */
+export function clearIfUnchanged(current: string, submitted: string): string {
+	return current === submitted ? "" : current;
+}
+
+/** Whether the loaded trace is the one the sheet asks for, so a delete cannot hit the trace shown before it. */
+export function deletableTrace(trace: { project_id: string; trace_id: string } | undefined, projectId: string, traceId: string): boolean {
+	return !!trace && trace.project_id === projectId && trace.trace_id === traceId;
+}
+
+/** One row a trace sheet steps through. */
+export interface NavigationRow {
+	project: string;
+	trace: string;
+	span: string;
+}
+
+/**
+ * The position of the open trace (or span) in the list behind the sheet. The project is part of the
+ * identity, as in the list's row ids: two projects can hold the same trace id. An unknown project
+ * (a link without one) matches the first row with the trace.
+ */
+export function navigationIndex(rows: NavigationRow[], current: NavigationRow & { bySpan: boolean }): number {
+	return rows.findIndex(
+		(row) =>
+			row.trace === current.trace &&
+			(!current.project || row.project === current.project) &&
+			(!current.bySpan || row.span === current.span),
+	);
 }

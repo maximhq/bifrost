@@ -36,3 +36,15 @@ export function buildTraceQuery(
 	for (const [name, value] of Object.entries(extra ?? {})) params.set(name, String(value));
 	return params.toString();
 }
+// The last instant a JavaScript Date can hold, in seconds: past it, toISOString throws.
+const MAX_DATE_SECONDS = 8.64e12;
+
+/**
+ * Whether a zoomed window read from the URL (unix seconds) can be used: both bounds set, finite,
+ * inside the dates a browser can represent, and the start before the end. A window that fails falls
+ * back to the selected range.
+ */
+export function validZoomWindow(start: number | null, end: number | null): boolean {
+	if (start === null || end === null || !Number.isFinite(start) || !Number.isFinite(end)) return false;
+	return start >= 0 && end <= MAX_DATE_SECONDS && start < end;
+}

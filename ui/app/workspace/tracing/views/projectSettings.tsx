@@ -122,7 +122,7 @@ export function ProjectSettings({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-h-[88vh] overflow-auto sm:max-w-2xl" data-testid="tracing-project-settings">
+			<DialogContent className="max-h-[88vh] overflow-auto sm:max-w-2xl" data-testid="tracing-project-settings" data-radius="md">
 				<DialogHeader>
 					<DialogTitle>{t("tracing.settings.title")}</DialogTitle>
 					<DialogDescription>{t("tracing.settings.description")}</DialogDescription>
@@ -138,7 +138,7 @@ export function ProjectSettings({
 									<SelectTrigger data-testid="tracing-settings-project-select">
 										<SelectValue />
 									</SelectTrigger>
-									<SelectContent>
+									<SelectContent data-radius="md">
 										{projects.map((candidate) => (
 											<SelectItem key={candidate.id} value={candidate.id}>
 												{candidate.name}
@@ -234,7 +234,7 @@ export function ProjectSettings({
 										<SelectTrigger data-testid={`tracing-settings-evaluator-select-${index}`}>
 											<SelectValue placeholder={t("tracing.evals.chooseEvaluator")} />
 										</SelectTrigger>
-										<SelectContent>
+										<SelectContent data-radius="md">
 											{evaluatorOptions.map((option) => (
 												<SelectItem key={option.id} value={option.id}>
 													{option.name}
@@ -311,7 +311,7 @@ export function ProjectSettings({
 									<SelectTrigger data-testid="tracing-settings-forward-vendor-select" aria-label={t("tracing.settings.vendor")}>
 										<SelectValue />
 									</SelectTrigger>
-									<SelectContent>
+									<SelectContent data-radius="md">
 										{Object.entries(SOURCE_LABELS).map(([value, label]) => (
 											<SelectItem key={value} value={value}>
 												{label}

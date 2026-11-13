@@ -55,6 +55,19 @@ export const tracesApi = baseApi.injectEndpoints({
 				responseHandler: async (response: Response) => (response.ok ? URL.createObjectURL(await response.blob()) : response.text()),
 			}),
 			keepUnusedDataFor: 300,
+			// The cache entry owns the object URL. RTK Query removes the entry only after its last
+			// subscriber is gone and keepUnusedDataFor has passed, so revoking then cannot break a card
+			// that still shows the file, and the blob is not held until the page unloads.
+			async onCacheEntryAdded(_id, { cacheDataLoaded, cacheEntryRemoved }) {
+				let url: string | undefined;
+				try {
+					url = (await cacheDataLoaded).data;
+				} catch {
+					return;
+				}
+				await cacheEntryRemoved;
+				if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+			},
 		}),
 		// Review: a reviewer's scores and comments on a trace or on one of its spans.
 		saveTraceScore: builder.mutation<
