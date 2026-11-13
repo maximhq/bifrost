@@ -26,6 +26,8 @@ interface RouteSheetProps {
 	route: RouteForm | null;
 	isNew: boolean;
 	endpointUsage: RelayUsageConfig | undefined;
+	/** The relay's forced body paths, which this route inherits unless it sets the same path. */
+	endpointBodyOverridePaths?: string[];
 	ignoreUpstreamCost?: boolean;
 	saving: boolean;
 	disabled?: boolean;
@@ -34,15 +36,26 @@ interface RouteSheetProps {
 }
 
 /** Adds or edits one route, in the same sheet shape as adding a provider key. */
-export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCost, saving, disabled, onCancel, onSave }: RouteSheetProps) {
+export function RouteSheet({
+	show,
+	route,
+	isNew,
+	endpointUsage,
+	endpointBodyOverridePaths,
+	ignoreUpstreamCost,
+	saving,
+	disabled,
+	onCancel,
+	onSave,
+}: RouteSheetProps) {
 	const { t } = useTranslation("config");
 
 	const form = useForm<RouteForm>({
 		resolver: zodResolver(relayRouteFormSchema),
-		defaultValues: route ?? { method: "POST", path: "/", headers: [] },
+		defaultValues: route ?? { method: "POST", path: "/", headers: [], body_overrides: [] },
 	});
 	useEffect(() => {
-		form.reset(route ?? { method: "POST", path: "/", headers: [] });
+		form.reset(route ?? { method: "POST", path: "/", headers: [], body_overrides: [] });
 	}, [route, form]);
 	const method = form.watch("method");
 	const job = form.watch("job");
@@ -135,10 +148,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 								name="headers"
 								render={({ field }) => (
 									<FormItem>
-										<InfoLabel
-											label={t("relays.routeSheet.headersLabel")}
-											info={t("relays.routeSheet.headersInfo")}
-										/>
+										<InfoLabel label={t("relays.routeSheet.headersLabel")} info={t("relays.routeSheet.headersInfo")} />
 										<HeaderPairsTable
 											value={field.value}
 											onChange={field.onChange}
@@ -148,6 +158,30 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 											disabled={disabled}
 											testIdPrefix="relay-route-header"
 										/>
+									</FormItem>
+								)}
+							/>
+
+							<FormField
+								control={form.control}
+								name="body_overrides"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel label={t("relays.routeSheet.bodyOverridesLabel")} info={t("relays.routeSheet.bodyOverridesInfo")} />
+										<HeaderPairsTable
+											value={field.value ?? []}
+											onChange={field.onChange}
+											errors={form.formState.errors.body_overrides}
+											keyPlaceholder="options.depth"
+											valuePlaceholder='"advanced"'
+											disabled={disabled}
+											testIdPrefix="relay-route-body-override"
+										/>
+										{!!endpointBodyOverridePaths?.length && (
+											<p className="text-muted-foreground text-sm" data-testid="relay-route-body-override-inherited">
+												{t("relays.routeSheet.bodyOverridesInherited", { paths: endpointBodyOverridePaths.join(", ") })}
+											</p>
+										)}
 									</FormItem>
 								)}
 							/>
@@ -186,7 +220,10 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 										<div className="space-y-0.5">
 											<InfoLabel
 												label={t("relays.routeSheet.billableLabel")}
-												info={t("relays.routeSheet.billableInfo", { method, default: routeBillableByDefault(method) ? t("yes", { ns: "common" }) : t("no", { ns: "common" }) })}
+												info={t("relays.routeSheet.billableInfo", {
+													method,
+													default: routeBillableByDefault(method) ? t("yes", { ns: "common" }) : t("no", { ns: "common" }),
+												})}
 											/>
 										</div>
 										<FormControl>
@@ -218,9 +255,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 										</button>
 									</CollapsibleTrigger>
 									<CollapsibleContent className="space-y-4 border-t px-4 py-4">
-										<p className="text-muted-foreground text-sm">
-											{t("relays.routeSheet.pricingHint")}
-										</p>
+										<p className="text-muted-foreground text-sm">{t("relays.routeSheet.pricingHint")}</p>
 										<UsageFields
 											control={form.control as unknown as Control<FieldValues>}
 											name="usage"
@@ -237,8 +272,7 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 
 						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={onCancel}>
-									{t("cancel", { ns: "common" })}
-
+								{t("cancel", { ns: "common" })}
 							</Button>
 							<Button type="submit" disabled={disabled} isLoading={saving} data-testid="relay-route-save">
 								{isNew ? t("relays.routes.addRoute") : t("relays.routeSheet.saveRoute")}

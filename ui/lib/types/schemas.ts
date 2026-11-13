@@ -2434,6 +2434,58 @@ export const relayHeaderPairSchema = z
 		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
 	});
 
+// Forced body fields are edited as path/JSON pairs, checked as core's validateBodyOverrides does.
+const relayBodyOverrideSegment = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isRelayBodyOverridePath(path: string): boolean {
+	return path.split(".").every((segment) => relayBodyOverrideSegment.test(segment) && !/^[0-9]+$/.test(segment));
+}
+
+export function isJSONText(text: string): boolean {
+	if (!text.trim()) return false;
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export const relayBodyOverridesSchema = z
+	.array(z.object({ name: z.string().trim(), value: z.string().trim() }))
+	.superRefine((pairs, ctx) => {
+		const seen = new Map<string, number>();
+		pairs.forEach((pair, i) => {
+			if (!pair.name && !pair.value) return;
+			if (!pair.name) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsPath"), path: [i, "name"] });
+				return;
+			}
+			if (!pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsValue"), path: [i, "value"] });
+			else if (!isJSONText(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideValueJson"), path: [i, "value"] });
+			if (!isRelayBodyOverridePath(pair.name)) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverridePathFormat"), path: [i, "name"] });
+				return;
+			}
+			const lower = pair.name.toLowerCase();
+			if (seen.has(lower)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideDup"), path: [i, "name"] });
+			else seen.set(lower, i);
+		});
+		seen.forEach((i, lower) => {
+			for (let prefix = lower; prefix.includes("."); ) {
+				prefix = prefix.slice(0, prefix.lastIndexOf("."));
+				const parent = seen.get(prefix);
+				if (parent !== undefined)
+					ctx.addIssue({
+						code: "custom",
+						message: i18n.t("validation.relays.bodyOverrideNested", { path: pairs[i].name, parent: pairs[parent].name }),
+						path: [i, "name"],
+					});
+			}
+		});
+	});
+
 // A route's async job block is set through config.json or the API; the form carries it untouched.
 export const relayJobSchema = z.object({
 	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
@@ -2473,6 +2525,7 @@ export const relayRouteFormSchema = z.object({
 	stream: z.boolean().optional(),
 	usage: relayUsageBaseSchema.optional(),
 	job: relayJobSchema.optional(),
+	body_overrides: relayBodyOverridesSchema.optional(),
 });
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
@@ -2569,6 +2622,7 @@ export const relayFormSchema = z
 		routes: z.array(relayRouteFormSchema),
 		skip_route_check: z.boolean(),
 		ignore_upstream_cost: z.boolean(),
+		body_overrides: relayBodyOverridesSchema,
 	})
 	.superRefine((form, ctx) => {
 		const type = form.auth.type;

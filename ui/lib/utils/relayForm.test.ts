@@ -10,6 +10,8 @@ import {
 	emptyRelayForm,
 	emptyUsageForm,
 	mergeUsage,
+	toBodyOverridePairs,
+	toBodyOverrides,
 	toRelayConfig,
 	toRelayForm,
 	relayGatewayPath,
@@ -30,6 +32,36 @@ const stored: Relay = {
 };
 
 describe("relay form", () => {
+	it("round-trips body overrides on the relay and its routes as JSON values", () => {
+		const withOverrides: Relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST", path: "/search", body_overrides: { "options.depth": "advanced", limits: { max: 3 }, tags: [1, 2], none: null } },
+				{ method: "POST", path: "/extract" },
+			],
+		};
+		const form = toRelayForm(withOverrides);
+		expect(form.body_overrides).toEqual([{ name: "include_usage", value: "true" }]);
+		expect(form.routes[0].body_overrides).toContainEqual({ name: "options.depth", value: '"advanced"' });
+		const back = toRelayConfig(form);
+		expect(back.body_overrides).toEqual({ include_usage: true });
+		expect(back.routes?.find((r) => r.path === "/search")?.body_overrides).toEqual({
+			"options.depth": "advanced",
+			limits: { max: 3 },
+			tags: [1, 2],
+			none: null,
+		});
+		expect(back.routes?.find((r) => r.path === "/extract")).not.toHaveProperty("body_overrides");
+	});
+
+	it("saves no body_overrides when every row is blank", () => {
+		expect(toBodyOverrides([{ name: "", value: "" }])).toBeUndefined();
+		expect(toBodyOverrides(undefined)).toBeUndefined();
+		expect(toBodyOverridePairs(undefined)).toEqual([]);
+		expect(toRelayConfig(toRelayForm(stored)).body_overrides).toBeUndefined();
+	});
+
 	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
 		const back = toRelayConfig(toRelayForm(stored));
 		const route = (path: string) => back.routes?.find((r) => r.path === path);
