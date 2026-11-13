@@ -278,4 +278,4 @@ Review your full configuration on the final screen - connection details, attribu
 
 **Roles not assigned after login** - confirm the user has an Auth0 role assigned under **User Management → Users → Roles** tab. Only roles from Auth0's built-in role system are populated by the action code above - custom claims from other sources need a modified action.
 
-**`invalid_token` or audience mismatch** - leave the **Audience** field blank in Bifrost, or set it to match the `aud` claim in the JWT (typically the Auth0 Client ID).
+**`invalid_token` or audience mismatch** - leave the **Audiences** field empty in Bifrost, or add the `aud` claim in the JWT to it (typically the Auth0 Client ID).
