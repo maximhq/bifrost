@@ -2390,6 +2390,7 @@
 				"overview": "Übersicht",
 				"models": "Modelle",
 				"routing": "Routing",
+				"test": "Testen",
 				"suggestions": "Vorschläge",
 				"unsaved": "Ungespeicherte Änderungen"
 			},
@@ -2418,7 +2419,10 @@
 					"classifierPending": "Richte den Klassifikator ein, damit der Router Anfragen einordnen kann.",
 					"modelsDone": "Jede Stufe hat ein Modell.",
 					"modelsPending": "Eine Stufe ohne Modell behält das Modell, das in der Anfrage angegeben ist.",
-					"pickModels": "Modelle wählen"
+					"pickModels": "Modelle wählen",
+					"test": "Eine Anfrage testen",
+					"testDetail": "Optional. Prüfen Sie einige Anfragen, bevor Traffic ankommt.",
+					"testAction": "Testen"
 				},
 				"facts": {
 					"notConfigured": "Noch nicht eingerichtet",
@@ -2464,6 +2468,24 @@
 				"conditionHelp": "Leer lassen, um jede Anfrage im Geltungsbereich zu übernehmen. Prüfen Sie das Feld Modell, damit Apps diesen Router per Namen anfordern können. Die Stufe kann hier nicht verwendet werden: Der Router legt sie fest, nachdem er die Anfrage übernommen hat.",
 				"saved": "Routing gespeichert",
 				"saveFailed": "Routing konnte nicht gespeichert werden: {{error}}"
+			},
+			"test": {
+				"description": "Klassifizieren Sie Beispielanfragen mit dem Router in seinem aktuellen Zustand, um zu prüfen, welche Stufe und welches Modell jede erhalten würde. Es wird nichts gespeichert.",
+				"placeholder": "Eine Anfrage pro Zeile. Beginnen Sie eine Zeile mit SIMPLE:, MEDIUM: oder COMPLEX:, um die erwartete Stufe zu prüfen.",
+				"run_one": "{{count}} Anfrage klassifizieren",
+				"run_other": "{{count}} Anfragen klassifizieren",
+				"hint": "Ein Router mit Entscheidungsmodell oder LLM führt pro Anfrage einen Modellaufruf aus.",
+				"tooMany": "Klassifizieren Sie höchstens {{max}} Anfragen auf einmal.",
+				"failed": "Klassifizierung fehlgeschlagen: {{error}}",
+				"unclassified": "Keine Stufe",
+				"accuracy": "{{correct}} von {{labeled}} markierten Anfragen erhielten die erwartete Stufe",
+				"columnStatement": "Anfrage",
+				"columnTier": "Stufe",
+				"columnHow": "Entschieden durch",
+				"columnRoutesTo": "Leitet weiter an",
+				"correct": "Erwartete Stufe",
+				"expected": "erwartet: {{tier}}",
+				"keepsModel": "Behält das Modell der Anfrage"
 			}
 		}
 	},

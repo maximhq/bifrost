@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 )
 
 // ReloadModelRouter serves a saved model router from the config store.
@@ -89,4 +91,15 @@ func (s *BifrostHTTPServer) RetryModelRouterWarmup(_ context.Context, id string)
 		return complexity.SemanticStatusInfo{}, false, configstore.ErrNotFound
 	}
 	return status, started, nil
+}
+
+var _ handlers.ModelRouterClassifier = (*BifrostHTTPServer)(nil)
+
+// ClassifyWithModelRouter classifies statements with one served router.
+func (s *BifrostHTTPServer) ClassifyWithModelRouter(ctx context.Context, routerID string, inputs []routing.ModelRouterClassifyInput) (routing.ModelRouterClassifyResult, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return routing.ModelRouterClassifyResult{}, fmt.Errorf("routing plugin not found: %w", err)
+	}
+	return routingPlugin.ClassifyWithModelRouter(ctx, routerID, inputs)
 }
