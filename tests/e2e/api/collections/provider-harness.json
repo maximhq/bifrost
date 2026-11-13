@@ -297306,6 +297306,442 @@
               }
             }
           ]
+        },
+        {
+          "name": "Body overrides: a route forces request body fields whatever the caller sent",
+          "description": "harness-relay-pricing's POST /v1/forced route sets body_overrides {include_usage: true, options.depth: advanced}. The upstream fixture echoes the raw body it received, so each case asserts the forced fields reached the upstream: added when missing, replaced when the caller disagrees (siblings kept), and a created JSON object for an empty body. A body the relay cannot guarantee the fields in (a forced key twice, in another case, or not a JSON object) is refused with 400 before the upstream is called.",
+          "item": [
+            {
+              "name": "a route's body_overrides add the fields the caller left out - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b1');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides added: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides added: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides added: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(sent.query, dump).to.eql('bifrost');",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.options && sent.options.depth, dump).to.eql('advanced');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\"\n}"
+                }
+              }
+            },
+            {
+              "name": "a route's body_overrides replace the caller's value and keep the caller's other fields - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides replaced: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides replaced: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides replaced: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(sent.include_usage, dump).to.eql(true);",
+                      "  pm.expect(sent.options.depth, dump).to.eql('advanced');",
+                      "  pm.expect(sent.options.max_results, 'the caller\\'s sibling field is kept: ' + dump).to.eql(2);",
+                      "  pm.expect(sent.query, dump).to.eql('bifrost');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"bifrost\",\n  \"include_usage\": false,\n  \"options\": {\"depth\": \"basic\", \"max_results\": 2}\n}"
+                }
+              }
+            },
+            {
+              "name": "an empty body on a route with body_overrides becomes a JSON object sent as application/json - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b3');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('body overrides on an empty body: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var echo = pm.response.json();",
+                      "var sent = {};",
+                      "pm.test('body overrides on an empty body: the upstream received a JSON body', function () {",
+                      "  pm.expect(function () { sent = JSON.parse(echo.body); }, 'upstream body: ' + echo.body).to.not.throw();",
+                      "});",
+                      "pm.test('body overrides on an empty body: the upstream received the forced fields', function () {",
+                      "  var dump = 'upstream body: ' + echo.body;",
+                      "  pm.expect(sent, dump).to.eql({ include_usage: true, options: { depth: 'advanced' } });",
+                      "  pm.expect(String(echo.headers['content-type'] || ''), 'upstream content-type: ' + JSON.stringify(echo.headers)).to.include('application/json');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body naming a forced field twice is refused, so the caller's duplicate cannot win, and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b4');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('duplicate forced field: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('duplicate forced field: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"more than once\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('duplicate forced field: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"query\": \"bifrost\", \"include_usage\": false, \"include_usage\": false}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body naming a forced field in different letter case is refused and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b5');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('case-variant forced field: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('case-variant forced field: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"different letter case\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('case-variant forced field: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"query\": \"bifrost\", \"Include_Usage\": false}"
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] a body that is not a JSON object is refused on a route with body_overrides and never reaches the upstream - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-b6');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "pm.test('non-JSON body: HTTP 400', function () { pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400); });",
+                      "pm.test('non-JSON body: the refusal says why', function () { pm.expect(pm.response.text()).to.include(\"must be a JSON object\"); });",
+                      "pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "  pm.test('non-JSON body: the upstream was never called', function () {",
+                      "    pm.expect(!err && res.code === 200, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    pm.expect(res.json().hits, 'upstream hits for ' + ID).to.eql(0);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-harness-relay-all"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-www-form-urlencoded"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/forced?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-pricing",
+                    "v1",
+                    "forced"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "query=bifrost"
+                }
+              }
+            }
+          ]
         }
       ]
     },

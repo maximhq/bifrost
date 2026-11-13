@@ -173,6 +173,38 @@ func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_RelayBodyOverrides pins that body_overrides is accepted on a relay and a
+// route with any JSON value, and that a key the relay would refuse (path syntax, an array index) is
+// refused when config.json loads.
+func TestValidateConfigSchema_RelayBodyOverrides(t *testing.T) {
+	relay := func(endpoint, route string) string {
+		return `{"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "tvly-x"},
+			"body_overrides": ` + endpoint + `, "routes": [{"method": "POST", "path": "/search", "body_overrides": ` + route + `}]}]}`
+	}
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		route    string
+		valid    bool
+	}{
+		{"any JSON values", `{"include_usage": true}`, `{"options.depth": "advanced", "limits": {"max": 3}, "tags": [1], "x": null, "max_results": 5}`, true},
+		{"hyphen and digits inside a key", `{"x-trace-2": "a"}`, `{"v2.flag": true}`, true},
+		{"array index", `{}`, `{"items.0": 1}`, false},
+		{"path syntax", `{"items.#.id": 1}`, `{}`, false},
+		{"empty segment", `{"a..b": 1}`, `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(relay(tc.endpoint, tc.route)), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected body_overrides to pass validation: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatal("expected body_overrides to fail validation")
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_NoWorkloadIdentityMappings pins that config.json holds no
 // workload identity mappings: workloads are mapped to service accounts in the dashboard or
 // through the API, and only the trusted issuers live in the file, on the SSO provider.

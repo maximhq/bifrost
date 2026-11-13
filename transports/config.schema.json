@@ -5827,6 +5827,14 @@
       },
       "additionalProperties": false
     },
+    "relay_body_overrides": {
+      "type": "object",
+      "description": "Request body fields forced on every call: a dotted path of object keys (include_usage, options.depth) to the JSON value the upstream receives, whatever the caller sent. A missing field is added, a different value replaced, and an empty POST, PUT or PATCH body becomes a JSON object; a body that is not a JSON object, is compressed, or names a forced field twice or under different letter case is refused with 400",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]*[A-Za-z_-][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]*[A-Za-z_-][A-Za-z0-9_-]*)*$"
+      },
+      "additionalProperties": true
+    },
     "relay_route_config": {
       "type": "object",
       "description": "Overrides for one upstream operation",
@@ -5867,6 +5875,10 @@
         },
         "usage": {
           "$ref": "#/$defs/relay_usage_config"
+        },
+        "body_overrides": {
+          "$ref": "#/$defs/relay_body_overrides",
+          "description": "Request body fields this route forces, over the relay's body_overrides for the same path"
         }
       },
       "required": [
@@ -5993,6 +6005,10 @@
         "ignore_upstream_cost": {
           "type": "boolean",
           "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        },
+        "body_overrides": {
+          "$ref": "#/$defs/relay_body_overrides",
+          "description": "Request body fields forced on every call through this relay; a route's body_overrides replace the value for the same path"
         }
       },
       "required": [
