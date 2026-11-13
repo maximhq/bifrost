@@ -731,7 +731,7 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		// reads both when the request context is built.
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, claims.Subject)
 		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialMCPToken, claims.Subject))
-		ctx.SetUserValue(ClientGatewayUserContextKey, true)
+		lib.MarkPreAuthenticated(ctx, lib.PreAuthClientGateway)
 	case schemas.MCPAuthModeSession:
 		ep.store.Mu.RLock()
 		enforceAuth := ep.store.ClientConfig.EnforceAuthOnInference
@@ -748,26 +748,6 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	// telemetry stamping; the inference path never reads them.
 	ctx.SetUserValue(clientGatewayClaimsKey{}, claims)
 	return 0, ""
-}
-
-// ClientGatewayUserContextKey marks a request a client gateway bearer token
-// authenticated as a signed-in user. Only the bearer middleware sets it, and it
-// is a typed key, so no plain string user value or header can be mistaken for
-// it. Inference auth middlewares that run after the gateway (the enterprise
-// identity middleware) read it through ClientGatewayAuthenticatedUser instead of
-// challenging the request again: the gateway has removed the bearer by then, so
-// they would find no credential.
-const ClientGatewayUserContextKey schemas.BifrostContextKey = "bifrost-client-gateway-user"
-
-// ClientGatewayAuthenticatedUser returns the user a client gateway token
-// authenticated ctx as, and false when no gateway authenticated a user on it
-// (virtual-key and anonymous gateway sessions included).
-func ClientGatewayAuthenticatedUser(ctx *fasthttp.RequestCtx) (string, bool) {
-	if marked, _ := ctx.UserValue(ClientGatewayUserContextKey).(bool); !marked {
-		return "", false
-	}
-	userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
-	return userID, userID != ""
 }
 
 // virtualKeyByID resolves the key a vk-mode token names, preferring the
