@@ -742,6 +742,9 @@
         "baseten": {
           "$ref": "#/$defs/provider"
         },
+        "kimchi": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -4576,7 +4579,8 @@
                         "databricks",
                         "cloudflare",
                         "byteplus",
-                        "baseten"
+                        "baseten",
+                        "kimchi"
                       ]
                     },
                     "embedding_model": {
