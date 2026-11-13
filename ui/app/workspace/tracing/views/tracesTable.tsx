@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { spanUsage } from "../traceTree";
-import { formatCost, formatDuration, formatTokens, previewValue, SOURCE_LABELS, spanKindMeta } from "./format";
+import { formatCost, formatDuration, formatTokens, previewValue, spanKindMeta } from "./format";
 
 interface SortProps {
 	pagination: TracePagination;
@@ -77,7 +77,6 @@ export function TracesTable({ traces, onOpen, ...sort }: SortProps & { traces: T
 					<SortHead id="tokens" label={t("tracing.columns.tokens")} className="text-right" {...sort} />
 					<SortHead id="cost" label={t("tracing.columns.cost")} className="text-right" {...sort} />
 					<SortHead id="duration" label={t("tracing.columns.duration")} className="text-right" {...sort} />
-					<TableHead>{t("tracing.columns.source")}</TableHead>
 				</TableRow>
 			</TableHeader>
 			<TableBody>
@@ -126,7 +125,6 @@ export function TracesTable({ traces, onOpen, ...sort }: SortProps & { traces: T
 							{formatCost(trace.cost)}
 						</TableCell>
 						<TableCell className="text-right tabular-nums">{formatDuration(trace.duration_ms)}</TableCell>
-						<TableCell className="text-xs">{SOURCE_LABELS[trace.source] ?? trace.source}</TableCell>
 					</TableRow>
 				))}
 			</TableBody>
@@ -245,7 +243,6 @@ export function ExperimentsTable({
 			<TableHeader>
 				<TableRow>
 					<TableHead>{t("tracing.columns.name")}</TableHead>
-					<TableHead>{t("tracing.columns.source")}</TableHead>
 					<TableHead>{t("tracing.columns.scores")}</TableHead>
 					<TableHead className="text-right">{t("tracing.overview.traces")}</TableHead>
 					<TableHead className="text-right">{t("tracing.columns.tokens")}</TableHead>
@@ -269,7 +266,6 @@ export function ExperimentsTable({
 							</div>
 							{experiment.dataset_name && <div className="text-muted-foreground truncate text-xs">{experiment.dataset_name}</div>}
 						</TableCell>
-						<TableCell className="text-xs">{SOURCE_LABELS[experiment.source] ?? experiment.source}</TableCell>
 						<TableCell>
 							<div className="flex flex-wrap gap-1">
 								{Object.entries(experiment.summary.scores ?? {}).map(([name, value]) => (

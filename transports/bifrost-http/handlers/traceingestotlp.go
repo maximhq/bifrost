@@ -41,25 +41,11 @@ type otlpResource struct {
 	Spans      []*traceingest.OTelSpan
 }
 
-// otlpCredential reads the tracing key from the headers OTLP exporters are configured with:
-// Authorization (bare or Bearer), Arize's api_key, Phoenix's and Arize's alternatives.
-func otlpCredential(ctx *fasthttp.RequestCtx) string {
-	if credential := bearerCredential(string(ctx.Request.Header.Peek("Authorization"))); credential != "" {
-		return credential
-	}
-	for _, name := range []string{"api_key", "arize-api-key", "x-api-key", "x-bf-tracing-key"} {
-		if value := strings.TrimSpace(string(ctx.Request.Header.Peek(name))); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 // receiveOTLP handles an OTLP/HTTP trace export, protobuf or JSON, for the given source.
 // resourceNamesProject says whether a resource attribute may pick the project. It may for Arize
 // and generic OTLP. It may not for Langfuse, whose key alone decides the project.
 func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string, resourceNamesProject bool) {
-	principal, ok := h.authenticate(ctx, otlpCredential(ctx))
+	principal, ok := h.authenticate(ctx)
 	if !ok {
 		return
 	}

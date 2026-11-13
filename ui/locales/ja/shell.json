@@ -10,7 +10,7 @@
 		"mcpLogs": "MCP ログ",
 		"connectors": "コネクタ",
 		"relayLogs": "リレーログ",
-		"tracing": "トレーシング",
+		"tracing": "トレース",
 		"relays": "リレー",
 		"logsSettings": "ログ設定",
 		"models": "モデル",
@@ -92,7 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "リレー呼び出しとそのコスト",
-		"tracing": "Braintrust、Langfuse、Arize、OpenTelemetry の SDK から送信されたトレース",
+		"tracing": "あらゆるトレーシング SDK からのトレース",
 		"relays": "ルートごとの料金で LLM 以外の API をリレー",
 		"home": "自分の利用量、キー、予算、アクセス",
 		"observability": "リクエストログと監視",

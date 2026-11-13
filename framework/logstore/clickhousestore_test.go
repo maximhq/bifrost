@@ -2198,7 +2198,7 @@ func TestClickHouseTraceStore(t *testing.T) {
 	assert.Equal(t, "traces/u1", upload.ObjectKey)
 
 	// The dashboard's read queries run on ClickHouse SQL too.
-	listed, err := store.SearchTraces(ctx, TraceFilters{ProjectIDs: []string{"p1"}, Search: "AGENT", Tags: []string{"prod"}}, PaginationOptions{})
+	listed, err := store.SearchTraces(ctx, TraceFilters{ProjectIDs: []string{"p1"}, Search: "AGENT", Tags: []string{"prod"}, Models: []string{""}, Kinds: []string{TraceSpanKindLLM}}, PaginationOptions{})
 	require.NoError(t, err)
 	require.Len(t, listed.Traces, 1)
 	spanPage, err := store.SearchTraceSpans(ctx, TraceFilters{Kinds: []string{TraceSpanKindLLM}}, PaginationOptions{SortBy: "tokens"})

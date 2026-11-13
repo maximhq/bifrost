@@ -3,6 +3,7 @@ import type {
 	TraceConnectInfo,
 	TraceDetail,
 	TraceExperiment,
+	TraceFilterData,
 	TraceFilters,
 	TraceHistogramResponse,
 	TracePagination,
@@ -12,8 +13,6 @@ import type {
 	TraceSessionSearchResponse,
 	TraceSpanSearchResponse,
 	TraceStatsResponse,
-	TracingKey,
-	TracingKeyInput,
 } from "@/lib/types/traces";
 import { buildTraceQuery } from "@/lib/utils/traceQuery";
 import { baseApi } from "./baseApi";
@@ -120,24 +119,13 @@ export const tracesApi = baseApi.injectEndpoints({
 		deleteTraceProject: builder.mutation<void, string>({
 			query: (id) => ({ url: `/traces/projects/${encodeURIComponent(id)}`, method: "DELETE" }),
 			// Deleting a project removes its traces and unbinds its keys.
-			invalidatesTags: ["TraceProjects", "TracingKeys", "Traces"],
+			invalidatesTags: ["TraceProjects", "Traces"],
 		}),
-		getTracingKeys: builder.query<{ keys: TracingKey[] | null }, void>({
-			query: () => ({ url: "/traces/keys" }),
-			providesTags: ["TracingKeys"],
-		}),
-		// The response's value is the only time the key is shown: only its hash is stored.
-		createTracingKey: builder.mutation<{ key: TracingKey; value: string }, TracingKeyInput>({
-			query: (body) => ({ url: "/traces/keys", method: "POST", body }),
-			invalidatesTags: ["TracingKeys"],
-		}),
-		updateTracingKey: builder.mutation<{ key: TracingKey }, { id: string; data: TracingKeyInput }>({
-			query: ({ id, data }) => ({ url: `/traces/keys/${encodeURIComponent(id)}`, method: "PUT", body: data }),
-			invalidatesTags: ["TracingKeys"],
-		}),
-		deleteTracingKey: builder.mutation<void, string>({
-			query: (id) => ({ url: `/traces/keys/${encodeURIComponent(id)}`, method: "DELETE" }),
-			invalidatesTags: ["TracingKeys"],
+		getTraceFilterData: builder.query<TraceFilterData, { projectIds?: string[] }>({
+			query: ({ projectIds }) => ({
+				url: `/traces/filterdata${projectIds && projectIds.length > 0 ? `?project_ids=${projectIds.map(encodeURIComponent).join(",")}` : ""}`,
+			}),
+			providesTags: ["Traces"],
 		}),
 	}),
 });
@@ -160,8 +148,5 @@ export const {
 	useCreateTraceProjectMutation,
 	useUpdateTraceProjectMutation,
 	useDeleteTraceProjectMutation,
-	useGetTracingKeysQuery,
-	useCreateTracingKeyMutation,
-	useUpdateTracingKeyMutation,
-	useDeleteTracingKeyMutation,
+	useGetTraceFilterDataQuery,
 } = tracesApi;

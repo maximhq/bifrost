@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -21,7 +22,6 @@ import (
 type traceTestConfig struct {
 	mu       sync.Mutex
 	projects map[string]*tables.TableTraceProject
-	keys     map[string]*tables.TableTracingKey
 }
 
 func (f *traceTestConfig) GetTraceProject(_ context.Context, id string) (*tables.TableTraceProject, error) {
@@ -54,37 +54,22 @@ func (f *traceTestConfig) CreateTraceProject(_ context.Context, project *tables.
 	return nil
 }
 
-func (f *traceTestConfig) GetTracingKey(_ context.Context, id string) (*tables.TableTracingKey, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, key := range f.keys {
-		if key.ID == id {
-			return key, nil
-		}
-	}
-	return nil, configstore.ErrNotFound
+// Dashboard credentials every handler test authenticates with.
+const (
+	traceTestUser     = "admin"
+	traceTestPassword = "secret"
+	// traceTestKey is base64("admin:secret"): the dashboard credentials in the form an SDK's API key field takes.
+	traceTestKey = "YWRtaW46c2VjcmV0"
+)
+
+// fakeDashboardAuth is a dashboard with auth on and one admin account.
+type fakeDashboardAuth struct{ active bool }
+
+func (f *fakeDashboardAuth) IsDashboardAuthActive() bool { return f.active }
+func (f *fakeDashboardAuth) VerifyAdminCredentials(username, password string) bool {
+	return username == traceTestUser && password == traceTestPassword
 }
-
-func (f *traceTestConfig) GetTracingKeyByHash(_ context.Context, hash string) (*tables.TableTracingKey, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if key, ok := f.keys[hash]; ok {
-		return key, nil
-	}
-	return nil, configstore.ErrNotFound
-}
-
-func (f *traceTestConfig) UpdateTracingKey(_ context.Context, key *tables.TableTracingKey) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.keys[key.KeyHash] = key
-	return nil
-}
-
-func (f *traceTestConfig) TouchTracingKey(context.Context, string, time.Time) error { return nil }
-
-// traceTestKey is the tracing key every handler test authenticates with.
-const traceTestKey = "bf-tr-handler-test"
+func (f *fakeDashboardAuth) VerifySessionToken(token string) bool { return token == "session-token" }
 
 type traceIngestTestEnv struct {
 	handler *TraceIngestHandler
@@ -95,22 +80,20 @@ type traceIngestTestEnv struct {
 }
 
 // newTraceIngestTestEnv builds the ingest handler over a real SQLite trace store, with one project
-// "agent" (id p1) and one key bound to it that may also create projects.
+// "agent" (id p1) as the default, and dashboard auth on.
 func newTraceIngestTestEnv(t *testing.T) *traceIngestTestEnv {
 	t.Helper()
 	ctx := context.Background()
 	store, err := logstore.NewLogStore(ctx, &logstore.Config{Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")}}, logger)
 	require.NoError(t, err)
-	config := &traceTestConfig{projects: map[string]*tables.TableTraceProject{"p1": {ID: "p1", Name: "agent"}}, keys: map[string]*tables.TableTracingKey{}}
-	key := &tables.TableTracingKey{ID: "k1", Name: "test", ProjectIDs: []string{"p1"}, DefaultProjectID: "p1", LogContent: true, CanCreateProjects: true, Enabled: true}
-	key.SetValue(traceTestKey)
-	config.keys[key.KeyHash] = key
-	service := traceingest.NewService(store, config, traceingest.Config{}, logger)
+	config := &traceTestConfig{projects: map[string]*tables.TableTraceProject{"p1": {ID: "p1", Name: "agent"}}}
+	service := traceingest.NewService(store, config, traceingest.Config{DefaultProjectName: "agent"}, logger)
 	t.Cleanup(func() {
 		service.Close()
 		_ = store.Close(ctx)
 	})
 	handler := NewTraceIngestHandler(service, nil, logger)
+	handler.SetCredentials(&fakeDashboardAuth{active: true})
 	rt := router.New()
 	handler.RegisterRoutes(rt)
 	return &traceIngestTestEnv{handler: handler, router: rt, store: store, service: service, config: config}
@@ -159,12 +142,44 @@ func TestTraceUploadURLWorksOnceWithinItsWindow(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusNotFound, late.Response.StatusCode(), "the upload window has closed")
 }
 
-// TestBearerCredentialReadsEveryAuthForm pins the credential forms SDKs send.
-func TestBearerCredentialReadsEveryAuthForm(t *testing.T) {
-	assert.Equal(t, "bf-tr-1", bearerCredential("Bearer bf-tr-1"))
-	assert.Equal(t, "bf-tr-1", bearerCredential("bearer  bf-tr-1"))
-	assert.Equal(t, "bf-tr-1", bearerCredential("bf-tr-1"), "Arize sends the bare key")
-	assert.Equal(t, "bf-tr-1", bearerCredential("Basic cGstbGYtYW55OmJmLXRyLTE="), "Langfuse sends public:secret, the secret is the key")
-	assert.Empty(t, bearerCredential("Basic not-base64!"))
-	assert.Empty(t, bearerCredential(""))
+// TestIngestAcceptsTheDashboardCredentialsInEveryForm pins ingest auth: SDKs send the dashboard's
+// own credentials in whichever form their API key field takes, and with dashboard auth off nothing
+// is needed.
+func TestIngestAcceptsTheDashboardCredentialsInEveryForm(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:secret"))
+	for name, credential := range map[string]string{
+		"basic, as Langfuse sends public and secret key": basic,
+		"bearer base64, as the dashboard API takes it":   "Bearer " + traceTestKey,
+		"bare base64":              traceTestKey,
+		"bare username:password":   "admin:secret",
+		"bearer username:password": "Bearer admin:secret",
+		"unpadded base64":          "YWRtaW46c2VjcmV0",
+		"dashboard session":        "Bearer session-token",
+	} {
+		principal, err := env.handler.authorize([]string{credential})
+		require.NoError(t, err, name)
+		assert.True(t, principal.AllProjects, name)
+	}
+	for name, credential := range map[string]string{
+		"wrong password": "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:nope")),
+		"wrong user":     "someone:secret",
+		"garbage":        "Bearer not-a-credential",
+		"unknown scheme": "Digest admin:secret",
+		"empty":          "",
+	} {
+		_, err := env.handler.authorize([]string{credential})
+		assert.ErrorIs(t, err, traceingest.ErrUnauthorized, name)
+	}
+	_, err := env.handler.authorize(nil)
+	assert.ErrorIs(t, err, traceingest.ErrUnauthorized)
+	_, err = env.handler.authorize([]string{"junk", traceTestKey})
+	assert.NoError(t, err, "any one valid credential is enough")
+
+	env.handler.SetCredentials(&fakeDashboardAuth{active: false})
+	_, err = env.handler.authorize(nil)
+	assert.NoError(t, err, "with dashboard auth off, no credential is needed")
+	env.handler.SetCredentials(nil)
+	_, err = env.handler.authorize(nil)
+	assert.NoError(t, err)
 }

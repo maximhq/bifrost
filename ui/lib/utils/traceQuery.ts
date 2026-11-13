@@ -23,6 +23,7 @@ export function buildTraceQuery(
 	text("user_id", filters.user_id);
 	text("experiment_id", filters.experiment_id);
 	text("status", filters.status);
+	text("trace_id", filters.trace_id);
 	text("search", filters.search);
 	text("start_time", filters.start_time);
 	text("end_time", filters.end_time);

@@ -10,7 +10,7 @@
 		"mcpLogs": "MCP 日志",
 		"connectors": "连接器",
 		"relayLogs": "中继日志",
-		"tracing": "链路追踪",
+		"tracing": "追踪",
 		"relays": "中继",
 		"logsSettings": "日志设置",
 		"models": "模型",
@@ -92,7 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "中继调用及其费用",
-		"tracing": "由 Braintrust、Langfuse、Arize 和 OpenTelemetry SDK 推送的追踪",
+		"tracing": "来自任意追踪 SDK 的追踪",
 		"relays": "通过按路由定价来中继非 LLM API",
 		"home": "你的用量、密钥、预算和访问权限",
 		"observability": "请求日志与监控",

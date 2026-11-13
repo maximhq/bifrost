@@ -10,7 +10,7 @@
 		"mcpLogs": "MCP-Protokolle",
 		"connectors": "Konnektoren",
 		"relayLogs": "Relay-Protokolle",
-		"tracing": "Tracing",
+		"tracing": "Traces",
 		"relays": "Relays",
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle",
@@ -92,7 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "Relay-Aufrufe und ihre Kosten",
-		"tracing": "Traces aus Braintrust-, Langfuse-, Arize- und OpenTelemetry-SDKs",
+		"tracing": "Traces aus jedem Tracing-SDK",
 		"relays": "Nicht-LLM-APIs mit Preisen pro Route weiterleiten",
 		"home": "Ihre Nutzung, Schlüssel, Budgets und Zugriffe",
 		"observability": "Anfrageprotokolle & Monitoring",

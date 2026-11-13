@@ -29,10 +29,18 @@ const (
 	traceUploadMaxBytes = 25 << 20
 )
 
-// TraceIngestAuthenticator resolves the credential on an ingest request. The default checks
-// tracing keys. Enterprise replaces it to accept scoped API keys too.
+// TraceIngestAuthenticator resolves who an ingest request acts as. Enterprise sets one to accept
+// scoped API keys. Without one, requests are checked against the dashboard's own credentials.
 type TraceIngestAuthenticator interface {
-	AuthenticateTraceIngest(ctx *fasthttp.RequestCtx, credential string) (*traceingest.Principal, error)
+	AuthenticateTraceIngest(ctx *fasthttp.RequestCtx) (*traceingest.Principal, error)
+}
+
+// TraceIngestCredentials checks the dashboard's credentials. The auth middleware implements it.
+// SDKs authenticate with what the dashboard uses: when dashboard auth is off, no credential is needed.
+type TraceIngestCredentials interface {
+	IsDashboardAuthActive() bool
+	VerifyAdminCredentials(username, password string) bool
+	VerifySessionToken(token string) bool
 }
 
 // TraceIngestHandler serves the endpoints observability SDKs push traces to. Each vendor adapter
@@ -43,6 +51,7 @@ type TraceIngestHandler struct {
 	config        *lib.Config
 	logger        schemas.Logger
 	authenticator TraceIngestAuthenticator
+	credentials   TraceIngestCredentials
 	forwarder     *traceingest.Forwarder
 	prompts       TracePromptStore
 	datasets      *datasets.Service
@@ -51,6 +60,12 @@ type TraceIngestHandler struct {
 // NewTraceIngestHandler builds the handler over the shared ingest service.
 func NewTraceIngestHandler(service *traceingest.Service, config *lib.Config, logger schemas.Logger) *TraceIngestHandler {
 	return &TraceIngestHandler{service: service, config: config, logger: logger}
+}
+
+// SetCredentials sets the dashboard credential check. Without one every request is accepted, as
+// the dashboard accepts every request when its auth is off.
+func (h *TraceIngestHandler) SetCredentials(credentials TraceIngestCredentials) {
+	h.credentials = credentials
 }
 
 // SetAuthenticator replaces how ingest credentials are resolved.
@@ -110,16 +125,28 @@ func ingestContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), traceIngestTimeout)
 }
 
-// authenticate resolves the request's credential, writing the error response when it fails.
-func (h *TraceIngestHandler) authenticate(ctx *fasthttp.RequestCtx, credential string) (*traceingest.Principal, bool) {
+// ingestCredentialHeaders are the headers SDKs carry their API key in: Authorization for most,
+// api_key and arize-api-key for Arize, x-api-key for others.
+var ingestCredentialHeaders = []string{"Authorization", "api_key", "arize-api-key", "x-api-key", "x-bf-api-key"}
+
+// authenticate resolves who the request acts as, writing the error response when it cannot.
+func (h *TraceIngestHandler) authenticate(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
 	var principal *traceingest.Principal
 	var err error
 	if h.authenticator != nil {
-		principal, err = h.authenticator.AuthenticateTraceIngest(ctx, credential)
+		principal, err = h.authenticator.AuthenticateTraceIngest(ctx)
 	} else {
-		storeCtx, cancel := ingestContext()
-		defer cancel()
-		principal, err = h.service.Authenticate(storeCtx, credential)
+		// A request an earlier middleware already authenticated with an API key needs nothing more.
+		if isAPIKey, _ := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); isAPIKey {
+			return traceingest.AdminPrincipal(), true
+		}
+		candidates := make([]string, 0, 2)
+		for _, name := range ingestCredentialHeaders {
+			if value := strings.TrimSpace(string(ctx.Request.Header.Peek(name))); value != "" {
+				candidates = append(candidates, value)
+			}
+		}
+		principal, err = h.authorize(candidates)
 	}
 	if err != nil {
 		h.fail(ctx, err)
@@ -128,12 +155,66 @@ func (h *TraceIngestHandler) authenticate(ctx *fasthttp.RequestCtx, credential s
 	return principal, true
 }
 
+// authorize checks the credentials a request carried against the dashboard's. Any one that holds
+// is enough. A credential is accepted in every form SDKs send an API key in:
+//
+//   - "Basic base64(username:password)", which Langfuse sends as public key and secret key
+//   - "Bearer <session token>", a dashboard session
+//   - "username:password", bare or after "Bearer"
+//   - "base64(username:password)", bare or after "Bearer", as the dashboard API takes it
+func (h *TraceIngestHandler) authorize(candidates []string) (*traceingest.Principal, error) {
+	if h.credentials == nil || !h.credentials.IsDashboardAuthActive() {
+		return traceingest.AdminPrincipal(), nil
+	}
+	for _, candidate := range candidates {
+		if h.credentialHolds(candidate) {
+			return traceingest.AdminPrincipal(), nil
+		}
+	}
+	return nil, traceingest.ErrUnauthorized
+}
+
+func (h *TraceIngestHandler) credentialHolds(value string) bool {
+	scheme, rest, found := strings.Cut(strings.TrimSpace(value), " ")
+	if !found {
+		rest, scheme = scheme, ""
+	}
+	rest = strings.TrimSpace(rest)
+	switch strings.ToLower(scheme) {
+	case "basic":
+		username, password, ok := decodeUserPassword(rest)
+		return ok && h.credentials.VerifyAdminCredentials(username, password)
+	case "bearer", "":
+	default:
+		return false
+	}
+	if h.credentials.VerifySessionToken(rest) {
+		return true
+	}
+	if username, password, ok := strings.Cut(rest, ":"); ok {
+		return h.credentials.VerifyAdminCredentials(username, password)
+	}
+	username, password, ok := decodeUserPassword(rest)
+	return ok && h.credentials.VerifyAdminCredentials(username, password)
+}
+
+// decodeUserPassword reads "username:password" out of its base64 form, padded or not.
+func decodeUserPassword(encoded string) (string, string, bool) {
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if decoded, err := encoding.DecodeString(encoded); err == nil {
+			return strings.Cut(string(decoded), ":")
+		}
+	}
+	return "", "", false
+}
+
 // fail writes the status an SDK should see for an ingest error. A store failure is a 503, so the
 // SDK retries: a resent part is stored once.
 func (h *TraceIngestHandler) fail(ctx *fasthttp.RequestCtx, err error) {
 	switch {
 	case errors.Is(err, traceingest.ErrUnauthorized):
-		SendError(ctx, fasthttp.StatusUnauthorized, "A valid tracing key is required. Create one under Observability > Tracing.")
+		ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="bifrost"`)
+		SendError(ctx, fasthttp.StatusUnauthorized, "Send your Bifrost dashboard username and password as the SDK's API key.")
 	case errors.Is(err, traceingest.ErrForbidden):
 		SendError(ctx, fasthttp.StatusForbidden, err.Error())
 	case errors.Is(err, traceingest.ErrRateLimited):
@@ -149,29 +230,6 @@ func (h *TraceIngestHandler) fail(ctx *fasthttp.RequestCtx, err error) {
 		}
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "trace ingest failed, retry")
 	}
-}
-
-// bearerCredential reads a key from an Authorization header in any of the forms SDKs send:
-// "Bearer <key>", "Basic base64(public:secret)" (the secret is the key), or the bare key.
-func bearerCredential(header string) string {
-	header = strings.TrimSpace(header)
-	scheme, rest, found := strings.Cut(header, " ")
-	if !found {
-		return header
-	}
-	rest = strings.TrimSpace(rest)
-	switch strings.ToLower(scheme) {
-	case "bearer":
-		return rest
-	case "basic":
-		decoded, err := base64.StdEncoding.DecodeString(rest)
-		if err != nil {
-			return ""
-		}
-		_, secret, _ := strings.Cut(string(decoded), ":")
-		return secret
-	}
-	return header
 }
 
 // publicBaseURL is the URL SDKs reach this Bifrost on, with no trailing slash. It is the configured

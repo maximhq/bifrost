@@ -1,5 +1,6 @@
 import {
 	BadgeCheck,
+	ChartNoAxesGantt,
 	BadgeInfo,
 	BookOpenText,
 	BookUser,
@@ -55,7 +56,6 @@ import {
 	Wallet,
 	WalletCards,
 	Waypoints,
-	Workflow,
 	Webhook,
 } from "lucide-react";
 
@@ -252,7 +252,7 @@ export function useNavItems(): NavItem[] {
 						id: "observability.tracing",
 						title: t("nav.tracing"),
 						url: "/workspace/tracing",
-						icon: Workflow,
+						icon: ChartNoAxesGantt,
 						description: t("navDesc.tracing"),
 						hasAccess: hasTracingAccess,
 					},

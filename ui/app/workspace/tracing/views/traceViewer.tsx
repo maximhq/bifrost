@@ -14,7 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { buildThread, buildTraceTree, spanUsage, type TraceTreeNode } from "../traceTree";
-import { formatCost, formatDuration, formatTokens, prettyValue, SOURCE_LABELS, spanKindMeta } from "./format";
+import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
 
 interface TraceViewerProps {
 	projectId: string | null;
@@ -87,7 +87,6 @@ export function TraceViewer({ projectId, traceId, initialSpanId, onClose, render
 				<SheetHeader className="border-b px-4 py-3">
 					<div className="flex items-center gap-2 pr-8">
 						<SheetTitle className="truncate text-base">{trace?.name || t("tracing.viewer.untitled")}</SheetTitle>
-						{trace && <Badge variant="outline">{SOURCE_LABELS[trace.source] ?? trace.source}</Badge>}
 						{trace?.in_progress && (
 							<Badge variant="secondary" className="gap-1">
 								<Loader2 className="h-3 w-3 animate-spin" />
@@ -508,7 +507,6 @@ function SpanDetail({
 							span_id: span.span_id,
 							parent_span_ids: span.parent_span_ids,
 							row_id: span.row_id,
-							source: span.source,
 							link_method: span.link_method,
 							session_id: span.session_id,
 							user_id: span.user_id,

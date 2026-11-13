@@ -2061,11 +2061,7 @@
 			"noComments": "No comments on this span yet.",
 			"deleteComment": "Delete comment"
 		},
-		"title": "Tracing",
-		"subtitle": "Traces pushed by your observability SDKs. A model call served by this gateway is counted once, with the gateway's numbers.",
 		"searchPlaceholder": "Search name, input or output",
-		"allProjects": "All projects",
-		"allSources": "All sources",
 		"inProgress": "In progress",
 		"estimated": "estimated",
 		"estimatedShare": "{{cost}} estimated",
@@ -2074,7 +2070,6 @@
 		"unpricedCalls": "{{count}} unpriced calls",
 		"clear": "Clear",
 		"status": {
-			"any": "Any status",
 			"error": "With errors",
 			"ok": "No errors"
 		},
@@ -2082,10 +2077,10 @@
 			"1h": "Last hour",
 			"24h": "Last 24h",
 			"7d": "Last 7 days",
-			"30d": "Last 30 days"
+			"30d": "Last 30 days",
+			"custom": "Zoomed range"
 		},
 		"tabs": {
-			"overview": "Overview",
 			"traces": "Traces",
 			"spans": "Spans",
 			"sessions": "Trace sessions",
@@ -2101,7 +2096,6 @@
 			"tokens": "Tokens",
 			"cost": "Cost",
 			"duration": "Duration",
-			"source": "Source",
 			"model": "Model"
 		},
 		"table": {
@@ -2111,15 +2105,9 @@
 		},
 		"overview": {
 			"traces": "Traces",
-			"volume": "Trace volume over time",
-			"bucket": "{{count}} traces, {{errors}} with errors",
-			"linkRate": "Linked to gateway",
-			"linkRateHint": "{{linked}} of {{total}} model calls were served by this gateway",
 			"avgDuration": "Avg duration",
-			"errors": "Traces with errors",
 			"inProgress": "{{count}} in progress",
-			"byProject": "By project",
-			"bySource": "By source"
+			"linkedShort": "{{percent}}% via gateway"
 		},
 		"sessions": {
 			"session": "Session",
@@ -2130,7 +2118,10 @@
 		},
 		"empty": {
 			"title": "No traces yet",
-			"description": "Point a Braintrust, Langfuse, Arize or OpenTelemetry SDK at Bifrost. It takes a tracing key and one URL."
+			"descriptionAuth": "Send your dashboard username and password as the SDK's API key: username:password, or for Langfuse the username as the public key and the password as the secret key.",
+			"descriptionOpen": "Admin auth is not set up on this gateway, so SDKs send no API key: leave the key unset. If an SDK refuses to start without one, any value works.",
+			"descriptionEnterprise": "SDKs authenticate with an API key. Create one for tracing and use it as the SDK's API key.",
+			"createApiKey": "Create a tracing API key"
 		},
 		"viewer": {
 			"untitled": "Untitled trace",
@@ -2165,32 +2156,17 @@
 			"sdkNumbers": "SDK numbers",
 			"attributes": "Attributes"
 		},
-		"connect": {
-			"button": "Connect",
-			"title": "Connect an SDK",
-			"description": "Create a tracing key, then point your SDK at the URL below. Nothing else in your code changes.",
-			"keys": "Tracing keys",
-			"keysHint": "A tracing key can write traces to its projects and do nothing else. It is shown once.",
-			"noContent": "No content",
-			"lastUsed": "Last used {{when}}",
-			"neverUsed": "Never used",
-			"enabled": "Enabled",
-			"deleteKey": "Delete key",
-			"copyNow": "Copy this key now. It will not be shown again.",
-			"copy": "Copy",
-			"keyName": "Key name",
-			"newProject": "Project",
-			"allProjects": "All existing projects",
-			"canCreateProjects": "May create projects",
-			"canReadPrompts": "May read prompts from the prompt repository (get_prompt, load_prompt)",
-			"canUseDatasets": "May create evals datasets and add and read their rows, and record experiment runs",
-			"logContent": "Store input and output",
-			"createKey": "Create tracing key",
-			"pointSDK": "Point your SDK at Bifrost",
-			"linkHint": "To attach gateway calls to the trace, so each is counted once, add this to the calls you send through Bifrost:",
-			"noUploads": "Attachments are off: this log store needs an object store to keep uploaded files.",
-			"received": "{{count}} traces received",
-			"waiting": "Waiting for the first trace"
+		"refresh": "Refresh",
+		"filters": {
+			"reset": "Reset",
+			"projects": "Project",
+			"noProjects": "No project yet. One is made the first time an SDK names it.",
+			"searchProjects": "Search projects",
+			"searchModels": "Search models",
+			"spanKind": "Span kind",
+			"environment": "Environment",
+			"traceID": "Trace ID",
+			"exactTraceID": "Exact trace ID"
 		}
 	}
 }

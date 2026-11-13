@@ -473,6 +473,8 @@ func TestSearchTracesFiltersSortsAndPages(t *testing.T) {
 		"like escape": {TraceFilters{Search: "%"}, nil},
 		"time range":  {TraceFilters{StartTime: new(base.Add(30 * time.Minute)), EndTime: new(base.Add(90 * time.Minute))}, []string{"t2"}},
 		"min tokens":  {TraceFilters{MinTokens: new(200)}, []string{"t2"}},
+		"span model":  {TraceFilters{Models: []string{"house-model"}}, []string{"t3"}},
+		"span kind":   {TraceFilters{Kinds: []string{TraceSpanKindLLM}, ProjectIDs: []string{"p2"}}, []string{"t3"}},
 	} {
 		result, err := store.SearchTraces(ctx, tc.filters, PaginationOptions{})
 		require.NoError(t, err, name)

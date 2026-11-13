@@ -87,7 +87,7 @@
 		"skills": "Compétences",
 		"skillsSettings": "Paramètres des compétences",
 		"relayLogs": "Journaux des relais",
-		"tracing": "Traçage",
+		"tracing": "Traces",
 		"relays": "Relais"
 	},
 	"navDesc": {
@@ -178,7 +178,7 @@
 		"skills": "Gérer les compétences et les paramètres de la marketplace",
 		"skillsSettings": "Configuration de la marketplace des compétences",
 		"relayLogs": "Appels de relais et leur coût",
-		"tracing": "Traces envoyées par les SDK Braintrust, Langfuse, Arize et OpenTelemetry",
+		"tracing": "Traces de tout SDK de traçage",
 		"relays": "Relayez des API non LLM avec une tarification par route"
 	},
 	"home": {

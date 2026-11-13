@@ -212,7 +212,6 @@ func (p *SpanPart) Span(projectID, source string, stored *logstore.TraceSpan) *l
 	}
 	if stored != nil {
 		span.CreatedAt = stored.CreatedAt
-		span.TracingKeyID = stored.TracingKeyID
 		span.ExpiresAt = stored.ExpiresAt
 		span.ContentHidden = stored.ContentHidden
 		span.LinkMethod, span.LinkSnapshotParsed, span.LinkedLogExpired = stored.LinkMethod, stored.LinkSnapshotParsed, stored.LinkedLogExpired

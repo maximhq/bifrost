@@ -12,9 +12,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// langfuseAuth is the header a Langfuse SDK sends: Basic public:secret, the secret being the key.
+// langfuseAuth is the header a Langfuse SDK sends: Basic public:secret, set to the dashboard
+// username and password.
 func langfuseAuth() map[string]string {
-	return map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-anything:"+traceTestKey)), "Content-Type": "application/json"}
+	return map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(traceTestUser+":"+traceTestPassword)), "Content-Type": "application/json"}
 }
 
 // TestLangfuseLegacyBatchAnswers207PerEvent pins POST /api/public/ingestion: each event gets its
@@ -103,6 +104,26 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 	require.Len(t, scores, 1)
 	assert.Equal(t, "good", scores[0].StringValue)
 	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`{"name":"quality"}`)).Response.StatusCode())
+
+	// Langfuse 5 posts scores as an array: 202 when every one is taken, 207 with counts otherwise.
+	batch := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`[{"traceId":"`+otlpTestTrace+`","name":"helpful","value":1,"dataType":"BOOLEAN"},{"traceId":"`+otlpTestTrace+`","name":"tone","value":"formal"}]`))
+	require.Equal(t, fasthttp.StatusAccepted, batch.Response.StatusCode(), string(batch.Response.Body()))
+	assert.JSONEq(t, `{"message":"Accepted"}`, string(batch.Response.Body()))
+	partial := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/scores", auth, []byte(`[{"traceId":"`+otlpTestTrace+`","name":"speed","value":0.5},{"name":"no trace"}]`))
+	require.Equal(t, fasthttp.StatusMultiStatus, partial.Response.StatusCode())
+	var counts struct {
+		Accepted int              `json:"accepted"`
+		Rejected int              `json:"rejected"`
+		Errors   []map[string]any `json:"errors"`
+	}
+	require.NoError(t, sonic.Unmarshal(partial.Response.Body(), &counts))
+	assert.Equal(t, 1, counts.Accepted)
+	assert.Equal(t, 1, counts.Rejected)
+	require.Len(t, counts.Errors, 1)
+	assert.NotEmpty(t, counts.Errors[0]["message"])
+	scores, err = env.store.ListTraceScores(ctx, "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, scores, 4, "the single score, both batch scores and the accepted half of the partial batch")
 
 	mediaBody := []byte(`{"traceId":"` + otlpTestTrace + `","contentType":"image/png","contentLength":9,"sha256Hash":"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=","field":"input"}`)
 	media := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/media", auth, mediaBody)
