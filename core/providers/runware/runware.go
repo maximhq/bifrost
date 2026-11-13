@@ -154,7 +154,7 @@ func (provider *RunwareProvider) TextCompletionStream(ctx *schemas.BifrostContex
 // shape, including reasoning_content, so the OpenAI handlers are used unchanged. Models are named
 // by their AIR identifier rather than an OpenAI model name.
 func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -175,7 +175,7 @@ func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // ChatCompletionStream streams a chat completion from Runware's OpenAI-compatible endpoint. The SSE
 // format matches OpenAI's, terminating with [DONE].
 func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.RestorePassthroughExtraParams(ctx, providerUtils.EnablePassthroughExtraParams(ctx))
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,

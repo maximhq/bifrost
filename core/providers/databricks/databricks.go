@@ -316,8 +316,9 @@ func (provider *DatabricksProvider) gatewayTagsHeader(ctx *schemas.BifrostContex
 	return string(encoded)
 }
 
-// prepareRequest resolves the upstream URL and auth header for an inference request, and
-// applies the per-request context flags every Databricks call needs.
+// prepareRequest resolves the upstream URL and auth header for an inference request.
+// Callers scope extra-param passthrough themselves (EnablePassthroughExtraParams): Databricks
+// accepts fields Bifrost does not model canonically (service_tier, reasoning_effort, ...).
 func (provider *DatabricksProvider) prepareRequest(ctx *schemas.BifrostContext, key schemas.Key, model, suffix string) (string, map[string]string, *schemas.BifrostError) {
 	url, bErr := provider.buildURL(ctx, key, model, suffix)
 	if bErr != nil {
@@ -327,10 +328,6 @@ func (provider *DatabricksProvider) prepareRequest(ctx *schemas.BifrostContext, 
 	if bErr != nil {
 		return "", nil, bErr
 	}
-	// Databricks accepts fields Bifrost does not model canonically — service_tier for
-	// priority pay-per-token, reasoning_effort, and other model-specific extensions. Enable
-	// extra-param passthrough so they survive to the wire instead of being dropped.
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	if tags := provider.gatewayTagsHeader(ctx, key); tags != "" {
 		auth[gatewayRequestTagsHeader] = tags
 	}

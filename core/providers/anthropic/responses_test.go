@@ -4456,3 +4456,29 @@ func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestToBifrostResponsesRequest_CapturesUnknownFieldsWithoutPassthrough pins that unknown
+// top-level fields reach Params.ExtraParams even when the passthrough flag is not set at
+// ingress: providers that enable passthrough themselves (vLLM, SGLang, ...) only decide
+// later, and the wire merge is still gated on the flag at egress.
+func TestToBifrostResponsesRequest_CapturesUnknownFieldsWithoutPassthrough(t *testing.T) {
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"vllm/gemma","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"enable_thinking":false}}`), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for name, ctx := range map[string]*schemas.BifrostContext{
+		"no flag": schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		"nil ctx": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := req.ToBifrostResponsesRequest(ctx)
+			raw, ok := got.Params.ExtraParams["chat_template_kwargs"].(json.RawMessage)
+			if !ok {
+				t.Fatalf("chat_template_kwargs not captured; ExtraParams=%v", got.Params.ExtraParams)
+			}
+			if string(raw) != `{"enable_thinking":false}` {
+				t.Fatalf("unexpected chat_template_kwargs: %s", raw)
+			}
+		})
+	}
+}

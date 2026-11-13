@@ -4728,3 +4728,40 @@ func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
 		<-ch
 	}
 }
+
+// TestEnableRestorePassthroughExtraParams pins that a provider-scoped enable puts back
+// exactly what the caller had: absent stays absent, a header-set value survives.
+func TestEnableRestorePassthroughExtraParams(t *testing.T) {
+	for name, prev := range map[string]any{"absent": nil, "caller true": true, "caller false": false} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if prev != nil {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, prev)
+			}
+			saved := EnablePassthroughExtraParams(ctx)
+			if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != true {
+				t.Fatal("expected passthrough enabled during the attempt")
+			}
+			RestorePassthroughExtraParams(ctx, saved)
+			if got := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams); got != prev {
+				t.Fatalf("expected %v after restore, got %v", prev, got)
+			}
+		})
+	}
+}
+
+func BenchmarkEnableRestorePassthroughExtraParams(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		RestorePassthroughExtraParams(ctx, EnablePassthroughExtraParams(ctx))
+	}
+}
+
+func BenchmarkSetPassthroughExtraParams(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	}
+}
