@@ -137,3 +137,88 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, spans)
 }
+
+// TestLangfuseReadAPI pins the read routes of Langfuse's current API, in the shapes its SDK models
+// require: every required ObservationV2 field is present (as null when Bifrost holds no value),
+// paging is by cursor, and a score carries its data type with a value of the matching JSON type.
+func TestLangfuseReadAPI(t *testing.T) {
+	ctx := context.Background()
+	env := newTraceIngestTestEnv(t)
+	auth := langfuseAuth()
+	batch := `{"batch":[
+		{"id":"e1","type":"trace-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"tr-1","name":"chat-app"}},
+		{"id":"e2","type":"generation-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"gen-1","traceId":"tr-1","name":"llm","model":"gpt-4o","startTime":"2026-11-12T10:00:00.100Z","endTime":"2026-11-12T10:00:01.100Z","input":[{"role":"user","content":"hi"}],"output":"hello","usage":{"input":9,"output":3,"total":12},"costDetails":{"total":0.0004}}},
+		{"id":"e3","type":"span-create","timestamp":"2026-11-12T10:00:00Z","body":{"id":"sp-1","traceId":"tr-1","name":"retrieve","parentObservationId":"gen-1","startTime":"2026-11-12T10:00:00.200Z","level":"ERROR","statusMessage":"timeout"}},
+		{"id":"e4","type":"score-create","timestamp":"2026-11-12T10:00:03Z","body":{"id":"sc-num","traceId":"tr-1","observationId":"gen-1","name":"helpful","value":0.8}},
+		{"id":"e5","type":"score-create","timestamp":"2026-11-12T10:00:04Z","body":{"id":"sc-cat","traceId":"tr-1","name":"tone","value":"formal"}}
+	]}`
+	require.Equal(t, fasthttp.StatusMultiStatus, env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/ingestion", auth, []byte(batch)).Response.StatusCode())
+
+	type observationPage struct {
+		Data []map[string]any `json:"data"`
+		Meta map[string]any   `json:"meta"`
+	}
+	var observations observationPage
+	resp := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations?traceId=tr-1&type=GENERATION", auth, nil)
+	require.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
+	require.NoError(t, sonic.Unmarshal(resp.Response.Body(), &observations))
+	require.Len(t, observations.Data, 1)
+	generation := observations.Data[0]
+	for _, required := range []string{"id", "traceId", "startTime", "endTime", "projectId", "parentObservationId", "type", "modelId", "inputPrice", "outputPrice", "totalPrice"} {
+		assert.Contains(t, generation, required, "ObservationV2 requires %s", required)
+	}
+	assert.Equal(t, "GENERATION", generation["type"])
+	assert.Nil(t, generation["parentObservationId"], "an observation under the trace root has no parent observation")
+	assert.Equal(t, "2026-11-12T10:00:00.100Z", generation["startTime"])
+	assert.Equal(t, map[string]any{"input": 9.0, "output": 3.0, "total": 12.0}, generation["usageDetails"])
+	assert.InDelta(t, 1.0, generation["latency"], 1e-9, "latency is in seconds")
+	assert.IsType(t, []any{}, generation["input"], "content is returned as the JSON it was sent as")
+
+	all := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations?traceId=tr-1", auth, nil)
+	observations = observationPage{}
+	require.NoError(t, sonic.Unmarshal(all.Response.Body(), &observations))
+	assert.Len(t, observations.Data, 2, "the span that stands for the trace object is not an observation")
+	paged := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations?traceId=tr-1&limit=1", auth, nil)
+	observations = observationPage{}
+	require.NoError(t, sonic.Unmarshal(paged.Response.Body(), &observations))
+	require.Len(t, observations.Data, 1)
+	require.Equal(t, "1", observations.Meta["cursor"])
+	errors := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations?level=ERROR", auth, nil)
+	observations = observationPage{}
+	require.NoError(t, sonic.Unmarshal(errors.Response.Body(), &observations))
+	require.Len(t, observations.Data, 1)
+	assert.Equal(t, "gen-1", observations.Data[0]["parentObservationId"])
+	assert.Equal(t, "timeout", observations.Data[0]["statusMessage"])
+	assert.NotContains(t, observations.Meta, "cursor", "the last page carries no cursor")
+	assert.Equal(t, fasthttp.StatusBadRequest, env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations?limit=5000", auth, nil).Response.StatusCode())
+	assert.Equal(t, fasthttp.StatusUnauthorized, env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v2/observations", nil, nil).Response.StatusCode())
+
+	var scores struct {
+		Data []map[string]any `json:"data"`
+		Meta map[string]any   `json:"meta"`
+	}
+	listed := env.do(fasthttp.MethodGet, "/tracing/langfuse/api/public/v3/scores?traceId=tr-1", auth, nil)
+	require.Equal(t, fasthttp.StatusOK, listed.Response.StatusCode(), string(listed.Response.Body()))
+	require.NoError(t, sonic.Unmarshal(listed.Response.Body(), &scores))
+	require.Len(t, scores.Data, 2)
+	assert.EqualValues(t, 50, scores.Meta["limit"])
+	byID := map[string]map[string]any{}
+	for _, score := range scores.Data {
+		byID[score["id"].(string)] = score
+		for _, required := range []string{"id", "projectId", "name", "source", "timestamp", "environment", "createdAt", "updatedAt", "dataType", "value"} {
+			assert.Contains(t, score, required)
+		}
+	}
+	assert.Equal(t, "NUMERIC", byID["sc-num"]["dataType"])
+	assert.Equal(t, 0.8, byID["sc-num"]["value"])
+	assert.Equal(t, "API", byID["sc-num"]["source"])
+	assert.Equal(t, "CATEGORICAL", byID["sc-cat"]["dataType"])
+	assert.Equal(t, "formal", byID["sc-cat"]["value"])
+
+	require.Equal(t, fasthttp.StatusNoContent, env.do(fasthttp.MethodDelete, "/tracing/langfuse/api/public/scores/sc-cat", auth, nil).Response.StatusCode())
+	assert.Equal(t, fasthttp.StatusNotFound, env.do(fasthttp.MethodDelete, "/tracing/langfuse/api/public/scores/sc-cat", auth, nil).Response.StatusCode())
+	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodDelete, "/tracing/langfuse/api/public/traces", auth, []byte(`{"traceIds":["tr-1"]}`)).Response.StatusCode())
+	spans, err := env.store.ListTraceSpans(ctx, "p1", "tr-1")
+	require.NoError(t, err)
+	assert.Empty(t, spans)
+}
