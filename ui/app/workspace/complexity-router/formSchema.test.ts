@@ -154,6 +154,22 @@ describe("Decision complexity configuration", () => {
 		expect(toAnalyzerPayload(parsed.data).decision).toBeUndefined();
 	});
 
+	test("carries the saved suggestions block through a save", () => {
+		const parsed = analyzerConfigSchema.safeParse({
+			...DEFAULT_FORM_VALUES,
+			keywords: { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] },
+		});
+		expect(parsed.success).toBe(true);
+		if (!parsed.success) return;
+
+		const saved: AnalyzerConfig = {
+			...toAnalyzerPayload(parsed.data),
+			suggestions: { enabled: true, sample_rate: 0.25, lookback_days: 14 },
+		};
+		expect(toAnalyzerPayload(parsed.data, saved).suggestions).toEqual(saved.suggestions);
+		expect(toAnalyzerPayload(parsed.data).suggestions).toBeUndefined();
+	});
+
 	test("rejects invalid Decision fields when Decision is the semantic fallback", () => {
 		const values = {
 			...DEFAULT_FORM_VALUES,
