@@ -941,8 +941,22 @@ func refusal(result *EvaluationResult, statusCode int, errorType schemas.ErrorTy
 		Error: &schemas.ErrorField{
 			Message: result.Reason,
 		},
-		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: errorType},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			ErrorType: errorType,
+			// Only this gateway knows when its own window reopens, and no provider was called to say.
+			// Not clamped like a provider's hint: a window can be a year long.
+			RetryAfter: retryAfterMillis(result.RetryAfter),
+		},
 	}
+}
+
+// retryAfterMillis rounds a wait up to whole milliseconds, so a client that sleeps for it never
+// wakes a hair before the window reopens. Zero or negative means no hint.
+func retryAfterMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
 // decide turns a governance decision into what the caller gets back: the result, and the error to

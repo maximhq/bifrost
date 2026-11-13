@@ -380,6 +380,39 @@ func TestApplyBifrostErrorResponseHeaders(t *testing.T) {
 		assert.Equal(t, "1", string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
 	})
 
+	t.Run("governance rate-limit refusal sets the standard Retry-After in whole seconds, rounded up", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			retryAfterMs int64
+			want         string
+		}{
+			"exact seconds":     {retryAfterMs: 180000, want: "180"},
+			"a fraction rounds": {retryAfterMs: 180001, want: "181"},
+			"under a second":    {retryAfterMs: 1, want: "1"},
+			"window of a year":  {retryAfterMs: 365 * 24 * 3600 * 1000, want: "31536000"},
+		} {
+			ctx := &fasthttp.RequestCtx{}
+			ApplyBifrostErrorResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostErrorExtraFields{
+				ErrorType:  schemas.ErrorTypePolicyRateLimited,
+				RetryAfter: tc.retryAfterMs,
+			})
+			assert.Equal(t, tc.want, string(ctx.Response.Header.Peek(HeaderRetryAfter)), name)
+			// Not the Bifrost-specific header: that one stays gated on headers mode.
+			assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRetryAfterMs)), name)
+		}
+	})
+
+	t.Run("no Retry-After without a hint, or for an error that is not a governance rate limit", func(t *testing.T) {
+		for name, extra := range map[string]schemas.BifrostErrorExtraFields{
+			"governance refusal with no window": {ErrorType: schemas.ErrorTypePolicyRateLimited},
+			// A provider's own hint keeps its existing treatment; this change speaks only for the gateway.
+			"provider hint": {RetryAfter: 5000},
+		} {
+			ctx := &fasthttp.RequestCtx{}
+			ApplyBifrostErrorResponseHeaders(ctx, newBifrostCtx(), extra)
+			assert.Empty(t, string(ctx.Response.Header.Peek(HeaderRetryAfter)), name)
+		}
+	})
+
 	t.Run("nil ctx (native error path) emits identity but no ctx-only headers", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 
