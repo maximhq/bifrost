@@ -1,3 +1,4 @@
+[fix]: preserve MCP custom CA settings through OAuth bootstrap [@wsj040303](https://github.com/wsj040303)
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models

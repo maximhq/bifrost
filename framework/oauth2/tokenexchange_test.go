@@ -2440,3 +2440,21 @@ func TestValidateProfile(t *testing.T) {
 		t.Fatal("the direct profile needs no id_jag fields")
 	}
 }
+
+func TestGetExchangedAccessToken_UsesCustomCA(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tls-exchange-test","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer server.Close()
+	config := exchangeTestClientConfig()
+	config.TLSConfig = &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))}
+	provider := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantRFC8693)
+	token, err := provider.GetExchangedAccessToken(userExchangeContext("test-subject"), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "tls-exchange-test" {
+		t.Fatalf("unexpected token: %q", token)
+	}
+}

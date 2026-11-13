@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -425,6 +426,10 @@ func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
 // newLoopbackOAuthMCPServerWithCIMD is newLoopbackOAuthMCPServer, optionally advertising
 // Client ID Metadata Document support. It counts requests to its OAuth endpoints.
 func newLoopbackOAuthMCPServerWithCIMD(t *testing.T, supportsCIMD bool) (*httptest.Server, *atomic.Int32) {
+	return newLoopbackOAuthMCPServerWithTLS(t, supportsCIMD, false)
+}
+
+func newLoopbackOAuthMCPServerWithTLS(t *testing.T, supportsCIMD, useTLS bool) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var oauthRequests atomic.Int32
 	mux := http.NewServeMux()
@@ -449,7 +454,17 @@ func newLoopbackOAuthMCPServerWithCIMD(t *testing.T, supportsCIMD bool) (*httpte
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
-	server = httptest.NewServer(mux)
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		oauthRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tls-test-access","refresh_token":"tls-test-refresh","token_type":"bearer","expires_in":3600}`))
+	})
+	server = httptest.NewUnstartedServer(mux)
+	if useTLS {
+		server.StartTLS()
+	} else {
+		server.Start()
+	}
 	t.Cleanup(server.Close)
 	return server, &oauthRequests
 }
@@ -3181,4 +3196,108 @@ func TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification(t *testin
 		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
 		assert.Empty(t, recorder.added)
 	})
+}
+
+// Real HTTPS and SQLite cover the boundary that the connection TLS tests miss:
+// create -> metadata -> registration -> callback -> stored-client refresh.
+func TestAddMCPClient_CustomCAOAuthLifecycle(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		for _, connectionType := range []string{"http", "sse"} {
+			t.Run(authType+"/"+connectionType, func(t *testing.T) {
+				server, calls := newLoopbackOAuthMCPServerWithTLS(t, false, true)
+				ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+				store := newRealOAuth2Store(t)
+				provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+				cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+				h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
+				payload := map[string]any{"name": "tls_oauth", "connection_type": connectionType, "connection_string": server.URL + "/mcp", "auth_type": authType, "oauth_config": map[string]any{}}
+				create := func() *fasthttp.RequestCtx {
+					body, err := json.Marshal(payload)
+					require.NoError(t, err)
+					var req fasthttp.Request
+					req.Header.SetMethod(fasthttp.MethodPost)
+					req.Header.SetContentType("application/json")
+					req.Header.SetHost("bifrost.example.com")
+					req.SetBody(body)
+					ctx := initCtx(&req)
+					h.addMCPClient(ctx)
+					return ctx
+				}
+				refused := create()
+				require.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+				require.Zero(t, calls.Load(), "without a CA no HTTPS request reaches the issuer")
+				payload["tls_config"] = map[string]any{"ca_cert_pem": ca}
+				result := create()
+				if authType == "per_user_oauth" && connectionType == "sse" {
+					require.Equal(t, fasthttp.StatusBadRequest, result.Response.StatusCode())
+					require.Contains(t, string(result.Response.Body()), "is not supported for connection_type")
+					return
+				}
+				require.Equal(t, fasthttp.StatusOK, result.Response.StatusCode(), string(result.Response.Body()))
+				var response struct {
+					ID           string `json:"oauth_config_id"`
+					AuthorizeURL string `json:"authorize_url"`
+				}
+				require.NoError(t, json.Unmarshal(result.Response.Body(), &response))
+				authorize, err := url.Parse(response.AuthorizeURL)
+				require.NoError(t, err)
+				require.Equal(t, int32(2), calls.Load(), "metadata and registration both used the CA")
+				require.NoError(t, provider.CompleteOAuthFlow(context.Background(), authorize.Query().Get("state"), "test-code"))
+				require.Equal(t, int32(3), calls.Load(), "the pending client supplies the CA on callback")
+				pending, err := provider.GetPendingMCPClient(response.ID)
+				require.NoError(t, err)
+				require.NoError(t, store.CreateMCPClientConfig(context.Background(), pending))
+				require.NoError(t, provider.RemovePendingMCPClient(response.ID))
+				var token configtables.TableMCPOauthToken
+				require.NoError(t, store.DB().Where("oauth_config_id = ?", response.ID).First(&token).Error)
+				require.NoError(t, provider.RefreshAccessToken(context.Background(), token.ID))
+				require.Equal(t, int32(4), calls.Load(), "saved client lookup retains the CA on refresh")
+				if authType == "per_user_oauth" {
+					caller := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					caller.SetValue(schemas.BifrostContextKeyMCPSessionID, "tls-caller")
+					flow, _, err := provider.InitiateUserOAuthFlow(caller, response.ID, pending.ID, "https://bifrost.example.com/callback", schemas.MCPAuthModeSession)
+					require.NoError(t, err)
+					completion, err := provider.CompleteUserOAuthFlow(caller, flow.State, "caller-test-code")
+					require.NoError(t, err)
+					assert.Equal(t, "tls-caller", completion.Identity)
+					callerToken, err := store.GetOauthUserTokenByMode(caller, schemas.MCPAuthModeSession, "tls-caller", pending.ID)
+					require.NoError(t, err)
+					require.NoError(t, provider.RefreshAccessToken(caller, callerToken.ID))
+				}
+			})
+		}
+	}
+}
+
+func TestInitiateMCPClientVerification_UsesCustomCA(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth} {
+		t.Run(string(authType), func(t *testing.T) {
+			server, calls := newLoopbackOAuthMCPServerWithTLS(t, false, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+			client := &schemas.MCPClientConfig{
+				ID: "configured-tls", Name: "configured_tls", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(server.URL + "/mcp"), AuthType: authType,
+				PendingOAuthConfig: &schemas.OAuth2Config{}, PendingVerification: true,
+				TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))},
+			}
+			require.NoError(t, store.CreateMCPClientConfig(context.Background(), client))
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetHost("bifrost.example.com")
+			ctx := initCtx(&req)
+			ctx.SetUserValue("id", client.ID)
+			h.initiateMCPClientVerification(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Equal(t, int32(2), calls.Load(), "the stored TLS settings reach discovery and registration")
+		})
+	}
 }

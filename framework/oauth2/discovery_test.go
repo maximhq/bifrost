@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -744,4 +746,76 @@ func TestOAuthRequestsNeverReadCallerValuesWhileDialing(t *testing.T) {
 	_, err := DiscoverOAuthMetadata(cancelled, server.URL)
 	require.Error(t, err, "a cancelled caller must still stop the request")
 	assert.Equal(t, before, dialed.Load(), "a cancelled request must not dial")
+}
+
+func TestOAuthTLS_ReuseIsolationAndDestinationPolicy(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	useProductionOAuthDialer(t, "127.0.0.1")
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+	config := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(ca)}}
+	ctx := withMCPClient(context.Background(), config)
+	for range 3 {
+		resp, err := newOAuthDiscoveryHTTPClient(ctx, time.Second).Get(server.URL)
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	assert.Equal(t, int32(1), connections.Load(), "OAuth calls with the same trust policy reuse a connection")
+	_, err := newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), &schemas.MCPClientConfig{}), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "certificate signed by unknown authority", "another client does not inherit this CA")
+
+	strict := *config
+	strict.RequirePublicTarget = true
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), &strict), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "blocked connection to non-public address")
+	_, err = newOAuthDiscoveryHTTPClient(ctx, time.Second).Get("https://169.254.169.254/")
+	require.ErrorContains(t, err, "blocked connection to link-local address")
+
+	invalid := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("invalid")}}
+	_, err = newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), invalid), time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "failed to parse MCP CA certificate PEM")
+	insecure := &schemas.MCPClientConfig{TLSConfig: &schemas.MCPTLSConfig{InsecureSkipVerify: true}}
+	resp, err := newOAuthDiscoveryHTTPClient(withMCPClient(context.Background(), insecure), time.Second).Get(server.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	SetPrivateTargetAllowlist(nil)
+	_, err = newOAuthDiscoveryHTTPClient(ctx, time.Second).Get(server.URL)
+	require.ErrorContains(t, err, "blocked connection to non-public address", "removal invalidates custom-CA keep-alive connections too")
+}
+
+func TestOAuthTLSTransports_BoundedAndReusePolicy(t *testing.T) {
+	useProductionOAuthDialer(t)
+	config := &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	firstBase := newOAuthDiscoveryTransport((&net.Dialer{}).DialContext)
+	first := oauthTransportWithTLS(firstBase, config)
+	require.Same(t, first, oauthTransportWithTLS(firstBase, config))
+	for range maxOAuthTLSTransports {
+		oauthTransportWithTLS(newOAuthDiscoveryTransport((&net.Dialer{}).DialContext), config)
+	}
+	oauthTLSCache.Lock()
+	count := len(oauthTLSCache.transports)
+	oauthTLSCache.Unlock()
+	assert.Equal(t, maxOAuthTLSTransports, count)
+	assert.NotSame(t, first, oauthTransportWithTLS(firstBase, config), "the oldest trust policy is evicted")
+	assert.Same(t, firstBase, oauthTransportWithTLS(firstBase, nil), "the common path needs no custom pool")
+}
+
+func BenchmarkOAuthDiscoveryHTTPClient(b *testing.B) {
+	old := testDialContextOverride
+	testDialContextOverride = nil
+	b.Cleanup(func() { testDialContextOverride = old })
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = newOAuthDiscoveryHTTPClient(ctx, time.Second)
+	}
 }
