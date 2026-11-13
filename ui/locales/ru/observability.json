@@ -2045,6 +2045,19 @@
 			"deleteTraceConfirm": "Delete this trace? This cannot be undone.",
 			"noProjects": "There is no project yet. Create a tracing key first."
 		},
+		"projects": {
+			"manage": "Manage projects",
+			"title": "Projects",
+			"description": "Every project that receives traces. Choose one to see its metrics and edit it.",
+			"newPlaceholder": "New project name",
+			"create": "Create",
+			"created": "Project {{name}} created",
+			"traffic": "{{traces}} traces \u00b7 {{tokens}} tokens \u00b7 {{cost}} in 30 days",
+			"metricsWindow": "Metrics for the last {{days}} days",
+			"viewTraces": "View traces",
+			"details": "Details",
+			"descriptionLabel": "Description"
+		},
 		"player": {
 			"play": "Play conversation",
 			"pause": "Pause",
