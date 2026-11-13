@@ -1223,7 +1223,7 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL ||
 				(custom.BaseProviderType == schemas.Gemini && schemas.IsGeminiDecisionModel(h.aliasTarget(provider, model))))
 	}
-	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
+	if provider == schemas.Typesafe || provider == schemas.Nace || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
 	}
 	listed := model

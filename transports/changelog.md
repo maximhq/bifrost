@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Nace (Drex) Decision Provider** - The new `nace` provider calls Drex decision models through `/v1/decisions` with typed answers, probabilities and request IDs. Drex Max models accept ordered images, the model list shows Drex pricing, and Drex models can be the Complexity Router decision model
 
 ## 🐞 Fixed
 
