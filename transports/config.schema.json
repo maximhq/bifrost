@@ -505,7 +505,7 @@
               "additionalProperties": false
             }
           ],
-          "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Bifrost presents it as its client_id. Publish the document served at /api/oauth/client-metadata.json there unchanged: its client_id must equal this URL exactly, and its redirect_uris keep Bifrost's callback under mcp_external_client_url. Unset, the document is served under mcp_external_client_url. Must have a path, and no query or fragment. Supports env var syntax: \"env.MY_VAR\"."
+          "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Bifrost presents it as its client_id. Publish the document served at /api/oauth/client-metadata.json there unchanged: its client_id must equal this URL with the scheme and host lowercased and a default :443 port removed, the form Bifrost presents, and its redirect_uris keep Bifrost's callback under mcp_external_client_url. Unset, the document is served under mcp_external_client_url. Must have a path, and no query or fragment. Supports env var syntax: \"env.MY_VAR\"."
         },
         "skills_external_client_url": {
           "anyOf": [
