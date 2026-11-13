@@ -884,3 +884,101 @@ func TestBuildRequest_OptionalQuerystringRequiresItsFieldsWhenSent(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "x", req.URL.Query().Get("q"))
 }
+
+// TestBuildRequest_TemplatedAndSanitizedQueryNames: with templates on, a
+// templated query name (metadata_<key>) takes an object and sends one pair per
+// entry; a sanitized argument (filter[status] as filter_status_) is sent under
+// its wire name. With templates off, the default, metadata_<key> stays one plain
+// argument under a valid name.
+func TestBuildRequest_TemplatedAndSanitizedQueryNames(t *testing.T) {
+	ts, cap := newCaptureServer(t, nil)
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/logs":{"get":{"operationId":"getLogs","parameters":[
+{"name":"metadata_<key>","in":"query","schema":{"type":"string"}},
+{"name":"filter[status]","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t", TemplateParams: true})
+	require.NoError(t, err)
+	exec, err := NewExecutor(ServerOptions{ClientName: "t", Synthesis: syn, BaseURL: ts.URL, BaseURLExplicit: true, HTTPClient: ts.Client()})
+	require.NoError(t, err)
+	tool := findTool(t, syn, "getLogs")
+	_, err = exec.Execute(context.Background(), tool, map[string]any{
+		"metadata":       map[string]any{"team": "search", "env": "prod"},
+		"filter_status_": "open",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "filter%5Bstatus%5D=open&metadata_env=prod&metadata_team=search", cap.query)
+
+	_, err = exec.BuildRequest(context.Background(), tool, map[string]any{"metadata": "team=search"})
+	require.ErrorContains(t, err, "metadata")
+
+	plain := synthesizeSpec(t, spec) // templates off
+	var plainSchema map[string]any
+	require.NoError(t, json.Unmarshal(findTool(t, plain, "getLogs").InputSchema, &plainSchema))
+	props := asMap(plainSchema["properties"])
+	assert.Contains(t, props, "metadata__key_")
+	assert.NotContains(t, props, "metadata")
+}
+
+// TestBuildRequest_TemplatedQueryHonorsStyleAndRequired: each templated entry
+// is serialized like an ordinary query parameter (form+explode arrays repeat,
+// pipeDelimited joins with |), and a required templated argument that emits no
+// pair is rejected unless configuration supplies it.
+func TestBuildRequest_TemplatedQueryHonorsStyleAndRequired(t *testing.T) {
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/logs":{"get":{"operationId":"getLogs","parameters":[
+{"name":"tag_<key>","in":"query","required":true,"schema":{"type":"array","items":{"type":"string"}}},
+{"name":"pipe_<key>","in":"query","style":"pipeDelimited","explode":false,"schema":{"type":"array","items":{"type":"string"}}}],"responses":{"200":{"description":"ok"}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t", TemplateParams: true})
+	require.NoError(t, err)
+	exec, err := NewExecutor(ServerOptions{ClientName: "t", Synthesis: syn, BaseURL: "https://api.example.com", BaseURLExplicit: true, HTTPClient: http.DefaultClient})
+	require.NoError(t, err)
+	tool := findTool(t, syn, "getLogs")
+
+	req, err := exec.BuildRequest(context.Background(), tool, map[string]any{
+		"tag":  map[string]any{"env": []any{"prod", "dev"}, "skip": nil},
+		"pipe": map[string]any{"ids": []any{"1", "2"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"prod", "dev"}, req.URL.Query()["tag_env"])
+	assert.Equal(t, "1|2", req.URL.Query().Get("pipe_ids"))
+	assert.NotContains(t, req.URL.Query(), "tag_skip")
+
+	// An object entry under form+explode would send its members as bare
+	// parameters, losing tag_<key>; it is refused before anything is sent.
+	_, err = exec.BuildRequest(context.Background(), tool, map[string]any{"tag": map[string]any{"env": map[string]any{"region": "eu"}}})
+	require.ErrorContains(t, err, "tag_<key>")
+
+	// An empty key names no concrete parameter: it is skipped, so it cannot
+	// satisfy the required check or send tag_ upstream.
+	req, err = exec.BuildRequest(context.Background(), tool, map[string]any{"tag": map[string]any{"": []any{"x"}, "env": []any{"prod"}}})
+	require.NoError(t, err)
+	assert.NotContains(t, req.URL.Query(), "tag_")
+	assert.Equal(t, []string{"prod"}, req.URL.Query()["tag_env"])
+
+	for _, empty := range []map[string]any{{}, {"env": nil}, {"env": []any{}}, {"": []any{"x"}}} {
+		_, err = exec.BuildRequest(context.Background(), tool, map[string]any{"tag": empty})
+		require.ErrorContains(t, err, "tag_<key>", "args %v", empty)
+	}
+
+	// A configured concrete name (tag_env) supplies the template, whether the
+	// argument is empty or omitted; the template's literal name and a name with
+	// an empty key (tag_) do not.
+	for base, ok := range map[string]bool{
+		"https://api.example.com?tag_env=x":       true,
+		"https://api.example.com?tag_%3Ckey%3E=x": false,
+		"https://api.example.com?tag_=x":          false,
+	} {
+		configured, err := NewExecutor(ServerOptions{ClientName: "t", Synthesis: syn, BaseURL: base, BaseURLExplicit: true, HTTPClient: http.DefaultClient})
+		require.NoError(t, err)
+		for _, args := range []map[string]any{{"tag": map[string]any{}}, {}} {
+			_, err = configured.BuildRequest(context.Background(), tool, args)
+			if ok {
+				require.NoError(t, err, "base %s args %v", base, args)
+			} else {
+				require.ErrorContains(t, err, "tag_<key>", "base %s args %v", base, args)
+			}
+		}
+	}
+}

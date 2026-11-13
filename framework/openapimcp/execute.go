@@ -136,7 +136,7 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 		// A JSON-declared parameter's null is a value (it encodes as null); for
 		// any other parameter null means not given.
 		if !present || (value == nil && !isJSONMediaType(arg.ContentType)) {
-			if arg.Required && !configured[parameterKey(arg.Location, arg.Name)] {
+			if arg.Required && !isConfigured(configured, arg) {
 				return nil, fmt.Errorf("missing required %s parameter %q", arg.Location, arg.Name)
 			}
 			continue
@@ -159,6 +159,37 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 			}
 			path = strings.ReplaceAll(path, "{"+arg.Name+"}", segment)
 		case InQuery:
+			if arg.Template != "" {
+				entries, ok := value.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("query parameter %q takes an object mapping each key to its value", arg.ArgName)
+				}
+				// Each entry is one concrete parameter, serialized under its style
+				// like any other query value.
+				placeholder := argNamePlaceholder.FindString(arg.Name)
+				emitted := 0
+				for _, key := range sortedKeys(entries) {
+					// An empty key names no concrete parameter (metadata_<key> would
+					// become metadata_), so it is not sent and does not count.
+					if key == "" || entries[key] == nil {
+						continue
+					}
+					// An exploded form object sends its members as bare parameters,
+					// dropping the concrete name the entry stands for.
+					if _, isObject := entries[key].(map[string]any); isObject && arg.Explode && arg.Style != "deepObject" {
+						return nil, fmt.Errorf("query parameter %q cannot take an object for key %q: its members would be sent without the parameter name", arg.Name, key)
+					}
+					concrete := arg
+					concrete.Name = strings.Replace(arg.Name, placeholder, key, 1)
+					before := countQueryValues(query)
+					addQueryValue(query, concrete, entries[key])
+					emitted += countQueryValues(query) - before
+				}
+				if emitted == 0 && arg.Required && !isConfigured(configured, arg) {
+					return nil, fmt.Errorf("missing required %s parameter %q", arg.Location, arg.Name)
+				}
+				continue
+			}
 			addQueryValue(query, arg, value)
 		case InHeader:
 			name := http.CanonicalHeaderKey(arg.Name)
@@ -518,6 +549,15 @@ func addQueryValue(q url.Values, arg ArgBinding, value any) {
 	}
 }
 
+// countQueryValues is the number of name=value pairs q encodes.
+func countQueryValues(q url.Values) int {
+	n := 0
+	for _, vals := range q {
+		n += len(vals)
+	}
+	return n
+}
+
 // objectPairs flattens an object to key,value,key,value in key order, the
 // non-exploded form/simple/label/matrix serialization.
 func objectPairs(v map[string]any) []string {
@@ -604,6 +644,30 @@ func parameterKey(location, name string) string {
 		return location + ":" + http.CanonicalHeaderKey(name)
 	}
 	return location + ":" + name
+}
+
+// isConfigured reports whether configuration supplies arg. A templated query
+// parameter (metadata_<key>) is supplied by any configured concrete name it
+// stands for (metadata_team), the placeholder matching a non-empty key; the
+// template's literal name is not one of them.
+func isConfigured(configured map[string]bool, arg ArgBinding) bool {
+	if arg.Template == "" {
+		return configured[parameterKey(arg.Location, arg.Name)]
+	}
+	loc := argNamePlaceholder.FindStringIndex(arg.Name)
+	if loc == nil {
+		return false
+	}
+	literal := parameterKey(arg.Location, arg.Name)
+	prefix := parameterKey(arg.Location, arg.Name[:loc[0]])
+	suffix := arg.Name[loc[1]:]
+	for key, ok := range configured {
+		if ok && key != literal && len(key) > len(prefix)+len(suffix) &&
+			strings.HasPrefix(key, prefix) && strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // configuredParameters lists the header and cookie names configuration
