@@ -183,9 +183,11 @@ fallbacks, and non-OpenAI models do not apply on this path. Use the
 
 The virtual key's governance still applies. Bifrost checks each turn's model
 against the key's allowed models, and budgets and rate limits count the usage
-ChatGPT reports. The model list request names no model, so a key that allows
-only some OpenAI models can still load the picker. Picking a model the key does
-not allow fails on the first turn.
+ChatGPT reports. The model list Codex fetches for its `/model` picker is
+trimmed to the OpenAI models the key allows, so a key limited to `gpt-5.5`
+shows only `gpt-5.5`. Codex caches that list, so a change to the key's allowed
+models reaches the picker on the next refresh. Without a Bifrost credential the
+list comes back as ChatGPT sent it.
 
 The ChatGPT token stands in for a Bifrost provider key, so no OpenAI key is
 picked for these requests. Provider-key limits, key weights, and the key column
