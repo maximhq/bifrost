@@ -595,6 +595,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
 	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
 	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
+	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13725,6 +13726,22 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddModelRoutersTable creates model_routers; nothing is copied into it.
+func migrationAddModelRoutersTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routers_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_routers would delete every model router", migrationName)
+		},
+	})
 }
 
 func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
