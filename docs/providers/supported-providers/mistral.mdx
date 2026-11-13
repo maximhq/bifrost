@@ -343,6 +343,8 @@ Lists available Mistral models with context length and capabilities.
 
 `/v1/audio/speech` requests go to Mistral's `POST /v1/audio/speech` (Voxtral TTS models such as `voxtral-mini-tts-latest`). `voice` is sent as `voice_id`: a preset slug such as `gb_jane_neutral` or the ID of a saved voice. `response_format` accepts `mp3` (default), `wav`, `pcm`, `flac` or `opus`. Mistral returns the audio base64-encoded in `audio_data`, and Bifrost returns the decoded bytes. Other Mistral fields such as `ref_audio`, `expressiveness` and `phoneme_hints` pass through `extra_params`.
 
+Speech requests staged for large-payload passthrough are refused with a 400, because the staged OpenAI-shaped body cannot be converted to Mistral's schema in flight.
+
 ---
 
 ## Unsupported Features

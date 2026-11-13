@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -127,16 +128,15 @@ func TestSpeechReturnsRawResponse(t *testing.T) {
 	assert.JSONEq(t, upstream, string(raw))
 }
 
-// In large-payload mode the request body is not built from the parsed request; the
-// staged client body must be what reaches /v1/audio/speech.
-func TestSpeechSendsLargePayloadBody(t *testing.T) {
+// A staged large-payload body is the client's OpenAI-shaped speech JSON (voice), which
+// Mistral does not accept (voice_id). Speech refuses it with a 400, before the input
+// check (a staged request carries no parsed input) and without calling Mistral.
+func TestSpeechRefusesLargePayload(t *testing.T) {
 	t.Parallel()
 
-	staged := `{"model":"voxtral-mini-tts-latest","input":"Hello from a staged body.","voice_id":"gb_jane_neutral"}`
-	var gotBody string
+	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		gotBody = string(raw)
+		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"audio_data":"` + base64.StdEncoding.EncodeToString([]byte("ID3fake")) + `"}`))
 	}))
@@ -146,16 +146,17 @@ func TestSpeechSendsLargePayloadBody(t *testing.T) {
 		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
 	}, &testLogger{})
 
+	staged := `{"model":"mistral/voxtral-mini-tts-latest","input":"Hello from a staged body.","voice":"gb_jane_neutral"}`
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader(staged)))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(staged))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
-	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
-		Model: "voxtral-mini-tts-latest",
-		Input: &schemas.SpeechInput{Input: "Hello from a staged body."},
-	})
-	require.Nil(t, bifrostErr)
-	assert.Equal(t, staged, gotBody)
-	assert.Equal(t, []byte("ID3fake"), resp.Audio)
+	resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{Model: "voxtral-mini-tts-latest"})
+	require.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	assert.Contains(t, bifrostErr.Error.Message, "large-payload")
+	assert.Zero(t, hits.Load(), "the staged body must not reach Mistral")
 }

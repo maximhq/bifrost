@@ -451,7 +451,16 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 // Speech performs a text-to-speech request to Mistral's POST /v1/audio/speech
 // (Voxtral TTS). Mistral returns the audio base64-encoded in audio_data.
 func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	if request == nil || request.Input == nil || request.Input.Input == "" {
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("speech request is required", nil)
+	}
+	// A large-payload request carries the client's staged OpenAI-shaped body
+	// (voice), which Mistral does not accept (voice_id), and a stream cannot be
+	// converted in place. TTS input never needs that size.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, providerUtils.NewBifrostBadRequestError("Mistral speech does not support large-payload passthrough: the staged body cannot be converted to the Mistral speech schema")
+	}
+	if request.Input == nil || request.Input.Input == "" {
 		return nil, providerUtils.NewBifrostOperationError("speech input text is required", nil)
 	}
 
@@ -477,10 +486,7 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	// Large-payload mode stages the client body as a stream; jsonData is nil then.
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, provider.GetProviderKey()) {
-		req.SetBody(jsonData)
-	}
+	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
