@@ -1514,6 +1514,11 @@ request                    // Request rate limit usage %
 
 // Request complexity (available only when classification succeeds)
 complexity_tier            // SIMPLE, MEDIUM, or COMPLEX; otherwise unavailable and complexity-dependent rules fall through
+
+// Request time. The engine reads the clock the first time a rule that
+// references current_time is evaluated, once per request evaluation.
+// Later rules and chain steps in that evaluation see the same UTC instant.
+current_time               // CEL timestamp. getHours, getDayOfWeek, getFullYear, getMonth, getDayOfMonth, getMinutes and getSeconds take an optional timezone and default to UTC. Pass a timezone for a non-UTC clock, e.g. current_time.getHours('America/Los_Angeles')
 ```
 
 ### Examples
