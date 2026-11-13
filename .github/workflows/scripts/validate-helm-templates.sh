@@ -1351,6 +1351,24 @@ expect_render_failure "serviceMonitor: schema rejects a zero hashmod modulus" \
   --set serviceMonitor.enabled=true \
   --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":0,"targetLabel":"__tmp_hash","action":"hashmod"}]'
 
+# Client gateways render under oauth2_server_config.gateways; an empty managedSettings is an
+# empty policy and must not be dropped, and enabling a gateway without issuerUrl fails.
+GW='bifrost.client.oauth2ServerConfig'
+check_config "gateways: Claude Code renders under oauth2_server_config.gateways.claude_code" \
+  'o = cfg["client"]["oauth2_server_config"]
+assert o["gateways"]["claude_code"] == {"enabled": True, "managed_settings": {"permissions": {"deny": ["Bash(rm:*)"]}}}, "claude_code changed: %r" % o.get("gateways")' \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set-json "$GW.gateways.claudeCode.managedSettings={\"permissions\":{\"deny\":[\"Bash(rm:*)\"]}}"
+check_config "gateways: an empty managedSettings stays an empty policy" \
+  'cc = cfg["client"]["oauth2_server_config"]["gateways"]["claude_code"]
+assert cc.get("managed_settings") == {}, "empty policy was dropped: %r" % cc' \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set-json "$GW.gateways.claudeCode.managedSettings={}"
+check_config "gateways: omitted by default" \
+  'assert "gateways" not in cfg.get("client", {}).get("oauth2_server_config", {}), "gateways rendered without being set"'
+expect_render_failure "gateways: Claude Code requires issuerUrl" "issuerUrl is required" \
+  --set "$GW.gateways.claudeCode.enabled=true"
+
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 
