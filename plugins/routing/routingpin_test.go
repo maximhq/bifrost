@@ -551,7 +551,7 @@ func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 	vkAccess := grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
-	}, nil)}, nil, grant.Union, nil)
+	}, nil)}, "", nil, grant.Union, nil)
 	const stored = `["anthropic/claude-sonnet-4","anthropic/claude-opus-4","groq/llama-3.1-8b-instant"]`
 	cases := []struct {
 		name         string
@@ -632,7 +632,7 @@ func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.
 	governance := NewMockGovernance()
 	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
-	}, nil)}, nil, grant.Union, nil)
+	}, nil)}, "", nil, grant.Union, nil)
 	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
 	require.NoError(t, err)
 
@@ -658,7 +658,7 @@ func BenchmarkWarnFallbacksOutsideAccess(b *testing.B) {
 	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"claude-sonnet-4"}, KeyIDs: schemas.WhiteList{"*"}},
 		{Provider: "groq", AllowedModels: schemas.WhiteList{"llama-3.1-8b-instant"}, KeyIDs: schemas.WhiteList{"*"}},
-	}, nil)}, nil, grant.Union, nil)
+	}, nil)}, "", nil, grant.Union, nil)
 	plugin := &RoutingPlugin{governance: governance}
 	fallbacks := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4"}, {Provider: schemas.Groq, Model: "llama-3.1-8b-instant"}}
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now())

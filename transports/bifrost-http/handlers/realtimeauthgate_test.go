@@ -183,7 +183,7 @@ func newResolvedVirtualKeyContext(t *testing.T) (*schemas.BifrostContext, contex
 	ctx, cancel := newRealtimeGateContext(t)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-valid")
 	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-valid"))
-	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, nil, "", nil))
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, "", nil, "", nil))
 	return ctx, cancel
 }
 

@@ -230,7 +230,7 @@ func TestLoadBalanceProvider_DuplicateProviderConfigsBothCount(t *testing.T) {
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK",
 		[]configstoreTables.TableVirtualKeyProviderConfig{first, second})
 
-	access := grant.NewAccess([]schemas.Permit{vkPermit(vk, nil)}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{vkPermit(vk, nil)}, "", nil, "", nil)
 	assert.Len(t, access.ProvidersForModel("llama-3.1-8b-instant"), 2)
 }
 
@@ -440,7 +440,7 @@ func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
 	require.NoError(t, err)
 
 	permit := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai", "azure")
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-5")
 	require.Error(t, exclusionErr, "the exact-pair budget is spent, so openai cannot serve the model")
@@ -489,7 +489,7 @@ func TestCandidateExclusionConsultsTheVirtualKeysProviderLimits(t *testing.T) {
 				RateLimits:  rateLimits,
 			}, nil, nil)
 			require.NoError(t, err)
-			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, nil, "", nil)
+			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, "", nil, "", nil)
 
 			decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-4o")
 			// openai's own limit on the key is spent, so it is no candidate, for that limit and no other reason.
