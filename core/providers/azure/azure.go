@@ -1661,13 +1661,17 @@ func (provider *AzureProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
+// UploadsFileSource marks AzureProvider as streaming BifrostFileUploadRequest.FileSource
+// (schemas.FileSourceUploader), so Bifrost does not read the upload into memory first.
+func (provider *AzureProvider) UploadsFileSource() {}
+
 // FileUpload uploads a file to Azure OpenAI.
 func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
-	if len(request.File) == 0 {
+	if len(request.File) == 0 && request.FileSource == nil {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
 
@@ -1675,30 +1679,9 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil)
 	}
 
-	// Create multipart form data
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	// Add purpose field
-	if err := writer.WriteField("purpose", string(request.Purpose)); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err)
-	}
-
-	// Add file field
 	filename := request.Filename
 	if filename == "" {
 		filename = "file.jsonl"
-	}
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := part.Write(request.File); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	// Create request
@@ -1707,6 +1690,15 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
+	// The file is streamed from its source while the request is written, never copied into a
+	// buffer: uploads run to hundreds of MB. ReleaseRequest closes the body stream.
+	upload, err := providerUtils.NewMultipartFileUpload(
+		[]providerUtils.MultipartField{{Name: "purpose", Value: string(request.Purpose)}},
+		"file", filename, providerUtils.FileUploadSource(request))
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to build multipart upload body", err)
+	}
+
 	// Build URL
 	requestURL := fmt.Sprintf("%s/openai/v1/files", endpoint)
 
@@ -1714,14 +1706,14 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType(writer.FormDataContentType())
+	req.Header.SetContentType(upload.ContentType)
 
 	// Set Azure authentication
 	if err := provider.setAzureAuth(ctx, req, key); err != nil {
 		return nil, err
 	}
 
-	req.SetBody(buf.Bytes())
+	req.SetBodyStream(upload.Body, upload.Size)
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

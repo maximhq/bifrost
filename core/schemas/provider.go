@@ -785,6 +785,13 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 type PostHookRunner func(ctx *BifrostContext, result *BifrostResponse, err *BifrostError) (*BifrostResponse, *BifrostError)
 
+// FileSourceUploader is implemented by providers whose FileUpload streams
+// BifrostFileUploadRequest.FileSource. For any other provider Bifrost reads FileSource into
+// File before calling FileUpload, so providers that need the bytes keep working unchanged.
+type FileSourceUploader interface {
+	UploadsFileSource()
+}
+
 // Provider defines the interface for AI model providers.
 type Provider interface {
 	// GetProviderKey returns the provider's identifier

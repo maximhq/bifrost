@@ -2919,7 +2919,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
-	if len(req.File) == 0 && req.Provider != schemas.Vertex {
+	if len(req.File) == 0 && req.FileSource == nil && req.Provider != schemas.Vertex {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -9361,6 +9361,28 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
+// prepareFileUploadContent reads an upload's FileSource into File for a provider that does not
+// stream it (does not implement schemas.FileSourceUploader). The bytes are kept on the request,
+// so a retry or a fallback reads the file once. A streaming provider gets the request untouched
+// and the file is never held in memory.
+func prepareFileUploadContent(provider schemas.Provider, request *schemas.BifrostFileUploadRequest) *schemas.BifrostError {
+	if request == nil || request.FileSource == nil || len(request.File) > 0 {
+		return nil
+	}
+	if _, streams := provider.(schemas.FileSourceUploader); streams {
+		return nil
+	}
+	file, err := schemas.ReadBodySource(request.FileSource)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          &schemas.ErrorField{Message: "failed to read uploaded file content", Error: err},
+		}
+	}
+	request.File = file
+	return nil
+}
+
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
@@ -9610,6 +9632,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.VideoGenerationResponse = videoRemixResponse
 	case schemas.FileUploadRequest:
+		if bifrostError := prepareFileUploadContent(provider, req.BifrostRequest.FileUploadRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
