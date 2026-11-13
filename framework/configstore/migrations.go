@@ -605,6 +605,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_run_result_score_number"}, run: migrationAddEvalsRunResultScoreNumber},
 	{IDs: []string{"add_tracing_tables"}, run: migrationAddTracingTables},
 	{IDs: []string{"add_trace_project_evaluators_column"}, run: migrationAddTraceProjectEvaluatorsColumn},
+	{IDs: []string{"add_tracing_key_can_read_prompts_column"}, run: migrationAddTracingKeyCanReadPromptsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17542,6 +17543,21 @@ func migrationAddTraceProjectEvaluatorsColumn(ctx context.Context, db *gorm.DB, 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableTraceProject{}, "evaluators_json")
+		},
+	})
+}
+
+// migrationAddTracingKeyCanReadPromptsColumn adds can_read_prompts to tracing_keys. Existing keys
+// get false, the column's constant default, so no key gains prompt access by upgrading.
+func migrationAddTracingKeyCanReadPromptsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_tracing_key_can_read_prompts_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableTracingKey{}, "can_read_prompts")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableTracingKey{}, "can_read_prompts")
 		},
 	})
 }
