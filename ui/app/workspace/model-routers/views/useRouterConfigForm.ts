@@ -38,8 +38,7 @@ import {
 	KnownTierDefaults,
 	lastKnownTierDefaults,
 	shouldSeedLLMPrompt,
-	tierCriteriaFormValues,
-	tierCriteriaToReseed,
+	tierCriteriaReseedValues,
 	toAnalyzerPayload,
 	toFormValues,
 } from "@/app/workspace/complexity-router/formSchema";
@@ -419,14 +418,15 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 	// generated criteria arrive: every tier still empty gets its saved edit or
 	// the generated criteria. When newer generated criteria arrive, a tier
 	// still showing the ones it was seeded from moves with them, so it keeps
-	// matching what Save compares against; an edited tier is never overwritten.
+	// matching what Save compares against; an edited tier is never overwritten
+	// (tierCriteriaReseedValues).
 	const seededTierCriteria = useRef<SuggestionTierDefaults["criteria"] | undefined>(undefined);
 	useEffect(() => {
 		if (!saved || !tierDefaults) return;
 		const current = getValues("suggestions.tier_criteria");
-		const seeded = tierCriteriaFormValues(saved.suggestions?.tier, tierDefaults.criteria);
-		for (const tier of tierCriteriaToReseed(current, seededTierCriteria.current)) {
-			setValue(`suggestions.tier_criteria.${tier}`, seeded[tier], { shouldDirty: false });
+		const reseed = tierCriteriaReseedValues(current, seededTierCriteria.current, saved.suggestions?.tier, tierDefaults.criteria);
+		for (const [tier, criteria] of reseed) {
+			setValue(`suggestions.tier_criteria.${tier}`, criteria, { shouldDirty: false });
 		}
 		seededTierCriteria.current = tierDefaults.criteria;
 	}, [saved, tierDefaults, getValues, setValue]);

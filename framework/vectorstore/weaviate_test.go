@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-openapi/strfmt"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
-	"github.com/go-openapi/strfmt"
 	"github.com/weaviate/weaviate/entities/models"
 )
 

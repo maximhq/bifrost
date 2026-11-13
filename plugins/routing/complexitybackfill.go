@@ -64,10 +64,16 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 	if rate <= 0 {
 		rate = configstore.DefaultComplexitySuggestionsSampleRate
 	}
-	// Only which requests are captured matters here, so their IDs are read
-	// without vectors.
-	captured, err := space.CapturedLogIDs(ctx, from, to)
-	if err != nil {
+	// Read through the whole walk, vectors and all: a filtered read stops at
+	// a result ceiling on Weaviate (it fails) and Redis (it ends early), and
+	// a captured request read as missing is embedded again.
+	captured := map[string]struct{}{}
+	if err := space.EachCaptured(ctx, from, to, func(page []complexity.CapturedRequest) error {
+		for _, r := range page {
+			captured[r.LogID] = struct{}{}
+		}
+		return ctx.Err()
+	}); err != nil {
 		return backfillPlan{}, fmt.Errorf("read captured requests: %w", err)
 	}
 	keep := newestLogs{max: backfillCandidateFactor * limit, held: map[string]struct{}{}}

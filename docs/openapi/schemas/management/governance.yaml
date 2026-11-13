@@ -3217,7 +3217,7 @@ ComplexitySemanticStatus:
       description: The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Filled on status reads; in the warmup retry response criteria is null. The fixed question, decision rule, and context rule are not exposed.
       properties:
         criteria:
-          type: object
+          type: [object, 'null']
           additionalProperties:
             type: object
             properties:

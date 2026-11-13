@@ -694,6 +694,22 @@ export function tierCriteriaToReseed(
 	);
 }
 
+// tierCriteriaReseedValues is what each tier tierCriteriaToReseed lists takes
+// once generated criteria arrive. A tier still empty takes its saved edit, or
+// the generated criteria when it has none. A tier showing the previous
+// generated criteria takes the new ones even when it has a saved edit: the
+// operator put the generated text back, and the saved edit would undo that.
+export function tierCriteriaReseedValues(
+	current: TierCriteriaFormValues,
+	previous: SuggestionTierDefaults["criteria"] | undefined,
+	saved: NonNullable<AnalyzerConfig["suggestions"]>["tier"] | undefined,
+	generated: SuggestionTierDefaults["criteria"],
+): Array<[DecisionTier, TierCriteriaFormValues[DecisionTier]]> {
+	const seeded = tierCriteriaFormValues(saved, generated);
+	const following = tierCriteriaFormValues(undefined, generated);
+	return tierCriteriaToReseed(current, previous).map((tier) => [tier, isDecisionTierEmpty(current[tier]) ? seeded[tier] : following[tier]]);
+}
+
 // withGeneratedTierCriteriaCleared is what the form validates: tiers whose
 // criteria are still the generated ones are not sent (see
 // tierCriteriaPayload), so their limits are the gateway's to keep, not the

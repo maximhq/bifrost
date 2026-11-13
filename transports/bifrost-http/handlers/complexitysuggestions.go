@@ -185,7 +185,9 @@ func (h *RoutingHandler) suggestionManager(ctx *fasthttp.RequestCtx) (Complexity
 // suggestionRouterID reads the model router a request is about, from its
 // path, and its current version. A router the plugin does not serve is
 // answered as its status endpoint answers it: 404 when it is not saved, 503
-// when it is saved but not loaded.
+// when it is saved but not loaded. A call the plugin then answers with
+// ErrUnknownComplexityRouter (the router was unloaded meanwhile) is answered
+// the same way.
 func (h *RoutingHandler) suggestionRouterID(ctx *fasthttp.RequestCtx, manager ComplexitySuggestionManager) (string, string, bool) {
 	routerID := pathID(ctx, "router_id")
 	version, ok := manager.ComplexitySuggestionRouter(routerID)
@@ -457,6 +459,8 @@ func (h *RoutingHandler) testComplexitySuggestionPhrases(ctx *fasthttp.RequestCt
 	}
 	result, err := manager.TestComplexitySuggestionPhrases(ctx, routerID, phrases, examples)
 	switch {
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		h.sendModelRouterNotServed(ctx, routerID)
 	case errors.Is(err, complexity.ErrNoServingGeneration):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, suggestrun.ErrInvalidPhraseTest):
@@ -525,7 +529,7 @@ func (h *RoutingHandler) startComplexitySuggestionRun(ctx *fasthttp.RequestCtx) 
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
-		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		h.sendModelRouterNotServed(ctx, routerID)
 		return
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff), errors.Is(err, routing.ErrComplexitySuggestionRunInFlight):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
@@ -564,7 +568,7 @@ func (h *RoutingHandler) estimateComplexitySuggestionRun(ctx *fasthttp.RequestCt
 	case errors.Is(err, routing.ErrComplexitySuggestionWindow):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
-		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		h.sendModelRouterNotServed(ctx, routerID)
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 	case errors.Is(err, ErrRoutingPluginUnavailable), errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):
@@ -595,7 +599,10 @@ func (h *RoutingHandler) cancelComplexitySuggestionRun(ctx *fasthttp.RequestCtx)
 	}
 	run, err := manager.CancelComplexitySuggestionRun(ctx, routerID, runID)
 	switch {
-	case errors.Is(err, routing.ErrUnknownComplexityRouter), errors.Is(err, routing.ErrUnknownComplexitySuggestionRun):
+	case errors.Is(err, routing.ErrUnknownComplexityRouter):
+		h.sendModelRouterNotServed(ctx, routerID)
+		return
+	case errors.Is(err, routing.ErrUnknownComplexitySuggestionRun):
 		SendError(ctx, fasthttp.StatusNotFound, err.Error())
 		return
 	case errors.Is(err, routing.ErrComplexitySuggestionRunEnded), errors.Is(err, routing.ErrComplexitySuggestionsOff):
@@ -665,7 +672,7 @@ func (h *RoutingHandler) complexitySuggestionImpact(ctx *fasthttp.RequestCtx) {
 	case errors.Is(err, routing.ErrComplexitySuggestionWindow), errors.Is(err, suggestrun.ErrInvalidPhraseTest):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 	case errors.Is(err, routing.ErrUnknownComplexityRouter):
-		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		h.sendModelRouterNotServed(ctx, routerID)
 	case errors.Is(err, routing.ErrComplexitySuggestionsOff):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 	case errors.Is(err, complexity.ErrNoServingGeneration), errors.Is(err, complexity.ErrNoCaptureStore):

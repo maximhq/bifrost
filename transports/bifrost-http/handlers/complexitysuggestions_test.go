@@ -286,6 +286,41 @@ func TestComplexitySuggestionsRouterNotServed(t *testing.T) {
 	}
 }
 
+// A router the plugin stops serving after the request's first check (a
+// reload dropped it meanwhile) is answered the same way: 503 while it is
+// still saved, 404 once it is not.
+func TestComplexitySuggestionsRouterUnloadedMidRequest(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name, method, path, body string
+		unload                   func(*suggestionManagerFake)
+	}{
+		{"phrase test", fasthttp.MethodPost, "/suggestions/test", `{"phrases":[{"tier":"SIMPLE","text":"x"}]}`,
+			func(m *suggestionManagerFake) { m.testErr = routing.ErrUnknownComplexityRouter }},
+		{"estimate", fasthttp.MethodGet, "/suggestions/runs/estimate", "",
+			func(m *suggestionManagerFake) { m.estimateErr = routing.ErrUnknownComplexityRouter }},
+		{"start", fasthttp.MethodPost, "/suggestions/runs", "",
+			func(m *suggestionManagerFake) { m.runErr = routing.ErrUnknownComplexityRouter }},
+		{"cancel", fasthttp.MethodPost, "/suggestions/runs/run-1/cancel", "",
+			func(m *suggestionManagerFake) { m.cancelErr = routing.ErrUnknownComplexityRouter }},
+		{"impact", fasthttp.MethodPost, "/suggestions/impact", `{"phrases":{"SIMPLE":["track my parcel"]}}`,
+			func(m *suggestionManagerFake) { m.impactErr = routing.ErrUnknownComplexityRouter }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, manager := suggestionHandler(t)
+			tc.unload(manager)
+			code, body := serve(t, r, tc.method, "/api/routing/model-routers/default"+tc.path, tc.body)
+			assert.Equal(t, fasthttp.StatusServiceUnavailable, code, body)
+			assert.Contains(t, errorText(body), "not loaded")
+		})
+	}
+	// A run that is not the router's is still 404, whatever the router's state.
+	r, manager := suggestionHandler(t)
+	manager.cancelErr = routing.ErrUnknownComplexitySuggestionRun
+	code, body := serve(t, r, fasthttp.MethodPost, "/api/routing/model-routers/default/suggestions/runs/run-9/cancel", "")
+	assert.Equal(t, fasthttp.StatusNotFound, code, body)
+}
+
 func TestComplexitySuggestionsList(t *testing.T) {
 	r, _ := suggestionHandler(t)
 	code, body := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
