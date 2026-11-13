@@ -51,6 +51,13 @@ curl -s http://localhost:8080/v1/models \
 
 A model is marked when its provider serves only decisions (TypeSafe, and a custom provider on the TypeSafe base) or when its name is in the provider's decision-model family: `clef*` on Cloudflare, `pplx-decider*` on Perplexity, `decision-models/*` on Baseten, `gemini-decision-*` on Gemini (and on a custom provider on the Gemini base), the System One families on Ollama, `Microsoft-Decision*` on Azure, `ai_decide` and System One models on Databricks, and TypeSafe models on OpenRouter. On other providers, a datasheet row marking the model `supports_decisions: false` keeps it unmarked; on TypeSafe and on custom providers on the TypeSafe base, the marker follows the provider and the datasheet is not read. A model whose provider already reports `decisions` in its output modalities is listed as reported.
 
+`GET /v1/models/{model}` recognizes only built-in provider names in the path. For a custom provider, pass its name in `?provider=`; a path such as `/v1/models/my-gemini/gemini-decision-1` without it is rejected with `400`, because `my-gemini` is read as part of the model name:
+
+```bash
+curl -s 'http://localhost:8080/v1/models/gemini-decision-1?provider=my-gemini' \
+  | jq '.architecture.output_modalities'
+```
+
 A model that also serves chat is not marked, so clients that sort models by output modality keep offering it for chat: OpenAI's and Azure's `gpt-6-luna` family, every model on vLLM and SGLang, and every model of a custom provider on the OpenAI base. To list every model that answers `/v1/decisions` natively, including those, call `GET /api/models?decisions=true&limit=0&include_deprecated=true` (add `&provider=<name>` to narrow it to one provider). Without `limit=0` the listing returns at most five models, and without `include_deprecated=true` it leaves deprecated models out.
 
 ## Basic Request
