@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestNewMultipartFileUpload asserts the streamed body has the exact length it declares (it is
@@ -89,5 +90,51 @@ func TestFileUploadSource(t *testing.T) {
 	b, err := schemas.ReadBodySource(FileUploadSource(&schemas.BifrostFileUploadRequest{File: []byte("bytes")}))
 	if err != nil || string(b) != "bytes" {
 		t.Errorf("File fallback read %q, %v; want bytes", b, err)
+	}
+}
+
+// TestSetPassthroughRequestBody asserts a passthrough upload passed as BodySource is sent as a
+// stream with its exact length, overriding a Content-Length copied from the client, and that a
+// plain Body is still sent as is.
+func TestSetPassthroughRequestBody(t *testing.T) {
+	var req fasthttp.Request
+	req.Header.SetContentLength(999)
+	if err := SetPassthroughRequestBody(&req, &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("streamed"))}); err != nil {
+		t.Fatal(err)
+	}
+	if !req.IsBodyStream() || req.Header.ContentLength() != len("streamed") {
+		t.Errorf("want a body stream of length %d, got stream=%v length=%d", len("streamed"), req.IsBodyStream(), req.Header.ContentLength())
+	}
+	if string(req.Body()) != "streamed" {
+		t.Errorf("body = %q, want streamed", req.Body())
+	}
+
+	var plain fasthttp.Request
+	if err := SetPassthroughRequestBody(&plain, &schemas.BifrostPassthroughRequest{Body: []byte(`{"a":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if plain.IsBodyStream() || string(plain.Body()) != `{"a":1}` {
+		t.Errorf("plain body = %q (stream=%v), want the bytes as is", plain.Body(), plain.IsBodyStream())
+	}
+}
+
+// TestPassthroughUsageRequestBody asserts usage extraction of a streamed upload reads its plain
+// fields re-encoded as multipart, without the file, and reads Body when there is one.
+func TestPassthroughUsageRequestBody(t *testing.T) {
+	form := &multipart.Form{
+		Value: map[string][]string{"n": {"2"}, "size": {"1024x1024"}},
+		File:  map[string][]*multipart.FileHeader{"image": {{Filename: "big.png", Size: 50 << 20}}},
+	}
+	body := PassthroughUsageRequestBody(&schemas.BifrostPassthroughRequest{Form: form, BodySource: schemas.NewBytesBodySource(nil)})
+	firstLine, _, _ := bytes.Cut(body, []byte("\r\n"))
+	got, err := multipart.NewReader(bytes.NewReader(body), string(bytes.TrimPrefix(firstLine, []byte("--")))).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Value["n"][0] != "2" || got.Value["size"][0] != "1024x1024" || len(got.File) != 0 {
+		t.Errorf("usage body form = %v files=%d, want n=2 size=1024x1024 and no files", got.Value, len(got.File))
+	}
+	if b := PassthroughUsageRequestBody(&schemas.BifrostPassthroughRequest{Body: []byte("json")}); string(b) != "json" {
+		t.Errorf("want Body as is, got %q", b)
 	}
 }

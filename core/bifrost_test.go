@@ -9728,3 +9728,34 @@ func TestPrepareFileUploadContent(t *testing.T) {
 		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
 	}
 }
+
+func (streamingFileProvider) SendsPassthroughBodySource() {}
+
+// TestPreparePassthroughBody asserts a passthrough body passed as a BodySource is read into Body
+// only for a provider that needs the bytes, and stays a stream for one that sends it.
+func TestPreparePassthroughBody(t *testing.T) {
+	newReq := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("form-bytes"))}
+	}
+
+	req := newReq()
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.Body) != "form-bytes" {
+		t.Errorf("plain provider: Body = %q, want the source read into memory", req.Body)
+	}
+
+	req = newReq()
+	if err := preparePassthroughBody(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.Body != nil {
+		t.Errorf("streaming provider: Body = %q, want nil (the body must stay a stream)", req.Body)
+	}
+
+	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
+		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
+}

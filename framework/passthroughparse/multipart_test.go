@@ -3,6 +3,7 @@ package passthroughparse
 import (
 	"bytes"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -226,4 +227,29 @@ func TestSummarizeMultipartFlagsACutField(t *testing.T) {
 	require.True(t, decoded.Truncated)
 	require.Len(t, decoded.Fields["prompt"], maxMultipartFieldBytes)
 	require.Equal(t, "whisper-1", decoded.Fields["model"])
+}
+
+// TestSummarizeMultipartFormMatchesBodySummary asserts a streamed upload, summarized from its
+// parsed form, logs the same summary as the same upload summarized from its bytes.
+func TestSummarizeMultipartFormMatchesBodySummary(t *testing.T) {
+	audio := bytes.Repeat([]byte{0x00, 0xff, 0x10}, 1000)
+	contentType, body := multipartBody(t, [][2]string{
+		{"language", "en"}, {"model", "whisper-1"},
+		{"timestamp_granularities[]", "word"}, {"timestamp_granularities[]", "segment"},
+	}, map[string][]byte{"file": audio})
+	fromBody, ok := SummarizeMultipart(contentType, body)
+	require.True(t, ok)
+
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1024)
+	require.NoError(t, err)
+	defer form.RemoveAll()
+	fromForm, ok := SummarizeMultipartForm(form)
+	require.True(t, ok)
+	require.JSONEq(t, string(fromBody), string(fromForm))
+	require.False(t, bytes.Contains(fromForm, audio[:30]), "file bytes must never be kept")
+
+	_, ok = SummarizeMultipartForm(nil)
+	require.False(t, ok)
 }

@@ -3,8 +3,11 @@ package passthroughparse
 import (
 	"bufio"
 	"bytes"
+	"maps"
 	"mime"
+	"mime/multipart"
 	"net/textproto"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -125,6 +128,56 @@ func SummarizeMultipart(contentType string, body []byte) (summary []byte, ok boo
 			result.Fields[name] = []string{existing, value}
 		case []string:
 			result.Fields[name] = append(existing, value)
+		}
+	}
+	out, err := providerUtils.MarshalSorted(result)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// SummarizeMultipartForm is SummarizeMultipart for a form already parsed by the transport, as a
+// streamed multipart passthrough upload carries it: the same summary, with the same bounds, built
+// from the form's values and file headers, so file contents are never read. Fields and files are
+// recorded in name order.
+func SummarizeMultipartForm(form *multipart.Form) (summary []byte, ok bool) {
+	if form == nil {
+		return nil, false
+	}
+	result := MultipartSummary{Fields: map[string]any{}}
+	fieldParts, fieldBytes := 0, 0
+	for _, name := range slices.Sorted(maps.Keys(form.Value)) {
+		for _, value := range form.Value[name] {
+			if len(value) > maxMultipartFieldBytes {
+				value = value[:maxMultipartFieldBytes]
+				result.Truncated = true
+			}
+			if fieldParts >= maxMultipartParts || fieldBytes+len(value) > maxMultipartSummaryBytes {
+				result.Truncated = true
+				continue
+			}
+			fieldParts++
+			fieldBytes += len(value)
+			value = strings.ToValidUTF8(value, "")
+			switch existing := result.Fields[name].(type) {
+			case nil:
+				result.Fields[name] = value
+			case string:
+				result.Fields[name] = []string{existing, value}
+			case []string:
+				result.Fields[name] = append(existing, value)
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(form.File)) {
+		for _, fh := range form.File[name] {
+			result.Files = append(result.Files, MultipartFile{
+				Field:       name,
+				Filename:    fh.Filename,
+				ContentType: fh.Header.Get("Content-Type"),
+				Bytes:       fh.Size,
+			})
 		}
 	}
 	out, err := providerUtils.MarshalSorted(result)

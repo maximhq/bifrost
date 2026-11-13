@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // MultipartField is one plain form field of a multipart upload body.
@@ -80,3 +81,42 @@ type multipartUploadReader struct {
 }
 
 func (r multipartUploadReader) Close() error { return r.file.Close() }
+
+// SetPassthroughRequestBody sets the outgoing body of a passthrough request: BodySource as a
+// stream with its exact length when the transport passed one (a multipart upload), else Body.
+// Call it after copying the client's headers, so the streamed length wins over theirs.
+// ReleaseRequest closes the stream.
+func SetPassthroughRequestBody(req *fasthttp.Request, passthrough *schemas.BifrostPassthroughRequest) error {
+	if passthrough.BodySource == nil || len(passthrough.Body) > 0 {
+		req.SetBody(passthrough.Body)
+		return nil
+	}
+	body, err := passthrough.BodySource.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open passthrough request body: %w", err)
+	}
+	req.SetBodyStream(body, int(passthrough.BodySource.Size()))
+	return nil
+}
+
+// PassthroughUsageRequestBody returns the request body that passthrough usage extraction reads.
+// For a streamed multipart upload that is only its plain fields, re-encoded as multipart: usage
+// reads scalar fields (n, size, seconds), never file contents, so the files are left out.
+func PassthroughUsageRequestBody(passthrough *schemas.BifrostPassthroughRequest) []byte {
+	if len(passthrough.Body) > 0 || passthrough.Form == nil {
+		return passthrough.Body
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for name, values := range passthrough.Form.Value {
+		for _, v := range values {
+			if err := w.WriteField(name, v); err != nil {
+				return nil
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil
+	}
+	return buf.Bytes()
+}

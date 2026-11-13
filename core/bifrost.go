@@ -9383,6 +9383,28 @@ func prepareFileUploadContent(provider schemas.Provider, request *schemas.Bifros
 	return nil
 }
 
+// preparePassthroughBody reads a passthrough request's BodySource into Body for a provider that
+// does not stream it (does not implement schemas.PassthroughBodySourceSender). The bytes are kept
+// on the request, so a retry or a fallback reads the body once. A streaming provider gets the
+// request untouched and the body is never held in memory.
+func preparePassthroughBody(provider schemas.Provider, request *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if request == nil || request.BodySource == nil || len(request.Body) > 0 {
+		return nil
+	}
+	if _, streams := provider.(schemas.PassthroughBodySourceSender); streams {
+		return nil
+	}
+	body, err := schemas.ReadBodySource(request.BodySource)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          &schemas.ErrorField{Message: "failed to read passthrough request body", Error: err},
+		}
+	}
+	request.Body = body
+	return nil
+}
+
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
@@ -9797,6 +9819,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.ContainerFileDeleteResponse = containerFileDeleteResponse
 	case schemas.PassthroughRequest:
+		if bifrostError := preparePassthroughBody(provider, req.BifrostRequest.PassthroughRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -9853,6 +9878,9 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 	case schemas.ImageEditStreamRequest:
 		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
 	case schemas.PassthroughStreamRequest:
+		if bifrostError := preparePassthroughBody(provider, req.BifrostRequest.PassthroughRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
