@@ -69,16 +69,19 @@ func (s *BifrostHTTPServer) wireRoutingSuggestions(routingPlugin *routing.Routin
 	}
 	s.applyRoutingLogRetention(routingPlugin)
 	s.applyRoutingCaptureDeleteRecorder(routingPlugin)
-	if s.Config != nil && s.Config.LogsStore != nil {
-		routingPlugin.SetComplexitySuggestionStore(s.Config.LogsStore, complexitySuggestionTexts(s.Config.LogsStore))
+	// The job runner first: a run is started only once the store is set, so
+	// one due at start-up is queued as a job rather than run inline on this
+	// node.
+	if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
+		routingPlugin.SetComplexitySuggestionJobs(s.SidekiqRunner, s.Config.ConfigStore)
 	}
 	if s.Config != nil && s.Config.ConfigStore != nil {
 		// Nodes sharing the config store share the schedule, and claim each
 		// due run there once between them.
 		routingPlugin.SetComplexitySuggestionSchedules(s.Config.ConfigStore)
 	}
-	if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
-		routingPlugin.SetComplexitySuggestionJobs(s.SidekiqRunner, s.Config.ConfigStore)
+	if s.Config != nil && s.Config.LogsStore != nil {
+		routingPlugin.SetComplexitySuggestionStore(s.Config.LogsStore, complexitySuggestionTexts(s.Config.LogsStore))
 	}
 }
 

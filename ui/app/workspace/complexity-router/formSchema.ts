@@ -678,6 +678,22 @@ function sameTierCriteria(a: TierCriteriaFormValues[DecisionTier], b: Suggestion
 	return a.definition.trim() === b.definition && same(a.signals, b.signals) && same(a.examples, b.examples);
 }
 
+// tierCriteriaToReseed lists the tiers the editors should take new generated
+// criteria into: those still empty, and those still showing the previous
+// generated criteria (untouched). Moving them with the baseline Save compares
+// against keeps an untouched tier from reading as an edit of the old text and
+// being saved as an override. Tiers the operator edited are left as written.
+// previous is the generated criteria the editors were last seeded from;
+// undefined means none yet, so only empty tiers are filled.
+export function tierCriteriaToReseed(
+	current: TierCriteriaFormValues,
+	previous: SuggestionTierDefaults["criteria"] | undefined,
+): DecisionTier[] {
+	return COMPLEXITY_TIER_VALUES.filter(
+		(tier) => isDecisionTierEmpty(current[tier]) || (previous?.[tier] !== undefined && sameTierCriteria(current[tier], previous[tier])),
+	);
+}
+
 // withGeneratedTierCriteriaCleared is what the form validates: tiers whose
 // criteria are still the generated ones are not sent (see
 // tierCriteriaPayload), so their limits are the gateway's to keep, not the

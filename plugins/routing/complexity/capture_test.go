@@ -953,6 +953,55 @@ func (s *singlePageStore) GetAll(ctx context.Context, namespace string, queries 
 	return results, nil, err
 }
 
+// CapturedLogIDs reads the window's log IDs without vectors, past one page,
+// leaving out requests outside the window; on a store whose plain read cannot
+// page past its first, it reads again through the vector read.
+func TestCapturedLogIDsReadsTheWindowWithoutVectors(t *testing.T) {
+	ctx := context.Background()
+	inner := newCaptureTestStore(t)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
+	require.NoError(t, inner.CreateNamespace(ctx, ns, 2, captureProperties))
+	now := time.Now()
+	const n = captureReadPage + 100
+	for i := range n {
+		id := fmt.Sprintf("req-%d", i)
+		require.NoError(t, inner.Add(ctx, ns, capturePointID(id), []float32{1, 0}, map[string]any{
+			captureMetadataKind: captureMetadataKindValue, captureMetadataTimestamp: now.Unix(), captureMetadataLogID: id,
+		}))
+	}
+	require.NoError(t, inner.Add(ctx, ns, capturePointID("old"), []float32{1, 0}, map[string]any{
+		captureMetadataKind: captureMetadataKindValue, captureMetadataTimestamp: now.Add(-48 * time.Hour).Unix(), captureMetadataLogID: "old",
+	}))
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+
+	counting := &vectorReadCounter{VectorStore: inner}
+	ids, err := CapturedLogIDs(ctx, counting, ns, from, to)
+	require.NoError(t, err)
+	assert.Len(t, ids, n)
+	assert.Contains(t, ids, "req-0")
+	assert.NotContains(t, ids, "old", "outside the window")
+	assert.Zero(t, counting.vectorReads, "a store that pages its plain reads is read without vectors")
+
+	single := &singlePageStore{VectorStore: inner}
+	ids, err = CapturedLogIDs(ctx, single, ns, from, to)
+	require.NoError(t, err)
+	assert.Len(t, ids, n, "a full page with no cursor is not taken as the whole window")
+	assert.NotZero(t, single.vectorReads)
+}
+
+// vectorReadCounter counts the reads that ask for vectors.
+type vectorReadCounter struct {
+	vectorstore.VectorStore
+	vectorReads int
+}
+
+func (s *vectorReadCounter) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	if vectorstore.IncludeVectorsRequested(ctx) {
+		s.vectorReads++
+	}
+	return s.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+}
+
 // CountCaptured must count every capture in the window, not one page of
 // them, on a store whose plain read cannot page past its first.
 func TestCountCapturedCountsPastOnePage(t *testing.T) {

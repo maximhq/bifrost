@@ -10,7 +10,6 @@ import {
 } from "@/lib/store/apis/governanceApi";
 import {
 	AnalyzerConfig,
-	COMPLEXITY_TIER_VALUES,
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	MAX_SEMANTIC_PHRASES,
@@ -36,11 +35,11 @@ import {
 	getDecisionProviderState,
 	isDecisionGuidanceDefault,
 	isDecisionGuidanceEmpty,
-	isDecisionTierEmpty,
 	KnownTierDefaults,
 	lastKnownTierDefaults,
 	shouldSeedLLMPrompt,
 	tierCriteriaFormValues,
+	tierCriteriaToReseed,
 	toAnalyzerPayload,
 	toFormValues,
 } from "@/app/workspace/complexity-router/formSchema";
@@ -418,16 +417,18 @@ export function useRouterConfigForm({ saved, routerId, canUpdate, createDefaults
 
 	// The tier step's criteria editors are seeded the same way once the
 	// generated criteria arrive: every tier still empty gets its saved edit or
-	// the generated criteria, and a filled tier is never overwritten.
+	// the generated criteria. When newer generated criteria arrive, a tier
+	// still showing the ones it was seeded from moves with them, so it keeps
+	// matching what Save compares against; an edited tier is never overwritten.
+	const seededTierCriteria = useRef<SuggestionTierDefaults["criteria"] | undefined>(undefined);
 	useEffect(() => {
 		if (!saved || !tierDefaults) return;
 		const current = getValues("suggestions.tier_criteria");
 		const seeded = tierCriteriaFormValues(saved.suggestions?.tier, tierDefaults.criteria);
-		for (const tier of COMPLEXITY_TIER_VALUES) {
-			if (isDecisionTierEmpty(current[tier])) {
-				setValue(`suggestions.tier_criteria.${tier}`, seeded[tier], { shouldDirty: false });
-			}
+		for (const tier of tierCriteriaToReseed(current, seededTierCriteria.current)) {
+			setValue(`suggestions.tier_criteria.${tier}`, seeded[tier], { shouldDirty: false });
 		}
+		seededTierCriteria.current = tierDefaults.criteria;
 	}, [saved, tierDefaults, getValues, setValue]);
 
 	// Run after saved-data hydration and read the current form value, not the

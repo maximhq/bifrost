@@ -15,6 +15,8 @@ import {
 	nextSuggestionRun,
 	shouldSeedLLMPrompt,
 	suggestionsFormValues,
+	tierCriteriaFormValues,
+	tierCriteriaToReseed,
 	toAnalyzerPayload,
 	toComplexityConfigPayload,
 	toFormValues,
@@ -441,6 +443,31 @@ describe("Decision complexity configuration", () => {
 			expect(toAnalyzerPayload(values, saved, kept).suggestions?.tier?.criteria).toEqual({
 				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
 			});
+		});
+
+		test("moves untouched tiers to new generated text with the baseline, keeping edited ones", () => {
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, generated);
+			values.suggestions.tier_criteria.MEDIUM.examples = ["medium", "draft a refund reply"];
+			// The router's phrases changed: the gateway now generates other examples.
+			const fresher: SuggestionTierDefaults = {
+				...generated,
+				criteria: {
+					SIMPLE: { ...generated.criteria.SIMPLE, examples: ["simple", "track my parcel"] },
+					MEDIUM: { ...generated.criteria.MEDIUM, examples: ["medium", "summarize the call"] },
+					COMPLEX: generated.criteria.COMPLEX,
+				},
+			};
+			const reseed = tierCriteriaToReseed(values.suggestions.tier_criteria, generated.criteria);
+			expect(reseed).toEqual(["SIMPLE", "COMPLEX"]);
+			const seeded = tierCriteriaFormValues(saved.suggestions?.tier, fresher.criteria);
+			for (const tier of reseed) values.suggestions.tier_criteria[tier] = seeded[tier];
+			// Only the edited tier is sent; the untouched ones keep following the router.
+			expect(toAnalyzerPayload(values, saved, fresher).suggestions?.tier?.criteria).toEqual({
+				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
+			});
+			// With nothing seeded before, only empty tiers are filled.
+			expect(tierCriteriaToReseed(values.suggestions.tier_criteria, undefined)).toEqual([]);
 		});
 
 		test("needs a definition for every tier a decision step sends, but lets lists be empty", () => {

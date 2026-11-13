@@ -2146,6 +2146,7 @@
 				"estimateEmpty": "Ainda não foram capturados pedidos neste período.",
 				"estimateBackfill_one": "{{count}} solicitação anterior à ativação das sugestões é incorporada primeiro a partir do seu log.",
 				"estimateBackfill_other": "{{count}} solicitações anteriores à ativação das sugestões são incorporadas primeiro a partir dos seus logs.",
+				"estimateBackfillUnknown": "As solicitações anteriores, de antes de as sugestões serem ativadas, podem ser incorporadas primeiro a partir dos seus logs; não foi possível calcular quantas.",
 				"captureUnavailableEmbedded": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone. O armazenamento vetorial deste gateway é o Chromem, que guarda os vetores na memória de cada gateway, por isso não são capturados pedidos para sugestões.",
 				"captureUnavailableNone": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone para guardar os pedidos capturados. Não está configurado nenhum, por isso não são capturados pedidos para sugestões.",
 				"runInBackground": "Corre em segundo plano no seu gateway, fora do caminho dos pedidos.",

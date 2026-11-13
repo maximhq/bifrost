@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -81,6 +82,26 @@ func capturedIDs(t *testing.T, space *complexity.SuggestionSpace, from, to time.
 		return nil
 	}))
 	return got
+}
+
+// failingRouterLogs is a log store whose router-log reads fail.
+type failingRouterLogs struct{ logstore.LogStore }
+
+func (failingRouterLogs) EachComplexityRouterLog(context.Context, string, time.Time, time.Time, func([]logstore.ComplexityRouterLog) error) error {
+	return errors.New("router logs unavailable")
+}
+
+// An estimate whose backfill cannot be planned still sizes what is captured,
+// and says the backfill is unknown, rather than failing: the run dialog
+// starts a run only on an estimate.
+func TestComplexitySuggestionEstimateWithUnknownBackfill(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	p.SetComplexitySuggestionStore(failingRouterLogs{store}, (&textReads{}).read)
+	estimate, err := p.EstimateComplexitySuggestionRun(context.Background(), captureRouterID, 0)
+	require.NoError(t, err)
+	assert.True(t, estimate.BackfillUnknown)
+	assert.Zero(t, estimate.Backfill)
+	assert.Equal(t, 6, estimate.Requests, "what is captured is still counted")
 }
 
 // A router's window is filled from its logs before it is read: the requests

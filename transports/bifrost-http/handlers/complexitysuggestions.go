@@ -183,13 +183,14 @@ func (h *RoutingHandler) suggestionManager(ctx *fasthttp.RequestCtx) (Complexity
 }
 
 // suggestionRouterID reads the model router a request is about, from its
-// path, and its current version, or answers 404 for a router that does not
-// exist.
+// path, and its current version. A router the plugin does not serve is
+// answered as its status endpoint answers it: 404 when it is not saved, 503
+// when it is saved but not loaded.
 func (h *RoutingHandler) suggestionRouterID(ctx *fasthttp.RequestCtx, manager ComplexitySuggestionManager) (string, string, bool) {
 	routerID := pathID(ctx, "router_id")
 	version, ok := manager.ComplexitySuggestionRouter(routerID)
 	if !ok {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", routerID))
+		h.sendModelRouterNotServed(ctx, routerID)
 		return "", "", false
 	}
 	return routerID, version, true
@@ -217,15 +218,17 @@ func parseSuggestionWindow(raw string) (time.Duration, error) {
 }
 
 // suggestionSchedule reports whether a router's suggestions are on and when
-// its next scheduled run is. A config that cannot be read reports them off.
+// its next scheduled run is, from the model router's own config: suggestions
+// are set per router, never on the global complexity analyzer config. A
+// router that cannot be read reports them off.
 func (h *RoutingHandler) suggestionSchedule(ctx context.Context, routerID string) (bool, *time.Time) {
-	config, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
-	if err != nil || !config.SuggestionsEnabled() {
+	router, err := h.configStore.GetModelRouter(ctx, routerID)
+	if err != nil || router == nil || !router.SuggestionsEnabled() {
 		return false, nil
 	}
 	// The schedule's state, once a node has set it, has the next run as
 	// catch-ups and schedule changes left it.
-	next := routing.NextComplexitySuggestionRun(ctx, h.configStore, routerID, config.Suggestions.EffectiveSchedule(), time.Now())
+	next := routing.NextComplexitySuggestionRun(ctx, h.configStore, routerID, router.Suggestions.EffectiveSchedule(), time.Now())
 	return true, &next
 }
 

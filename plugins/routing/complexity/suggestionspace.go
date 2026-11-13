@@ -174,6 +174,15 @@ func (s *SuggestionSpace) EachCaptured(ctx context.Context, from, to time.Time, 
 	return EachCaptured(ctx, s.Store, s.CaptureNamespace, from, to, fn)
 }
 
+// CapturedLogIDs returns the log IDs of the space's requests captured from
+// from through to, without reading their vectors.
+func (s *SuggestionSpace) CapturedLogIDs(ctx context.Context, from, to time.Time) (map[string]struct{}, error) {
+	if s.Store == nil {
+		return nil, ErrNoCaptureStore
+	}
+	return CapturedLogIDs(ctx, s.Store, s.CaptureNamespace, from, to)
+}
+
 // Close releases the hold on the generation. It is safe to call twice.
 func (s *SuggestionSpace) Close() {
 	if s == nil || s.release == nil {

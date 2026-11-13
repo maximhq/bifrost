@@ -2146,6 +2146,7 @@
 				"estimateEmpty": "In questo periodo non è ancora stata acquisita alcuna richiesta.",
 				"estimateBackfill_one": "{{count}} richiesta precedente all'attivazione dei suggerimenti viene prima incorporata dal suo log.",
 				"estimateBackfill_other": "{{count}} richieste precedenti all'attivazione dei suggerimenti vengono prima incorporate dai loro log.",
+				"estimateBackfillUnknown": "Le richieste precedenti, di prima dell'attivazione dei suggerimenti, potrebbero essere incorporate prima dai rispettivi log; non è stato possibile stabilire quante.",
 				"captureUnavailableEmbedded": "I suggerimenti richiedono un archivio vettoriale condiviso come Weaviate, Qdrant, Redis o Pinecone. L'archivio vettoriale di questo gateway è Chromem, che conserva i vettori nella memoria di ciascun gateway, quindi le richieste non vengono acquisite per i suggerimenti.",
 				"captureUnavailableNone": "I suggerimenti richiedono un archivio vettoriale condiviso come Weaviate, Qdrant, Redis o Pinecone in cui conservare le richieste acquisite. Non ne è configurato nessuno, quindi le richieste non vengono acquisite per i suggerimenti.",
 				"runInBackground": "Viene eseguito in background nel tuo gateway, fuori dal percorso delle richieste.",

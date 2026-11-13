@@ -1069,6 +1069,48 @@ func CountCaptured(ctx context.Context, store vectorstore.VectorStore, namespace
 // without vectors ended on a full page with no cursor, which a store that
 // cannot page that read also returns.
 func countCapturedPages(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time) (count int, complete bool, err error) {
+	complete, err = eachCapturedPage(ctx, store, namespace, from, to, []string{captureMetadataTimestamp}, func(page []vectorstore.SearchResult) {
+		count += len(page)
+	})
+	if err != nil {
+		return count, false, fmt.Errorf("count captured requests: %w", err)
+	}
+	return count, complete, nil
+}
+
+// CapturedLogIDs returns the log IDs of the requests captured from from
+// through to, reading only that field, filtered by the store and without
+// vectors, as CountCaptured counts them: what a backfill needs to know is
+// already captured. A store that cannot page that read is read again through
+// the vector read, as CountCaptured does.
+func CapturedLogIDs(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time) (map[string]struct{}, error) {
+	ids := map[string]struct{}{}
+	if store == nil || namespace == "" {
+		return ids, nil
+	}
+	collect := func(page []vectorstore.SearchResult) {
+		for _, r := range page {
+			if logID, _ := r.Properties[captureMetadataLogID].(string); logID != "" {
+				ids[logID] = struct{}{}
+			}
+		}
+	}
+	fields := []string{captureMetadataLogID}
+	complete, err := eachCapturedPage(ctx, store, namespace, from, to, fields, collect)
+	if err == nil && !complete {
+		_, err = eachCapturedPage(vectorstore.WithIncludeVectors(ctx), store, namespace, from, to, fields, collect)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read captured log IDs: %w", err)
+	}
+	return ids, nil
+}
+
+// eachCapturedPage pages GetAll over the requests captured from from through
+// to, filtered by the store, reading fields, and hands each page to fn.
+// complete is false when a read without vectors ended on a full page with no
+// cursor, which a store that cannot page that read also returns.
+func eachCapturedPage(ctx context.Context, store vectorstore.VectorStore, namespace string, from, to time.Time, fields []string, fn func([]vectorstore.SearchResult)) (complete bool, err error) {
 	queries := []vectorstore.Query{
 		{Field: captureMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: captureMetadataKindValue},
 		{Field: captureMetadataTimestamp, Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: from.Unix()},
@@ -1076,22 +1118,22 @@ func countCapturedPages(ctx context.Context, store vectorstore.VectorStore, name
 	}
 	var cursor *string
 	for {
-		results, next, err := store.GetAll(ctx, namespace, queries, []string{captureMetadataTimestamp}, cursor, captureReadPage)
+		results, next, err := store.GetAll(ctx, namespace, queries, fields, cursor, captureReadPage)
 		// As in EachCaptured: a namespace missing from the start holds
 		// nothing yet, but one that goes after a page was read leaves the
-		// count partial, which is not passed off as the whole window.
+		// read partial, which is not passed off as the whole window.
 		if errors.Is(err, vectorstore.ErrNotFound) && cursor == nil {
-			return count, true, nil
+			return true, nil
 		}
 		if err != nil {
-			return count, false, fmt.Errorf("count captured requests: %w", err)
+			return false, err
 		}
-		count += len(results)
+		fn(results)
 		if len(results) == 0 {
-			return count, true, nil
+			return true, nil
 		}
 		if next == nil || *next == "" {
-			return count, len(results) < captureReadPage || vectorstore.IncludeVectorsRequested(ctx), nil
+			return len(results) < captureReadPage || vectorstore.IncludeVectorsRequested(ctx), nil
 		}
 		cursor = next
 	}

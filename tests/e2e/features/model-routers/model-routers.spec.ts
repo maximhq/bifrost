@@ -71,7 +71,14 @@ test.describe('Routers', () => {
         route.fulfill({
           json: {
             config: { classifier: 'semantic', keywords: KEYWORDS },
-            decision_defaults: { criteria: {} },
+            // As the gateway returns it: shipped guidance for every tier.
+            decision_defaults: {
+              criteria: {
+                SIMPLE: { definition: 'Short, direct answers.', signals: ['a lookup'], examples: [] },
+                MEDIUM: { definition: 'Routine work.', signals: ['a draft'], examples: [] },
+                COMPLEX: { definition: 'Design and reasoning.', signals: ['trade-offs'], examples: [] },
+              },
+            },
             llm_default_prompt: 'Classify the request.',
           },
         }),
@@ -192,6 +199,8 @@ test.describe('Routers', () => {
     await page.getByTestId('model-router-edit-general-btn').click()
     await expect(page.getByTestId('model-router-sheet')).toBeVisible()
     await page.getByTestId('model-router-sheet-cancel-button').click()
+    // The sheet blocks clicks until it has finished closing.
+    await expect(page.getByTestId('model-router-sheet')).toHaveCount(0)
 
     await page.getByTestId('model-router-actions-general-btn').click()
     await page.getByTestId('model-router-delete-general-btn').click()
