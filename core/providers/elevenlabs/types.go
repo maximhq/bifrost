@@ -37,11 +37,11 @@ type ElevenlabsSpeechWithTimestampsResponse struct {
 	NormalizedAlignment *ElevenlabsAlignment `json:"normalized_alignment,omitempty"`
 }
 
-// ElevenlabsAlignment represents character-level timing information
+// ElevenlabsAlignment represents character-level timing information, in seconds
 type ElevenlabsAlignment struct {
-	CharStartTimesMs []float64 `json:"char_start_times_ms"`
-	CharEndTimesMs   []float64 `json:"char_end_times_ms"`
-	Characters       []string  `json:"characters"`
+	CharacterStartTimesSeconds []float64 `json:"character_start_times_seconds"`
+	CharacterEndTimesSeconds   []float64 `json:"character_end_times_seconds"`
+	Characters                 []string  `json:"characters"`
 }
 
 type ElevenlabsVoiceSettings struct {

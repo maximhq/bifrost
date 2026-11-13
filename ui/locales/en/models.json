@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex endpoint ID or URL",
 			"vertexEndpointHint": "The Model ID above is the served model name sent in the body. Uses Google credentials from this key. Supports chat and Responses-to-chat conversion.",
 			"vertexEndpointPlaceholder": "2222222222 or https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Enter a Vertex endpoint ID or paste a supported endpoint URL."
+			"vertexEndpointInvalid": "Enter a Vertex endpoint ID or paste a supported endpoint URL.",
+			"patternBadge": "Pattern",
+			"patternHint": "Start a name with regex: to cover many models. In the model ID, $1 inserts the first capture group: regex:(claude-.*) with global.anthropic.$1 sends claude-opus-5 as global.anthropic.claude-opus-5. The key's allowed models must also include those names.",
+			"canonicalPatternPlaceholder": "e.g. $1",
+			"canonicalModelNamePatternHint": "The canonical name used for routing and pricing. It can use capture groups such as $1. Defaults to the expanded model ID when blank."
 		},
 		"saveChanges": "Save Changes",
 		"saving": "Saving...",
@@ -729,6 +733,7 @@
 			"projectIdOptional": "Project ID (Optional)",
 			"mantleProjectHelp": "Scopes inference and model listing to a specific Bedrock project (sent as the OpenAI-Project / anthropic-workspace-id header). Leave empty to use the account's default project.",
 			"oauthM2mHelp": "Databricks recommends OAuth machine-to-machine for production. Tokens are minted from the workspace OIDC endpoint and refreshed automatically.",
+			"databricksScopesHelp": "Leave empty to request all-apis. If the service principal's OAuth secret was created with scopes, list them here. Databricks rejects a token request that names a scope the secret does not have. Model Serving needs model-serving, Unity AI Gateway needs ai-gateway, and decisions need ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1351,6 +1356,8 @@
 		"deletedAfterExpiry": "· deleted automatically after expiry",
 		"viewSpend": "View spend",
 		"noAgentsGranted": "No agents granted",
+		"virtualMcps": "Virtual MCPs",
+		"noVirtualMcpsAssigned": "No Virtual MCPs assigned",
 		"listItem": {
 			"copied": "Virtual key copied",
 			"copyAria": "Copy virtual key",
@@ -2165,7 +2172,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "Reset budget usage?",
-		"description": "You changed a budget amount or reset frequency on this {{owner}}. Reset current usage to 0, or preserve the existing counters. The reset window keeps its current start and end either way."
+		"description": "You changed the budgets on this {{owner}}. Reset Usage sets current usage to 0 on every budget. Preserve Usage keeps the existing counters. The reset window keeps its current start and end either way."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Search decision models…",

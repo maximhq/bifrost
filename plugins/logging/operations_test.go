@@ -5622,6 +5622,37 @@ func TestA2AResponseCorrelationPreservesRequestValuesWhenResponseOmitsThem(t *te
 	require.Equal(t, "response-attempt", *entry.AttemptID)
 }
 
+// TestA2AHooksCaptureCallerCorrelationID verifies that a delegating agent's x-bf-agent-correlation-id is stored on
+// the subagent's operation, both when the pre-hook ran and when only the post-hook saw the request.
+func TestA2AHooksCaptureCallerCorrelationID(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		preHook bool
+	}{
+		{name: "pre and post hooks", preHook: true},
+		{name: "post hook only", preHook: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry, 1)}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-caller-"+test.name)
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-agent-correlation-id": "task-parent"})
+			if test.preHook {
+				_, short, err := plugin.PreA2AHook(ctx, &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "support-analyst"})
+				require.NoError(t, err)
+				require.Nil(t, short)
+			}
+			_, _, err := plugin.PostA2AHook(ctx, &schemas.BifrostA2AResponse{
+				ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSendMessage, AgentName: "support-analyst"},
+			}, nil)
+			require.NoError(t, err)
+			entry := (<-plugin.writeQueue).agentLog
+			require.NotNil(t, entry.CallerCorrelationID)
+			require.Equal(t, "task-parent", *entry.CallerCorrelationID)
+		})
+	}
+}
+
 func TestA2AHooksCaptureRequestPayload(t *testing.T) {
 	plugin := &LoggerPlugin{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

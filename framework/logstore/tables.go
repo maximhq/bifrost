@@ -1620,10 +1620,12 @@ type AgentLogHistoryFilter struct {
 	PushConfigID   string
 	DeliveryID     string
 	AttemptID      string
-	RecordKind     []string
-	EventType      []string
-	TaskState      []string
-	Status         []string
+	// CallerCorrelationID matches operations a caller delegated under its own A2A task (x-bf-agent-correlation-id).
+	CallerCorrelationID string
+	RecordKind          []string
+	EventType           []string
+	TaskState           []string
+	Status              []string
 	// Search is a free-text match across DB-resident metadata columns only
 	// (agent name, operation, task/context/request/trace id and the serialized
 	// error). Protocol payloads are deliberately excluded: under the hybrid
@@ -1635,7 +1637,7 @@ type AgentLogHistoryFilter struct {
 // Explicit identifier searches keep every matching operation visible.
 func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
 	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
-		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == "" && f.CallerCorrelationID == ""
 }
 
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
@@ -1735,6 +1737,7 @@ type AgentLogSummary struct {
 	ResponseMessageID       *string          `json:"response_message_id,omitempty"`
 	ArtifactID              *string          `json:"artifact_id,omitempty"`
 	PushConfigID            *string          `json:"push_config_id,omitempty"`
+	CallerCorrelationID     *string          `json:"caller_correlation_id,omitempty"`
 	DeliveryID              *string          `json:"delivery_id,omitempty"`
 	AttemptID               *string          `json:"attempt_id,omitempty"`
 	EventSequence           *int64           `json:"event_sequence,omitempty"`
@@ -1785,7 +1788,8 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		RequestID: entry.RequestID, TraceID: entry.TraceID, TaskID: entry.TaskID, ContextID: entry.ContextID,
 		MessageID: entry.MessageID, RequestMessageID: entry.RequestMessageID, ResponseMessageID: entry.ResponseMessageID,
 		ArtifactID: entry.ArtifactID, PushConfigID: entry.PushConfigID, DeliveryID: entry.DeliveryID, AttemptID: entry.AttemptID,
-		EventSequence: entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
+		CallerCorrelationID: entry.CallerCorrelationID,
+		EventSequence:       entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
 		DownstreamTransport: entry.DownstreamTransport, UpstreamTransport: entry.UpstreamTransport,
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
@@ -1852,11 +1856,15 @@ type AgentLog struct {
 	ResponseMessageID *string `gorm:"type:varchar(255);index:idx_agent_logs_response_message_id" json:"response_message_id,omitempty"`
 	ArtifactID        *string `gorm:"type:varchar(255);index:idx_agent_logs_artifact_id" json:"artifact_id,omitempty"`
 	PushConfigID      *string `gorm:"type:varchar(255);index:idx_agent_logs_push_config_id" json:"push_config_id,omitempty"`
-	DeliveryID        *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
-	AttemptID         *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
-	EventSequence     *int64  `json:"event_sequence,omitempty"`
-	EventType         *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
-	TaskState         *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
+	// CallerCorrelationID is the caller's x-bf-agent-correlation-id: the A2A task of the agent that delegated
+	// this operation. It links a subagent's operation to its caller the way agent_correlation_id links LLM
+	// and MCP logs to the agent task that issued them.
+	CallerCorrelationID *string `gorm:"type:varchar(255);index:idx_agent_logs_caller_correlation_id,where:caller_correlation_id IS NOT NULL" json:"caller_correlation_id,omitempty"`
+	DeliveryID          *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
+	AttemptID           *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
+	EventSequence       *int64  `json:"event_sequence,omitempty"`
+	EventType           *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
+	TaskState           *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
 
 	DownstreamTransport *string  `gorm:"type:varchar(32)" json:"downstream_transport,omitempty"`
 	UpstreamTransport   *string  `gorm:"type:varchar(32)" json:"upstream_transport,omitempty"`

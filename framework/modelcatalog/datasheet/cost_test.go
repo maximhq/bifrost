@@ -4332,6 +4332,28 @@ func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
 }
 
+func TestResolvePricing_PatternAliasPricesExpandedModelID(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("anthropic.claude-opus-5", "bedrock", "chat"):    chatPricing(0.000005, 0.000025),
+		makeKeyNormalized("us.anthropic.claude-opus-5", "bedrock", "chat"): chatPricing(0.0000055, 0.0000275),
+	})
+	aliases := schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "us.anthropic.$1"}}
+	ac := aliases.ResolveConfig("claude-opus-5")
+	require.NotNil(t, ac)
+
+	// The regional row wins over the base row the requested name falls back to.
+	info := schemas.RoutingInfo{Provider: "bedrock", Model: "claude-opus-5", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: ac.ModelID, ModelName: ac.ModelName}}
+	p := s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+
+	// An upstream id with no row of its own is priced from the requested name.
+	info.ResolvedKeyAlias.ModelID = "global.anthropic.claude-opus-5"
+	p = s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
 func TestResolvePricing_NothingFound(t *testing.T) {
 	s := testStoreWithPricing(nil)
 	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "unknown"}, schemas.ChatCompletionRequest, LookupScopes{})

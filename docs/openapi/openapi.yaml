@@ -1952,6 +1952,8 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
     DecisionInputImageAsset:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
+    DecisionInputFile:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputFile"
     DecisionInputItem:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputItem"
     DecisionFunctionCall:

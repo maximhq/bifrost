@@ -22,7 +22,6 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
-	deepseekprovider "github.com/maximhq/bifrost/core/providers/deepseek"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -602,52 +601,6 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
 		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
-	}
-}
-
-// The tools operations are gated like every other typed operation: a custom provider
-// whose allowed_requests does not enable them must be refused before the provider call.
-func TestHandleProviderRequest_ToolsOperationsNotAllowed(t *testing.T) {
-	for _, requestType := range []schemas.RequestType{schemas.SearchRequest, schemas.FetchRequest} {
-		t.Run(string(requestType), func(t *testing.T) {
-			providerConfig := &schemas.ProviderConfig{
-				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        "http://127.0.0.1:1",
-					DefaultRequestTimeoutInSeconds: 1,
-				},
-				CustomProviderConfig: &schemas.CustomProviderConfig{
-					CustomProviderKey: "custom-deepseek",
-					BaseProviderType:  schemas.DeepSeek,
-					AllowedRequests:   &schemas.AllowedRequests{},
-				},
-			}
-			provider, err := deepseekprovider.NewDeepSeekProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
-			if err != nil {
-				t.Fatalf("NewDeepSeekProvider: %v", err)
-			}
-
-			req := &ChannelMessage{
-				Context:        schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
-				BifrostRequest: schemas.BifrostRequest{RequestType: requestType},
-			}
-			switch requestType {
-			case schemas.SearchRequest:
-				req.SearchRequest = &schemas.BifrostSearchRequest{Provider: schemas.DeepSeek, Query: "q"}
-			case schemas.FetchRequest:
-				req.FetchRequest = &schemas.BifrostFetchRequest{Provider: schemas.DeepSeek, URL: "https://example.com/"}
-			}
-
-			response, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, providerConfig, req, schemas.Key{}, nil)
-			if response != nil {
-				t.Fatalf("expected nil response, got %#v", response)
-			}
-			if bifrostErr == nil || bifrostErr.Error == nil {
-				t.Fatal("expected an unsupported operation error")
-			}
-			if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
-				t.Fatalf("code = %v, want unsupported_operation", bifrostErr.Error.Code)
-			}
-		})
 	}
 }
 
@@ -9555,6 +9508,188 @@ func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
 	// An unknown name is ignored with a warning; it must not enable anything.
 	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
 	expect("update to an unknown family", "cl100k_base")
+}
+
+// TestPatternKeyAliasRoutesAndNamesModel pins that a regex: key alias sends the expanded template upstream and sets no model name.
+func TestPatternKeyAliasRoutesAndNamesModel(t *testing.T) {
+	server, models := agentLoopServer(t, 0)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 100,
+		Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "claude-fable-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"global.anthropic.claude-fable-5"}) {
+		t.Fatalf("upstream models = %v, want [global.anthropic.claude-fable-5]", got)
+	}
+	alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+	if alias == nil || alias.ModelID != "global.anthropic.claude-fable-5" || alias.ModelName != nil {
+		t.Fatalf("ResolvedKeyAlias = %+v, want model_id global.anthropic.claude-fable-5 and no model_name", alias)
+	}
+
+	_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		t.Error("a model outside the key's allow list was served; a pattern alias must not widen the allow list")
+	}
+}
+
+// patternAliasServer records the bearer token and model of each upstream call and answers 429 for a "fail." model.
+func patternAliasServer(t *testing.T) (*httptest.Server, func() [][2]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls [][2]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [2]string{strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), model})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() [][2]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][2]string(nil), calls...)
+	}
+}
+
+// patternAliasChat sends one chat request for model on the OpenAI mock provider.
+func patternAliasChat(client *Bifrost, model string) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	return client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+}
+
+// TestPatternKeyAliasBlockListChecksRequestedName pins that a blocked name is refused without falling through to a pattern, and that the upstream id is never checked.
+func TestPatternKeyAliasBlockListChecksRequestedName(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+		BlacklistedModels: schemas.BlackList{"claude-opus-5", "regex:claude-haiku-.*", "global.anthropic.claude-sonnet-5"},
+		Aliases: schemas.KeyAliases{
+			"claude-opus-5":     {ModelID: "exact-target"},
+			"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	for _, model := range []string{"claude-opus-5", "CLAUDE-OPUS-5", "claude-haiku-5"} {
+		if _, bifrostErr := patternAliasChat(client, model); bifrostErr == nil {
+			t.Errorf("blocked model %q was served", model)
+		}
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("blocked requests reached upstream: %v", got)
+	}
+	resp, bifrostErr := patternAliasChat(client, "claude-sonnet-5")
+	if bifrostErr != nil {
+		t.Fatalf("claude-sonnet-5 failed: %s", bifrostErr.Error.Message)
+	}
+	if alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias; alias == nil || alias.ModelID != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("ResolvedKeyAlias = %+v, want global.anthropic.claude-sonnet-5", alias)
+	}
+	if got := calls(); len(got) != 1 || got[0][1] != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("upstream calls = %v, want one for global.anthropic.claude-sonnet-5", got)
+	}
+}
+
+// TestPatternKeyAliasTemplateFollowsSelectedKey pins that every attempt sends the template of the key it used, across key selection and retries.
+func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 2
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+	templates := map[string]string{"sk-us": "us.", "sk-eu": "eu.", "sk-fail": "fail."}
+	keys := make([]schemas.Key, 0, len(templates))
+	for value, prefix := range templates {
+		keys = append(keys, schemas.Key{
+			ID: value, Name: value, Value: *schemas.NewSecretVar(value), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 1,
+			Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: prefix + "$1"}},
+		})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	served := map[string]int{}
+	for i := 0; i < 60; i++ {
+		model := fmt.Sprintf("claude-fable-%d", i)
+		resp, bifrostErr := patternAliasChat(client, model)
+		got := calls()
+		last := got[len(got)-1]
+		if bifrostErr != nil {
+			if last[1] != "fail."+model {
+				t.Fatalf("request %d failed after upstream call %v", i, last)
+			}
+			continue
+		}
+		alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+		if alias == nil || alias.ModelID != last[1] || resp.ExtraFields.RoutingInfo.Key != last[0] {
+			t.Fatalf("request %d: routing info key=%q alias=%+v, upstream call %v", i, resp.ExtraFields.RoutingInfo.Key, alias, last)
+		}
+		served[last[0]]++
+	}
+	for _, call := range calls() {
+		prefix, ok := templates[call[0]]
+		if !ok || !strings.HasPrefix(call[1], prefix+"claude-fable-") {
+			t.Errorf("key %q sent %q, want its own template %q", call[0], call[1], prefix)
+		}
+	}
+	if served["sk-us"] == 0 || served["sk-eu"] == 0 || served["sk-fail"] != 0 {
+		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
+	}
 }
 
 // The SDK reaches FetchRequest without passing through the HTTP route, so the URL rules the

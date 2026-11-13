@@ -3351,6 +3351,15 @@ func applyA2ATransports(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
 	}
 }
 
+// applyA2ACallerCorrelation records the delegating agent's x-bf-agent-correlation-id (its A2A task) on the
+// operation, so a subagent's work nests under its caller. A value captured earlier in the operation is kept.
+func applyA2ACallerCorrelation(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
+	if entry == nil || ctx == nil || entry.CallerCorrelationID != nil {
+		return
+	}
+	entry.CallerCorrelationID = optionalBoundedA2AValue(requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"), maxPersistedAgentCorrelationIDLen)
+}
+
 func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
 	if entry == nil {
 		return
@@ -3388,6 +3397,7 @@ func (p *LoggerPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
 	entry.RequestBody = req.RequestBody
 	applyA2ARequestCorrelation(entry, req)
@@ -3431,6 +3441,7 @@ func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	// attribution captured earlier in the operation.
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency

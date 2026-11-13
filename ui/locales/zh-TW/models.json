@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex 端點 ID 或 URL",
 			"vertexEndpointHint": "上方的模型 ID 是要求本文中傳送的服務模型名稱。使用此金鑰中的 Google 憑證。支援聊天，以及將 Responses 轉換為聊天格式。",
 			"vertexEndpointPlaceholder": "2222222222 或 https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL。"
+			"vertexEndpointInvalid": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL。",
+			"patternBadge": "模式",
+			"patternHint": "名稱以 regex: 開頭即可涵蓋多個模型。在模型 ID 中，$1 會替換為第一個擷取群組：regex:(claude-.*) 搭配 global.anthropic.$1 會把 claude-opus-5 送出為 global.anthropic.claude-opus-5。金鑰的允許模型也必須包含這些名稱。",
+			"canonicalPatternPlaceholder": "例如 $1",
+			"canonicalModelNamePatternHint": "用於路由和計價的正式名稱。可使用 $1 等擷取群組。留空時預設為展開後的模型 ID。"
 		},
 		"saveChanges": "儲存更改",
 		"saving": "儲存中…",
@@ -729,6 +733,7 @@
 			"projectIdOptional": "Project ID（可選）",
 			"mantleProjectHelp": "將推理和模型列表限定到特定 Bedrock 專案（作為 OpenAI-Project / anthropic-workspace-id 請求頭髮送）。留空則使用帳戶預設專案。",
 			"oauthM2mHelp": "Databricks 建議生產環境使用 OAuth machine-to-machine。Token 由 workspace OIDC 端點簽發並自動重新整理。",
+			"databricksScopesHelp": "留空則請求 all-apis。如果服務主體的 OAuth 密鑰建立時指定了 scope，請在此列出。若權杖請求包含密鑰沒有的 scope，Databricks 會拒絕該請求。Model Serving 需要 model-serving，Unity AI Gateway 需要 ai-gateway，decisions 需要 ai-functions。",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1351,6 +1356,8 @@
 		"deletedAfterExpiry": "· 到期後自動刪除",
 		"viewSpend": "檢視花費",
 		"noAgentsGranted": "未授權任何代理",
+		"virtualMcps": "虛擬 MCP",
+		"noVirtualMcpsAssigned": "未指派虛擬 MCP",
 		"listItem": {
 			"copied": "虛擬金鑰已複製",
 			"copyAria": "複製虛擬金鑰",
@@ -2163,7 +2170,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "要重置預算用量嗎？",
-		"description": "你變更了此{{owner}}的預算金額或重置頻率。可將目前用量重置為 0，或保留現有計數。無論選擇哪種，重置視窗都會保持目前的起訖時間。"
+		"description": "你變更了此{{owner}}的預算。重設會將每個預算的目前用量歸零。保留會保留現有計數。無論哪種方式，重設週期的開始與結束時間都維持不變。"
 	},
 	"decisionModel": {
 		"searchDecisionModels": "搜尋決策模型…",

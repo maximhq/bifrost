@@ -108841,6 +108841,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109299,6 +109308,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109585,6 +109603,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109866,6 +109893,15 @@
             "name": "push_config_id",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
             "schema": {
               "type": "string"
             }
@@ -116545,6 +116581,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116757,6 +116797,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116968,6 +117012,10 @@
           },
           "push_config_id": {
             "type": "string"
+          },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
           },
           "delivery_id": {
             "type": "string"
@@ -118288,7 +118336,8 @@
           "typesafe",
           "minimax",
           "byteplus",
-          "baseten"
+          "baseten",
+          "kimchi"
         ]
       },
       "Fallback": {
@@ -123497,7 +123546,7 @@
         }
       },
       "DecisionInputPart": {
-        "description": "One part of a message's content. User messages take text, JSON, and image parts; assistant messages take output text and refusals.",
+        "description": "One part of a message's content. User messages take text, JSON, image, and file parts; assistant messages take output text and refusals.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/DecisionInputText"
@@ -123510,6 +123559,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImageAsset"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputFile"
           },
           {
             "$ref": "#/components/schemas/DecisionOutputText"
@@ -123624,6 +123676,66 @@
           "name": {
             "type": "string",
             "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
+          }
+        }
+      },
+      "DecisionInputFile": {
+        "type": "object",
+        "description": "A PDF, audio, or video file, read as evidence. Accepted on `/v1/decisions` only; `/openai/v1/decisions` rejects it with a 400, since OpenAI's Decisions API has no file part. Gemini reads it; every other provider rejects it with a 400. Send images as `input_image`. Exactly one of `data`, `url`, and `name` carries the file.",
+        "required": [
+          "type",
+          "mime_type"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "url"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_file"
+            ]
+          },
+          "mime_type": {
+            "type": "string",
+            "example": "application/pdf",
+            "description": "The file's media type, which decides how it is read. Gemini reads `application/pdf`, `audio/*`, and `video/*`; `image/*` is rejected."
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "The file, base64-encoded, without a `data:` prefix"
+          },
+          "url": {
+            "type": "string",
+            "description": "An HTTPS URL, or a Gemini Files API URI, that the model fetches the file from"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the file. A JSON request cannot use it."
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high",
+              "auto"
+            ],
+            "description": "A video's resolution. Audio and PDFs take none."
           }
         }
       },
@@ -125303,13 +125415,13 @@
           "alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -125326,13 +125438,13 @@
           "normalized_alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"

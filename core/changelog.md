@@ -7,6 +7,8 @@
 - [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: Search takes one provider-neutral request and result shape [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: DeepSeek provider - add Search and Fetch as first-class operations (`POST /v1/tools/search`, `POST /v1/tools/fetch`), model-less and priced per request [@jimaldon](https://github.com/jimaldon)
+- feat: Kimchi provider for chat, Responses and embeddings
+- fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null. Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`) (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
 - fix: anthropic - Messages requests routed to Bedrock keep `toolset_name` on replayed `tool_use` blocks, so a computer toolset turn no longer fails with a 400 on its paired `tool_result`

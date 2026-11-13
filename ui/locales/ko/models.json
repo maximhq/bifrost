@@ -255,7 +255,11 @@
 			"vertexEndpoint": "Vertex 엔드포인트 ID 또는 URL",
 			"vertexEndpointHint": "위의 모델 ID는 본문에 전송되는 제공 모델 이름입니다. 이 키의 Google 인증 정보를 사용합니다. 채팅 및 Responses-채팅 변환을 지원합니다.",
 			"vertexEndpointPlaceholder": "2222222222 또는 https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여 넣으세요."
+			"vertexEndpointInvalid": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여 넣으세요.",
+			"patternBadge": "패턴",
+			"patternHint": "이름을 regex:로 시작하면 여러 모델을 한 번에 처리합니다. 모델 ID에서 $1은 첫 번째 캡처 그룹으로 바뀝니다. regex:(claude-.*)와 global.anthropic.$1을 쓰면 claude-opus-5가 global.anthropic.claude-opus-5로 전송됩니다. 키의 허용 모델에도 해당 이름이 포함되어야 합니다.",
+			"canonicalPatternPlaceholder": "예: $1",
+			"canonicalModelNamePatternHint": "라우팅과 가격 책정에 사용되는 정식 이름입니다. $1 같은 캡처 그룹을 사용할 수 있습니다. 비워 두면 확장된 모델 ID가 사용됩니다."
 		},
 		"saveChanges": "변경 사항 저장",
 		"saving": "저장 중...",
@@ -729,6 +733,7 @@
 			"projectIdOptional": "프로젝트 ID(선택사항)",
 			"mantleProjectHelp": "추론 및 모델 목록을 특정 Bedrock 프로젝트로 범위 지정합니다(OpenAI-Project / anthropic-workspace-id 헤더로 전송됨). 계정의 기본 프로젝트를 사용하려면 비워 두세요.",
 			"oauthM2mHelp": "Databricks에서는 OAuth 기계 대 기계 생산을 권장해요. 토큰은 작업공간 OIDC 엔드포인트에서 발행되고 자동으로 새로 고쳐집니다.",
+			"databricksScopesHelp": "비워 두면 all-apis를 요청해요. 서비스 주체의 OAuth 시크릿이 스코프를 지정해 생성되었다면 여기에 해당 스코프를 입력하세요. 시크릿에 없는 스코프를 포함한 토큰 요청은 Databricks가 거부해요. Model Serving에는 model-serving, Unity AI Gateway에는 ai-gateway, decisions에는 ai-functions가 필요해요.",
 			"vllmUrlPlaceholder": "http://vllm-서버:8000",
 			"vllmModelPlaceholder": "메타-라마/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1351,6 +1356,8 @@
 		"deletedAfterExpiry": "· 만료 후 자동 삭제",
 		"viewSpend": "지출 보기",
 		"noAgentsGranted": "허용된 에이전트 없음",
+		"virtualMcps": "가상 MCP",
+		"noVirtualMcpsAssigned": "할당된 가상 MCP 없음",
 		"fiscalYearStarts": "회계연도 시작 {{month}}",
 		"assignedUserEmail": "할당된 사용자 이메일",
 		"leavesGoverningOwner": "이 키의 공급자, 예산 및 요청 한도는 소유자의 액세스 프로필에서 가져왔으며, 키 자체 설정은 없습니다.",
@@ -2163,7 +2170,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "예산 사용량을 초기화할까요?",
-		"description": "이 {{owner}}의 예산 금액 또는 초기화 주기를 변경했어요. 현재 사용량을 0으로 초기화하거나 기존 카운터를 유지하세요. 어느 쪽이든 초기화 기간의 시작과 종료는 그대로 유지돼요."
+		"description": "이 {{owner}}의 예산을 변경했습니다. 재설정하면 모든 예산의 현재 사용량이 0이 됩니다. 유지하면 기존 카운터가 그대로 남습니다. 어느 경우든 재설정 기간의 시작과 끝은 그대로입니다."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "결정 모델 검색…",

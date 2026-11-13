@@ -355,6 +355,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"relay_logs_add_large_payload_response"}, run: migrationAddRelayLogLargePayloadResponse},
 	{IDs: []string{"relay_logs_add_correlation_columns"}, run: migrationAddRelayLogCorrelationColumns},
 	{IDs: []string{"mcp_tool_logs_add_round_trip_id_column"}, run: migrationAddRoundTripIDColumnToMCPToolLogs},
+	{IDs: []string{"agent_logs_add_caller_correlation_id_column"}, run: migrationAddCallerCorrelationIDColumnToAgentLogs},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3033,6 +3034,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_agent_correlation_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_agent_correlation_id ON mcp_tool_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
+	},
+	{
+		table: "agent_logs",
+		name:  "idx_agent_logs_caller_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_agent_logs_caller_correlation_id ON agent_logs(caller_correlation_id) WHERE caller_correlation_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -6089,6 +6095,52 @@ func roundTripIDColumnMigration(ctx context.Context, logger schemas.Logger) *mig
 				return err
 			}
 			return dropColumnIfExists(tx, logger, &MCPToolLog{}, "round_trip_id")
+		},
+	}
+}
+
+// migrationAddCallerCorrelationIDColumnToAgentLogs adds the column linking a subagent's operation to the A2A task of
+// the agent that delegated it. Older rows leave it null, so there is no backfill. Postgres builds its index
+// concurrently through performanceIndexes; other dialects create it here.
+func migrationAddCallerCorrelationIDColumnToAgentLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "agent_logs_add_caller_correlation_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{callerCorrelationIDColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// callerCorrelationIDColumnMigration refuses its rollback while caller_correlation_id holds a value: the link from
+// a subagent's operation to its caller cannot be recaptured once dropped.
+func callerCorrelationIDColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "agent_logs_add_caller_correlation_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &AgentLog{}, "caller_correlation_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id") {
+				if err := tx.Migrator().CreateIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id"); err != nil {
+					return fmt.Errorf("create idx_agent_logs_caller_correlation_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := refuseRollbackWhileRecorded(tx, "agent_logs_add_caller_correlation_id_column", []any{&AgentLog{}}, "caller_correlation_id"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &AgentLog{}, "caller_correlation_id")
 		},
 	}
 }

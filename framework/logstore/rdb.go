@@ -5724,7 +5724,7 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 		orderClause = "latency " + direction + " NULLS LAST, id " + direction
 	}
 	inputPreview := fmt.Sprintf("substr(request_body, 1, %d) AS input", maxA2APayloadPreviewRunes)
-	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
+	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "caller_correlation_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for i := range rows {
@@ -5928,6 +5928,7 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		"request_id": filter.RequestID, "trace_id": filter.TraceID,
 		"task_id": filter.TaskID, "context_id": filter.ContextID, "push_config_id": filter.PushConfigID,
 		"delivery_id": filter.DeliveryID, "attempt_id": filter.AttemptID,
+		"caller_correlation_id": filter.CallerCorrelationID,
 	} {
 		if value != "" {
 			query = query.Where(column+" = ?", value)
