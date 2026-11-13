@@ -2266,7 +2266,7 @@
 				"impact": {
 					"back": "Suggestions",
 					"replaying": "Replaying recent requests against the draft…",
-					"emptyBank": "The draft phrase lists are empty, so there is nothing to replay.",
+					"emptyBank": "No phrases are staged, so there is nothing to replay.",
 					"failed": "Could not replay the draft: {{error}}",
 					"retry": "Retry",
 					"source_one": "Replay of the last {{count}} day · {{requests}} captured requests · draft vs live",

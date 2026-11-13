@@ -4374,33 +4374,111 @@ ComplexitySuggestionImpactRequest:
   required: [phrases]
   properties:
     phrases:
-      type: array
-      minItems: 1
-      maxItems: 750
-      description: The whole draft phrase bank, every phrase it would serve. Between 1 and 750, the most a bank can hold.
-      items:
-        type: object
-        required: [tier, text]
-        properties:
-          tier:
-            type: string
-            enum: [SIMPLE, MEDIUM, COMPLEX]
-          text:
-            type: string
-            minLength: 1
-            maxLength: 2000
-            pattern: '\S'
-            description: At most 2,000 characters once trimmed, the phrase bank's own limit; empty or whitespace-only text is 400.
+      $ref: '#/PhrasesByTier'
     min_similarity:
       type: number
       minimum: 0
       exclusiveMaximum: 1
       description: The similarity floor the draft would save, when the draft changes it; the draft side is replayed at it and the live side at the serving floor. Omitted replays the draft at the serving floor. At least 0 and less than 1.
 
+PhrasesByTier:
+  type: object
+  description: Phrases by tier, keyed SIMPLE, MEDIUM or COMPLEX; the gateway also accepts these keys in any case. A phrase is compared as the bank compares phrases, ignoring case and runs of whitespace.
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    SIMPLE:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        maxLength: 2000
+    MEDIUM:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        maxLength: 2000
+    COMPLEX:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        maxLength: 2000
+  example:
+    SIMPLE: [where is my refund]
+    COMPLEX: [plan a database migration]
+
+PhrasesAdded:
+  type: object
+  description: What phrases given by tier did to a phrase bank.
+  properties:
+    added:
+      type: object
+      description: The phrases added, by tier.
+      additionalProperties:
+        type: array
+        items:
+          type: string
+    skipped:
+      type: array
+      description: Phrases left out because their tier already holds them.
+      items:
+        type: object
+        properties:
+          tier:
+            type: string
+            enum: [SIMPLE, MEDIUM, COMPLEX]
+          text:
+            type: string
+
+AddModelRouterPhrasesRequest:
+  type: object
+  required: [phrases]
+  additionalProperties: false
+  properties:
+    phrases:
+      $ref: '#/PhrasesByTier'
+    suggestion_ids:
+      type: array
+      description: The suggestions the phrases came from. Each must be the router's and open; once the phrases are saved they are marked accepted where they still can be (see `accepted` in the response).
+      items:
+        type: string
+
+AddModelRouterPhrasesResponse:
+  allOf:
+    - $ref: '#/PhrasesAdded'
+    - type: object
+      properties:
+        router:
+          $ref: '#/ModelRouter'
+        accepted:
+          type: array
+          description: Only the suggestions actually marked accepted. One a run superseded while the phrases were saved, or whose status could not be written, is left out; the phrases stay saved either way.
+          items:
+            type: string
+
 ComplexitySuggestionImpact:
   type: object
-  description: What a draft phrase bank would do to a router's recent captured traffic. Costs are in USD over the window, for the changed requests only.
+  description: What the phrases tried would do to a router's recent captured traffic, added to its saved phrases. Costs are in USD over the window, for the changed requests only. added and skipped say which of the phrases tried were new and which the bank already held.
   properties:
+    added:
+      type: object
+      description: The phrases the replay added to the router's saved ones, by tier.
+      additionalProperties:
+        type: array
+        items:
+          type: string
+    skipped:
+      type: array
+      description: Phrases tried that their tier already holds.
+      items:
+        type: object
+        properties:
+          tier:
+            type: string
+          text:
+            type: string
     window_seconds:
       type: integer
     requests:

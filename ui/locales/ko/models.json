@@ -2264,7 +2264,7 @@
 				"impact": {
 					"back": "제안",
 					"replaying": "최근 요청을 초안에 대해 재생하는 중…",
-					"emptyBank": "초안 문구 목록이 비어 있어 재생할 항목이 없습니다.",
+					"emptyBank": "준비된 문구가 없어 재생할 항목이 없습니다.",
 					"failed": "초안을 재생할 수 없습니다: {{error}}",
 					"retry": "다시 시도",
 					"source_one": "최근 {{count}}일 재생 · 캡처된 요청 {{requests}}건 · 초안 vs 라이브",

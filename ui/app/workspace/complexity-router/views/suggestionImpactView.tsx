@@ -4,17 +4,18 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { getLocale } from "@/lib/i18n";
 import { getErrorMessage } from "@/lib/store";
 import { useGetComplexitySuggestionImpactMutation } from "@/lib/store/apis/governanceApi";
-import { EditableKeywordConfig, UNMATCHED_TIER } from "@/lib/types/complexityRouter";
+import { UNMATCHED_TIER } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, ChevronDown, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { draftBank } from "./suggestions.utils";
+import { StagedSuggestion, stagedAdditions } from "./suggestions.utils";
 
 interface Props {
 	routerId: string;
 	// The draft phrase lists, staged suggestions included.
-	keywords: EditableKeywordConfig;
+	// The staged suggestions whose phrases the replay tries.
+	staged: StagedSuggestion[];
 	// The similarity floor the draft would save; the draft side is replayed at
 	// it, the live side at the serving one.
 	minSimilarity?: number;
@@ -30,27 +31,19 @@ interface Props {
 // the draft phrase bank and the live one, before the draft is applied: how the
 // tier mix moves, which requests change tier, which new phrases may be taking
 // requests by mistake, and what the change would save.
-export default function SuggestionImpactView({
-	routerId,
-	keywords,
-	minSimilarity,
-	groupOfPhrase,
-	tierLabel,
-	onBack,
-	onReviewGroup,
-}: Props) {
+export default function SuggestionImpactView({ routerId, staged, minSimilarity, groupOfPhrase, tierLabel, onBack, onReviewGroup }: Props) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.complexityUi.suggestions.impact" });
 	const [replay, { data, isLoading, error }] = useGetComplexitySuggestionImpactMutation();
-	const bank = useMemo(() => draftBank(keywords), [keywords]);
-	const bankKey = useMemo(() => JSON.stringify(bank), [bank]);
-	// Keyed by the bank's text, so a re-render with an equal draft does not
+	const added = useMemo(() => stagedAdditions(staged), [staged]);
+	const addedKey = useMemo(() => JSON.stringify(added), [added]);
+	// Keyed by the phrases' text, so a re-render with equal staging does not
 	// replay again. The hook's reset is left out on purpose: its identity
 	// changes with every request, so depending on it would replay after each
 	// answer, forever. A new request already starts with no data.
 	useEffect(() => {
-		const phrases = JSON.parse(bankKey) as ReturnType<typeof draftBank>;
-		if (phrases.length > 0) void replay({ routerId, phrases, minSimilarity });
-	}, [routerId, bankKey, minSimilarity, replay]);
+		const phrases = JSON.parse(addedKey) as ReturnType<typeof stagedAdditions>;
+		if (Object.keys(phrases).length > 0) void replay({ routerId, phrases, minSimilarity });
+	}, [routerId, addedKey, minSimilarity, replay]);
 	const number = (value: number) => new Intl.NumberFormat(getLocale()).format(value);
 	const percent = (value: number) => new Intl.NumberFormat(getLocale(), { style: "percent", maximumFractionDigits: 1 }).format(value);
 	const money = (value: number) =>
@@ -74,7 +67,7 @@ export default function SuggestionImpactView({
 				{t("back")}
 			</button>
 
-			{bank.length === 0 ? (
+			{Object.keys(added).length === 0 ? (
 				<section className="text-muted-foreground rounded-sm border p-6 text-sm" data-testid="complexity-suggestions-impact-empty">
 					{t("emptyBank")}
 				</section>
@@ -86,7 +79,7 @@ export default function SuggestionImpactView({
 			) : error ? (
 				<section className="space-y-2 rounded-sm border p-6 text-sm" data-testid="complexity-suggestions-impact-error">
 					<p>{t("failed", { error: getErrorMessage(error) })}</p>
-					<Button type="button" variant="outline" size="sm" onClick={() => void replay({ routerId, phrases: bank, minSimilarity })}>
+					<Button type="button" variant="outline" size="sm" onClick={() => void replay({ routerId, phrases: added, minSimilarity })}>
 						{t("retry")}
 					</Button>
 				</section>

@@ -627,9 +627,6 @@ export const DEFAULT_SUGGESTION_START_AT = "1970-01-01T03:00:00Z";
 // The intervals the gateway accepts, as config.json and the API spell them.
 export const SUGGESTION_EVERY_PATTERN = /^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$/;
 
-// The router suggestions belong to until a gateway can define several.
-export const DEFAULT_COMPLEXITY_ROUTER_ID = "default";
-
 // Run windows offered for "Run now"; the ones longer than the lookback are
 // left out, since the vectors they would read are gone.
 export const SUGGESTION_RUN_WINDOWS = ["24h", "7d", "14d", "30d"] as const;

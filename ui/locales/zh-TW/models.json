@@ -2264,7 +2264,7 @@
 				"impact": {
 					"back": "建議",
 					"replaying": "正在以草稿重播最近的請求…",
-					"emptyBank": "草稿詞句清單為空，因此沒有可重播的內容。",
+					"emptyBank": "沒有暫存的詞句，因此沒有可重播的內容。",
 					"failed": "無法重播草稿：{{error}}",
 					"retry": "重試",
 					"source_one": "重播最近 {{count}} 天 · {{requests}} 個擷取的請求 · 草稿 vs 線上",

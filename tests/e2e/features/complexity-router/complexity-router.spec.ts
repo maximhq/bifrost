@@ -406,11 +406,11 @@ test.describe('Complexity Router', () => {
           }),
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) => {
           const params = new URL(route.request().url()).searchParams
           const status = params.get('status')
-          listRouters.push(params.get('router_id'))
+          listRouters.push(new URL(route.request().url()).pathname.split('/')[4]) // the router the call is under
           return route.fulfill({
             json: {
               router_id: 'default',
@@ -425,7 +425,7 @@ test.describe('Complexity Router', () => {
         },
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/sug-refund',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/sug-refund',
         (route) =>
           route.fulfill({
             json: {
@@ -435,16 +435,16 @@ test.describe('Complexity Router', () => {
           }),
       )
       await page.route(
-        (url) => /^\/api\/routing\/complexity-suggestions\/[^/]+\/status$/.test(url.pathname),
+        (url) => /^\/api\/routing\/model-routers\/default\/suggestions\/[^/]+\/status$/.test(url.pathname),
         (route) => {
-          const id = new URL(route.request().url()).pathname.split('/')[4]
+          const id = new URL(route.request().url()).pathname.split('/')[6]
           const { status } = route.request().postDataJSON()
           statusCalls.push({ id, status })
           return route.fulfill({ json: { ...OPEN[0], id, status } })
         },
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs',
         (route) => {
           if (route.request().method() !== 'POST') return route.fulfill({ json: { runs: [LAST_RUN] } })
           runStarts++
@@ -453,7 +453,7 @@ test.describe('Complexity Router', () => {
         },
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs/estimate',
         (route) => {
           const window = new URL(route.request().url()).searchParams.get('window')
           const requests = window === '24h' ? 1200 : 8400
@@ -461,7 +461,7 @@ test.describe('Complexity Router', () => {
         },
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/test',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
         (route) => {
           const body = route.request().postDataJSON()
           return route.fulfill({
@@ -565,7 +565,7 @@ test.describe('Complexity Router', () => {
       const MANY = Array.from({ length: 120 }, (_, i) => ({ ...OPEN[0], id: `sug-many-${i}`, request_count: 500 - i, phrases: [`question ${i}`] }))
       const offsets: number[] = []
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) => {
           const params = new URL(route.request().url()).searchParams
           const limit = Number(params.get('limit') ?? 100)
@@ -701,7 +701,7 @@ test.describe('Complexity Router', () => {
       // refetched right after the start (the tab's and the tab count's) still
       // show the previous run.
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) => {
           if (runStarts === 0) return route.fallback()
           listedAfterStart++
@@ -735,7 +735,7 @@ test.describe('Complexity Router', () => {
     test('should mark a suggestion that adds two phrases', async ({ page }) => {
       const PAIR = { ...OPEN[0], id: 'sug-pair', phrases: ['translate this to formal german', 'formal german translation please'] }
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) =>
           route.fulfill({
             json: { suggestions: [PAIR], counts: { open: 1, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
@@ -842,7 +842,7 @@ test.describe('Complexity Router', () => {
       let release!: () => void
       const held = new Promise<void>((resolve) => (release = resolve))
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs/estimate',
         async (route) => {
           if (new URL(route.request().url()).searchParams.get('window') !== '24h') return route.fallback()
           await held
@@ -869,7 +869,7 @@ test.describe('Complexity Router', () => {
 
     test('should not start a run on a window with nothing captured', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs/estimate',
         (route) => route.fulfill({ json: { requests: 0, clustered: 0, assigned: 0, skipped: 0, max_model_calls: 0 } }),
       )
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
@@ -880,7 +880,7 @@ test.describe('Complexity Router', () => {
 
     test('should say a first run embeds earlier requests from their logs', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/estimate',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs/estimate',
         (route) => route.fulfill({ json: { requests: 1300, clustered: 1000, assigned: 300, skipped: 0, max_model_calls: 30, backfill: 1200 } }),
       )
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
@@ -988,13 +988,13 @@ test.describe('Complexity Router', () => {
       let release!: () => void
       const held = new Promise<void>((resolve) => (release = resolve))
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/test',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
         async (route) => {
           await held
           await route.fallback()
         },
       )
-      const answered = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/routing/complexity-suggestions/test')
+      const answered = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/routing/model-routers/default/suggestions/test')
       await runButton.click()
       await phraseInput.fill('refund status for order 12')
       release()
@@ -1009,7 +1009,7 @@ test.describe('Complexity Router', () => {
       // second has nothing new to add.
       const TWIN = { ...OPEN[0], id: 'sug-twin', request_count: 9 }
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) =>
           route.fulfill({
             json: { suggestions: [OPEN[0], TWIN], counts: { open: 2, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
@@ -1026,7 +1026,7 @@ test.describe('Complexity Router', () => {
       const UNSURE = { ...OPEN[1], id: 'sug-unsure', tier: 'MEDIUM', confidence: 'low', phrases: ['plan the rollout of this flag'] }
       // Registered after beforeEach, so it answers first.
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) =>
           route.fulfill({
             json: { suggestions: [OPEN[0], UNSURE], counts: { open: 2, dismissed: 0 }, enabled: true, last_run: LAST_RUN },
@@ -1063,7 +1063,7 @@ test.describe('Complexity Router', () => {
       let cancelled: string | null = null
       const RUNNING = { ...LAST_RUN, id: 'run-live', status: 'running', stage: 'suggesting', clusters_asked: 20, clusters_done: 5, finished_at: undefined }
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions',
         (route) =>
           route.fulfill({
             json: {
@@ -1075,9 +1075,9 @@ test.describe('Complexity Router', () => {
           }),
       )
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/runs/run-live/cancel',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/runs/run-live/cancel',
         (route) => {
-          cancelled = new URL(route.request().url()).searchParams.get('router_id')
+          cancelled = new URL(route.request().url()).pathname.split('/')[4] // the router the cancel is under
           return route.fulfill({ json: { ...RUNNING, status: 'cancelled' } })
         },
       )
@@ -1091,11 +1091,11 @@ test.describe('Complexity Router', () => {
     })
 
     test("should review a draft's impact and apply it from the draft bar", async ({ page }) => {
-      let replayed: { tier: string; text: string }[] | null = null
+      let replayed: Record<string, string[]> | null = null
       let replayFloor: unknown
       let replays = 0
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/impact',
         (route) => {
           replays++
           replayed = route.request().postDataJSON().phrases
@@ -1110,13 +1110,9 @@ test.describe('Complexity Router', () => {
       const impact = page.getByTestId('complexity-suggestions-impact')
       await expect(impact).toBeVisible()
       await expect(page).toHaveURL(/view=impact/)
-      // The whole draft bank is replayed, the accepted phrase included.
-      await expect.poll(() => replayed).toEqual([
-        { tier: 'SIMPLE', text: 'hello' },
-        { tier: 'SIMPLE', text: 'where is my refund' },
-        { tier: 'MEDIUM', text: 'summarize this support thread' },
-        { tier: 'COMPLEX', text: 'design a system' },
-      ])
+      // The staged phrase is sent, keyed by its tier; the gateway adds it to
+      // the router's saved phrases for the replay.
+      await expect.poll(() => replayed).toEqual({ SIMPLE: ['where is my refund'] })
       await expect(page.getByTestId('complexity-suggestions-impact-summary')).toContainText('214 requests (33.4%) would change tier.')
       // One draft, one replay: an answer must not set off another request.
       await page.waitForTimeout(1500)
@@ -1141,7 +1137,7 @@ test.describe('Complexity Router', () => {
 
     test('should keep the impact view and say why when applying the draft fails', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/impact',
         (route) => route.fulfill({ json: IMPACT }),
       )
       // Registered last, so it answers saves first; reads fall through.
@@ -1164,9 +1160,25 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-suggestions-draft-bar')).toBeVisible()
     })
 
+    test('should show the list for an impact link with nothing staged, and the impact once a group is', async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/impact',
+        (route) => route.fulfill({ json: IMPACT }),
+      )
+      await page.goto('/workspace/model-routers?router=default&tab=suggestions&view=impact')
+      // Nothing staged: the list, not an impact view with nothing to replay.
+      await expect(page.getByTestId('complexity-suggestions-tab')).toBeVisible({ timeout: 10000 })
+      await expect(page.getByTestId('complexity-suggestions-impact')).toHaveCount(0)
+      await expect(page).toHaveURL(/view=impact/)
+
+      // The view is kept, so staging a group opens it.
+      await page.getByTestId('complexity-suggestion-accept-sug-refund').click()
+      await expect(page.getByTestId('complexity-suggestions-impact-summary')).toBeVisible()
+    })
+
     test('should open the group a flagged phrase came from', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/impact',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/impact',
         (route) => route.fulfill({ json: IMPACT }),
       )
       await page.goto('/workspace/model-routers?router=default&tab=suggestions')
@@ -1193,7 +1205,7 @@ test.describe('Complexity Router', () => {
 
     test('should warn about a phrase that repeats the bank even with no example to route', async ({ page }) => {
       await page.route(
-        (url) => url.pathname === '/api/routing/complexity-suggestions/test',
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions/test',
         (route) => {
           const body = route.request().postDataJSON()
           return route.fulfill({

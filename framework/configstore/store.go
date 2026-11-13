@@ -375,6 +375,9 @@ type ConfigStore interface {
 	GetModelRouter(ctx context.Context, id string) (*ModelRouter, error)
 	CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
 	UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	// EditModelRouter applies edit to the stored router under its row lock and
+	// saves what edit changed; see RDBConfigStore.EditModelRouter.
+	EditModelRouter(ctx context.Context, id string, edit func(*ModelRouter) (bool, error)) (*ModelRouter, error)
 	DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error
 	ResetModelRouter(ctx context.Context, id string, defaults *ComplexityAnalyzerConfig) (*ModelRouter, error)
 	// SetModelRouterTargets replaces the model each tier of a saved router gets.

@@ -2266,7 +2266,7 @@
 				"impact": {
 					"back": "Sugerencias",
 					"replaying": "Reproduciendo solicitudes recientes contra el borrador…",
-					"emptyBank": "Las listas de frases del borrador están vacías, así que no hay nada que reproducir.",
+					"emptyBank": "No hay frases preparadas, así que no hay nada que reproducir.",
 					"failed": "No se pudo reproducir el borrador: {{error}}",
 					"retry": "Reintentar",
 					"source_one": "Reproducción del último {{count}} día · {{requests}} solicitudes capturadas · borrador vs. activo",

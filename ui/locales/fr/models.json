@@ -2266,7 +2266,7 @@
 				"impact": {
 					"back": "Suggestions",
 					"replaying": "Rejeu des requêtes récentes avec le brouillon…",
-					"emptyBank": "Les listes de phrases du brouillon sont vides, il n'y a donc rien à rejouer.",
+					"emptyBank": "Aucune phrase n'est en attente, il n'y a donc rien à rejouer.",
 					"failed": "Impossible de rejouer le brouillon : {{error}}",
 					"retry": "Réessayer",
 					"source_one": "Rejeu du dernier {{count}} jour · {{requests}} requêtes capturées · brouillon vs en production",

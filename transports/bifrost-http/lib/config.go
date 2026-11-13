@@ -1084,7 +1084,7 @@ const FeatureFlagWarp = "warp"
 // semantic model router's Suggestions tab, its settings sheet and the draft
 // bar. Off by default in every build, so a few deployments can try the
 // suggestion APIs before the dashboard ships. It gates only the UI: the
-// /api/routing/complexity-suggestions routes, request capture and scheduled
+// /api/routing/model-routers/{id}/suggestions routes, request capture and scheduled
 // runs keep working as a router's suggestions settings say, flag on or off.
 // The UI references the same id in ui/lib/constants/featureFlags.ts.
 const FeatureFlagPhraseSuggestions = "phrase-suggestions"
