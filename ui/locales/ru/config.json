@@ -1705,14 +1705,15 @@
 		"collectorsLabel": "Коллекторы",
 		"collectorEndpointLabel": "Адрес коллектора",
 		"collectorHeadersLabel": "Заголовки коллектора",
-		"collectorHeadersHelp": "По одному заголовку в строке в формате <code0>name: env.VARIABLE</code0>. Значения заголовков должны быть ссылками env. или vault., чтобы учётные данные не хранились в конфигурации.",
+		"collectorHeadersHelp": "Значения заголовков должны быть ссылками env. или vault., чтобы учётные данные не хранились в конфигурации.",
 		"addCollector": "Добавить коллектор",
 		"removeCollector": "Удалить коллектор",
 		"dropAttributesLabel": "Удаляемые атрибуты",
 		"dropAttributesHelp": "Ключи атрибутов через запятую, которые удаляются на всех уровнях перед пересылкой, например <code0>prompt</code0>.",
 		"telemetryNoDestination": "Добавьте хотя бы один коллектор, чтобы пересылать телеметрию.",
 		"telemetryEndpointInvalid": "Адрес каждого коллектора должен быть URL http или https либо ссылкой env. или vault.",
-		"telemetryHeaderMalformed": "Записывайте каждый заголовок коллектора в формате name: value.",
+		"telemetryHeaderMalformed": "Укажите имя и значение для каждого заголовка коллектора.",
+		"telemetryHeaderConflict": "У одного коллектора два заголовка с одинаковым именем. Переименуйте или удалите один из них.",
 		"telemetryHeaderNotReference": "Заголовок {{name}} должен быть ссылкой env. или vault."
 	},
 	"gateways": {

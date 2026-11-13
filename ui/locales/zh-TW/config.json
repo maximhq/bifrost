@@ -1652,14 +1652,15 @@
 		"collectorsLabel": "收集器",
 		"collectorEndpointLabel": "收集器端點",
 		"collectorHeadersLabel": "收集器標頭",
-		"collectorHeadersHelp": "每行一個標頭，格式為 <code0>name: env.VARIABLE</code0>。標頭值必須是 env. 或 vault. 參照，這樣設定中不會儲存任何憑證。",
+		"collectorHeadersHelp": "標頭值必須是 env. 或 vault. 參照，這樣設定中不會儲存任何憑證。",
 		"addCollector": "新增收集器",
 		"removeCollector": "移除收集器",
 		"dropAttributesLabel": "移除屬性",
 		"dropAttributesHelp": "以逗號分隔的屬性鍵，轉送前會在所有層級移除，例如 <code0>prompt</code0>。",
 		"telemetryNoDestination": "請至少新增一個收集器以轉送遙測資料。",
 		"telemetryEndpointInvalid": "每個收集器端點必須是 http 或 https URL，或是 env. 或 vault. 參照。",
-		"telemetryHeaderMalformed": "請以 name: value 格式填寫每個收集器標頭。",
+		"telemetryHeaderMalformed": "請為每個收集器標頭填寫名稱和值。",
+		"telemetryHeaderConflict": "同一收集器中有兩個同名標頭。請重新命名或刪除其中一個。",
 		"telemetryHeaderNotReference": "{{name}} 標頭必須是 env. 或 vault. 參照。"
 	},
 	"gateways": {

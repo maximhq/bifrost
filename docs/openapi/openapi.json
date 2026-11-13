@@ -136088,17 +136088,57 @@
                                   "type": "object",
                                   "properties": {
                                     "endpoint": {
-                                      "type": "string",
-                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                                      "oneOf": [
+                                        {
+                                          "type": "string",
+                                          "description": "Collector URL or an env. reference (requests)."
+                                        },
+                                        {
+                                          "type": "object",
+                                          "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                          "properties": {
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "ref": {
+                                              "type": "string"
+                                            },
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ],
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax (\"env.MY_VAR\"). Responses return it as an object.\n"
                                     },
                                     "headers": {
                                       "type": "object",
+                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references; plain-text values are refused so no collector credential is stored in the config. Responses return each value as an object.\n",
                                       "additionalProperties": {
-                                        "type": "string",
-                                        "pattern": "^(env|vault)\\.",
-                                        "description": "An env. or vault. reference; plain-text values are refused so no collector credential is stored in the config."
-                                      },
-                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references."
+                                        "oneOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "^(env|vault)\\."
+                                          },
+                                          {
+                                            "type": "object",
+                                            "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                            "properties": {
+                                              "value": {
+                                                "type": "string"
+                                              },
+                                              "ref": {
+                                                "type": "string"
+                                              },
+                                              "type": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
                                     }
                                   },
                                   "required": [
@@ -136115,6 +136155,14 @@
                                 },
                                 "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
                               }
+                            },
+                            "if": {
+                              "properties": { "enabled": { "const": true } },
+                              "required": ["enabled"]
+                            },
+                            "then": {
+                              "required": ["destinations"],
+                              "properties": { "destinations": { "minItems": 1 } }
                             },
                             "additionalProperties": false
                           }
@@ -136738,17 +136786,57 @@
                                   "type": "object",
                                   "properties": {
                                     "endpoint": {
-                                      "type": "string",
-                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                                      "oneOf": [
+                                        {
+                                          "type": "string",
+                                          "description": "Collector URL or an env. reference (requests)."
+                                        },
+                                        {
+                                          "type": "object",
+                                          "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                          "properties": {
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "ref": {
+                                              "type": "string"
+                                            },
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ],
+                                      "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax (\"env.MY_VAR\"). Responses return it as an object.\n"
                                     },
                                     "headers": {
                                       "type": "object",
+                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references; plain-text values are refused so no collector credential is stored in the config. Responses return each value as an object.\n",
                                       "additionalProperties": {
-                                        "type": "string",
-                                        "pattern": "^(env|vault)\\.",
-                                        "description": "An env. or vault. reference; plain-text values are refused so no collector credential is stored in the config."
-                                      },
-                                      "description": "Headers sent with every export, for example authorization. Values must be env. or vault. references."
+                                        "oneOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "^(env|vault)\\."
+                                          },
+                                          {
+                                            "type": "object",
+                                            "description": "A secret-bearing value as returned in responses; value is redacted when it comes from a reference.",
+                                            "properties": {
+                                              "value": {
+                                                "type": "string"
+                                              },
+                                              "ref": {
+                                                "type": "string"
+                                              },
+                                              "type": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
                                     }
                                   },
                                   "required": [
@@ -136765,6 +136853,14 @@
                                 },
                                 "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
                               }
+                            },
+                            "if": {
+                              "properties": { "enabled": { "const": true } },
+                              "required": ["enabled"]
+                            },
+                            "then": {
+                              "required": ["destinations"],
+                              "properties": { "destinations": { "minItems": 1 } }
                             },
                             "additionalProperties": false
                           }

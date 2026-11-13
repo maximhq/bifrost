@@ -1657,14 +1657,15 @@
 		"collectorsLabel": "Collecteurs",
 		"collectorEndpointLabel": "Point de terminaison du collecteur",
 		"collectorHeadersLabel": "En-têtes du collecteur",
-		"collectorHeadersHelp": "Un en-tête par ligne au format <code0>nom: env.VARIABLE</code0>. Les valeurs doivent être des références env. ou vault., afin qu’aucun identifiant ne soit stocké dans la configuration.",
+		"collectorHeadersHelp": "Les valeurs doivent être des références env. ou vault., afin qu’aucun identifiant ne soit stocké dans la configuration.",
 		"addCollector": "Ajouter un collecteur",
 		"removeCollector": "Supprimer le collecteur",
 		"dropAttributesLabel": "Attributs à supprimer",
 		"dropAttributesHelp": "Clés d’attribut séparées par des virgules, supprimées à tous les niveaux avant le transfert, par exemple <code0>prompt</code0>.",
 		"telemetryNoDestination": "Ajoutez au moins un collecteur pour transférer la télémétrie.",
 		"telemetryEndpointInvalid": "Chaque point de terminaison de collecteur doit être une URL http ou https, ou une référence env. ou vault.",
-		"telemetryHeaderMalformed": "Écrivez chaque en-tête du collecteur au format nom: valeur.",
+		"telemetryHeaderMalformed": "Indiquez un nom et une valeur pour chaque en-tête du collecteur.",
+		"telemetryHeaderConflict": "Deux en-têtes d’un même collecteur portent le même nom. Renommez-en un ou supprimez-le.",
 		"telemetryHeaderNotReference": "L’en-tête {{name}} doit être une référence env. ou vault."
 	},
 	"gateways": {

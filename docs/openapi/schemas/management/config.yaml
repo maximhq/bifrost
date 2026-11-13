@@ -412,18 +412,24 @@ ClientConfig:
                         required: [endpoint]
                         properties:
                           endpoint:
-                            type: string
+                            oneOf:
+                              - type: string
+                                description: Collector URL or an env. reference (requests).
+                              - $ref: '#/SecretVarObject'
                             description: >
                               Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}.
-                              Supports env var syntax ("env.MY_VAR").
+                              Supports env var syntax ("env.MY_VAR"). Responses return it as an object.
                           headers:
                             type: object
                             description: >
                               Headers sent with every export, for example authorization. Values must be env. or vault.
                               references; plain-text values are refused so no collector credential is stored in the config.
+                              Responses return each value as an object.
                             additionalProperties:
-                              type: string
-                              pattern: '^(env|vault)\.'
+                              oneOf:
+                                - type: string
+                                  pattern: '^(env|vault)\.'
+                                - $ref: '#/SecretVarObject'
                         additionalProperties: false
                     drop_attributes:
                       type: array
@@ -431,6 +437,16 @@ ClientConfig:
                         type: string
                         minLength: 1
                       description: Attribute keys removed at every level before forwarding, for example "prompt".
+                  if:
+                    properties:
+                      enabled:
+                        const: true
+                    required: [enabled]
+                  then:
+                    required: [destinations]
+                    properties:
+                      destinations:
+                        minItems: 1
                   additionalProperties: false
               additionalProperties: false
           additionalProperties: false
@@ -596,3 +612,15 @@ UpdateConfigRequest:
       admin_password: env.BIFROST_ADMIN_PASSWORD
       is_enabled: true
       setup_token: <your-setup-token>
+
+SecretVarObject:
+  type: object
+  description: A secret-bearing value as returned in responses; value is redacted when it comes from a reference.
+  properties:
+    value:
+      type: string
+    ref:
+      type: string
+    type:
+      type: string
+  additionalProperties: false

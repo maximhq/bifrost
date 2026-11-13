@@ -1633,14 +1633,15 @@
 		"collectorsLabel": "Recolectores",
 		"collectorEndpointLabel": "Endpoint del recolector",
 		"collectorHeadersLabel": "Encabezados del recolector",
-		"collectorHeadersHelp": "Un encabezado por línea con el formato <code0>nombre: env.VARIABLE</code0>. Los valores deben ser referencias env. o vault., para que no se guarde ninguna credencial en la configuración.",
+		"collectorHeadersHelp": "Los valores deben ser referencias env. o vault., para que no se guarde ninguna credencial en la configuración.",
 		"addCollector": "Añadir recolector",
 		"removeCollector": "Quitar recolector",
 		"dropAttributesLabel": "Descartar atributos",
 		"dropAttributesHelp": "Claves de atributo separadas por comas que se eliminan en todos los niveles antes de reenviar, por ejemplo <code0>prompt</code0>.",
 		"telemetryNoDestination": "Añade al menos un recolector para reenviar la telemetría.",
 		"telemetryEndpointInvalid": "Cada endpoint de recolector debe ser una URL http o https, o una referencia env. o vault.",
-		"telemetryHeaderMalformed": "Escribe cada encabezado del recolector como nombre: valor.",
+		"telemetryHeaderMalformed": "Indica un nombre y un valor para cada encabezado del recolector.",
+		"telemetryHeaderConflict": "Dos encabezados de un mismo recolector tienen el mismo nombre. Cambia el nombre de uno o elimínalo.",
 		"telemetryHeaderNotReference": "El encabezado {{name}} debe ser una referencia env. o vault."
 	},
 	"gateways": {

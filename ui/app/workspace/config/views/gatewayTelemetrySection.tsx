@@ -1,14 +1,15 @@
 import { Button } from "@/components/ui/button";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { Plus, Trash2 } from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { newDestinationId, type TelemetryDestinationDraft, type TelemetryDraft } from "./gatewayTelemetrySection.utils";
 
 interface GatewayTelemetrySectionProps {
 	value: TelemetryDraft;
-	onChange: (value: TelemetryDraft) => void;
+	onChange: Dispatch<SetStateAction<TelemetryDraft>>;
 	disabled: boolean;
 }
 
@@ -17,9 +18,10 @@ interface GatewayTelemetrySectionProps {
 // it with the rest of the gateway settings.
 export default function GatewayTelemetrySection({ value, onChange, disabled }: GatewayTelemetrySectionProps) {
 	const { t } = useTranslation("config");
-	const update = (patch: Partial<TelemetryDraft>) => onChange({ ...value, ...patch });
+	// Functional updates: the headers table can report a conflict and an edit in one event.
+	const update = (patch: Partial<TelemetryDraft>) => onChange((prev) => ({ ...prev, ...patch }));
 	const updateRow = (id: string, patch: Partial<TelemetryDestinationDraft>) =>
-		update({ destinations: value.destinations.map((d) => (d.id === id ? { ...d, ...patch } : d)) });
+		onChange((prev) => ({ ...prev, destinations: prev.destinations.map((d) => (d.id === id ? { ...d, ...patch } : d)) }));
 
 	return (
 		<div className="space-y-3 rounded-sm border p-4" data-testid="claude-code-telemetry">
@@ -41,7 +43,7 @@ export default function GatewayTelemetrySection({ value, onChange, disabled }: G
 			</div>
 
 			<p className="text-sm font-medium">{t("claudeCode.collectorsLabel")}</p>
-			{value.destinations.map((d) => (
+			{value.destinations.map((d, i) => (
 				<div key={d.id} className="space-y-2 rounded-sm border p-3" data-testid="claude-code-telemetry-destination">
 					<div className="flex items-center gap-2">
 						<Input
@@ -59,33 +61,40 @@ export default function GatewayTelemetrySection({ value, onChange, disabled }: G
 							size="icon"
 							aria-label={t("claudeCode.removeCollector")}
 							data-testid="claude-code-telemetry-remove-btn"
-							onClick={() => update({ destinations: value.destinations.filter((row) => row.id !== d.id) })}
+							onClick={() => onChange((prev) => ({ ...prev, destinations: prev.destinations.filter((row) => row.id !== d.id) }))}
 							disabled={disabled}
 						>
 							<Trash2 className="h-4 w-4" />
 						</Button>
 					</div>
-					<Textarea
+					<HeadersTable
+						label={t("claudeCode.collectorHeadersLabel")}
 						value={d.headers}
-						// i18n-ignore: a header example, not prose
-						placeholder="authorization: env.OTEL_COLLECTOR_TOKEN"
-						aria-label={t("claudeCode.collectorHeadersLabel")}
-						data-testid="claude-code-telemetry-headers-input"
-						className="min-h-16 font-mono text-xs"
-						onChange={(e) => updateRow(d.id, { headers: e.target.value })}
+						onChange={(headers) => updateRow(d.id, { headers })}
+						// A conflict on the empty add row has nothing to save, so only held rows count.
+						onConflictsChange={(conflicts, headers) =>
+							updateRow(d.id, { headerConflict: [...conflicts.keys()].some((row) => row < Object.keys(headers).length) })
+						}
+						// i18n-ignore: a header name example, not prose
+						keyPlaceholder="authorization"
+						// i18n-ignore: a reference example, not prose
+						valuePlaceholder="env.OTEL_COLLECTOR_TOKEN"
+						testIdPrefix={`claude-code-telemetry-header-${i}`}
+						keepClearedNames
+						useSecretVarInput
 						disabled={disabled}
 					/>
 				</div>
 			))}
-			<p className="text-muted-foreground text-xs">
-				<Trans t={t} i18nKey="claudeCode.collectorHeadersHelp" components={{ code0: <code className="text-xs" /> }} />
-			</p>
+			<p className="text-muted-foreground text-xs">{t("claudeCode.collectorHeadersHelp")}</p>
 			<Button
 				type="button"
 				variant="outline"
 				size="sm"
 				data-testid="claude-code-telemetry-add-btn"
-				onClick={() => update({ destinations: [...value.destinations, { id: newDestinationId(), endpoint: "", headers: "" }] })}
+				onClick={() =>
+					onChange((prev) => ({ ...prev, destinations: [...prev.destinations, { id: newDestinationId(), endpoint: "", headers: {} }] }))
+				}
 				disabled={disabled}
 			>
 				<Plus className="h-4 w-4" />

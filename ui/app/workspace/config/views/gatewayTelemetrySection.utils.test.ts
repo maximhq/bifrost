@@ -7,9 +7,11 @@ import {
 	type TelemetryDraft,
 } from "./gatewayTelemetrySection.utils";
 
+const envRef = (ref: string) => ({ value: "", ref, type: "env" as const });
+
 const draft = (over: Partial<TelemetryDraft> = {}): TelemetryDraft => ({
 	enabled: true,
-	destinations: [{ id: "a", endpoint: "https://otel.example.com", headers: "authorization: env.OTEL_TOKEN" }],
+	destinations: [{ id: "a", endpoint: "https://otel.example.com", headers: { authorization: envRef("env.OTEL_TOKEN") } }],
 	dropAttributes: "prompt, tool_input",
 	...over,
 });
@@ -37,7 +39,7 @@ describe("telemetryDraftFromConfig", () => {
 			drop_attributes: ["prompt"],
 		};
 		const d = telemetryDraftFromConfig(stored);
-		expect(d.destinations[0].headers).toBe("authorization: env.OTEL_TOKEN");
+		expect(d.destinations[0].headers).toEqual({ authorization: envRef("env.OTEL_TOKEN") });
 		expect(telemetryPayloadFromDraft(d)).toEqual({
 			telemetry: {
 				enabled: true,
@@ -56,7 +58,7 @@ describe("telemetryDraftKey", () => {
 	it("ignores row ids and whitespace so an untouched form is unchanged", () => {
 		const a = draft();
 		const b = draft({
-			destinations: [{ id: "other", endpoint: " https://otel.example.com ", headers: "authorization: env.OTEL_TOKEN\n" }],
+			destinations: [{ id: "other", endpoint: " https://otel.example.com ", headers: { "authorization ": envRef("env.OTEL_TOKEN ") } }],
 			dropAttributes: "prompt,tool_input",
 		});
 		expect(telemetryDraftKey(a)).toBe(telemetryDraftKey(b));
@@ -66,7 +68,7 @@ describe("telemetryDraftKey", () => {
 
 describe("telemetryPayloadFromDraft", () => {
 	it("builds the payload, ignoring empty rows", () => {
-		const d = draft({ destinations: [...draft().destinations, { id: "b", endpoint: "  ", headers: "" }] });
+		const d = draft({ destinations: [...draft().destinations, { id: "b", endpoint: "  ", headers: {} }] });
 		expect(telemetryPayloadFromDraft(d)).toEqual({
 			telemetry: {
 				enabled: true,
@@ -76,17 +78,26 @@ describe("telemetryPayloadFromDraft", () => {
 		});
 	});
 
+	it("refuses to save while the headers table holds a name conflict", () => {
+		const d = draft({ destinations: [{ ...draft().destinations[0], headerConflict: true }] });
+		expect(telemetryPayloadFromDraft(d).error).toEqual({ kind: "headerConflict" });
+	});
+
 	it("refuses what the server refuses", () => {
 		expect(telemetryPayloadFromDraft(draft({ destinations: [] })).error).toEqual({ kind: "noDestination" });
-		expect(telemetryPayloadFromDraft(draft({ destinations: [{ id: "a", endpoint: "ftp://x", headers: "" }] })).error).toEqual({
+		expect(telemetryPayloadFromDraft(draft({ destinations: [{ id: "a", endpoint: "ftp://x", headers: {} }] })).error).toEqual({
 			kind: "endpointInvalid",
 		});
 		expect(
-			telemetryPayloadFromDraft(draft({ destinations: [{ id: "a", endpoint: "https://x.example.com", headers: "authorization" }] })).error,
+			telemetryPayloadFromDraft(
+				draft({ destinations: [{ id: "a", endpoint: "https://x.example.com", headers: { authorization: { value: "", ref: "" } } }] }),
+			).error,
 		).toEqual({ kind: "headerMalformed" });
 		expect(
 			telemetryPayloadFromDraft(
-				draft({ destinations: [{ id: "a", endpoint: "https://x.example.com", headers: "authorization: Bearer abc" }] }),
+				draft({
+					destinations: [{ id: "a", endpoint: "https://x.example.com", headers: { authorization: { value: "Bearer abc", ref: "" } } }],
+				}),
 			).error,
 		).toEqual({
 			kind: "headerNotReference",
@@ -97,7 +108,7 @@ describe("telemetryPayloadFromDraft", () => {
 	it("allows an env endpoint and keeps collectors while forwarding is paused", () => {
 		expect(
 			telemetryPayloadFromDraft(
-				draft({ enabled: false, destinations: [{ id: "a", endpoint: "env.OTEL_ENDPOINT", headers: "" }], dropAttributes: "" }),
+				draft({ enabled: false, destinations: [{ id: "a", endpoint: "env.OTEL_ENDPOINT", headers: {} }], dropAttributes: "" }),
 			),
 		).toEqual({
 			telemetry: { enabled: false, destinations: [{ endpoint: "env.OTEL_ENDPOINT" }] },

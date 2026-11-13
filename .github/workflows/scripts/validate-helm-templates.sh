@@ -1368,6 +1368,9 @@ check_config "gateways: omitted by default" \
   'assert "gateways" not in cfg.get("client", {}).get("oauth2_server_config", {}), "gateways rendered without being set"'
 expect_render_failure "gateways: Claude Code requires issuerUrl" "issuerUrl is required" \
   --set "$GW.gateways.claudeCode.enabled=true"
+expect_render_failure "gateways: enabled telemetry needs a destination" "destinations" \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set "$GW.gateways.claudeCode.telemetry.enabled=true"
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml

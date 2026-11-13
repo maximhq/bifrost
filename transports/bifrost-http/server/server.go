@@ -4238,10 +4238,11 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
 	}
+	s.stopClientGateways()
 }
 
 // stopClientGateways drains queued client gateway telemetry, for at most five
-// seconds, on every shutdown path that stops the OAuth2 sweep worker.
+// seconds, on every shutdown path, including a failed Serve.
 func (s *BifrostHTTPServer) stopClientGateways() {
 	if s.ClientGateways == nil {
 		return

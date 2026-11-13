@@ -1623,14 +1623,15 @@
 		"collectorsLabel": "收集器",
 		"collectorEndpointLabel": "收集器端点",
 		"collectorHeadersLabel": "收集器请求头",
-		"collectorHeadersHelp": "每行一个请求头，格式为 <code0>name: env.VARIABLE</code0>。请求头的值必须是 env. 或 vault. 引用，这样配置中不会保存任何凭据。",
+		"collectorHeadersHelp": "请求头的值必须是 env. 或 vault. 引用，这样配置中不会保存任何凭据。",
 		"addCollector": "添加收集器",
 		"removeCollector": "移除收集器",
 		"dropAttributesLabel": "移除属性",
 		"dropAttributesHelp": "以逗号分隔的属性键，转发前会在所有层级移除，例如 <code0>prompt</code0>。",
 		"telemetryNoDestination": "请至少添加一个收集器以转发遥测数据。",
 		"telemetryEndpointInvalid": "每个收集器端点必须是 http 或 https URL，或者 env. 或 vault. 引用。",
-		"telemetryHeaderMalformed": "请按 name: value 的格式填写每个收集器请求头。",
+		"telemetryHeaderMalformed": "请为每个收集器请求头填写名称和值。",
+		"telemetryHeaderConflict": "同一收集器中有两个同名请求头。请重命名或删除其中一个。",
 		"telemetryHeaderNotReference": "{{name}} 请求头必须是 env. 或 vault. 引用。"
 	},
 	"gateways": {

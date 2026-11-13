@@ -78,14 +78,15 @@ test.describe('Claude Code gateway settings', () => {
     // A plain-text credential is refused before anything is sent.
     let puts = 0
     page.on('request', r => { if (new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT') puts++ })
-    await claudeCodeGatewayPage.telemetryHeadersInput.fill('authorization: Bearer abc')
+    await claudeCodeGatewayPage.telemetryHeaderNameInput.fill('authorization')
+    await claudeCodeGatewayPage.telemetryHeaderValueInput.fill('Bearer abc')
     await claudeCodeGatewayPage.saveBtn.click()
     const refusal = page.getByText('The authorization header must be an env. or vault. reference.')
     await expect(refusal).toBeVisible()
     expect(puts).toBe(0)
     await expect(refusal).toBeHidden({ timeout: 15000 })
 
-    await claudeCodeGatewayPage.telemetryHeadersInput.fill('authorization: env.OTEL_COLLECTOR_TOKEN')
+    await claudeCodeGatewayPage.telemetryHeaderValueInput.fill('env.OTEL_COLLECTOR_TOKEN')
     await claudeCodeGatewayPage.telemetryDropInput.fill('prompt, tool_input')
     const submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
