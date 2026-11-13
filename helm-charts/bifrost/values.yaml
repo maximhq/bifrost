@@ -1962,7 +1962,8 @@ bifrost:
   # Model routers: named complexity classifiers that each take the requests their routing matches,
   # after governance.routingRules. Each entry takes id, name and description, the settings of
   # governance.complexityAnalyzerConfig (keywords, classifier, semantic, decision, llm, session,
-  # tier_boundaries, suggestions), targets: the model each tier gets, and routing:
+  # tier_boundaries), suggestions (phrase suggestions, which only routers make), targets: the
+  # model each tier gets, and routing:
   # which requests it takes. Routers are tried narrowest scope first (virtual key, user, team, customer,
   # then global), by priority within a scope; the first enabled router whose condition holds classifies the
   # request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model.

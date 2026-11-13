@@ -264,6 +264,24 @@ func TestComplexityConfigCapturesNothing(t *testing.T) {
 	assert.Empty(t, captureNamespacesOf(t, p))
 }
 
+// A suggestions block stored on the complexity config before suggestions
+// moved to routers is dropped when the config is served, so even an invalid
+// one (on, with no model) cannot send the config to the defaults.
+func TestComplexityConfigDropsStoredSuggestions(t *testing.T) {
+	p := newCapturePlugin(t, nil)
+	stored := captureTestConfig(&configstore.ComplexitySuggestionsConfig{Enabled: true, SampleRate: 1})
+	stored.LLM = nil // enabled suggestions with no model of their own or the llm block's are invalid
+	_, err := complexity.ValidateAndNormalize(stored)
+	require.Error(t, err, "the stored block alone would fail validation")
+
+	require.NoError(t, p.storeComplexityAnalyzerConfig(stored))
+	served := p.complexityConfig.Load()
+	require.NotNil(t, served)
+	assert.Nil(t, served.Suggestions)
+	assert.Equal(t, stored.Keywords.SimpleKeywords, served.Keywords.SimpleKeywords, "the config is served as written, not the defaults")
+	assert.NotNil(t, stored.Suggestions, "the caller's config is not modified")
+}
+
 // Deleting a router drops what it captured, and only that.
 func TestRemoveModelRouterDropsItsCaptures(t *testing.T) {
 	p := newCapturePlugin(t, &configstore.ComplexitySuggestionsConfig{Enabled: true, SampleRate: 1})

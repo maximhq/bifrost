@@ -2786,6 +2786,10 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, tt.analyzer)
+			// Suggestions are a model router's; their rules are checked there.
+			if strings.Contains(tt.analyzer, `"suggestions"`) {
+				config = fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(tt.analyzer))
+			}
 			err := validateConfig(t, compiled, config)
 			if tt.wantError && err == nil {
 				t.Fatal("expected schema validation to fail")
@@ -2808,8 +2812,8 @@ func TestSchemaSuggestionsModelMatchesGoTrimming(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return validateConfig(t, compiled, fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`,
-			complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":`+string(block))))
+		return validateConfig(t, compiled, fmt.Sprintf(`{"model_routers":[%s]}`,
+			modelRouterSchemaConfig(complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":`+string(block)))))
 	}
 	for r := rune(0); r <= unicode.MaxRune; r++ {
 		if !unicode.IsSpace(r) {
@@ -2836,6 +2840,28 @@ const (
 
 func complexityAnalyzerSchemaConfig(fields ...string) string {
 	return `{"keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]}` + strings.Join(fields, "") + `}`
+}
+
+// modelRouterSchemaConfig turns a complexityAnalyzerSchemaConfig into a
+// model_routers entry with the same settings.
+func modelRouterSchemaConfig(analyzer string) string {
+	return `{"id":"suggestions-router","name":"Suggestions router",` + strings.TrimPrefix(analyzer, "{")
+}
+
+// The complexity analyzer config makes no phrase suggestions: only model
+// routers do, so config.json refuses a suggestions block on it, enabled or
+// not, and takes the same block on a router.
+func TestSchemaComplexityAnalyzerConfigRefusesSuggestions(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, block := range []string{`{"enabled":true,"provider":"openai","model":"gpt-5"}`, `{"enabled":false}`} {
+		analyzer := complexityAnalyzerSchemaConfig(suggestionsSchemaPrereqs, `,"suggestions":`+block)
+		if err := validateConfig(t, compiled, fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, analyzer)); err == nil {
+			t.Fatalf("the complexity config must refuse suggestions %s", block)
+		}
+		if err := validateConfig(t, compiled, fmt.Sprintf(`{"model_routers":[%s]}`, modelRouterSchemaConfig(analyzer))); err != nil {
+			t.Fatalf("a model router must take suggestions %s: %v", block, err)
+		}
+	}
 }
 
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.

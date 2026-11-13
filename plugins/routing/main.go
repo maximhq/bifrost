@@ -270,10 +270,18 @@ func (p *RoutingPlugin) ReloadComplexityAnalyzerConfig(config *complexity.Analyz
 }
 
 // storeComplexityAnalyzerConfig validates and installs the runtime classifier configuration:
-// the Complexity Router page's config, which routing rules read complexity_tier from and
-// request capture for phrase suggestions follows. Model routers are configured apart from
-// it; see ReloadModelRouter.
+// the Complexity Router page's config, which routing rules read complexity_tier from.
+// Model routers are configured apart from it; see ReloadModelRouter.
+//
+// The config makes no phrase suggestions: those are a model router's. A
+// suggestions block stored before they moved to routers is dropped here, so
+// an incomplete one cannot fail validation and send the config to defaults.
 func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	if config != nil && config.Suggestions != nil {
+		withoutSuggestions := *config
+		withoutSuggestions.Suggestions = nil
+		config = &withoutSuggestions
+	}
 	resolved, err := p.resolveRouterConfig(config)
 	if err != nil {
 		return err
