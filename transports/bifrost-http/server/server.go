@@ -33,6 +33,7 @@ import (
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
+	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
@@ -360,6 +361,10 @@ type BifrostHTTPServer struct {
 	// agentGatewayManager backs the gRPC binding, which needs the manager
 	// directly rather than through the HTTP handler.
 	agentGatewayManager *agent.Manager
+	// TraceIngest receives traces pushed by observability SDKs. Nil without a logs store and a config store.
+	TraceIngest        *traceingest.Service
+	TraceIngestHandler *handlers.TraceIngestHandler
+
 	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
 	// the management handler a clustered server replays relay changes through.
 	relays                 *relay.Manager
@@ -2840,6 +2845,27 @@ func (s *BifrostHTTPServer) virtualKeyCache() handlers.VirtualKeyCache {
 	return nil
 }
 
+// RegisterTraceIngestRoutes starts the trace ingest service and mounts the /tracing routes. It is a
+// no-op without a logs store and a config store: there is nowhere to keep traces or tracing keys.
+func (s *BifrostHTTPServer) RegisterTraceIngestRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
+	if s.Config.LogsStore == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	s.TraceIngest = traceingest.NewService(s.Config.LogsStore, s.Config.ConfigStore, traceingest.Config{
+		RetentionDays: func() int {
+			if s.Config.ClientConfig == nil {
+				return 0
+			}
+			return s.Config.ClientConfig.LogRetentionDays
+		},
+		ContentLoggingDisabled: func() bool {
+			return s.Config.ClientConfig != nil && s.Config.ClientConfig.DisableContentLogging
+		},
+	}, logger)
+	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
+	s.TraceIngestHandler.RegisterRoutes(s.Router, middlewares...)
+}
+
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
@@ -3828,6 +3854,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
+	// Tracing ingest sits outside the LLM pipeline: SDKs authenticate with a tracing key, which the
+	// handler checks itself, so neither dashboard auth nor virtual-key auth applies to these routes.
+	s.RegisterTraceIngestRoutes(commonMiddlewares...)
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
@@ -4010,6 +4039,10 @@ func (s *BifrostHTTPServer) Start() error {
 			s.shutdownEvals()
 			logger.Info("closing agent gateway...")
 			s.CloseAgentGateway()
+			if s.TraceIngest != nil {
+				// Queued trace batches are written before the stores close.
+				s.TraceIngest.Close()
+			}
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
