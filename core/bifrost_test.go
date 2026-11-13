@@ -9691,3 +9691,29 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
 	}
 }
+
+// TestArmDeliveryTimerCreatesTheTimerOnFirstUse pins that a request worker holds no timer until it
+// hands off its first stream. Every provider parks its whole worker pool at start, a thousand
+// workers by default, so a timer made per worker up front was megabytes held by workers that had
+// served nothing. After the first use the same timer is rearmed, never replaced.
+func TestArmDeliveryTimerCreatesTheTimerOnFirstUse(t *testing.T) {
+	first := armDeliveryTimer(nil, time.Hour)
+	if first == nil {
+		t.Fatal("the first use must create the timer")
+	}
+	if !first.Stop() {
+		t.Fatal("a new timer must be armed")
+	}
+	again := armDeliveryTimer(first, 10*time.Millisecond)
+	if again != first {
+		t.Fatal("a later use must rearm the same timer")
+	}
+	select {
+	case <-again.C:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the rearmed timer did not fire")
+	}
+	if allocs := testing.AllocsPerRun(100, func() { armDeliveryTimer(first, time.Hour).Stop() }); allocs != 0 {
+		t.Fatalf("rearming allocated %.0f times", allocs)
+	}
+}

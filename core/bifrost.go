@@ -8195,18 +8195,35 @@ func applyProviderProxySignal(ctx *schemas.BifrostContext, config *schemas.Provi
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
 }
 
+// armDeliveryTimer arms a worker's handoff timer for d, creating it on first use. It returns the
+// timer to keep: the same one once it exists.
+func armDeliveryTimer(timer *time.Timer, d time.Duration) *time.Timer {
+	if timer == nil {
+		return time.NewTimer(d)
+	}
+	timer.Reset(d)
+	return timer
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
 
-	// Reusable timer for the response/error/stream handoff guard below. One timer per
-	// (long-lived) worker, reset per use, instead of a fresh time.After on every request:
-	// time.After leaks a live timer for the full 5s after each request, piling ~5s worth
-	// of timers on the runtime heap under load. Reset/Stop is race-free on Go 1.23+.
-	deliveryTimer := time.NewTimer(time.Hour)
-	deliveryTimer.Stop()
-	defer deliveryTimer.Stop()
+	// Reusable timer for the stream handoff guard below. One timer per (long-lived) worker,
+	// reset per use, instead of a fresh time.After on every request: time.After leaks a live
+	// timer for the full 5s after each request, piling ~5s worth of timers on the runtime heap
+	// under load. Reset/Stop is race-free on Go 1.23+.
+	//
+	// It is created on the worker's first stream handoff, not here. Every provider parks its
+	// whole pool at start (a thousand workers by default), and most of them never serve a
+	// stream: a timer made up front for each was ~200 bytes held by an idle goroutine.
+	var deliveryTimer *time.Timer
+	defer func() {
+		if deliveryTimer != nil {
+			deliveryTimer.Stop()
+		}
+	}()
 
 	for {
 		var req *ChannelMessage
@@ -8709,7 +8726,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Streaming takes no part in the claim; its caller keeps a ctx escape
 				// and may already have released the message back to the pool, so the
 				// guarded send stays. Teardown bills via the provider goroutine.
-				deliveryTimer.Reset(5 * time.Second)
+				deliveryTimer = armDeliveryTimer(deliveryTimer, 5*time.Second)
 				select {
 				case req.Err <- *bifrostError:
 					// Error sent successfully
@@ -8750,7 +8767,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			req.sentAt = time.Now()
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
-				deliveryTimer.Reset(5 * time.Second)
+				deliveryTimer = armDeliveryTimer(deliveryTimer, 5*time.Second)
 				select {
 				case req.ResponseStream <- stream:
 					// Stream sent successfully
