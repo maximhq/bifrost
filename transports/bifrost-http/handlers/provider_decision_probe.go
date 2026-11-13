@@ -108,6 +108,8 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer bifrostCtx.Cancel()
 	bifrost.PrepareContextForInternalRequest(bifrostCtx)
+	// One upstream call: a retry would bill again and replace the error being probed.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyDisableRetries, true)
 	if keyID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
 	}
@@ -159,26 +161,36 @@ func probedRoute(provider schemas.ModelProvider, model string, routing schemas.R
 }
 
 // decisionProbeErrorFrom renders a failed probe for the caller. It applies the
-// client sanitizer every error response gets, then removes the provider's
-// credentials by value and masks userinfo and query values in any URL, since
-// an upstream error can echo the key or the URL it was sent to.
+// client sanitizer every error response gets, then, in every returned string
+// (type, code, and message), removes the provider's credentials by value and
+// masks userinfo and query values in any URL, since an upstream error can echo
+// the key or the URL it was sent to.
 func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) *DecisionProbeError {
 	sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr)
-	out := &DecisionProbeError{StatusCode: sanitized.EffectiveHTTPStatus(), Type: sanitized.Type}
+	scrub := func(text string) string {
+		for _, secret := range secrets {
+			text = strings.ReplaceAll(text, secret, "[redacted]")
+		}
+		return decisionProbeURLPattern.ReplaceAllStringFunc(text, lib.RedactURLCredentials)
+	}
+	scrubPtr := func(text *string) *string {
+		if text == nil {
+			return nil
+		}
+		return schemas.Ptr(scrub(*text))
+	}
+	out := &DecisionProbeError{StatusCode: sanitized.EffectiveHTTPStatus(), Type: scrubPtr(sanitized.Type)}
 	if field := sanitized.Error; field != nil {
 		if field.Type != nil {
-			out.Type = field.Type
+			out.Type = scrubPtr(field.Type)
 		}
-		out.Code = field.Code
+		out.Code = scrubPtr(field.Code)
 		out.Message = field.Message
 		if out.Message == "" && field.Error != nil {
 			out.Message = field.Error.Error()
 		}
 	}
-	for _, secret := range secrets {
-		out.Message = strings.ReplaceAll(out.Message, secret, "[redacted]")
-	}
-	out.Message = decisionProbeURLPattern.ReplaceAllStringFunc(out.Message, lib.RedactURLCredentials)
+	out.Message = scrub(out.Message)
 	return out
 }
 

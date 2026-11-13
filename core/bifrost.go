@@ -7378,6 +7378,11 @@ func executeRequestWithRetries[T any](
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
 
+	// An internal caller that needs the first upstream answer as is (a route probe) asks for
+	// exactly one attempt: a retry would be another billed call and would replace the error
+	// the caller is asking about.
+	disableRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableRetries).(bool)
+
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
@@ -7915,7 +7920,7 @@ func executeRequestWithRetries[T any](
 		// returns false when there is nothing to strip, so the extra attempt is spent
 		// only on requests that carry a token. Runs once per request.
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
+		if !disableRetries && !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
@@ -7929,7 +7934,7 @@ func executeRequestWithRetries[T any](
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
 		}
 
-		if !shouldRetry {
+		if !shouldRetry || disableRetries {
 			break
 		}
 

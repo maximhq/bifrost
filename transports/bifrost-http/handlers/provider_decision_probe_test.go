@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -36,10 +37,25 @@ func (u *decisionProbeUpstream) recorded() ([]map[string]any, []string) {
 	return append([]map[string]any(nil), u.requests...), append([]string(nil), u.auth...)
 }
 
+// probeUpstreamReply is one canned upstream answer.
+type probeUpstreamReply struct {
+	status int
+	body   string
+}
+
 // newDecisionProbeHandler serves status and body from a fake upstream behind
 // a custom provider on the OpenAI base, with one key, and returns a handler
 // whose Bifrost client reaches it.
 func newDecisionProbeHandler(t *testing.T, status int, body string) (*ProviderHandler, *decisionProbeUpstream) {
+	t.Helper()
+	return newDecisionProbeHandlerWithReplies(t, probeUpstreamReply{status: status, body: body})
+}
+
+// newDecisionProbeHandlerWithReplies is newDecisionProbeHandler with the
+// upstream answering each decision request with the next reply in turn, the
+// last one repeating. The provider allows two retries, so a probe that made
+// more than one call would reach the later replies.
+func newDecisionProbeHandlerWithReplies(t *testing.T, replies ...probeUpstreamReply) (*ProviderHandler, *decisionProbeUpstream) {
 	t.Helper()
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
@@ -50,14 +66,15 @@ func newDecisionProbeHandler(t *testing.T, status int, body string) (*ProviderHa
 		var decoded map[string]any
 		_ = json.Unmarshal(raw, &decoded)
 		upstream.mu.Lock()
+		reply := replies[min(len(upstream.requests), len(replies)-1)]
 		if r.URL.Path == "/v1/decisions" {
 			upstream.requests = append(upstream.requests, decoded)
 			upstream.auth = append(upstream.auth, r.Header.Get("Authorization"))
 		}
 		upstream.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
+		w.WriteHeader(reply.status)
+		_, _ = w.Write([]byte(reply.body))
 	}))
 	t.Cleanup(server.Close)
 
@@ -72,7 +89,7 @@ func newDecisionProbeHandler(t *testing.T, status int, body string) (*ProviderHa
 					Models: schemas.WhiteList{"*"},
 					Weight: 1,
 				}},
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10},
+				NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10, MaxRetries: 2, RetryBackoffInitial: time.Millisecond, RetryBackoffMax: time.Millisecond},
 				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 				CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 			},
@@ -151,7 +168,7 @@ func TestProbeDecision_ReportsTheAnsweringRoute(t *testing.T) {
 // code, and message, with the key value and URL credentials removed.
 func TestProbeDecision_MapsUpstreamErrorsWithoutCredentials(t *testing.T) {
 	h, upstream := newDecisionProbeHandler(t, http.StatusUnauthorized,
-		`{"error":{"message":"Incorrect API key provided: `+probeTestSecret+`. Manage keys at https://admin:hunter22@keys.example.com/manage?token=tok-leak","type":"invalid_request_error","code":"invalid_api_key"}}`)
+		`{"error":{"message":"Incorrect API key provided: `+probeTestSecret+`. Manage keys at https://admin:hunter22@keys.example.com/manage?token=tok-leak","type":"invalid_request_error for `+probeTestSecret+`","code":"invalid_api_key https://ops:codepass@keys.example.com/c?sig=code-sig-leak"}}`)
 
 	status, body := probeDecisionForTest(h, probeTestProvider, `{"model":"decider","key_id":"probe-key"}`)
 	if status != fasthttp.StatusOK {
@@ -167,16 +184,16 @@ func TestProbeDecision_MapsUpstreamErrorsWithoutCredentials(t *testing.T) {
 	if result.Error.StatusCode != fasthttp.StatusUnauthorized {
 		t.Fatalf("status_code got %d, want 401", result.Error.StatusCode)
 	}
-	if result.Error.Type == nil || *result.Error.Type != "invalid_request_error" {
-		t.Fatalf("type got %v, want invalid_request_error", result.Error.Type)
+	if result.Error.Type == nil || *result.Error.Type != "invalid_request_error for [redacted]" {
+		t.Fatalf("type got %v, want invalid_request_error for [redacted]", result.Error.Type)
 	}
-	if result.Error.Code == nil || *result.Error.Code != "invalid_api_key" {
-		t.Fatalf("code got %v, want invalid_api_key", result.Error.Code)
+	if result.Error.Code == nil || !strings.HasPrefix(*result.Error.Code, "invalid_api_key https://redacted:redacted@keys.example.com/c?sig=redacted") {
+		t.Fatalf("code got %v, want invalid_api_key with the URL credentials masked", result.Error.Code)
 	}
 	if result.Provider != probeTestProvider || result.Model != "decider" {
 		t.Fatalf("attempted route got %s/%s, want %s/decider", result.Provider, result.Model, probeTestProvider)
 	}
-	for _, leaked := range []string{probeTestSecret, "hunter22", "tok-leak"} {
+	for _, leaked := range []string{probeTestSecret, "hunter22", "tok-leak", "codepass", "code-sig-leak"} {
 		if strings.Contains(string(body), leaked) {
 			t.Fatalf("response leaks %q: %s", leaked, body)
 		}
@@ -219,5 +236,31 @@ func TestProbeDecision_RejectsRoutesItCannotProbe(t *testing.T) {
 	}
 	if requests, _ := upstream.recorded(); len(requests) != 0 {
 		t.Fatalf("upstream got %d decision requests, want none", len(requests))
+	}
+}
+
+// TestProbeDecision_MakesOneUpstreamCall pins that a probe is never retried:
+// the provider allows retries and its first answer is a retryable 503, yet the
+// probe makes exactly one call and reports that 503 rather than the success a
+// retry would have reached.
+func TestProbeDecision_MakesOneUpstreamCall(t *testing.T) {
+	h, upstream := newDecisionProbeHandlerWithReplies(t,
+		probeUpstreamReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`},
+		probeUpstreamReply{status: http.StatusOK, body: `{"model":"decider","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`},
+	)
+
+	status, body := probeDecisionForTest(h, probeTestProvider, `{"model":"decider"}`)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", status, body)
+	}
+	var result DecisionProbeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to decode response: %v; body=%s", err, body)
+	}
+	if requests, _ := upstream.recorded(); len(requests) != 1 {
+		t.Fatalf("upstream got %d decision requests, want exactly 1", len(requests))
+	}
+	if result.OK || result.Error == nil || result.Error.StatusCode != fasthttp.StatusServiceUnavailable {
+		t.Fatalf("expected the first attempt's 503, got %s", body)
 	}
 }
