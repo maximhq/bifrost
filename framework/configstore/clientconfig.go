@@ -2467,6 +2467,17 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Hash the per-client tool sync interval and tool execution timeout (whole
+	// seconds) so editing only these in config.json drifts the hash. 0 means
+	// "use the global setting" and contributes nothing, so entries that omit
+	// them keep matching hashes stored before these fields were hashed.
+	if m.ToolSyncInterval != 0 {
+		hash.Write([]byte("tool_sync_interval:" + strconv.Itoa(m.ToolSyncInterval)))
+	}
+	if m.ToolExecutionTimeout != 0 {
+		hash.Write([]byte("tool_execution_timeout:" + strconv.Itoa(m.ToolExecutionTimeout)))
+	}
+
 	// Hash PerUserDiscovery so flipping it in config.json drifts the hash. Only
 	// true contributes: false is the default every row and every file entry
 	// written before the field existed already has, and a stored hash from
