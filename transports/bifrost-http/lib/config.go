@@ -1307,6 +1307,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 11. Skills registry (after plugins, before framework)
 	loadSkillsRegistry(ctx, config, &configData)
 	// 12. Framework config and pricing manager
+	// PUT /api/config refuses an openapi_url outside the app directory; config.json
+	// gets the same rule. An env reference is checked once resolved, in
+	// ResolveFrameworkPricingConfig.
+	if fc := configData.FrameworkConfig; fc != nil && fc.Pricing != nil && fc.Pricing.OpenAPIURL != nil && !strings.HasPrefix(strings.TrimSpace(*fc.Pricing.OpenAPIURL), "env.") {
+		if err := configstore.ValidateOpenAPIURL(*fc.Pricing.OpenAPIURL); err != nil {
+			return nil, fmt.Errorf("openapi_url %w", err)
+		}
+	}
 	initFrameworkConfig(ctx, config, &configData)
 	// 13. Encryption sync
 	syncEncryption(ctx, config)
@@ -1692,6 +1700,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if err := configstore.ValidatePublicBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
 		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
+	}
+	if err := configstore.ValidatePublicBaseURL(client.BifrostURL.GetValue()); err != nil {
+		logger.Warn("bifrost_url %v; it will be ignored and self URLs will follow the request", err)
+		client.BifrostURL = nil
 	}
 }
 
@@ -7011,6 +7023,7 @@ func ResolveFrameworkPricingConfig(
 	fileMCPLibraryURL := (*string)(nil)
 	fileMCPLibrarySyncSeconds := (*int64)(nil)
 	fileLiveModelsSyncSeconds := (*int64)(nil)
+	fileOpenAPIURL := (*string)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	skipMCPLibraryURLBackfill := false
@@ -7102,6 +7115,30 @@ func ResolveFrameworkPricingConfig(
 				fileMCPLibrarySyncSeconds = &val
 			}
 		}
+		// openapi_url has no default to backfill: unset reads the build's spec. An env
+		// reference that does not resolve, or a value outside the app directory, is
+		// ignored with a warning. An explicit "" is kept: it chooses the build's spec,
+		// so it enters the hash and, once the file changes, clears a stored override.
+		if fileConfig.Pricing.OpenAPIURL != nil {
+			raw := strings.TrimSpace(*fileConfig.Pricing.OpenAPIURL)
+			unresolved := false
+			if strings.HasPrefix(raw, "env.") {
+				resolvedURL, err := envutils.ProcessEnvValue(raw)
+				if err != nil {
+					logger.Warn("openapi_url: env variable not found (%v); using the build's default spec", err)
+					unresolved = true
+				} else {
+					raw = strings.TrimSpace(resolvedURL)
+				}
+			}
+			if !unresolved {
+				if err := configstore.ValidateOpenAPIURL(raw); err != nil {
+					logger.Warn("openapi_url %v; using the build's default spec", err)
+				} else {
+					fileOpenAPIURL = &raw
+				}
+			}
+		}
 		if fileConfig.Pricing.LiveModelsSyncInterval != nil {
 			val := *fileConfig.Pricing.LiveModelsSyncInterval
 			switch {
@@ -7133,6 +7170,7 @@ func ResolveFrameworkPricingConfig(
 	resolvedMCPLibraryURL := &defaultMCPLibraryURL
 	resolvedMCPLibrarySyncInterval := &defaultMCPLibrarySyncSeconds
 	resolvedLiveModelsSyncInterval := &defaultLiveModelsSyncSeconds
+	resolvedOpenAPIURL := nonEmptyOpenAPIURL(fileOpenAPIURL)
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
@@ -7171,7 +7209,7 @@ func ResolveFrameworkPricingConfig(
 	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
 	// Folded into the same predicate so a config.json edit that touches only
 	// live_models_sync_interval still registers as a file change.
-	fileHasHashableOptionalConfig := fileHasHashableMCPConfig || fileLiveModelsSyncSeconds != nil
+	fileHasHashableOptionalConfig := fileHasHashableMCPConfig || fileLiveModelsSyncSeconds != nil || fileOpenAPIURL != nil
 	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableOptionalConfig) {
 		var h string
 		var err error
@@ -7184,6 +7222,7 @@ func ResolveFrameworkPricingConfig(
 				MCPLibraryURL:          mcpHashURL,
 				MCPLibrarySyncInterval: fileMCPLibrarySyncSeconds,
 				LiveModelsSyncInterval: fileLiveModelsSyncSeconds,
+				OpenAPIURL:             fileOpenAPIURL,
 			})
 		} else {
 			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
@@ -7332,6 +7371,20 @@ func ResolveFrameworkPricingConfig(
 		} else {
 			needsDBUpdate = true
 		}
+
+		// openapi_url: the stored value (empty included, the build's default) wins
+		// while the file is unchanged; a changed file that sets it wins and is saved.
+		resolvedOpenAPIURL = nil
+		if dbConfig.OpenAPIURL != nil {
+			if trimmed := strings.TrimSpace(*dbConfig.OpenAPIURL); trimmed != "" {
+				resolvedOpenAPIURL = &trimmed
+			}
+		}
+		if fileChanged && fileOpenAPIURL != nil {
+			logger.Info("openapi_url from config.json overrides DB (file hash changed) — updating DB")
+			resolvedOpenAPIURL = nonEmptyOpenAPIURL(fileOpenAPIURL)
+			needsDBUpdate = true
+		}
 	}
 
 	// --- Phase 4: nil guard ---
@@ -7375,6 +7428,7 @@ func ResolveFrameworkPricingConfig(
 		MCPLibraryURL:          resolvedMCPLibraryURL,
 		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		OpenAPIURL:             resolvedOpenAPIURL,
 		ConfigHash:             persistedHash,
 	}, &modelcatalog.Config{
 		PricingURL:             resolvedPricingURL,
@@ -7383,7 +7437,17 @@ func ResolveFrameworkPricingConfig(
 		MCPLibraryURL:          resolvedMCPLibraryURL,
 		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		OpenAPIURL:             resolvedOpenAPIURL,
 	}, needsDBUpdate
+}
+
+// nonEmptyOpenAPIURL is the stored form of an openapi_url: nil for the build's
+// default, which an explicit "" in config.json also chooses.
+func nonEmptyOpenAPIURL(value *string) *string {
+	if value == nil || *value == "" {
+		return nil
+	}
+	return value
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -8446,6 +8510,67 @@ func (c *Config) GetMCPExternalClientURL() string {
 		return ""
 	}
 	return value
+}
+
+// GetBifrostURL returns the configured public base URL of the gateway, without a
+// trailing slash, or empty string if it is not configured or not a valid public URL.
+// Resolves env var references automatically.
+func (c *Config) GetBifrostURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil || c.ClientConfig.BifrostURL == nil {
+		return ""
+	}
+	value := strings.TrimRight(strings.TrimSpace(c.ClientConfig.BifrostURL.GetValue()), "/")
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
+}
+
+// GetBifrostMCPAllowWrites reports whether the Bifrost MCP serves non-GET /api tools
+// (true unless turned off).
+func (c *Config) GetBifrostMCPAllowWrites() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig == nil || c.ClientConfig.BifrostMCPAllowWrites == nil || *c.ClientConfig.BifrostMCPAllowWrites
+}
+
+// GetOpenAPIURL returns the OpenAPI spec the Bifrost MCP builds its tools from: the
+// framework config's openapi_url when one is set, else defaultURL, the build's spec
+// (handlers.DefaultOpenAPIURL unless the build passes another).
+func (c *Config) GetOpenAPIURL(defaultURL string) string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.FrameworkConfig != nil && c.FrameworkConfig.Pricing != nil && c.FrameworkConfig.Pricing.OpenAPIURL != nil {
+		if value := resolveOpenAPIURL(*c.FrameworkConfig.Pricing.OpenAPIURL); value != "" {
+			return value
+		}
+	}
+	return defaultURL
+}
+
+// resolveOpenAPIURL is a stored openapi_url as the Bifrost MCP reads it: trimmed, and
+// an env reference resolved and checked the way ResolveFrameworkPricingConfig checks
+// config.json's. A reference that is unset, resolves empty, or resolves to a value
+// ValidateOpenAPIURL refuses is "" (the build's default), never the reference itself,
+// which would otherwise be read as a file of that name.
+func resolveOpenAPIURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if !strings.HasPrefix(value, "env.") {
+		return value
+	}
+	resolved, err := envutils.ProcessEnvValue(value)
+	if err != nil {
+		logger.Warn("openapi_url: env variable not found (%v); using the build's default spec", err)
+		return ""
+	}
+	resolved = strings.TrimSpace(resolved)
+	if err := configstore.ValidateOpenAPIURL(resolved); err != nil {
+		logger.Warn("openapi_url %v; using the build's default spec", err)
+		return ""
+	}
+	return resolved
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway

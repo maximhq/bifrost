@@ -3029,6 +3029,67 @@ func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an
+// openapi_url outside the app directory, and config.json gets the same rule.
+func TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, specURL := range []string{"/etc/bifrost/openapi.json", "../openapi.json"} {
+		tempDir := createTempDir(t)
+		value := specURL
+		createConfigFile(t, tempDir, &ConfigData{FrameworkConfig: &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "openapi_url", specURL)
+	}
+}
+
+// TestGetBifrostURLAndBifrostMCPSettings: the getters trim, ignore an invalid public
+// URL rather than letting a request-derived fallback be shadowed by garbage, treat
+// an unset writes switch as on, and read the build's default spec while openapi_url
+// is unset or blank.
+func TestGetBifrostURLAndBifrostMCPSettings(t *testing.T) {
+	const fallback = "https://example.com/default/openapi.json"
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	assert.Empty(t, cfg.GetBifrostURL())
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback))
+	assert.True(t, cfg.GetBifrostMCPAllowWrites())
+
+	blank := "  "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &blank}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "a blank openapi_url reads the default")
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar(" https://gw.example.com/bifrost/ ")
+	set := " specs/openapi.json "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &set}}
+	cfg.ClientConfig.BifrostMCPAllowWrites = new(false)
+	assert.Equal(t, "https://gw.example.com/bifrost", cfg.GetBifrostURL())
+	assert.Equal(t, "specs/openapi.json", cfg.GetOpenAPIURL(fallback))
+	assert.False(t, cfg.GetBifrostMCPAllowWrites())
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("not a url")
+	assert.Empty(t, cfg.GetBifrostURL())
+
+	// An env reference (saved through the API, or stored before config.json resolved
+	// it) is resolved like config.json's: an unset, empty or invalid value reads the
+	// default rather than a file named after the reference.
+	useEnv := func(value string) string {
+		ref := " env.BIFROST_TEST_OPENAPI_URL "
+		cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &ref}}
+		t.Setenv("BIFROST_TEST_OPENAPI_URL", value)
+		return cfg.GetOpenAPIURL(fallback)
+	}
+	assert.Equal(t, "https://mirror.internal/openapi.json", useEnv(" https://mirror.internal/openapi.json "), "an env reference is resolved and trimmed")
+	assert.Equal(t, "specs/openapi.json", useEnv("specs/openapi.json"), "an env reference may name a path in the app directory")
+	assert.Equal(t, fallback, useEnv(""), "an env reference that resolves empty reads the default")
+	assert.Equal(t, fallback, useEnv("/etc/openapi.json"), "an env reference that resolves outside the app directory reads the default")
+	unset := "env.BIFROST_TEST_OPENAPI_URL_NEVER_SET"
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unset}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "an unset env reference reads the default")
+}
+
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
 func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
 	var configData ConfigData
@@ -21175,6 +21236,75 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		// URL should still come from DB (only the interval was corrupted).
 		require.Equal(t, dbURL, *tableOut.PricingURL,
 			"URL from a valid DB field must still be used")
+	})
+
+	t.Run("openapi_url has no default to backfill; file applies, then DB wins until the file changes", func(t *testing.T) {
+		fullDB := func(openAPIURL *string, hash string) *tables.TableFrameworkConfig {
+			return &tables.TableFrameworkConfig{
+				ID: 9, PricingURL: &defaultURL, PricingSyncInterval: &defaultSyncSeconds, ModelParametersURL: &defaultModelParamsURL,
+				MCPLibraryURL: &defaultMCPLibraryURL, MCPLibrarySyncInterval: &defaultSyncSeconds, LiveModelsSyncInterval: &defaultLiveModelsSyncSeconds,
+				OpenAPIURL: openAPIURL, ConfigHash: hash,
+			}
+		}
+		withOpenAPI := func(value string) *framework.FrameworkConfig {
+			return &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+		}
+
+		tableOut, catalogOut, needsDBUpdate := ResolveFrameworkPricingConfig(fullDB(nil, ""), nil)
+		require.False(t, needsDBUpdate, "an unset openapi_url is not a backfill: the build's default is read at use")
+		require.Nil(t, tableOut.OpenAPIURL)
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// No DB row: initFrameworkConfig writes the result whatever needsDBUpdate says.
+		tableOut, catalogOut, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI(" specs/openapi.json "))
+		require.Equal(t, "specs/openapi.json", *tableOut.OpenAPIURL, "no DB row: the file value applies, trimmed")
+		require.Equal(t, "specs/openapi.json", *catalogOut.OpenAPIURL)
+
+		fileURL := "specs/openapi.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &fileURL})
+		require.NoError(t, err)
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(nil, storedHash), withOpenAPI(fileURL))
+		require.False(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "cleared in the UI while config.json is unchanged: the cleared value stands")
+		uiURL := "https://mirror.internal/openapi.json"
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(fileURL))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "set in the UI while config.json is unchanged: the DB value stands")
+
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI("specs/v2.json"))
+		require.True(t, needsDBUpdate)
+		require.Equal(t, "specs/v2.json", *tableOut.OpenAPIURL, "a changed config.json wins and is saved")
+
+		tableOut, _, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI("/etc/bifrost/openapi.json"))
+		require.Nil(t, tableOut.OpenAPIURL, "a path outside the app directory is ignored")
+
+		// An explicit "" in config.json chooses the build's default. Once the file
+		// changes it clears a stored override, like any other changed file value.
+		tableOut, catalogOut, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(""))
+		require.True(t, needsDBUpdate, "switching config.json to an explicit empty openapi_url is a file change")
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the stored override")
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// The same when another file setting is what changed the hash.
+		empty := ""
+		emptyHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &empty})
+		require.NoError(t, err)
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), withOpenAPI(""))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unchanged config.json leaves the stored override in place")
+		fileSync := int64(7200)
+		emptyAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &empty, PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), emptyAndSync)
+		require.True(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the override when another setting changed the file")
+
+		// Omitted, or an env reference that does not resolve: the stored override stays.
+		onlySync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), onlySync)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an omitted openapi_url keeps the stored override")
+		unresolved := "env.BIFROST_TEST_OPENAPI_URL_UNSET"
+		unresolvedAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unresolved, PricingSyncInterval: &fileSync}}
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), unresolvedAndSync)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unresolved env reference keeps the stored override")
 	})
 }
 

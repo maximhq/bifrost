@@ -1,3 +1,4 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import type { Page } from '@playwright/test'
 import { ConfigSettingsState } from './pages/config-settings.page'
@@ -257,5 +258,82 @@ test.describe('Client Settings', () => {
         await configSettingsPage.saveSettings()
       }
     }
+  })
+
+  test('should save the Bifrost URL', async ({ configSettingsPage, request }) => {
+    const original = (await coreConfigApi.get(request)).client_config.bifrost_url ?? ''
+    try {
+      await configSettingsPage.goto('client-settings')
+      const input = configSettingsPage.page.getByTestId('client-settings-bifrost-url-input')
+      await expect(input).toBeVisible()
+
+      await input.fill('https://gateway.e2e.example')
+      await configSettingsPage.saveSettings()
+      await expect
+        .poll(async () => {
+          const value = (await coreConfigApi.get(request)).client_config.bifrost_url
+          if (typeof value === 'string') return value
+          return value !== null && typeof value === 'object' && 'value' in value ? value.value : undefined
+        })
+        .toBe('https://gateway.e2e.example')
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('https://gateway.e2e.example')
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { bifrost_url: original })
+    }
+  })
+
+  test('should save the OpenAPI URL to the framework config', async ({ configSettingsPage, request }) => {
+    const original = String((await coreConfigApi.get(request)).framework_config.openapi_url ?? '')
+    try {
+      await configSettingsPage.goto('client-settings')
+      const input = configSettingsPage.page.getByTestId('client-settings-openapi-url-input')
+      await expect(input).toHaveValue(original)
+
+      await input.fill('openapi.json')
+      await configSettingsPage.saveSettings()
+      await expect.poll(async () => (await coreConfigApi.get(request)).framework_config.openapi_url).toBe('openapi.json')
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('openapi.json')
+    } finally {
+      await coreConfigApi.updateFrameworkConfig(request, { openapi_url: original })
+    }
+  })
+
+  // The form checks both URLs with the server's rules and shows the error beside
+  // the field, so an invalid value never reaches PUT /api/config.
+  test('should refuse invalid Bifrost and OpenAPI URLs inline', async ({ configSettingsPage, request }) => {
+    const before = await coreConfigApi.get(request)
+    const page = configSettingsPage.page
+    const bifrostURL = page.getByTestId('client-settings-bifrost-url-input')
+    const openAPIURL = page.getByTestId('client-settings-openapi-url-input')
+    const bifrostURLError = page.getByTestId('client-settings-bifrost-url-error')
+    const openAPIURLError = page.getByTestId('client-settings-openapi-url-error')
+
+    await bifrostURL.fill('https://gateway.e2e.example/?token=1')
+    await expect(bifrostURLError).toBeVisible()
+    await expect(bifrostURL).toHaveAttribute('aria-invalid', 'true')
+    await expect(configSettingsPage.saveBtn).toBeDisabled()
+
+    await bifrostURL.fill('https://gateway.e2e.example')
+    await expect(bifrostURLError).toHaveCount(0)
+
+    await openAPIURL.fill('../openapi.json')
+    await expect(openAPIURLError).toBeVisible()
+    await expect(openAPIURL).toHaveAttribute('aria-invalid', 'true')
+    await expect(configSettingsPage.saveBtn).toBeDisabled()
+
+    await openAPIURL.fill('/etc/openapi.json')
+    await expect(openAPIURLError).toBeVisible()
+
+    await openAPIURL.fill('specs/openapi.json')
+    await expect(openAPIURLError).toHaveCount(0)
+    await expect(configSettingsPage.saveBtn).toBeEnabled()
+
+    const after = await coreConfigApi.get(request)
+    expect(after.client_config.bifrost_url).toEqual(before.client_config.bifrost_url)
+    expect(after.framework_config.openapi_url).toEqual(before.framework_config.openapi_url)
   })
 })

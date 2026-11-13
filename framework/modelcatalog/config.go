@@ -62,6 +62,12 @@ type Config struct {
 	// is the transport's configuration channel, carried here to keep every
 	// catalog cadence in one place.
 	LiveModelsSyncInterval *int64 `json:"live_models_sync_interval,omitempty"` // seconds
+
+	// OpenAPIURL is the OpenAPI spec /v1/mcp builds its tools from: an http(s)
+	// URL, or a path relative to the app directory. Nil or empty uses the build's
+	// default spec. Like LiveModelsSyncInterval, nothing in this package acts on
+	// it; the HTTP server reads it.
+	OpenAPIURL *string `json:"openapi_url,omitempty"`
 }
 
 // Type re-exports so external callers can continue importing the legacy

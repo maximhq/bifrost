@@ -96,6 +96,12 @@ type TableClientConfig struct {
 	// The explicit column name avoids GORM deriving "mcp_open_api_..." from the field name.
 	MCPOpenAPIMaxSpecMB int `gorm:"column:mcp_openapi_max_spec_mb;default:0" json:"mcp_openapi_max_spec_mb"`
 
+	// BifrostURL is the gateway's public base URL; empty leaves self URLs to the request.
+	BifrostURL string `gorm:"column:bifrost_url;type:varchar(512)" json:"bifrost_url,omitempty"`
+	// BifrostMCPAllowWrites gates /v1/mcp's non-GET /api tools; NULL is true. A pointer, so GORM
+	// stores false instead of substituting a column default for the zero value.
+	BifrostMCPAllowWrites *bool `gorm:"column:bifrost_mcp_allow_writes" json:"bifrost_mcp_allow_writes,omitempty"`
+
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.
 	MCPServerAuthMode MCPServerAuthMode `gorm:"column:mcp_server_auth_mode;type:varchar(20);not null;default:'headers'" json:"mcp_server_auth_mode"`

@@ -10,6 +10,10 @@ function inferType(ref: string | undefined): SecretVar["type"] | undefined {
 export const emptySecretVar = (): SecretVar => ({ value: "", ref: "" });
 
 // isSecretVarSet reports whether a SecretVar carries a non-blank literal value or reference.
+// secretVarEquals compares two SecretVars as the API stores them: an absent field equals an empty one.
+export const secretVarEquals = (a?: SecretVar, b?: SecretVar): boolean =>
+	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
+
 export const isSecretVarSet = (secret: SecretVar | undefined): boolean => Boolean(secret?.value?.trim() || secret?.ref?.trim());
 
 // trimSecretVar strips stray whitespace from a SecretVar form value's literal value and reference.

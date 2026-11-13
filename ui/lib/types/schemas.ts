@@ -1530,6 +1530,97 @@ const providerBackedCacheConfigSchema = baseCacheConfigSchema
 export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
 // Core config schema
+// Mirrors configstore.MaxPublicURLLength: bifrost_url is stored in a varchar(512) column.
+export const MAX_PUBLIC_URL_LENGTH = 512;
+// Mirrors configstore.MaxOpenAPIURLLength.
+export const MAX_OPENAPI_URL_LENGTH = 2048;
+
+// Go measures these limits with len(), in UTF-8 bytes, not UTF-16 code units.
+const utf8Length = (value: string) => new TextEncoder().encode(value).length;
+
+// The browser's URL parser normalizes what Go's url.Parse refuses (it drops tabs and
+// newlines, empty userinfo, missing or extra slashes after the scheme, and treats "\"
+// as "/"), so the raw text is checked first. urlAuthority returns the authority as
+// written, or null when the value has no "scheme://" or contains a control character.
+function urlAuthority(value: string): string | null {
+	if (/[\x00-\x1f\x7f]/.test(value)) return null;
+	const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(value);
+	return match ? match[1] : null;
+}
+
+// publicBaseUrlError mirrors configstore.ValidatePublicBaseURL: empty, or an absolute
+// http(s) URL without userinfo, a query or a fragment. The server checks the value as
+// sent, so surrounding whitespace is an error here too (the URL parser would drop it).
+export function publicBaseUrlError(value: string): string | null {
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_PUBLIC_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_PUBLIC_URL_LENGTH) });
+	const authority = urlAuthority(value);
+	if (authority === null || authority === "" || authority.includes("\\")) return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	// Go keeps an empty userinfo ("https://@host"), which the browser drops.
+	if (authority.includes("@") || value.includes("?") || value.includes("#")) {
+		return i18n.t("validation.publicUrlNoUserinfoQueryOrFragment");
+	}
+	return null;
+}
+
+// openAPIUrlError mirrors configstore.ValidateOpenAPIURL: empty (the build's default
+// spec), an absolute http(s) URL, or a relative path that stays inside the app directory.
+export function openAPIUrlError(raw: string): string | null {
+	const value = raw.trim();
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_OPENAPI_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_OPENAPI_URL_LENGTH) });
+	if (value.startsWith("http://") || value.startsWith("https://")) {
+		// Go takes the host after any userinfo, so "https://@host" is fine but "https:///x" is not.
+		const authority = urlAuthority(value);
+		const host = authority?.slice(authority.lastIndexOf("@") + 1);
+		if (host && !host.includes("\\")) {
+			try {
+				if (new URL(value).hostname) return null;
+			} catch {
+				// falls through to the error below
+			}
+		}
+		return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	}
+	if (value.includes("://")) return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	if (value.startsWith("/")) return i18n.t("validation.openapiUrlMustStayInAppDir");
+	// filepath.Clean, then refuse a path whose first segment is "..".
+	let depth = 0;
+	for (const segment of value.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === "..") {
+			if (depth === 0) return i18n.t("validation.openapiUrlMustStayInAppDir");
+			depth--;
+		} else {
+			depth++;
+		}
+	}
+	return null;
+}
+
+// bifrost_url as the client settings form edits it. An env or vault reference resolves
+// on the server, so only a literal value is checked here.
+export const bifrostUrlSchema = secretVarSchema.superRefine((secret, ctx) => {
+	if (secret.ref?.trim() || secret.type === "env" || secret.type === "vault") return;
+	const error = publicBaseUrlError(secret.value ?? "");
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
+// framework_config.openapi_url as the client settings form edits it.
+export const openAPIUrlSchema = z.string().superRefine((value, ctx) => {
+	const error = openAPIUrlError(value);
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
 export const coreConfigSchema = z.object({
 	drop_excess_requests: z.boolean().default(false),
 	initial_pool_size: z.number().min(1).default(10),
@@ -1553,6 +1644,8 @@ export const coreConfigSchema = z.object({
 	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
 	mcp_max_instructions_total: z.number().int().min(0).default(0),
 	mcp_openapi_max_spec_mb: z.number().int().min(0).max(256).default(0),
+	bifrost_url: bifrostUrlSchema.optional(),
+	bifrost_mcp_allow_writes: z.boolean().optional(),
 	mcp_code_mode_limits: z
 		.object({
 			max_source_bytes: z.number().int().min(0).optional(),

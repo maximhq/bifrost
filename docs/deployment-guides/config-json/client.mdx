@@ -248,6 +248,8 @@ Network permission does not authorize runtime calls to another service. Set `age
 | `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
 | `mcp_openapi_max_spec_mb` | integer | `0` | Size limit in MiB on an [OpenAPI MCP server](/mcp/openapi-servers)'s spec, inline or fetched (`0` = default of 32, maximum 256) |
+| `bifrost_url` | string or secret reference | Unset | The gateway's public base URL as clients reach it, including any base path. Required for `/v1/mcp` and Warp's configuration tools: their tool calls arrive as if through it, so links their routes build point here. Unset disables both; the client's `Host` header is never used instead |
+| `bifrost_mcp_allow_writes` | boolean | `true` | Whether `/v1/mcp` serves the non-GET `/api` operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way |
 
 ```json
 {

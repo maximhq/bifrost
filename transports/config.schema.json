@@ -560,6 +560,45 @@
           ],
           "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. Required to enable Agent Gateway protocol endpoints. When unset, agent traffic is rejected while management APIs remain available. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "bifrost_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset, the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax (\"env.MY_VAR\") and vault refs. Must include server.base_path when Bifrost is mounted under one."
+        },
+        "bifrost_mcp_allow_writes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint."
+        },
         "mcp_server_auth_mode": {
           "type": "string",
           "enum": [
@@ -7964,6 +8003,12 @@
               "minimum": 60
             }
           ]
+        },
+        "openapi_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, dev's docs/openapi/openapi-oss.json.",
+          "optional": true
         }
       },
       "additionalProperties": false
