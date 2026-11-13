@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { formatCost, formatTokens } from "./format";
 import { TraceMetricStrip } from "./traceOverview";
+import TracingProjectPolicies from "@enterprise/components/tracing/tracingProjectPolicies";
 
 /** The window project metrics cover: the last 30 days, fixed when the view opens. */
 const PROJECT_METRICS_DAYS = 30;
@@ -277,6 +278,7 @@ export function ProjectSheet({
 							</Button>
 						</div>
 					</form>
+					{project && <TracingProjectPolicies projectId={project.id} />}
 				</div>
 			</SheetContent>
 		</Sheet>
