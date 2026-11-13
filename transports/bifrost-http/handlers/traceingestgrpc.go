@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
+	"github.com/valyala/fasthttp"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -74,30 +75,41 @@ func (s *TraceIngestGRPCServer) stop(gracefulTimeout time.Duration) {
 	}
 }
 
-// grpcCredential reads the tracing key from call metadata, in the same forms as the HTTP headers.
-func grpcCredential(md metadata.MD) string {
-	for _, value := range md.Get("authorization") {
-		if credential := bearerCredential(value); credential != "" {
-			return credential
-		}
-	}
-	for _, name := range []string{"api_key", "arize-api-key", "x-api-key", "x-bf-tracing-key"} {
+// grpcCredentials collects the credentials of a call from its metadata, from the same headers the
+// HTTP routes read.
+func grpcCredentials(md metadata.MD) []string {
+	var candidates []string
+	for _, name := range ingestCredentialHeaders {
 		for _, value := range md.Get(name) {
 			if strings.TrimSpace(value) != "" {
-				return strings.TrimSpace(value)
+				candidates = append(candidates, strings.TrimSpace(value))
 			}
 		}
 	}
-	return ""
+	return candidates
+}
+
+// principal resolves who an export acts as, the way the HTTP routes do: an installed authenticator
+// decides, reading the credential metadata as request headers; without one, the dashboard
+// credentials are checked.
+func (s *TraceIngestGRPCServer) principal(md metadata.MD) (*traceingest.Principal, error) {
+	if s.handler.authenticator == nil {
+		return s.handler.authorize(grpcCredentials(md))
+	}
+	request := &fasthttp.RequestCtx{}
+	for _, name := range ingestCredentialHeaders {
+		for _, value := range md.Get(name) {
+			request.Request.Header.Add(name, value)
+		}
+	}
+	return s.handler.authenticator.AuthenticateTraceIngest(request)
 }
 
 // Export stores one OTLP export. Like the HTTP route it rejects nothing it can decode, so the
 // answer never carries a partial success.
 func (s *TraceIngestGRPCServer) Export(ctx context.Context, request *collectortrace.ExportTraceServiceRequest) (*collectortrace.ExportTraceServiceResponse, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
-	storeCtx, cancel := ingestContext()
-	defer cancel()
-	principal, err := s.handler.service.Authenticate(storeCtx, grpcCredential(md))
+	principal, err := s.principal(md)
 	if err != nil {
 		return nil, grpcIngestError(err)
 	}
@@ -121,7 +133,7 @@ func (s *TraceIngestGRPCServer) Export(ctx context.Context, request *collectortr
 func grpcIngestError(err error) error {
 	switch {
 	case errors.Is(err, traceingest.ErrUnauthorized):
-		return status.Error(codes.Unauthenticated, "a valid tracing key is required")
+		return status.Error(codes.Unauthenticated, "send your Bifrost dashboard username and password as the API key")
 	case errors.Is(err, traceingest.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, traceingest.ErrRateLimited):
