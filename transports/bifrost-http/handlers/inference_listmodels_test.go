@@ -568,3 +568,66 @@ func TestModelRetrieveTarget(t *testing.T) {
 		})
 	}
 }
+
+// TestTagDecisionModels pins which /v1/models rows carry the decisions output
+// modality: a model its provider serves on the decisions endpoint and on nothing
+// else, by the strict rule decisionRuleFor documents. A model that also serves chat
+// and a row that already reports the modality are left as they are, and the
+// architecture a row arrived with is never written through.
+func TestTagDecisionModels(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Cloudflare && model == "clef-retired" {
+			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	decisionsAllowed := &schemas.AllowedRequests{ListModels: true, Decision: true}
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Typesafe: {}, schemas.Gemini: {}, schemas.OpenAI: {}, schemas.OpenRouter: {}, schemas.Cloudflare: {}, schemas.VLLM: {},
+		"my-gemini": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: decisionsAllowed}},
+		"my-openai": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: decisionsAllowed}},
+	}}
+	// Spare capacity, so an append written through would land in this backing array.
+	shared := &schemas.Architecture{OutputModalities: append(make([]string, 0, 4), "text")}
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "typesafe/jev-1.13"},
+		{ID: "gemini/gemini-decision-1", Architecture: shared},
+		{ID: "gemini/gemini-3-flash", Architecture: shared},
+		{ID: "openai/gpt-6-luna"},
+		{ID: "openrouter/openai/gpt-6-luna-decisions", Architecture: &schemas.Architecture{OutputModalities: []string{"decisions"}}},
+		{ID: "cloudflare/clef-flash"},
+		{ID: "cloudflare/clef-retired"},
+		{ID: "vllm/qwen3-8b"},
+		{ID: "my-gemini/gemini-decision-1"},
+		{ID: "my-gemini/gemini-3-flash"},
+		{ID: "my-openai/gpt-4o"},
+	}}
+
+	tagDecisionModels(config, resp)
+
+	want := map[string][]string{
+		"typesafe/jev-1.13":                      {"decisions"},
+		"gemini/gemini-decision-1":               {"text", "decisions"},
+		"gemini/gemini-3-flash":                  {"text"},
+		"openai/gpt-6-luna":                      nil,
+		"openrouter/openai/gpt-6-luna-decisions": {"decisions"},
+		"cloudflare/clef-flash":                  {"decisions"},
+		"cloudflare/clef-retired":                nil,
+		"vllm/qwen3-8b":                          nil,
+		"my-gemini/gemini-decision-1":            {"decisions"},
+		"my-gemini/gemini-3-flash":               nil,
+		"my-openai/gpt-4o":                       nil,
+	}
+	for _, row := range resp.Data {
+		var got []string
+		if row.Architecture != nil {
+			got = row.Architecture.OutputModalities
+		}
+		require.Equal(t, want[row.ID], got, row.ID)
+	}
+	require.Equal(t, []string{"text"}, shared.OutputModalities)
+	require.Equal(t, "", shared.OutputModalities[:2][1], "the shared slice's backing array was written through")
+	require.Same(t, shared, resp.Data[2].Architecture, "an untagged row keeps the architecture it arrived with")
+}

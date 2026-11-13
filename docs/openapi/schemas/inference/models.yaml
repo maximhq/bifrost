@@ -78,6 +78,10 @@ Architecture:
         type: string
     output_modalities:
       type: array
+      description: >-
+        What the model outputs (for example `text`, `image`, `embeddings`).
+        `decisions` marks a model that serves only decisions on `/v1/decisions`;
+        a model that serves both chat and decisions does not carry it.
       items:
         type: string
 

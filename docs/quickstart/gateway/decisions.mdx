@@ -40,6 +40,19 @@ Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemon
 
 Chat models (for example `openai/gpt-4o`) have no decisions endpoint. By default they return `400` with code `unsupported_operation`; with the compat setting `convert_decision_to_responses` on, Bifrost emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
+### Finding Decision Models
+
+`GET /v1/models` marks a model that serves only decisions with `decisions` in `architecture.output_modalities`, the same marker OpenRouter uses for its decision models:
+
+```bash
+curl -s http://localhost:8080/v1/models \
+  | jq -r '.data[] | select(.architecture.output_modalities // [] | index("decisions")) | .id'
+```
+
+A model is marked when its provider serves only decisions (TypeSafe, and a custom provider on the TypeSafe base) or when its name is in the provider's decision-model family: `clef*` on Cloudflare, `pplx-decider*` on Perplexity, `decision-models/*` on Baseten, `gemini-decision-*` on Gemini (and on a custom provider on the Gemini base), the System One families on Ollama, `Microsoft-Decision*` on Azure, `ai_decide` and System One models on Databricks, and TypeSafe models on OpenRouter. A datasheet row marking the model `supports_decisions: false` keeps it unmarked.
+
+A model that also serves chat is not marked, so clients that sort models by output modality keep offering it for chat: OpenAI's and Azure's `gpt-6-luna` family, every model on vLLM and SGLang, and every model of a custom provider on the OpenAI base. To list every model that answers `/v1/decisions` natively, including those, call `GET /api/models?decisions=true` (add `&provider=<name>` to narrow it to one provider).
+
 ## Basic Request
 
 ```bash

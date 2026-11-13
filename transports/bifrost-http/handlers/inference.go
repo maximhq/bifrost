@@ -1041,6 +1041,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.config.ModelCatalog.EnrichListModelsResponse(resp)
+	tagDecisionModels(h.config, resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
