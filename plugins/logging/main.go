@@ -3069,6 +3069,10 @@ func (p *LoggerPlugin) ConsumesOverheadSpans() bool { return true }
 
 // Inject receives a completed trace and writes the log entries with plugin logs to DB.
 // This implements the ObservabilityPlugin interface.
+// ConsumesGatewayTracesOnly keeps traces received from observability SDKs out of request logs: they
+// are stored in the trace store, and a request log is a call this gateway served.
+func (p *LoggerPlugin) ConsumesGatewayTracesOnly() bool { return true }
+
 func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil

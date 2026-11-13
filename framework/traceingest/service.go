@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,7 +117,10 @@ type Service struct {
 	logger schemas.Logger
 	hooks  []SpanHook
 	pricer Pricer
-	evals  *evaluations
+	// partHooks run on each received part before it is stored; traceHooks on each completed trace.
+	partHooks  []PartHook
+	traceHooks []TraceHook
+	export     *exportState
 
 	requests chan *commitRequest
 	done     chan struct{}
@@ -126,7 +128,6 @@ type Service struct {
 	closing  sync.Once
 
 	mu       sync.Mutex
-	masks    map[string]cachedMask // by project id
 	projects map[string]cachedProject
 	rate     rateWindow
 	// retries schedules another look at traces whose calls are not all linked yet.
@@ -136,16 +137,6 @@ type Service struct {
 type cachedProject struct {
 	project *tables.TableTraceProject
 	expires time.Time
-}
-
-type cachedMask struct {
-	updatedAt time.Time
-	rules     []compiledMask
-}
-
-type compiledMask struct {
-	pattern     *regexp.Regexp
-	replacement string
 }
 
 type matchRetry struct {
@@ -172,8 +163,8 @@ func NewService(store logstore.TraceStore, config ConfigStore, cfg Config, logge
 	s := &Service{
 		store: store, config: config, cfg: cfg.withDefaults(), logger: logger,
 		requests: make(chan *commitRequest, 1024), done: make(chan struct{}),
-		masks: make(map[string]cachedMask), projects: make(map[string]cachedProject),
-		retries: make(map[logstore.TraceKey]matchRetry),
+		projects: make(map[string]cachedProject),
+		retries:  make(map[logstore.TraceKey]matchRetry),
 	}
 	s.wg.Add(2)
 	go s.commitLoop()
@@ -186,6 +177,38 @@ func (s *Service) AddSpanHook(hook SpanHook) {
 	s.hooks = append(s.hooks, hook)
 }
 
+// PartHook runs on every received span part before anything of it is stored, the kept raw part
+// included. It may rewrite the part's content: the enterprise build masks content this way. It does
+// not run when the request's content is not stored at all.
+type PartHook func(ctx context.Context, project *tables.TableTraceProject, part *SpanPart)
+
+// AddPartHook registers a part hook. Call it before the first request.
+func (s *Service) AddPartHook(hook PartHook) {
+	s.partHooks = append(s.partHooks, hook)
+}
+
+// TraceHook runs each time the rollup of a completed trace is rebuilt: once when the trace
+// completes, and again when a late part changes it. It runs on the rollup loop, so a hook that does
+// slow work (the enterprise build runs evaluators) hands it off.
+type TraceHook func(ctx context.Context, trace *logstore.Trace)
+
+// AddTraceHook registers a trace hook. Call it before the first request.
+func (s *Service) AddTraceHook(hook TraceHook) {
+	s.traceHooks = append(s.traceHooks, hook)
+}
+
+// traceRolledUp runs the trace hooks and the connector export on a trace whose rollup was rebuilt.
+// A trace still arriving is left until it completes.
+func (s *Service) traceRolledUp(ctx context.Context, trace *logstore.Trace) {
+	if trace == nil || trace.InProgress {
+		return
+	}
+	for _, hook := range s.traceHooks {
+		hook(ctx, trace)
+	}
+	s.exportTrace(ctx, trace)
+}
+
 // Store returns the trace store the service writes to.
 func (s *Service) Store() logstore.TraceStore { return s.store }
 
@@ -193,13 +216,13 @@ func (s *Service) Store() logstore.TraceStore { return s.store }
 func (s *Service) Close() {
 	s.closing.Do(func() { close(s.done) })
 	s.wg.Wait()
+	s.waitForExports()
 }
 
 // InvalidateProjects drops every cached project, so an edit in the dashboard takes effect now.
 func (s *Service) InvalidateProjects() {
 	s.mu.Lock()
 	clear(s.projects)
-	clear(s.masks)
 	s.mu.Unlock()
 }
 
@@ -284,59 +307,6 @@ func (s *Service) allowRate(spans int) bool {
 	return true
 }
 
-// masksFor returns the project's compiled masking rules. A rule whose pattern does not compile is
-// skipped: a bad rule must not stop ingest.
-func (s *Service) masksFor(project *tables.TableTraceProject) []compiledMask {
-	if len(project.MaskingRules) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	cached, ok := s.masks[project.ID]
-	s.mu.Unlock()
-	if ok && cached.updatedAt.Equal(project.UpdatedAt) {
-		return cached.rules
-	}
-	rules := make([]compiledMask, 0, len(project.MaskingRules))
-	for _, rule := range project.MaskingRules {
-		pattern, err := regexp.Compile(rule.Pattern)
-		if err != nil {
-			if s.logger != nil {
-				s.logger.Warn("traceingest: masking rule %q of project %s does not compile: %v", rule.Name, project.Name, err)
-			}
-			continue
-		}
-		rules = append(rules, compiledMask{pattern: pattern, replacement: rule.Replacement})
-	}
-	s.mu.Lock()
-	s.masks[project.ID] = cachedMask{updatedAt: project.UpdatedAt, rules: rules}
-	s.mu.Unlock()
-	return rules
-}
-
-// maskValue applies the rules to every string inside value.
-func maskValue(value any, rules []compiledMask) any {
-	switch v := value.(type) {
-	case string:
-		for _, rule := range rules {
-			v = rule.pattern.ReplaceAllString(v, rule.replacement)
-		}
-		return v
-	case map[string]any:
-		masked := make(map[string]any, len(v))
-		for key, child := range v {
-			masked[key] = maskValue(child, rules)
-		}
-		return masked
-	case []any:
-		masked := make([]any, len(v))
-		for i, child := range v {
-			masked[i] = maskValue(child, rules)
-		}
-		return masked
-	}
-	return value
-}
-
 // Ingest stores span parts for one project and returns once they are committed. A nil error means
 // the caller may acknowledge the SDK's request: the parts survive a restart.
 func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tables.TableTraceProject, source string, spans []*SpanPart) error {
@@ -350,7 +320,6 @@ func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tab
 		return ErrRateLimited
 	}
 	hidden := !principal.LogContent || (s.cfg.ContentLoggingDisabled != nil && s.cfg.ContentLoggingDisabled())
-	rules := s.masksFor(project)
 	now := time.Now().UTC()
 	partExpiry := now.Add(s.cfg.PartRetention)
 	request := &commitRequest{hidden: hidden, result: make(chan error, 1)}
@@ -360,10 +329,9 @@ func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tab
 		}
 		if hidden {
 			span.Input, span.Output, span.Expected = nil, nil, nil
-		} else if len(rules) > 0 {
-			span.Input, span.Output, span.Expected = maskValue(span.Input, rules), maskValue(span.Output, rules), maskValue(span.Expected, rules)
-			if masked, ok := maskValue(span.Metadata, rules).(map[string]any); ok {
-				span.Metadata = masked
+		} else {
+			for _, hook := range s.partHooks {
+				hook(ctx, project, span)
 			}
 		}
 		stored, err := span.toStoredPart(project.ID, source, now, &partExpiry)
@@ -697,7 +665,7 @@ func (s *Service) FlushRollups(ctx context.Context) error {
 			if err := s.store.ClearTraceDirty(ctx, trace); err != nil {
 				return err
 			}
-			s.evaluateTrace(ctx, rolled)
+			s.traceRolledUp(ctx, rolled)
 			s.scheduleRetry(trace.TraceKey, retry)
 		}
 		if len(dirty) < 200 {

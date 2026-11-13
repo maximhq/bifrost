@@ -76,7 +76,7 @@ func (s *TraceIngestGRPCServer) Export(ctx context.Context, request *collectortr
 	}
 	// The source is Arize: its SDKs are the ones that default to gRPC, and a span's own attributes
 	// still decide how it is read.
-	if _, err := s.handler.ingestOTLP(principal, logstore.TraceSourceArize, otlpResourcesOf(request), explicitProject, true); err != nil {
+	if err := s.handler.ingestOTLP(principal, logstore.TraceSourceArize, otlpResourcesOf(request), explicitProject, true); err != nil {
 		if s.logger != nil && status.Code(grpcIngestError(err)) == codes.Unavailable {
 			s.logger.Error("trace ingest over gRPC failed: %v", err)
 		}

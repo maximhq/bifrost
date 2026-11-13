@@ -7299,3 +7299,13 @@ func TestTraceLinkIsRecordedOnTheGatewayRow(t *testing.T) {
 		t.Fatalf("mcp trace link = %v/%v, want trace-1/span-1", mcpEntry.TraceID, mcpEntry.ParentSpanID)
 	}
 }
+
+// TestLoggerPluginRecordsGatewayTracesOnly pins that the logging plugin opts out of traces received
+// from observability SDKs: they live in the trace store, and request logs hold gateway calls only.
+func TestLoggerPluginRecordsGatewayTracesOnly(t *testing.T) {
+	var plugin schemas.ObservabilityPlugin = &LoggerPlugin{}
+	consumer, ok := plugin.(schemas.GatewayTraceConsumer)
+	if !ok || !consumer.ConsumesGatewayTracesOnly() {
+		t.Fatal("the logging plugin must record gateway traces only")
+	}
+}

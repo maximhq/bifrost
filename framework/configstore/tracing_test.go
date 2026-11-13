@@ -17,12 +17,12 @@ func setupTracingTestStore(t *testing.T) *RDBConfigStore {
 }
 
 // TestTraceProjectCRUD pins tracing projects: names are unique, a project is found by id and by
-// name, and its settings round-trip.
+// name, and its name, description and retention round-trip.
 func TestTraceProjectCRUD(t *testing.T) {
 	ctx := context.Background()
 	store := setupTracingTestStore(t)
 
-	project := &tables.TableTraceProject{Name: "checkout-agent", RetentionDays: new(30), MaskingRules: []tables.TraceMaskingRule{{Name: "emails", Pattern: `[\w.]+@[\w.]+`, Replacement: "[email]"}}}
+	project := &tables.TableTraceProject{Name: "checkout-agent", Description: "agent", RetentionDays: new(30)}
 	require.NoError(t, store.CreateTraceProject(ctx, project))
 	require.NotEmpty(t, project.ID, "the store assigns the id")
 	assert.ErrorIs(t, store.CreateTraceProject(ctx, &tables.TableTraceProject{Name: "checkout-agent"}), ErrTraceProjectExists)
@@ -31,8 +31,7 @@ func TestTraceProjectCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, project.ID, byName.ID)
 	assert.Equal(t, 30, *byName.RetentionDays)
-	require.Len(t, byName.MaskingRules, 1)
-	assert.Equal(t, "[email]", byName.MaskingRules[0].Replacement)
+	assert.Equal(t, "agent", byName.Description)
 
 	byName.Description = "prod"
 	byName.RetentionDays = nil

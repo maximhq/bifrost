@@ -331,21 +331,14 @@ func (h *TracesHandler) listProjects(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "list tracing projects", err)
 		return
 	}
-	for _, project := range projects {
-		redactTraceForward(project)
-	}
 	SendJSON(ctx, map[string]any{"projects": projects})
 }
 
 // traceProjectPayload is the editable part of a tracing project.
 type traceProjectPayload struct {
-	Name          string                     `json:"name"`
-	Description   string                     `json:"description"`
-	RetentionDays *int                       `json:"retention_days"`
-	MaskingRules  []tables.TraceMaskingRule  `json:"masking_rules"`
-	Forward       *tables.TraceForwardTarget `json:"forward"`
-	// Evaluators is nil when the caller did not send the field, which leaves the stored rules alone.
-	Evaluators *[]tables.TraceEvaluatorRule `json:"evaluators"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	RetentionDays *int   `json:"retention_days"`
 }
 
 func (p *traceProjectPayload) validate() error {
@@ -356,19 +349,11 @@ func (p *traceProjectPayload) validate() error {
 	if p.RetentionDays != nil && (*p.RetentionDays < 1 || *p.RetentionDays > 3650) {
 		return fmt.Errorf("retention_days must be between 1 and 3650")
 	}
-	return validateTraceProjectSettings(p)
+	return nil
 }
-
-// validateTraceProjectSettings checks the masking rules and the forward target. It is a variable
-// so the file that implements those features owns their rules.
-var validateTraceProjectSettings = func(*traceProjectPayload) error { return nil }
 
 func (p *traceProjectPayload) apply(project *tables.TableTraceProject) {
 	project.Name, project.Description, project.RetentionDays = p.Name, p.Description, p.RetentionDays
-	project.MaskingRules, project.Forward = p.MaskingRules, p.Forward
-	if p.Evaluators != nil {
-		project.Evaluators = *p.Evaluators
-	}
 }
 
 func (h *TracesHandler) createProject(ctx *fasthttp.RequestCtx) {
@@ -389,7 +374,6 @@ func (h *TracesHandler) createProject(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "create tracing project", err)
 		return
 	}
-	redactTraceForward(project)
 	SendJSON(ctx, map[string]any{"project": project})
 }
 
@@ -411,14 +395,12 @@ func (h *TracesHandler) updateProject(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, "update tracing project", err)
 		return
 	}
-	keepStoredForwardSecrets(payload.Forward, project.Forward)
 	payload.apply(project)
 	if err := h.config.UpdateTraceProject(storeCtx, project); err != nil {
 		h.fail(ctx, "update tracing project", err)
 		return
 	}
 	h.invalidate()
-	redactTraceForward(project)
 	SendJSON(ctx, map[string]any{"project": project})
 }
 

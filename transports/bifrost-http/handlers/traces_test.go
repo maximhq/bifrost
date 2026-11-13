@@ -3,11 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -196,86 +193,37 @@ func TestTraceReviewScoresAndComments(t *testing.T) {
 	assert.NotContains(t, trace.ScoresParsed, "correctness")
 }
 
-// TestTraceProjectSettingsForwardAndDelete pins the project settings and what they drive: a
-// masking rule that does not compile is refused, the forward target's credential is never sent
-// back to the dashboard and survives an edit that leaves it masked, a stored request is replayed
-// to the upstream with that credential, and a deleted trace is gone.
-func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
+// TestTraceProjectSettingsAndDelete pins the project settings open source keeps (name, description,
+// retention), that the fields the enterprise build owns are not accepted here, and that a deleted
+// trace is gone with its received parts.
+func TestTraceProjectSettingsAndDelete(t *testing.T) {
 	ctx := context.Background()
 	env := newTracesAPITestEnv(t)
-	var mu sync.Mutex
-	var upstreamAuth, upstreamPath string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		upstreamAuth, upstreamPath = r.Header.Get("Authorization"), r.URL.Path
-		mu.Unlock()
-	}))
-	defer upstream.Close()
-
 	var created struct {
-		Project tables.TableTraceProject `json:"project"`
+		Project map[string]any `json:"project"`
 	}
-	body := map[string]any{
-		"name": "agent", "retention_days": 14,
-		"masking_rules": []map[string]any{{"name": "email", "pattern": `[\w.]+@[\w.]+`, "replacement": "[email]"}},
-		"forward":       map[string]any{"vendor": "otel", "base_url": upstream.URL, "headers": map[string]string{"Authorization": "Bearer upstream-secret"}, "enabled": true},
-	}
+	body := map[string]any{"name": "agent", "retention_days": 14, "masking_rules": []map[string]any{{"pattern": "x"}}}
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", body, &created))
-	projectID := created.Project.ID
-	assert.Equal(t, traceForwardSecretMask, created.Project.Forward.Headers["Authorization"], "the upstream credential is never sent back")
+	projectID := created.Project["id"].(string)
+	assert.NotContains(t, created.Project, "masking_rules", "masking is an enterprise feature: the open-source API ignores it")
+	assert.NotContains(t, created.Project, "forward")
+	assert.NotContains(t, created.Project, "evaluators")
+	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, map[string]any{"name": "agent", "retention_days": 0}, nil))
 
-	for name, bad := range map[string]map[string]any{
-		"pattern does not compile": {"name": "agent", "masking_rules": []map[string]any{{"pattern": "("}}},
-		"pattern matches nothing":  {"name": "agent", "masking_rules": []map[string]any{{"pattern": "a*"}}},
-		"unknown vendor":           {"name": "agent", "forward": map[string]any{"vendor": "datadog", "base_url": "https://x.test"}},
-		"relative url":             {"name": "agent", "forward": map[string]any{"vendor": "otel", "base_url": "/v1/traces"}},
-	} {
-		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, bad, nil), name)
-	}
-
-	// Evaluator rules: refused when malformed, stored when valid, left alone by an edit that omits them.
-	for name, bad := range map[string][]map[string]any{
-		"no evaluator":   {{"sample_rate": 1}},
-		"rate above one": {{"evaluator_id": "ev-1", "sample_rate": 1.5}},
-		"listed twice":   {{"evaluator_id": "ev-1", "sample_rate": 1}, {"evaluator_id": "ev-1", "sample_rate": 0.5}},
-		"negative cap":   {{"evaluator_id": "ev-1", "sample_rate": 1, "daily_cap": -1}},
-	} {
-		assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "PUT", "/api/traces/projects/"+projectID, map[string]any{"name": "agent", "evaluators": bad}, nil), name)
-	}
-	body["evaluators"] = []map[string]any{{"evaluator_id": "ev-1", "name": "faithfulness", "sample_rate": 0.25, "daily_cap": 100, "enabled": true}}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/projects/"+projectID, body, nil))
-	delete(body, "evaluators")
-
-	// An edit that sends the mask back keeps the stored credential.
-	body["description"] = "edited"
-	body["forward"].(map[string]any)["headers"] = map[string]string{"Authorization": traceForwardSecretMask}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/projects/"+projectID, body, nil))
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/projects/"+projectID, map[string]any{"name": "agent", "description": "edited", "retention_days": 14}, nil))
 	stored, err := env.config.GetTraceProject(ctx, projectID)
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer upstream-secret", stored.Forward.Headers["Authorization"])
 	assert.Equal(t, "edited", stored.Description)
-	require.Len(t, stored.Evaluators, 1, "an edit that does not send evaluators leaves the rules in place")
-	assert.Equal(t, 0.25, stored.Evaluators[0].SampleRate)
 
-	forwarder := traceingest.NewForwarder(nil, logger)
-	defer forwarder.Close()
-	env.ingest.SetForwarder(forwarder)
 	reqCtx := &fasthttp.RequestCtx{}
 	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
 	reqCtx.Request.SetRequestURI("/tracing/otel/v1/traces")
 	reqCtx.Request.Header.Set("Authorization", traceTestKey)
+	reqCtx.Request.Header.Set("x-project-name", "agent")
 	reqCtx.Request.Header.SetContentType("application/x-protobuf")
 	reqCtx.Request.SetBody(otlpTestExport(t))
 	env.router.Handler(reqCtx)
 	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return upstreamPath == "/v1/traces"
-	}, 3*time.Second, 10*time.Millisecond, "the stored request is replayed to the project's upstream")
-	mu.Lock()
-	assert.Equal(t, "Bearer upstream-secret", upstreamAuth, "with the upstream's credential, not the Bifrost tracing key")
-	mu.Unlock()
 
 	spans, err := env.store.ListTraceSpans(ctx, projectID, otlpTestTrace)
 	require.NoError(t, err)
