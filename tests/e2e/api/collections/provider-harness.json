@@ -321526,6 +321526,460 @@
           }
         }
       ]
+    },
+    {
+      "name": "341. Soniox provider: async speech-to-text and text-to-speech (soniox provider)",
+      "description": "Soniox is reached through its REST API (api.soniox.com) for async speech-to-text and through tts-rt.soniox.com for text-to-speech. Bifrost runs a transcription as one call: it uploads the file, creates the job, polls it to completion, reads the transcript, then deletes the job and the file. A job that finishes with status error is reported with HTTP 200 by Soniox, so Bifrost turns invalid_audio_file into a 400. Soniox text-to-speech requires language, which Bifrost takes from language_code, and audio_format, which comes from response_format (default mp3); a missing language_code is Soniox's own 400. The realtime WebSocket is not part of this provider yet.",
+      "item": [
+        {
+          "name": "/v1/audio/speech - mp3 bytes with language_code - soniox/tts-rt-v2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech returns mp3 audio', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"soniox/tts-rt-v2\",\n  \"input\": \"Hello from Soniox through Bifrost.\",\n  \"voice\": \"Daniel\",\n  \"language_code\": \"en\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech stream - SSE deltas then done with usage - soniox/tts-rt-v2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech streams deltas and a done event', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no delta events').to.include('speech.audio.delta');",
+                  "  pm.expect(text, 'no done event').to.include('speech.audio.done');",
+                  "  pm.expect(text, 'no usage on done').to.match(/\"input_chars\":\\s*[1-9]/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"soniox/tts-rt-v2\",\n  \"input\": \"Hello from Soniox through Bifrost.\",\n  \"voice\": \"Daniel\",\n  \"language_code\": \"en\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/speech - missing language_code is Soniox's 400 - soniox/tts-rt-v2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('missing language surfaces Soniox error as a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text().toLowerCase()).to.include('language');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"soniox/tts-rt-v2\",\n  \"input\": \"Hello from Soniox through Bifrost.\",\n  \"voice\": \"Daniel\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/audio/speech - OpenAI drop-in route carries language_code - soniox/tts-rt-v2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in speech returns mp3 audio', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"soniox/tts-rt-v2\",\n  \"input\": \"Hello from Soniox through Bifrost.\",\n  \"voice\": \"Daniel\",\n  \"language_code\": \"en\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - async job returns text and duration usage - soniox/stt-async-v6",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcription returns text and seconds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.seconds, 'usage seconds missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "soniox/stt-async-v6",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - verbose_json words carry speakers with diarization - soniox/stt-async-v6",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('sub-word tokens regroup into words with a speaker', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.words, 'no words: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words[0].word).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.words[0].end).to.be.at.least(j.words[0].start);",
+                  "  pm.expect(j.words[0].speaker, 'speaker').to.match(/^\\d+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "soniox/stt-async-v6",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                },
+                {
+                  "key": "timestamp_granularities[]",
+                  "value": "word",
+                  "type": "text"
+                },
+                {
+                  "key": "enable_speaker_diarization",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/audio/transcriptions - OpenAI drop-in route - soniox/stt-async-v6",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in transcription returns text', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "soniox/stt-async-v6",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/transcriptions - an unreadable file is a 400 after the job fails - soniox/stt-async-v6",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid_audio_file job becomes a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('Invalid audio file');",
+                  "  // Only a job error names its transcription; an upload rejected with the same message would not.",
+                  "  pm.expect(pm.response.text(), 'not the job error path: ' + pm.response.text()).to.match(/\\(transcription [^)]+\\)/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "soniox/stt-async-v6",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.txt",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models?provider=soniox - lists speech-to-text and text-to-speech models - soniox",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('soniox ListModels merges both catalogs', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (model) { return model.id; });",
+                  "  pm.expect(ids, 'speech-to-text model missing: ' + body.slice(0, 500)).to.include('soniox/stt-async-v6');",
+                  "  pm.expect(ids, 'text-to-speech model missing: ' + body.slice(0, 500)).to.include('soniox/tts-rt-v2');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=soniox",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "soniox"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
