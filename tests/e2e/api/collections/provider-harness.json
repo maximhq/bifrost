@@ -321549,7 +321549,7 @@
       ]
     },
     {
-      "name": "265. Request trace endpoint (log-trace) [SERIAL]",
+      "name": "349. Request trace endpoint (log-trace) [SERIAL]",
       "description": "GET /api/logs/{id}/trace serves the causal chain Warp's get_request_trace tool builds (the two now share logstore.BuildRequestTrace), so the Bifrost MCP and API clients can explain one request. The case sends one request, waits for its log row through the session listing, and requires the trace to be rooted at it with one successful openai node; an unknown id must return 404. Red before the change: the route did not exist. The seeded log is deleted at the end.",
       "item": [
         {
@@ -321907,6 +321907,94 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/logs/search?query=refunds&period=last_quarter"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: six identical phrasings count toward the limit of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: six copies of one query return 400 instead of folding to one', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"6 queries given\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a&query=a&query=a&query=a&query=a&query=a"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a list filter that names no value is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: providers=, returns 400 instead of searching every provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"providers\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&providers=,"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a filter given twice is refused, not half-applied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: a repeated max_cost returns 400 instead of applying one of them', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"max_cost\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&max_cost=100&max_cost=1"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a metadata filter with no key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: metadata_ with no key returns 400 instead of being dropped', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"metadata\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&metadata_=prod"
           }
         },
         {
@@ -322330,7 +322418,7 @@
       ]
     },
     {
-      "name": "301. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "name": "351. Per-user limits endpoints are Enterprise-only (user-limits)",
       "item": [
         {
           "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
@@ -322383,7 +322471,7 @@
       ]
     },
     {
-      "name": "267. Caller identity endpoint (session-me)",
+      "name": "350. Caller identity endpoint (session-me)",
       "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and Bifrost MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
       "item": [
         {
