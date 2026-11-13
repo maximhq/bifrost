@@ -3,6 +3,8 @@ import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
+import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { getErrorMessage } from "@/lib/store";
 import { useDeleteModelRouterMutation, useGetModelRouterQuery, useUpdateModelRouterMutation } from "@/lib/store/apis/governanceApi";
 import { MAX_SEMANTIC_PHRASES } from "@/lib/types/complexityRouter";
@@ -54,6 +56,8 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
 	const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(ROUTER_TABS).withDefault("overview").withOptions({ history: "push" }));
 	const [suggestionsView, setSuggestionsView] = useQueryState("view", suggestionsViewParser);
+	// The suggestions dashboard ships behind a flag; their APIs work either way.
+	const suggestionsFlagOn = useFeatureFlag(FEATURE_FLAGS.phraseSuggestions);
 	const { data, isLoading, error, refetch } = useGetModelRouterQuery(routerId, { refetchOnMountOrArgChange: true });
 	const [updateRouter] = useUpdateModelRouterMutation();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
@@ -109,9 +113,9 @@ export default function RouterDetailView({ routerId, traffic, trafficWindow, onB
 		);
 	}
 
-	const showSuggestions = config.live.classifier === "semantic";
-	// Suggestions only serve the semantic classifier, so a link to them on any
-	// other router lands on its overview.
+	const showSuggestions = suggestionsFlagOn && config.live.classifier === "semantic";
+	// Suggestions only serve the semantic classifier, and only show with their
+	// flag on, so a link to them otherwise lands on the router's overview.
 	const currentTab: RouterTab = tab === "suggestions" && !showSuggestions ? "overview" : tab;
 
 	const confirmDelete = () => {
