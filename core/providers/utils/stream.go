@@ -11,6 +11,105 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+const maxPassthrough429RetryBodyBytes = 1 << 20
+const maxPassthrough429RetryChunks = 1024
+
+// bufferPassthrough429ForRetry consumes only an initial raw HTTP 429 response,
+// allowing its retry classifier to inspect a bounded complete body. It returns
+// original chunks for exact forwarding when retry is refused or bounds overflow.
+func bufferPassthrough429ForRetry(ctx context.Context, first *schemas.BifrostStreamChunk, rest chan *schemas.BifrostStreamChunk, classify func(*schemas.BifrostStreamChunk) *schemas.BifrostError) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError, bool) {
+	if first == nil || first.BifrostPassthroughResponse == nil || first.BifrostPassthroughResponse.StatusCode != 429 || classify == nil {
+		return nil, nil, nil, false
+	}
+	chunks := []*schemas.BifrostStreamChunk{first}
+	body := first.BifrostPassthroughResponse.Body
+	overflow := len(body) > maxPassthrough429RetryBodyBytes
+	for len(chunks) <= maxPassthrough429RetryChunks && len(body) <= maxPassthrough429RetryBodyBytes {
+		if overflow {
+			break
+		}
+		chunk, ok := <-rest
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+		if chunk != nil && chunk.BifrostPassthroughResponse != nil {
+			nextBody := chunk.BifrostPassthroughResponse.Body
+			if len(nextBody) > maxPassthrough429RetryBodyBytes-len(body) {
+				overflow = true
+			} else {
+				body = append(body, nextBody...)
+			}
+		}
+	}
+	if overflow || len(chunks) > maxPassthrough429RetryChunks || len(body) > maxPassthrough429RetryBodyBytes {
+		// Bounds are exceeded: never retry an incompletely inspected POST. Stream
+		// all retained chunks and the unread tail without further buffering.
+		forwarded, done := forwardPassthroughChunks(ctx, chunks, rest)
+		return forwarded, done, nil, true
+	}
+	combined := *first.BifrostPassthroughResponse
+	combined.Body = body
+	classificationChunk := *first
+	classificationChunk.BifrostPassthroughResponse = &combined
+	if retryErr := classify(&classificationChunk); retryErr != nil {
+		done := make(chan struct{})
+		close(done)
+		return nil, done, retryErr, true
+	}
+	forwarded := make(chan *schemas.BifrostStreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		forwarded <- chunk
+	}
+	close(forwarded)
+	done := make(chan struct{})
+	close(done)
+	return forwarded, done, nil, true
+}
+
+func forwardPassthroughChunks(ctx context.Context, chunks []*schemas.BifrostStreamChunk, rest chan *schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	out := make(chan *schemas.BifrostStreamChunk)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(out)
+		drain := func() {
+			for range rest {
+			}
+		}
+		send := func(chunk *schemas.BifrostStreamChunk) bool {
+			select {
+			case out <- chunk:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for _, chunk := range chunks {
+			if !send(chunk) {
+				drain()
+				return
+			}
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				drain()
+				return
+			case chunk, ok := <-rest:
+				if !ok {
+					return
+				}
+				if !send(chunk) {
+					drain()
+					return
+				}
+			}
+		}
+	}()
+	return out, done
+}
+
 // ErrStreamFirstTokenTimeout closes the socket of a stream attempt that missed
 // its first-token deadline.
 var ErrStreamFirstTokenTimeout = errors.New(schemas.ErrStreamFirstTokenTimeout)
@@ -477,6 +576,7 @@ func drainInBackground(stream chan *schemas.BifrostStreamChunk) <-chan struct{} 
 func CheckFirstStreamChunkForError(
 	ctx context.Context,
 	stream chan *schemas.BifrostStreamChunk,
+	firstChunkRetry ...func(*schemas.BifrostStreamChunk) *schemas.BifrostError,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	if stream == nil {
 		done := make(chan struct{})
@@ -527,6 +627,23 @@ func CheckFirstStreamChunkForError(
 	if !abort.Disarm() {
 		// The deadline fired while this chunk was in flight.
 		return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
+	}
+
+	if len(firstChunkRetry) > 0 && firstChunkRetry[0] != nil {
+		if checked, complete, retryErr, handled := bufferPassthrough429ForRetry(ctx, firstChunk, stream, firstChunkRetry[0]); handled {
+			if retryErr != nil {
+				return nil, complete, retryErr
+			}
+			return checked, complete, nil
+		}
+	}
+
+	// A rejected first HTTP 429 is a retry signal only if no bytes have
+	// committed. Drain the former attempt, never expose its chunks.
+	if len(firstChunkRetry) > 0 && firstChunkRetry[0] != nil {
+		if retryErr := firstChunkRetry[0](firstChunk); retryErr != nil {
+			return nil, drainInBackground(stream), retryErr
+		}
 	}
 
 	// First chunk is valid data — wrap channel to re-inject it. A commit marker means a
