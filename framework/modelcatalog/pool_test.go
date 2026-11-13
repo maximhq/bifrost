@@ -446,6 +446,39 @@ func TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate(t *testing.T)
 	}
 }
 
+// TestGetProvidersForModel_PatternAliasCandidate pins when a pattern alias makes a provider a candidate for a bare model its upstream does not list.
+func TestGetProvidersForModel_PatternAliasCandidate(t *testing.T) {
+	pattern := schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}}
+	all := schemas.WhiteList{"*"}
+	keys := map[schemas.ModelProvider][]schemas.Key{
+		"pattern":       {{ID: "k1", Models: all, Aliases: pattern}},
+		"exact":         {{ID: "k2", Models: all, Aliases: schemas.KeyAliases{"claude-opus-5": {ModelID: "us.anthropic.claude-opus-5"}}}},
+		"no-alias":      {{ID: "k3", Models: all}},
+		"allow-refuses": {{ID: "k4", Models: schemas.WhiteList{"regex:gpt-.*"}, Aliases: pattern}},
+		"blocked":       {{ID: "k5", Models: all, BlacklistedModels: schemas.BlackList{"claude-opus-5"}, Aliases: pattern}},
+	}
+	mc := NewTestCatalog(nil)
+	mc.ReplaceKeyConfig(keys)
+	// A listed model keeps a wildcard key from claiming every name, so only the alias can add one.
+	for provider, ks := range keys {
+		mc.UpsertLive(provider, ks[0].ID, false, []string{"listed-by-" + string(provider)})
+		mc.UpsertLive(provider, ks[0].ID, true, []string{"listed-by-" + string(provider)})
+	}
+	for model, want := range map[string][]schemas.ModelProvider{
+		"claude-opus-5":     {"exact", "pattern"},
+		"CLAUDE-OPUS-5":     {"exact", "pattern"},
+		"claude-sonnet-5":   {"blocked", "pattern"},
+		"mistral-large":     nil,
+		"regex:(claude-.*)": nil,
+	} {
+		got := mc.GetProvidersForModel(model)
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("GetProvidersForModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
 func ptrBool(b bool) *bool { return &b }
 
 // TestExtractModelIDs_StripsOwningProviderPrefix verifies the canonical

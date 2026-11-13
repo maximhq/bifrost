@@ -638,6 +638,11 @@ interface LogDetailViewProps {
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
 	onOpenLog?: (logId: string) => void;
+	/**
+	 * "embedded" renders inside another surface (the agent trace tree): no sticky sheet header or sheet padding,
+	 * and the active tab and "More details" state stay local so several embedded views never share URL keys.
+	 */
+	variant?: "sheet" | "embedded";
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -705,7 +710,9 @@ export function LogDetailView({
 	onFilterByParentRequestId,
 	onFilterBySessionId,
 	onOpenLog,
+	variant = "sheet",
 }: LogDetailViewProps) {
+	const embedded = variant === "embedded";
 	const { t } = useTranslation("observability");
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: t("logs.detail.copyRequestBodySuccess"),
@@ -726,11 +733,17 @@ export function LogDetailView({
 	// Kept in localStorage so a filter such as "reasoning only" survives reloads and new sessions.
 	const [visibleRoles, setVisibleRoles] = useMessageRoleFilterPreference();
 	// Kept in the URL so the open section and active tab survive switching logs, which remounts this view.
-	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
+	const [urlMoreDetailsOpen, setUrlMoreDetailsOpen] = useQueryState(
 		"log_more",
 		parseAsBoolean.withDefault(false).withOptions({ history: "replace" }),
 	);
-	const [tabParam, setTabParam] = useQueryState("log_tab", parseAsString.withOptions({ history: "replace" }));
+	const [urlTabParam, setUrlTabParam] = useQueryState("log_tab", parseAsString.withOptions({ history: "replace" }));
+	const [localMoreDetailsOpen, setLocalMoreDetailsOpen] = useState(false);
+	const [localTabParam, setLocalTabParam] = useState<string | null>(null);
+	const moreDetailsOpen = embedded ? localMoreDetailsOpen : urlMoreDetailsOpen;
+	const setMoreDetailsOpen = embedded ? setLocalMoreDetailsOpen : setUrlMoreDetailsOpen;
+	const tabParam = embedded ? localTabParam : urlTabParam;
+	const setTabParam = embedded ? setLocalTabParam : setUrlTabParam;
 
 	const handleToggleReveal = (checked: boolean) => {
 		setShowRevealedValues(checked && revealAvailable);
@@ -973,9 +986,14 @@ export function LogDetailView({
 	) : (
 		<>
 			{/* Breadcrumb header with actions */}
-			<div className="bg-card sticky -top-5 z-20 mx-4 flex items-center justify-between gap-3 pt-4 pb-2 md:mx-8 md:pt-8">
+			<div
+				className={cn(
+					"bg-card flex items-center justify-between gap-3",
+					embedded ? "pb-2" : "sticky -top-5 z-20 mx-4 pt-4 pb-2 md:mx-8 md:pt-8",
+				)}
+			>
 				<div className="text-muted-foreground flex items-center gap-2 text-sm">
-					{headerAction}
+					{!embedded && headerAction}
 					<span className="text-foreground font-medium">{t("logs.detail.requestDetails")}</span>
 				</div>
 				<div className="flex items-center gap-3">
@@ -1059,9 +1077,11 @@ export function LogDetailView({
 							<X className="h-3 w-3" />
 						</Button>
 					) : null}
+					{/* Embedded, the header action (e.g. "Open in LLM logs") sits at the right end. */}
+					{embedded && headerAction}
 				</div>
 			</div>
-			<div className="flex flex-col gap-4 px-4 pb-4 md:px-8 md:pb-8">
+			<div className={cn("flex flex-col gap-4", !embedded && "px-4 pb-4 md:px-8 md:pb-8")}>
 				{fallbackChain && <FallbackChainBanner chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 				<div className="border-border rounded-sm border">
 					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
