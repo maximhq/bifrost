@@ -7,7 +7,7 @@ icon: "sparkles"
 
 ## Overview
 
-Warp is an agent built into the Bifrost dashboard. You ask it a question about your deployment, such as "Who are my top 5 users by cost this week?", and it answers from your own data. It reads that data through a fixed set of read-only tools: request logs, metrics, usage rankings, model performance, request traces, and virtual key limits.
+Warp is an agent built into the Bifrost dashboard. You ask it a question about your deployment, such as "Who are my top 5 users by cost this week?", and it answers from your own data. It reads that data through a fixed set of read-only tools: request logs, metrics, usage rankings, model performance, request traces, and virtual key limits. With a [Bifrost URL](#configuration-tools) set, it also reads how the deployment is configured and can create resources after you confirm each one.
 
 Warp runs on a model you choose, separate from the providers your gateway serves. Its own model calls go through Bifrost like any other request. They are logged, priced, and governed under the app name **Warp**, so you can always see what Warp costs.
 
@@ -16,7 +16,7 @@ Warp runs on a model you choose, separate from the providers your gateway serves
 - **Semantic log search** - Warp finds conversations by meaning ("requests where users asked about refunds") using an embedding index of your logs.
 - **Inline charts and log links** - Answers can include line and bar charts and links that open the matching rows on the **Logs** page.
 - **Clarifying questions** - When a question is ambiguous, Warp asks a multiple-choice question instead of guessing.
-- **Read-only and scoped** - Warp cannot change configuration. It reads only the data the person asking is allowed to see.
+- **Scoped to the person asking** - Warp reads only the data the person asking is allowed to see. Its configuration tools call Bifrost's API with that person's own permissions, and a create runs only after they confirm it.
 
 <Note>
 Warp is in alpha. Its settings and behavior may change between releases.
@@ -331,7 +331,27 @@ Warp uses only these read-only tools:
 | `describe_user_limits` | Shows a person's budgets and rate limits with current usage. Enterprise only. |
 | `ask_user` | Asks you a multiple-choice question. |
 
-Warp has no tool that changes configuration, sends requests to providers on your behalf, or reads data outside the logs store and governance settings.
+These tools never change configuration or send requests to providers on your behalf. Reading and creating configuration goes through the separate [configuration tools](#configuration-tools).
+
+### Configuration tools
+
+Warp also reaches Bifrost's own `/api` through the Bifrost MCP, the server behind `/v1/mcp`. It runs in process and as the person asking, so `/api`'s authentication and permissions decide what each call may do. The tools carry the API's operation names, such as `getConfig`, `listProviders`, `listTeams`, or `createVirtualKey`.
+
+| | Behavior |
+|---|---|
+| **Reads** | Every `GET /api` operation, except the log reads Warp's own tools already answer and the routes that return virtual key values in plaintext. |
+| **Creates** | `POST` create operations, offered only when `bifrost_mcp_allow_writes` is on (the default). A create never runs on the model's say-so: Warp ends its turn with a confirmation card showing the exact call, and it runs only when you press **Confirm**. The card expires after 10 minutes. Creating a webhook is excluded, because its signing secret is shown only once. |
+| **Changes and deletes** | Not offered. Warp declines them. |
+| **Permissions** | A call you are not allowed to make fails with `401` or `403`, and Warp tells you so. |
+| **Data sent to the model** | Tool results go to Warp's model provider, as log results already do. Virtual key values are removed from every result first. |
+
+The configuration tools load only when these settings allow it:
+
+| Setting | Where | Effect on Warp |
+|---|---|---|
+| `client.bifrost_url` | **Settings → Client Settings → Bifrost URL** | Required. Unset, the Bifrost MCP does not load and Warp keeps only its traffic tools. See [MCP agent settings](/deployment-guides/config-json/client#mcp-agent-settings). |
+| `client.bifrost_mcp_allow_writes` | **Settings → Security** | On by default. Off, Warp only reads configuration. This setting also decides whether `/v1/mcp` serves configuration changes, so turning it off applies to both. |
+| `framework.pricing.openapi_url` | **Settings → Client Settings → OpenAPI URL** | The spec the tools are built from. Unset, Bifrost fetches the published spec from GitHub. On an air-gapped install, point it at a local copy relative to the app directory, or the tools do not load. |
 
 ---
 
@@ -364,9 +384,54 @@ Naming a scope in the question ("for the payments team") always overrides the de
 
 ---
 
+## Upgrading from read-only Warp
+
+Before the configuration tools, Warp was read-only: it answered questions about traffic and declined anything about configuration. An existing Warp deployment picks up the new behavior on upgrade, with no change to its Warp settings. Whether it does depends on the [settings above](#configuration-tools): with `bifrost_url` set, Warp starts reading configuration and, by default, creating resources.
+
+### What changes
+
+| | Before | After the upgrade |
+|---|---|---|
+| Configuration questions | Declined | Answered, when `bifrost_url` is set |
+| Creating virtual keys, teams, routing rules and other resources | Not possible | After you press **Confirm** on a card, when `bifrost_url` is set and `bifrost_mcp_allow_writes` is on (the default) |
+| Changing or deleting anything | Not possible | Still not possible |
+| Data sent to Warp's model provider | Logs, metrics and governance | Also the configuration Warp reads. Virtual key values are removed. |
+| Outbound network | Warp's model provider and embedding provider | The same, plus the OpenAPI spec fetched from GitHub when `bifrost_url` is set, unless `openapi_url` points elsewhere |
+
+Traffic questions, chat history, the log index, and Warp's own settings are unchanged. No data migration runs.
+
+### Upgrade checklist
+
+1. **Decide whether Warp may create.** If Warp should stay read-only, turn off **Allow configuration changes through the Bifrost MCP** under **Settings → Security**, or set `bifrost_mcp_allow_writes` to `false`. This also stops `/v1/mcp` from serving configuration changes.
+2. **Set the Bifrost URL to turn the configuration tools on.** Enter the URL clients reach the gateway at, including any `server.base_path`, under **Settings → Client Settings**. To keep Warp exactly as it was, leave it unset, but note that `/v1/mcp` is then disabled too.
+3. **On an air-gapped install, set the OpenAPI URL** to a local copy of the spec, relative to the app directory.
+4. **With RBAC, review roles.** Warp now acts with each user's own `/api` permissions, so what Warp can read or create follows each role.
+
+The same settings in `config.json`:
+
+```json
+{
+  "client": {
+    "bifrost_url": "https://bifrost.example.com",
+    "bifrost_mcp_allow_writes": false
+  },
+  "framework": {
+    "pricing": {
+      "openapi_url": "specs/openapi-oss.json"
+    }
+  }
+}
+```
+
+### The upgrade notice
+
+When an administrator (Update on **Warp**) opens **Settings → Warp** on a deployment with Warp enabled, the dashboard shows a one-time notice. It lists these changes, shows the current Bifrost URL and OpenAPI URL, says what Warp will do with them, and has an **Allow creates** switch that saves `bifrost_mcp_allow_writes`. Changing the switch requires Update on **Settings**. **Got it** records the acknowledgement in the browser's local storage, not on the account. Anyone using the same browser profile on the same dashboard address will not see the notice again, and an administrator on another browser or profile still will. Do not rely on the notice to reach every administrator; share these upgrade notes with them. **Remind me later** closes it until the next visit.
+
+---
+
 ## Cost and governance
 
-Warp's model calls go through the full Bifrost pipeline, so they appear on the **Logs** page with the app name **Warp** and the user agent `bifrost-warp/1`. Calls from one conversation share a session ID equal to the conversation ID. MCP tools are never attached to Warp's calls.
+Warp's model calls go through the full Bifrost pipeline, so they appear on the **Logs** page with the app name **Warp** and the user agent `bifrost-warp/1`. Calls from one conversation share a session ID equal to the conversation ID. Tools from your MCP clients are never attached to Warp's calls. Its configuration tools come only from the Bifrost MCP.
 
 Warp's traffic is subject to the same governance as any other request. If a budget, rate limit, or model restriction applies to the person asking, Warp reports that its model call was refused and why (`budget_exceeded`, `rate_limited`, or `model_blocked`).
 
@@ -456,6 +521,16 @@ The response body has a `reason` field:
 
 **Cause:** A backfill is already running.
 **Fix:** Wait for it to finish, or cancel it from the settings page or [Background jobs](/features/observability/default#background-jobs).
+
+### Warp says it cannot see how the deployment is configured
+
+**Cause:** The configuration tools did not load. Either `bifrost_url` is unset, or the OpenAPI spec could not be fetched (common on air-gapped installs). The server log has a `[Bifrost MCP]` warning naming which.
+**Fix:** Set the Bifrost URL, and on an air-gapped install the OpenAPI URL, as described in [Configuration tools](#configuration-tools).
+
+### Warp offers to create something you expected it to decline
+
+**Cause:** `bifrost_mcp_allow_writes` is on, which is the default.
+**Fix:** Turn off **Allow configuration changes through the Bifrost MCP** under **Settings → Security**. See [Upgrading from read-only Warp](#upgrading-from-read-only-warp).
 
 ### Semantic search misses recent conversations
 
