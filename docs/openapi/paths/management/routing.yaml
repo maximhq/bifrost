@@ -581,7 +581,7 @@ complexity-suggestions:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List phrase suggestions
@@ -662,7 +662,7 @@ complexity-suggestion:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a phrase suggestion with its examples
@@ -720,7 +720,7 @@ complexity-suggestion-status:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Accept, dismiss or reopen a phrase suggestion
@@ -796,7 +796,7 @@ complexity-suggestion-test:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Test phrases against routed requests
@@ -867,7 +867,7 @@ complexity-suggestion-runs:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List phrase suggestion runs
@@ -940,7 +940,7 @@ complexity-suggestion-runs:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Start a phrase suggestion run now
@@ -1015,7 +1015,7 @@ complexity-suggestion-run-estimate:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Estimate a phrase suggestion run
@@ -1087,7 +1087,7 @@ model-routers:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List model routers
@@ -1115,7 +1115,7 @@ model-routers:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create a model router
@@ -1162,7 +1162,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a model router
@@ -1198,7 +1198,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a model router
@@ -1242,7 +1242,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Delete` | RBAC role or API key scope |
+        | `Routers:Delete` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a model router
@@ -1280,7 +1280,7 @@ model-router-reset:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reset a model router
@@ -1311,7 +1311,7 @@ model-router-defaults:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model router defaults
@@ -1345,7 +1345,7 @@ model-router-targets:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set a model router's targets
@@ -1391,7 +1391,7 @@ model-router-routing:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a model router's routing
@@ -1440,7 +1440,7 @@ model-router-status:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a model router's classifier status
@@ -1486,7 +1486,7 @@ model-router-status-retry:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Retry a model router's failed warmup
@@ -1538,7 +1538,7 @@ model-router-classify:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Classify statements with a model router
@@ -1600,7 +1600,7 @@ complexity-suggestion-run-cancel:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Cancel a phrase suggestion run
@@ -1664,7 +1664,7 @@ complexity-suggestion-impact:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check what phrases would do to recent traffic
@@ -1750,7 +1750,7 @@ model-router-phrases:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add phrases to a model router

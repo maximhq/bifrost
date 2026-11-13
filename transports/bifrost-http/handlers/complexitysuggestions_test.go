@@ -430,15 +430,18 @@ func TestComplexitySuggestionsRuns(t *testing.T) {
 }
 
 func TestComplexitySuggestionsNeedALogStore(t *testing.T) {
+	// The router is saved, so the 503 is about the deployment, not a router
+	// that does not exist (that one is 404 on every suggestion endpoint).
+	store := suggestionsConfigStore{routers: map[string]*configstore.ModelRouter{"default": suggestionTestRouter()}}
 	manager := &suggestionManagerFake{}
-	h, err := NewRoutingHandler(manager, suggestionsConfigStore{})
+	h, err := NewRoutingHandler(manager, store)
 	require.NoError(t, err)
 	r := router.New()
 	h.RegisterRoutes(r)
 	code, _ := serve(t, r, fasthttp.MethodGet, "/api/routing/model-routers/default/suggestions", "")
 	assert.Equal(t, fasthttp.StatusServiceUnavailable, code)
 
-	h, err = NewRoutingHandler(&mockRoutingManager{}, suggestionsConfigStore{})
+	h, err = NewRoutingHandler(&mockRoutingManager{}, store)
 	require.NoError(t, err)
 	r = router.New()
 	h.RegisterRoutes(r)

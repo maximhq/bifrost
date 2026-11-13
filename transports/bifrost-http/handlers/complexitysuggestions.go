@@ -147,7 +147,7 @@ type complexitySuggestionRunsResponse struct {
 // no /api/governance alias.
 func (h *RoutingHandler) registerComplexitySuggestionRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handle := func(method, path string, handler fasthttp.RequestHandler) {
-		r.Handle(method, path, lib.ChainMiddlewares(handler, middlewares...))
+		r.Handle(method, path, lib.ChainMiddlewares(h.visibleModelRouter(path, handler), middlewares...))
 	}
 	const base = "/api/routing/model-routers/{router_id}/suggestions"
 	handle(fasthttp.MethodGet, base, h.listComplexitySuggestions)

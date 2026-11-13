@@ -88116,7 +88116,7 @@
       "get": {
         "operationId": "listComplexitySuggestions",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List phrase suggestions",
         "description": "Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the model router config.\n",
@@ -88529,7 +88529,7 @@
       "post": {
         "operationId": "testComplexitySuggestionPhrases",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Test phrases against routed requests",
         "description": "Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.\n",
@@ -88781,7 +88781,7 @@
       "get": {
         "operationId": "listComplexitySuggestionRuns",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List phrase suggestion runs",
         "description": "Lists suggestion runs newest first, scheduled and manual, with what each read, created, refreshed and superseded, what its model calls cost, and why it failed if it did. The latest 200 runs are kept.\n",
@@ -89021,7 +89021,7 @@
       "post": {
         "operationId": "startComplexitySuggestionRun",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Start a phrase suggestion run now",
         "description": "Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).\n",
@@ -89130,7 +89130,7 @@
       "get": {
         "operationId": "estimateComplexitySuggestionRun",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Estimate a phrase suggestion run",
         "description": "Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there.\n",
@@ -89264,7 +89264,7 @@
       "post": {
         "operationId": "cancelComplexitySuggestionRun",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Cancel a phrase suggestion run",
         "description": "Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the call waits a few seconds for that and returns the run as it ended, or, if it has not stopped by then, as it stands, still running.\n",
@@ -89491,7 +89491,7 @@
       "post": {
         "operationId": "replayComplexitySuggestionImpact",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Check what phrases would do to recent traffic",
         "description": "Adds the phrases given, by tier, to the router's saved phrases for this replay only, routes the router's captured requests from the window, by nearest phrase, against the saved bank and against the bank with the phrases added, and reports what would change. Nothing is saved: the phrases are dropped after the replay, and only the add phrases endpoint saves phrases. A phrase its tier already holds is skipped and reported; one another tier holds is refused. A window that reaches back before the router captured requests is first filled from its logs. Reported: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.\n\nOnly requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.\n",
@@ -89815,7 +89815,7 @@
       "get": {
         "operationId": "getComplexitySuggestion",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get a phrase suggestion with its examples",
         "description": "Returns one suggestion and the text of the requests it was written from, read from their logs within the caller's access scope. An example whose log was deleted, hides its content, or is outside the caller's access is listed without text.\n",
@@ -90036,7 +90036,7 @@
       "put": {
         "operationId": "updateComplexitySuggestionStatus",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Accept, dismiss or reopen a phrase suggestion",
         "description": "Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank, with POST /api/routing/model-routers/{router_id}/phrases or a router update. Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.\n",
@@ -90281,7 +90281,7 @@
       "post": {
         "operationId": "addModelRouterPhrases",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add phrases to a model router",
         "description": "Appends phrases, by tier, to the router's saved phrase bank and serves it; the one phrase suggestion endpoint that changes routing. A phrase its tier already holds is skipped and reported. A phrase another tier holds, a bank past its phrase limit, or a suggestion named that is not the router's or not open refuses the request, and nothing is saved. Once the phrases are saved, the suggestions named are marked accepted: the phrases stay saved even when one cannot be (a run superseded it meanwhile, or its status could not be written), and `accepted` lists only those that were. The router is served again even when every phrase was already there, so a retry after a failed reload reaches it. Unknown fields are refused with 400. Changed phrases are re-embedded in the background, as any phrase save is.\n",
@@ -90490,7 +90490,7 @@
       "get": {
         "operationId": "listModelRouters",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List model routers",
         "description": "Returns every model router, oldest first. The list is empty until a router is created. A router stored in a form this version cannot read is left out of the list.",
@@ -90531,7 +90531,7 @@
       "post": {
         "operationId": "createModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a model router",
         "description": "Creates a named model router and starts serving it. An omitted id is generated. Targets in the body are ignored; set them with PUT /api/routing/model-routers/{router_id}/targets. Routing is optional and checked as on PUT /api/routing/model-routers/{router_id}/routing; without it the router starts off, global, with the priority after the last global router. A priority another router in the same scope has is 409.\n",
@@ -90604,7 +90604,7 @@
       "get": {
         "operationId": "getModelRouterDefaults",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get model router defaults",
         "description": "Returns what a new model router starts from, so a client can show it before saving anything - the built-in config with its reference phrases, the decision model's per-tier guidance, and the llm classifier's default prompt.",
@@ -90648,7 +90648,7 @@
       "get": {
         "operationId": "getModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get a model router",
         "description": "Returns one model router.",
@@ -90709,7 +90709,7 @@
       "put": {
         "operationId": "updateModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a model router",
         "description": "Changes a router's name, description and classifier config, and hot-reloads it. The id in the path names the router. Only what the body sends changes - an omitted name or description keeps the stored one, and a body without any classifier setting keeps the stored config; a body with classifier settings replaces the whole config. Targets and routing in the body are ignored and stay as stored; each is set on its own endpoint.",
@@ -90790,7 +90790,7 @@
       "delete": {
         "operationId": "deleteModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete a model router",
         "description": "Deletes a router with its targets and routing.",
@@ -90854,7 +90854,7 @@
       "post": {
         "operationId": "resetModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Reset a model router",
         "description": "Restores the router's reference phrases to the built-in defaults and hot-reloads it. Its name, classifier, targets, routing and other settings are kept.",
@@ -90918,7 +90918,7 @@
       "put": {
         "operationId": "setModelRouterTargets",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Set a model router's targets",
         "description": "Replaces the model each tier of the router gets, and serves the new targets without restarting the router's classifiers. A tier with no target keeps the request's model; an empty list clears them.",
@@ -91002,7 +91002,7 @@
       "put": {
         "operationId": "setModelRouterRouting",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a model router's routing",
         "description": "Changes which requests the router takes: whether it is on, its scope, its condition and its priority within the scope. Each field the body sends replaces the stored value and an omitted field keeps it, as in a routing rule update, so `{\"enabled\": false}` turns the router off and leaves the rest as it is. A `cel_expression` sent without `query` clears the stored builder state, which described the old condition. Unknown fields are refused with 400. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, global), by priority within a scope. The first enabled router whose condition holds classifies the request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model; no other router is tried. A condition of model == \"<name>\" lets apps ask for the router by that model name. The condition cannot use complexity_tier. Priorities are unique within a scope among model routers, separate from routing rule priorities. The router's classifier and targets are left as they are.\n",
@@ -91138,7 +91138,7 @@
       "get": {
         "operationId": "getModelRouterStatus",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get a model router's classifier status",
         "description": "Returns the readiness of one router's semantic classifier and llm fallback, in the shape of the complexity analyzer status.",
@@ -91359,7 +91359,7 @@
       "post": {
         "operationId": "retryModelRouterWarmup",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Retry a model router's failed warmup",
         "description": "Restarts one router's semantic classifier warmup when its state is failed. The retry runs asynchronously.",
@@ -91590,7 +91590,7 @@
       "post": {
         "operationId": "classifyWithModelRouter",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Routers:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Classify statements with a model router",
         "description": "Classifies up to 100 statements with one model router as it is served now, and returns the complexity tier each one gets. Each statement is classified as the latest user turn of a chat request, through the same input extraction, classifier, and fallback chain as live traffic.\n\nNothing is saved. No session tier is read or changed, and the statements are not captured for phrase suggestions. A router whose classifier is the decision model, or that falls back to the decision model or the LLM classifier, makes one model call per statement that reaches it, billed like any routing call.\n\nLabel statements with `expected_tier` to score a dataset: the summary then reports accuracy over the labelled statements and a confusion matrix. Send a larger dataset in pages of 100.\n",

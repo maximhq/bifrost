@@ -67,9 +67,9 @@ export function RoutersTable({ traffic, trafficFilter, onOpenRouter, onCreate }:
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: trouting } = useTranslation("models", { keyPrefix: "routing" });
 	const { t: tc } = useTranslation("common");
-	const canCreate = useRbac(RbacResource.Governance, RbacOperation.Create);
-	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const canCreate = useRbac(RbacResource.Routers, RbacOperation.Create);
+	const canUpdate = useRbac(RbacResource.Routers, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.Routers, RbacOperation.Delete);
 	const { data, isLoading, error, refetch } = useGetModelRoutersQuery();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
 	// Held by id, so the sheet always compares against the router as last read.
