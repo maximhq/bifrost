@@ -319298,6 +319298,176 @@
           ]
         }
       ]
+    },
+    {
+      "name": "344. Files API uploads streamed from the request (multipart upload stream)",
+      "description": "A Files API upload used to be copied in memory at every layer: the transport plugins rebuilt the parsed multipart form with Body() and copied it per phase, the /openai/files parser read the file into a []byte, the OpenAI provider rebuilt the multipart body in a buffer and copied it again, and passthrough rebuilt the form and copied it into the upstream request. A 55 MB upload grew the gateway by ~500 MiB, and parallel batch-input uploads OOM-killed pods.\n\nThe file now stays in the request's temp file and is streamed upstream with an exact Content-Length. These cases pin that a streamed upload still reaches OpenAI whole: the bytes OpenAI reports storing must equal the fixture size exactly (2215244 bytes), on the passthrough route and on the /openai integration route. Each upload is deleted afterwards.",
+      "item": [
+        {
+          "name": "344.1 openai /openai_passthrough/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamPassthroughFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "344.2 openai /openai/v1/files multipart upload arrives whole (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('upstream stored the whole file', function () {",
+                  "  pm.expect(body.bytes, 'bytes the upstream received: ' + pm.response.text()).to.eql(2215244);",
+                  "  pm.expect(body.filename, pm.response.text()).to.eql('arxiv-1706.03762.pdf');",
+                  "  pm.expect(body.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('mpStreamIntegrationFileId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "344.3 openai /openai_passthrough/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files/{{mpStreamPassthroughFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files",
+                "{{mpStreamPassthroughFileId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "344.4 openai /openai/v1/files/{id} deletes the streamed upload (multipart upload stream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete answered 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('file deleted', function () { pm.expect(pm.response.json().deleted, pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{mpStreamIntegrationFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{mpStreamIntegrationFileId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

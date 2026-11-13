@@ -3645,6 +3645,38 @@ func isJSONMediaType(mediaType string) bool {
 	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
+// passthroughMultipartBody returns a multipart request's parsed form and an exact-length stream
+// of it. It returns nils for a request that is not multipart, or whose form does not parse; the
+// caller then reads the body as bytes and forwards it as before.
+func passthroughMultipartBody(req *fasthttp.Request) (*multipart.Form, schemas.BodySource) {
+	boundary := req.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	form, err := req.MultipartForm()
+	if err != nil {
+		return nil, nil
+	}
+	source, err := schemas.NewMultipartFormBodySource(form, string(boundary))
+	if err != nil {
+		return nil, nil
+	}
+	return form, source
+}
+
+// multipartFormModelAndStream reads the model and stream fields of a parsed multipart form, the
+// way parseMultipartPassthroughBody reads them from raw bytes.
+func multipartFormModelAndStream(form *multipart.Form) (model string, isStream bool) {
+	if v := form.Value["model"]; len(v) > 0 {
+		model = strings.TrimSpace(v[0])
+	}
+	if v := form.Value["stream"]; len(v) > 0 {
+		s := strings.TrimSpace(strings.ToLower(v[0]))
+		isStream = s == "true" || s == "1"
+	}
+	return model, isStream
+}
+
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
 //   - Form fields (Content-Disposition name="model"/"stream"): read as plain text.
 func parseMultipartPassthroughBody(body []byte, boundary string) (model string, isStream bool) {
@@ -3747,13 +3779,24 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	body := ctx.Request.Body()
-	// Parse body once to get both model and stream flag.
-	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
-	if err != nil {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
-		return
+	// A multipart upload is passed on as its parsed form and a stream of it, never as bytes:
+	// fasthttp parsed it while reading the request and keeps large files in temp files, and
+	// Body() would rebuild the whole form in memory. Anything else is read as bytes.
+	form, bodySource := passthroughMultipartBody(&ctx.Request)
+	var body []byte
+	var bodyModel string
+	var bodyStream bool
+	var err error
+	if form != nil {
+		bodyModel, bodyStream = multipartFormModelAndStream(form)
+	} else {
+		body = ctx.Request.Body()
+		// Parse body once to get both model and stream flag.
+		bodyModel, bodyStream, err = parsePassthroughBody(string(ctx.Request.Header.ContentType()), body)
+		if err != nil {
+			g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+			return
+		}
 	}
 	if cfg.BodyModelKey != nil {
 		if key := cfg.BodyModelKey(string(ctx.Method()), path); key != "" {
@@ -3808,6 +3851,8 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		RawQuery:     string(ctx.URI().QueryString()),
 		UpstreamURL:  cfg.UpstreamURL,
 		Body:         body,
+		BodySource:   bodySource,
+		Form:         form,
 		SafeHeaders:  safeHeaders,
 		Provider:     provider,
 		BaseProvider: baseProvider,

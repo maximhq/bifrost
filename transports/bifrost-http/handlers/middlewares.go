@@ -1291,10 +1291,11 @@ func pluginRequestBodyMode(ctx *fasthttp.RequestCtx) pluginBodyMode {
 	return pluginBodyCopy
 }
 
-// multipartFormBodySource streams a request's multipart form for transport plugins. Open
-// serializes the parsed form (its temp files included) through a pipe, so the form is never held
-// in memory as one body. The form is the one fasthttp parsed while reading the request, or is
-// parsed on the first Open and cached on the request, where the handler reuses it.
+// multipartFormBodySource streams a request's multipart form for transport plugins, through
+// schemas.NewMultipartFormBodySource: the parsed form is serialized as it is read, its files from
+// their temp files, so it is never held in memory as one body. The form is the one fasthttp parsed
+// while reading the request, or is parsed on the first Open and cached on the request, where the
+// handler reuses it. Nothing is parsed until a plugin opens the body, so Size is unknown (-1).
 type multipartFormBodySource struct {
 	req *fasthttp.Request
 }
@@ -1306,12 +1307,11 @@ func (s multipartFormBodySource) Open() (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	boundary := string(s.req.Header.MultipartFormBoundary())
-	pr, pw := io.Pipe()
-	go func() {
-		pw.CloseWithError(fasthttp.WriteMultipartForm(pw, form, boundary))
-	}()
-	return pr, nil
+	src, err := schemas.NewMultipartFormBodySource(form, string(s.req.Header.MultipartFormBoundary()))
+	if err != nil {
+		return nil, err
+	}
+	return src.Open()
 }
 
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.

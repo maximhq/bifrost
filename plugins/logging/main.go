@@ -4113,7 +4113,13 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 			Model:    req.PassthroughRequest.Model,
 		}
 		initialData.Params = passthroughParams
-		if len(req.PassthroughRequest.Body) > 0 {
+		if len(req.PassthroughRequest.Body) == 0 && req.PassthroughRequest.Form != nil {
+			// A streamed multipart upload: summarize its parsed form, never the file contents.
+			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form); ok {
+				initialData.PassthroughRequestBody = string(summary)
+				passthroughParams.MultipartSummary = true
+			}
+		} else if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
 			if strings.Contains(ct, "application/json") {
