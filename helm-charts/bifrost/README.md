@@ -15,6 +15,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - `serviceMonitor.enabled: true` is refused at render time when `bifrost.plugins.telemetry.config.metrics_enabled` is `false`, since `/metrics` would return `404`.
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
 - Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` (`server_type_on_slug`): code mode for the client on its own `/mcp/<slug>` only (`inherit`, `enabled` or `disabled`); `/mcp`, Virtual MCPs and LLM requests follow `isCodeModeClient`.
+- Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
 
 ### 2.1.48
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1678,6 +1679,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if err := configstore.ValidatePublicBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
+	}
+	if err := ValidateClientMetadataURL(client.MCPClientMetadataURL.GetValue()); err != nil {
+		logger.Warn("mcp_client_metadata_url %v; Bifrost's Client ID Metadata Document will be served under mcp_external_client_url", err)
+		client.MCPClientMetadataURL = nil
 	}
 	if err := configstore.ValidatePublicBaseURL(client.SkillsExternalClientURL.GetValue()); err != nil {
 		logger.Warn("skills_external_client_url %v; marketplace serving will be disabled", err)
@@ -8422,6 +8427,62 @@ func (c *Config) GetMCPExternalClientURL() string {
 		return ""
 	}
 	return value
+}
+
+// GetMCPClientMetadataURL returns where the admin hosts Bifrost's Client ID Metadata Document, or empty
+// string when it is served under the MCP external client URL. Resolves env var references automatically.
+func (c *Config) GetMCPClientMetadataURL() string {
+	if c == nil {
+		return ""
+	}
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.MCPClientMetadataURL.GetValue()
+	if ValidateClientMetadataURL(value) != nil {
+		return ""
+	}
+	return normalizeClientMetadataURL(value)
+}
+
+// ValidateClientMetadataURL checks a hosted Client ID Metadata Document URL: https, a path other than "/",
+// no userinfo, query, fragment, or dot segments, and a host authorization servers may fetch (not loopback
+// or a private or special-use IP). "" is valid and means none is hosted.
+func ValidateClientMetadataURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	if !oauth2.IsClientMetadataURL(value) || strings.Contains(value, "?") {
+		return fmt.Errorf("must be an HTTPS URL with a path, and no userinfo, query, fragment, or dot segments")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("must be an HTTPS URL with a path, and no userinfo, query, fragment, or dot segments")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if network.IsLocalhost(host) || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("must be on a host authorization servers can reach, not a loopback address")
+	}
+	if ip := net.ParseIP(host); ip != nil && !network.IsPublicIP(ip) {
+		return fmt.Errorf("must be on a host authorization servers can reach, not a private or special-use address")
+	}
+	return nil
+}
+
+// normalizeClientMetadataURL lowercases the scheme and host and drops the default port (CIMD §3), so the
+// client_id Bifrost presents and serves is the form authorization servers compare against.
+func normalizeClientMetadataURL(value string) string {
+	scheme, rest, ok := strings.Cut(value, "://")
+	if !ok {
+		return value
+	}
+	authority, path := rest, ""
+	if i := strings.Index(rest, "/"); i >= 0 {
+		authority, path = rest[:i], rest[i:]
+	}
+	return strings.ToLower(scheme) + "://" + strings.TrimSuffix(strings.ToLower(authority), ":443") + path
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway

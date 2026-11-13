@@ -32,6 +32,7 @@ type OAuthHandler struct {
 func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifrost, store *lib.Config, mcpManager MCPManager) *OAuthHandler {
 	// A metadata-document client_id follows the base these paths are served under.
 	oauthProvider.SetClientMetadataDocumentPaths(oauthCallbackPath, oauthClientMetadataPath)
+	oauthProvider.SetHostedClientMetadataDocumentURL(store.GetMCPClientMetadataURL)
 	return &OAuthHandler{
 		client:        client,
 		store:         store,
@@ -54,13 +55,14 @@ const (
 	oauthClientMetadataPath = "/api/oauth/client-metadata.json"
 )
 
-// handleClientMetadataDocument serves Bifrost's Client ID Metadata Document (unauthenticated).
+// handleClientMetadataDocument serves Bifrost's Client ID Metadata Document (unauthenticated). With a
+// hosted document configured, it is the content to publish there.
 func (h *OAuthHandler) handleClientMetadataDocument(ctx *fasthttp.RequestCtx) {
 	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
 	redirectURI := base + oauthCallbackPath
 	ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")
 	SendJSON(ctx, map[string]any{
-		"client_id":                  base + oauthClientMetadataPath,
+		"client_id":                  h.oauthProvider.ClientMetadataDocumentURL(redirectURI),
 		"client_name":                oauth2.ClientName,
 		"client_uri":                 base,
 		"redirect_uris":              []string{redirectURI},

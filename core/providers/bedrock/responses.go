@@ -2842,12 +2842,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			if bifrostReq.Params.Text.Format != nil {
-				// Bedrock structured output goes through the synthetic `bf_so_*`
-				// tool path for all models, including Anthropic. We capture the
-				// tool here and defer injection until after normal tool/tool_choice
-				// conversion so the forced structured-output tool choice is not
-				// overwritten.
+			if outputConfig := responsesNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params.Text, bifrostReq.Params.Tools); outputConfig != nil {
+				bedrockReq.OutputConfig = outputConfig
+			} else if bifrostReq.Params.Text.Format != nil {
+				// Otherwise the synthetic `bf_so_*` tool is captured here and injected after
+				// the normal tool/tool_choice conversion so its forced choice is not overwritten.
 				responseFormatTool, _, err := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
 				if err != nil {
 					return nil, err
@@ -2871,6 +2870,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if len(bedrockReq.ExtraParams) == 0 {
 				bedrockReq.ExtraParams = nil
 			}
+		}
+		if bedrockReq.OutputConfig != nil {
+			setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
 		}
 
 		bedrockReq.InferenceConfig = inferenceConfig
@@ -4989,7 +4991,6 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					}
 				}
 			}
-
 		} else if block.ReasoningContent != nil {
 			// Reasoning content - collected into reasoning messages, one per upstream item
 			if block.ReasoningContent.ReasoningText != nil {

@@ -268,8 +268,7 @@ func customChatRequest(model string) *schemas.BifrostChatRequest {
 		Params: &schemas.ChatParameters{
 			Tools: []schemas.ChatTool{{
 				Type: schemas.ChatToolTypeCustom,
-				Name: "apply_patch",
-				Custom: &schemas.ChatToolCustom{Format: &schemas.ChatToolCustomFormat{
+				Custom: &schemas.ChatToolCustom{Name: "apply_patch", Format: &schemas.ChatToolCustomFormat{
 					Type:    "grammar",
 					Grammar: &schemas.ChatToolCustomGrammarFormat{Syntax: "regex", Definition: "^\\d+$"},
 				}},
@@ -492,4 +491,23 @@ func TestRestoreCustomToolCall_MatchesNamespace(t *testing.T) {
 	require.False(t, restoreCustomToolCall(function, names))
 	require.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *function.Type)
 	require.Equal(t, `{"input":"ls"}`, *function.Arguments)
+}
+
+// The OpenAI Chat wire nests the custom tool name under "custom"; the function
+// rewrite for old models must keep it.
+func TestToOpenAIChatRequest_NestedCustomToolNameAsFunction(t *testing.T) {
+	stubCustomToolsDatasheet(t)
+	var tool schemas.ChatTool
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"custom","custom":{"name":"ApplyPatch","description":"Apply a patch"}}`), &tool))
+	req := customChatRequest("gpt-4o")
+	req.Params.Tools = []schemas.ChatTool{tool}
+	req.Params.ToolChoice = nil
+
+	result := ToOpenAIChatRequest(nil, req)
+	require.NotNil(t, result)
+	fn := result.ChatParameters.Tools[0].Function
+	require.NotNil(t, fn)
+	require.Equal(t, "ApplyPatch", fn.Name)
+	require.NotNil(t, fn.Description)
+	require.Equal(t, "Apply a patch", *fn.Description)
 }
