@@ -1,6 +1,7 @@
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import { TracingFilterSidebar, type TracingSidebarFilters } from "@/components/filters/tracingFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
+import { ColumnConfigDropdown, useColumnConfig } from "@/components/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,12 +25,18 @@ import { TracingEmptyState } from "./views/emptyState";
 import { ProjectSettings } from "./views/projectSettings";
 import { renderTraceSpanExtras } from "./views/traceExtras";
 import { toVolumeHistogram, TraceMetricStrip } from "./views/traceOverview";
-import { ExperimentsTable, Pager, SessionsTable, SpansTable, TracesTable } from "./views/tracesTable";
+import { LogsDataTable, type LogsTablePagination } from "./views/logsDataTable";
+import {
+	createExperimentColumns,
+	createSessionColumns,
+	createSpanColumns,
+	createTraceColumns,
+	getTraceColumnLabels,
+} from "./views/tracingColumns";
 import { TraceViewer } from "./views/traceViewer";
 
 const RANGE_KEYS = ["1h", "24h", "7d", "30d"] as const;
 const RANGES: Record<string, number> = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000 };
-const PAGE_SIZE = 50;
 const arr = parseAsSafeArrayOf.withDefault([]);
 
 /** Buckets that give roughly sixty bars across the chosen range. */
@@ -62,6 +69,7 @@ export default function TracingPage() {
 		sort_by: parseAsSafeString.withDefault("timestamp"),
 		order: parseAsSafeString.withDefault("desc"),
 		offset: parseAsInteger.withDefault(0),
+		limit: parseAsInteger.withDefault(50),
 		// A link printed by an SDK opens one trace: its project (id or name), trace and span.
 		project: parseAsSafeString.withDefault(""),
 		trace: parseAsSafeString.withDefault(""),
@@ -112,12 +120,14 @@ export default function TracingPage() {
 			endSeconds,
 		],
 	);
-	const pagination: TracePagination = {
-		limit: PAGE_SIZE,
+	const pagination: TracePagination & LogsTablePagination = {
+		limit: url.limit,
 		offset: url.offset,
 		sort_by: url.sort_by,
 		order: url.order === "asc" ? "asc" : "desc",
 	};
+	const onPaginationChange = (next: LogsTablePagination) =>
+		setUrl({ limit: next.limit, offset: next.offset, sort_by: next.sort_by, order: next.order });
 
 	const live = { pollingInterval: 10_000, skipPollingIfUnfocused: true };
 	const traces = useGetTracesQuery({ filters, pagination }, { skip: url.view !== "traces", ...live });
@@ -138,9 +148,67 @@ export default function TracingPage() {
 		session_id: url.session_id,
 		trace_id: url.trace_id,
 	};
-	const onSort = (sortBy: string) =>
-		setUrl({ sort_by: sortBy, order: url.sort_by === sortBy && url.order === "desc" ? "asc" : "desc", offset: 0 });
 	const [viewerProject, setViewerProject] = useState<string | null>(null);
+	const traceColumns = useMemo(() => createTraceColumns(t, projects), [t, projects]);
+	const spanColumns = useMemo(() => createSpanColumns(t), [t]);
+	const sessionColumns = useMemo(() => createSessionColumns(t), [t]);
+	const experimentColumns = useMemo(() => createExperimentColumns(t), [t]);
+	const columnLabels = useMemo(() => getTraceColumnLabels(t), [t]);
+	// One column layout per list, each kept in its own URL key and storage slot, as the log pages keep theirs.
+	const traceConfig = useColumnConfig({
+		columnIds: traceColumns.map((column) => column.id as string),
+		paramName: "trace_cols",
+		storageKey: "bifrost.traces.cols",
+		defaultHidden: ["tags", "project", "session"],
+		fixedColumns: { left: ["status"] },
+	});
+	const spanConfig = useColumnConfig({
+		columnIds: spanColumns.map((column) => column.id as string),
+		paramName: "span_cols",
+		storageKey: "bifrost.trace_spans.cols",
+		fixedColumns: { left: ["status"] },
+	});
+	const sessionConfig = useColumnConfig({
+		columnIds: sessionColumns.map((column) => column.id as string),
+		paramName: "session_cols",
+		storageKey: "bifrost.trace_sessions.cols",
+		fixedColumns: { left: ["status"] },
+	});
+	const experimentConfig = useColumnConfig({
+		columnIds: experimentColumns.map((column) => column.id as string),
+		paramName: "experiment_cols",
+		storageKey: "bifrost.trace_experiments.cols",
+		fixedColumns: { left: ["status"] },
+	});
+	const activeConfig =
+		url.view === "spans"
+			? spanConfig
+			: url.view === "sessions"
+				? sessionConfig
+				: url.view === "experiments"
+					? experimentConfig
+					: traceConfig;
+	const tableProps = (config: typeof traceConfig) => ({
+		columnEntries: config.entries,
+		columnOrder: config.columnOrder,
+		columnVisibility: config.columnVisibility,
+		columnPinning: config.columnPinning,
+		onToggleColumnVisibility: config.toggleVisibility,
+		onTogglePin: config.togglePin,
+		onReorderColumns: config.reorder,
+	});
+	// The sheet steps through the rows of the list behind it, as the log sheets do.
+	const navigable =
+		url.view === "spans"
+			? (spans.data?.spans ?? []).map((span) => ({ project: span.project_id, trace: span.trace_id, span: span.span_id }))
+			: (traces.data?.traces ?? []).map((trace) => ({ project: trace.project_id, trace: trace.trace_id, span: "" }));
+	const position = navigable.findIndex((row) => row.trace === url.trace && (url.view !== "spans" || row.span === url.span));
+	const navigate = (direction: "prev" | "next") => {
+		const target = navigable[position + (direction === "prev" ? -1 : 1)];
+		if (!target) return;
+		setViewerProject(target.project);
+		setUrl({ trace: target.trace, span: target.span });
+	};
 	const linkedProject = useMemo(
 		() => projects.find((project) => project.id === url.project || project.name === url.project)?.id ?? url.project,
 		[projects, url.project],
@@ -163,9 +231,7 @@ export default function TracingPage() {
 		);
 	}
 
-	const activePagination =
-		(url.view === "spans" ? spans.data?.pagination : url.view === "sessions" ? sessions.data?.pagination : traces.data?.pagination) ??
-		pagination;
+	const totalOf = (result?: { pagination: TracePagination }) => result?.pagination.total_count ?? 0;
 
 	return (
 		<div className="dark:bg-card bg-white" data-testid="tracing-page">
@@ -221,6 +287,12 @@ export default function TracingPage() {
 								{zoomed && <SelectItem value="custom">{t("tracing.range.custom")}</SelectItem>}
 							</SelectContent>
 						</Select>
+						<ColumnConfigDropdown
+							entries={activeConfig.entries}
+							labels={columnLabels}
+							onToggleVisibility={activeConfig.toggleVisibility}
+							onReset={activeConfig.reset}
+						/>
 						<Button
 							variant="outline"
 							size="icon"
@@ -274,71 +346,103 @@ export default function TracingPage() {
 							onOpenChange={setChartOpen}
 						/>
 					</div>
-					<div className="min-h-0 flex-1 overflow-auto px-4">
-						{url.view === "traces" && (
-							<TracesTable
-								traces={traces.data?.traces ?? []}
-								pagination={activePagination}
-								onSort={onSort}
-								onOpen={(trace) => {
-									setViewerProject(trace.project_id);
-									setUrl({ trace: trace.trace_id, span: "" });
-								}}
-							/>
-						)}
-						{url.view === "spans" && (
-							<SpansTable
-								spans={spans.data?.spans ?? []}
-								pagination={activePagination}
-								onSort={onSort}
-								onOpen={(span) => {
-									setViewerProject(span.project_id);
-									setUrl({ trace: span.trace_id, span: span.span_id });
-								}}
-							/>
-						)}
-						{url.view === "sessions" && (
-							<>
-								<p className="text-muted-foreground py-2 text-xs">{t("tracing.sessions.hint")}</p>
-								<SessionsTable
-									sessions={sessions.data?.sessions ?? []}
-									onOpen={(session) =>
-										setUrl({
-											view: "traces",
-											session_id: session.session_id,
-											project_ids: [session.project_id],
-											offset: 0,
-											sort_by: "timestamp",
-											order: "asc",
-										})
-									}
-								/>
-							</>
-						)}
-						{url.view === "experiments" && (
-							<>
-								<p className="text-muted-foreground py-2 text-xs">{t("tracing.experiments.hint")}</p>
-								<ExperimentsTable
-									experiments={experiments.data?.experiments ?? []}
-									onOpen={(experiment) =>
-										setUrl({
-											view: "traces",
-											experiment: experiment.id,
-											project_ids: [experiment.project_id],
-											range: "30d",
-											start_time: null,
-											end_time: null,
-											offset: 0,
-										})
-									}
-								/>
-							</>
-						)}
-					</div>
-					{url.view !== "experiments" && (
-						<div className="shrink-0 px-4 pb-2">
-							<Pager pagination={activePagination} onPage={(offset) => setUrl({ offset })} />
-						</div>
+					{(url.view === "sessions" || url.view === "experiments") && (
+						<p className="text-muted-foreground shrink-0 px-4 text-xs">
+							{url.view === "sessions" ? t("tracing.sessions.hint") : t("tracing.experiments.hint")}
+						</p>
+					)}
+					{url.view === "traces" && (
+						<LogsDataTable
+							columns={traceColumns}
+							data={traces.data?.traces ?? []}
+							getRowId={(trace) => `${trace.project_id}/${trace.trace_id}`}
+							pageSizeStorageKey="bifrost.traces.pageSize"
+							testIdPrefix="traces"
+							waitingLabel={t("tracing.table.waiting")}
+							totalItems={totalOf(traces.data)}
+							loading={traces.isFetching && !traces.data}
+							pagination={pagination}
+							onPaginationChange={onPaginationChange}
+							onRefresh={refresh}
+							onRowClick={(trace) => {
+								setViewerProject(trace.project_id);
+								setUrl({ trace: trace.trace_id, span: "" });
+							}}
+							{...tableProps(traceConfig)}
+						/>
+					)}
+					{url.view === "spans" && (
+						<LogsDataTable
+							columns={spanColumns}
+							data={spans.data?.spans ?? []}
+							getRowId={(span) => `${span.project_id}/${span.trace_id}/${span.span_id}`}
+							pageSizeStorageKey="bifrost.traceSpans.pageSize"
+							testIdPrefix="trace-spans"
+							waitingLabel={t("tracing.table.waiting")}
+							totalItems={totalOf(spans.data)}
+							loading={spans.isFetching && !spans.data}
+							pagination={pagination}
+							onPaginationChange={onPaginationChange}
+							onRefresh={refresh}
+							onRowClick={(span) => {
+								setViewerProject(span.project_id);
+								setUrl({ trace: span.trace_id, span: span.span_id });
+							}}
+							{...tableProps(spanConfig)}
+						/>
+					)}
+					{url.view === "sessions" && (
+						<LogsDataTable
+							columns={sessionColumns}
+							data={sessions.data?.sessions ?? []}
+							getRowId={(session) => `${session.project_id}/${session.session_id}`}
+							pageSizeStorageKey="bifrost.traceSessions.pageSize"
+							testIdPrefix="trace-sessions"
+							waitingLabel={t("tracing.table.waiting")}
+							totalItems={totalOf(sessions.data)}
+							loading={sessions.isFetching && !sessions.data}
+							pagination={pagination}
+							onPaginationChange={onPaginationChange}
+							onRefresh={refresh}
+							onRowClick={(session) =>
+								setUrl({
+									view: "traces",
+									session_id: session.session_id,
+									project_ids: [session.project_id],
+									offset: 0,
+									sort_by: "timestamp",
+									order: "asc",
+								})
+							}
+							{...tableProps(sessionConfig)}
+						/>
+					)}
+					{url.view === "experiments" && (
+						<LogsDataTable
+							columns={experimentColumns}
+							data={experiments.data?.experiments ?? []}
+							getRowId={(experiment) => `${experiment.project_id}/${experiment.id}`}
+							pageSizeStorageKey="bifrost.traceExperiments.pageSize"
+							testIdPrefix="trace-experiments"
+							waitingLabel={t("tracing.table.waiting")}
+							totalItems={experiments.data?.experiments?.length ?? 0}
+							loading={experiments.isFetching && !experiments.data}
+							pagination={{ ...pagination, offset: 0 }}
+							onPaginationChange={onPaginationChange}
+							onRefresh={refresh}
+							onRowClick={(experiment) =>
+								setUrl({
+									view: "traces",
+									experiment: experiment.id,
+									project_ids: [experiment.project_id],
+									range: "30d",
+									start_time: null,
+									end_time: null,
+									offset: 0,
+								})
+							}
+							{...tableProps(experimentConfig)}
+						/>
 					)}
 				</div>
 			</div>
@@ -347,6 +451,9 @@ export default function TracingPage() {
 				projectId={url.trace ? viewerProject || linkedProject || url.project_ids[0] || null : null}
 				traceId={url.trace || null}
 				initialSpanId={url.span || null}
+				hasPrev={position > 0}
+				hasNext={position !== -1 && position < navigable.length - 1}
+				onNavigate={navigate}
 				onClose={() => {
 					setViewerProject(null);
 					setUrl({ trace: "", span: "", project: "" });

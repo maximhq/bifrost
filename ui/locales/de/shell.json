@@ -311,6 +311,7 @@
 		"aboutPage": "Über diese Seite"
 	},
 	"titles": {
+		"traces": "Traces",
 		"dashboard": "Übersicht",
 		"adaptiveRoutingSettings": "Adaptive Routing-Einstellungen",
 		"alertChannels": "Benachrichtigungskanäle",

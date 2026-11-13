@@ -66,6 +66,7 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/providers": "Model Providers",
 	"/workspace/routing-rules/tree": "Routing Tree",
 	"/workspace/scim": "User Provisioning",
+	"/workspace/tracing": "Traces",
 };
 
 const routeTitleI18nKeys: Partial<Record<string, ParseKeys<"shell">>> = {
@@ -83,6 +84,7 @@ const routeTitleI18nKeys: Partial<Record<string, ParseKeys<"shell">>> = {
 	"/workspace/guardrails/configuration": "titles.guardrailRules",
 	"/workspace/guardrails/providers": "titles.guardrailProviders",
 	"/workspace/logs": "titles.llmLogs",
+	"/workspace/tracing": "titles.traces",
 	"/workspace/logs/connectors": "titles.logConnectors",
 	"/workspace/observability": "titles.observabilityConnectors",
 	"/workspace/prompt-repo": "titles.promptRepository",

@@ -311,6 +311,7 @@
 		"aboutPage": "À propos de cette page"
 	},
 	"titles": {
+		"traces": "Traces",
 		"dashboard": "Tableau de bord",
 		"adaptiveRoutingSettings": "Paramètres du routage adaptatif",
 		"alertChannels": "Canaux d’alerte",

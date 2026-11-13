@@ -313,6 +313,7 @@
 		"aboutPage": "Об этой странице"
 	},
 	"titles": {
+		"traces": "Трассировки",
 		"dashboard": "Панель",
 		"adaptiveRoutingSettings": "Настройки адаптивной маршрутизации",
 		"alertChannels": "Каналы оповещений",
