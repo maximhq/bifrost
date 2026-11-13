@@ -58,6 +58,7 @@ export default function DashboardPage() {
 			objects: parseAsSafeArrayOf.withDefault([]),
 			status: parseAsSafeArrayOf.withDefault([]),
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			model_router_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
 			tool_call_names: parseAsSafeArrayOf.withDefault([]),
@@ -134,6 +135,7 @@ export default function DashboardPage() {
 			...(urlState.routing_rule_ids.length > 0 && {
 				routing_rule_ids: urlState.routing_rule_ids,
 			}),
+			...(urlState.model_router_ids.length > 0 && { model_router_ids: urlState.model_router_ids }),
 			...(urlState.routing_engine_used.length > 0 && {
 				routing_engine_used: urlState.routing_engine_used,
 			}),
@@ -175,6 +177,7 @@ export default function DashboardPage() {
 			urlState.objects,
 			urlState.status,
 			urlState.routing_rule_ids,
+			urlState.model_router_ids,
 			urlState.routing_engine_used,
 			urlState.stop_reasons,
 			urlState.tool_call_names,
@@ -387,6 +390,7 @@ export default function DashboardPage() {
 				objects: newFilters.objects || [],
 				status: newFilters.status || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
+				model_router_ids: newFilters.model_router_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				stop_reasons: newFilters.stop_reasons || [],
 				tool_call_names: newFilters.tool_call_names || [],

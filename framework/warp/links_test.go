@@ -204,9 +204,6 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		"error_codes":        "the Logs page has no error-code filter",
 		"status_codes":       "the Logs page has no status-code filter",
 		"guardrail_outcomes": "the Logs page has no guardrail-outcome filter",
-
-		// The model routing filters, which the Logs page does not read.
-		"model_router_ids": "the Logs page has no model-router filter",
 	}
 	filters := &logstore.SearchFilters{}
 	value := reflect.ValueOf(filters).Elem()
@@ -587,9 +584,7 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
 		"guardrail_outcomes":    {arg: []any{"blocked", "detected"}, noLink: true},
-
-		// The model routing filters, which the Logs page does not read.
-		"model_router_ids": {arg: []any{"support"}, noLink: true},
+		"model_router_ids":      {arg: []any{"support"}, want: "support"},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},
 	}
@@ -802,7 +797,7 @@ func TestWarpRankingLinksPerDimension(t *testing.T) {
 		logstore.RankingDimensionApp:                 "apps",
 		logstore.RankingDimensionUserAgent:           "user_agents",
 		logstore.RankingDimensionRoutingRule:         "routing_rule_ids",
-		logstore.RankingDimensionModelRouter:         "",
+		logstore.RankingDimensionModelRouter:         "model_router_ids",
 		logstore.RankingDimensionRoutingEngine:       "routing_engine_used",
 		logstore.RankingDimensionSelectedKey:         "selected_key_ids",
 		logstore.RankingDimensionAlias:               "aliases",

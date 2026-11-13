@@ -77,7 +77,8 @@
 		"modelLimits": "モデル制限",
 		"agent": "エージェント",
 		"relay": "リレー",
-		"relays": "リレー"
+		"relays": "リレー",
+		"modelRouters": "ルーター"
 	},
 	"aboutField": "{{field}}について",
 	"thisField": "このフィールド",
