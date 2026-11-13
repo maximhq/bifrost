@@ -1,3 +1,5 @@
+- feat: Kimchi provider for chat, Responses and embeddings
+- fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null. Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`) (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - fix: Gemini chat requests replay the thought signature of a function call from `extra_content.google.thought_signature` instead of writing skip_thought_signature_validator over it (#8149) [@pcbeingused333](https://github.com/pcbeingused333)
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - Claude Responses requests that carry a `computer` or `computer_use_preview` tool are served through InvokeModel instead of losing the tool on Converse; `/anthropic/v1/messages` sends `computer_toolset_20260801` and dated `computer_*` tools as these types
