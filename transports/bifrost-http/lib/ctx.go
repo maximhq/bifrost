@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -326,7 +327,9 @@ func requestDeadline(ctx *fasthttp.RequestCtx) time.Time {
 	}
 	timeout, err := time.ParseDuration(raw)
 	if err != nil {
-		if seconds, parseErr := strconv.Atoi(raw); parseErr == nil {
+		// Bound the seconds before converting so the multiplication cannot overflow into a
+		// positive duration; a value outside the range falls through to the warning below.
+		if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && seconds > 0 && seconds <= math.MaxInt64/int64(time.Second) {
 			timeout = time.Duration(seconds) * time.Second
 		}
 	}
