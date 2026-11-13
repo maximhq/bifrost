@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
@@ -12,7 +13,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net"
+	"os"
 	"reflect"
 	"runtime"
 	"slices"
@@ -4086,6 +4090,235 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 	}
 }
 
+// fakeBodyPlugin is an HTTPTransportPlugin whose pre-auth and pre hooks are supplied per test,
+// so one plugin can drive either transport phase.
+type fakeBodyPlugin struct {
+	preAuth func(req *schemas.HTTPRequest)
+	pre     func(req *schemas.HTTPRequest)
+}
+
+func (p *fakeBodyPlugin) GetName() string { return "body-plugin" }
+
+func (p *fakeBodyPlugin) Cleanup() error { return nil }
+
+func (p *fakeBodyPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p.preAuth != nil {
+		p.preAuth(req)
+	}
+	return nil, nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p.pre != nil {
+		p.pre(req)
+	}
+	return nil, nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponse) error {
+	return nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
+func (p *fakeBodyPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
+// bodyTestPhases runs a body test through both transport phases that expose the request body.
+var bodyTestPhases = []struct {
+	name       string
+	middleware func(*lib.Config) schemas.BifrostHTTPMiddleware
+	plugin     func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin
+}{
+	{"pre-auth", TransportPreAuthInterceptorMiddleware, func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin {
+		return &fakeBodyPlugin{preAuth: hook}
+	}},
+	{"pre-hook", TransportInterceptorMiddleware, func(hook func(req *schemas.HTTPRequest)) *fakeBodyPlugin {
+		return &fakeBodyPlugin{pre: hook}
+	}},
+}
+
+// multipartUploadTestRequest returns a raw Files API upload carrying a fileSize-byte file.
+func multipartUploadTestRequest(tb testing.TB, fileSize int) []byte {
+	tb.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("purpose", "batch"); err != nil {
+		tb.Fatal(err)
+	}
+	part, err := w.CreateFormFile("file", "batch.jsonl")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("a"), fileSize)); err != nil {
+		tb.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		tb.Fatal(err)
+	}
+	head := fmt.Sprintf("POST /v1/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())
+	return append([]byte(head), body.Bytes()...)
+}
+
+// multipartUploadTestCtx reads raw the way the server does, so the multipart form is parsed
+// while reading and a file over fasthttp's 16 MB in-memory limit lands in a temp file.
+func multipartUploadTestCtx(tb testing.TB, raw []byte) *fasthttp.RequestCtx {
+	tb.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	if err := ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))); err != nil {
+		tb.Fatal(err)
+	}
+	return ctx
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodyNotCopied pins the Files API upload fix: with a
+// transport plugin loaded, a multipart body must not be copied into HTTPRequest.Body or written
+// back, so the handler finds the form fasthttp parsed while reading, its large file still in a
+// temp file. Before the fix the body was rebuilt in memory, copied, and written back, which
+// deleted the temp file and made the handler parse the whole file again in memory.
+func TestTransportInterceptorMiddleware_MultipartBodyNotCopied(t *testing.T) {
+	const fileSize = 17 << 20 // over fasthttp's 16 MB in-memory limit, so it goes to a temp file
+	raw := multipartUploadTestRequest(t, fileSize)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			var pluginBodyLen int
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				pluginBodyLen = len(req.Body)
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			parsed, err := ctx.Request.MultipartForm()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var handlerForm *multipart.Form
+			var fileOnDisk bool
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				form, err := ctx.MultipartForm()
+				if err != nil {
+					t.Errorf("handler could not read the multipart form: %v", err)
+					return
+				}
+				handlerForm = form
+				f, err := form.File["file"][0].Open()
+				if err != nil {
+					t.Errorf("handler could not open the uploaded file: %v", err)
+					return
+				}
+				defer f.Close()
+				_, fileOnDisk = f.(*os.File)
+			})(ctx)
+
+			if pluginBodyLen != 0 {
+				t.Errorf("plugin got a %d-byte copy of the multipart body in req.Body, want none", pluginBodyLen)
+			}
+			if handlerForm != parsed {
+				t.Error("handler got a re-parsed multipart form, want the one fasthttp parsed while reading the request")
+			}
+			if !fileOnDisk {
+				t.Error("handler read the uploaded file from memory, want it still in its temp file")
+			}
+		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodySourceReadable asserts plugins still see a
+// multipart body: through req.BodySource, as a stream of the whole form, in both phases.
+func TestTransportInterceptorMiddleware_MultipartBodySourceReadable(t *testing.T) {
+	const fileSize = 17 << 20
+	raw := multipartUploadTestRequest(t, fileSize)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			var purpose string
+			var gotFileSize int64
+			var readErr error
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				if req.BodySource == nil {
+					readErr = errors.New("req.BodySource is nil")
+					return
+				}
+				rc, err := req.BodySource.Open()
+				if err != nil {
+					readErr = err
+					return
+				}
+				defer rc.Close()
+				form, err := multipart.NewReader(rc, string(ctxBoundary(req))).ReadForm(1 << 20)
+				if err != nil {
+					readErr = err
+					return
+				}
+				defer form.RemoveAll()
+				purpose = form.Value["purpose"][0]
+				gotFileSize = form.File["file"][0].Size
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			phase.middleware(config)(func(*fasthttp.RequestCtx) {})(ctx)
+
+			if readErr != nil {
+				t.Fatalf("plugin could not read the multipart body: %v", readErr)
+			}
+			if purpose != "batch" || gotFileSize != fileSize {
+				t.Errorf("plugin read purpose=%q file size=%d, want purpose=batch file size=%d", purpose, gotFileSize, fileSize)
+			}
+		})
+	}
+}
+
+// ctxBoundary returns the multipart boundary from a transport request's Content-Type header.
+func ctxBoundary(req *schemas.HTTPRequest) string {
+	_, params, _ := mime.ParseMediaType(req.CaseInsensitiveHeaderLookup("Content-Type"))
+	return params["boundary"]
+}
+
+// TestTransportInterceptorMiddleware_MultipartBodySetByPluginApplied asserts a plugin can still
+// replace a multipart body: setting req.Body writes it over the request.
+func TestTransportInterceptorMiddleware_MultipartBodySetByPluginApplied(t *testing.T) {
+	raw := multipartUploadTestRequest(t, 1024)
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				req.Body = []byte("replaced")
+			}))
+			ctx := multipartUploadTestCtx(t, raw)
+			defer ctx.Request.Reset()
+			var handlerBody string
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				handlerBody = string(ctx.Request.Body())
+			})(ctx)
+			if handlerBody != "replaced" {
+				t.Errorf("handler body = %q, want the plugin's replacement", handlerBody)
+			}
+		})
+	}
+}
+
+// TestTransportInterceptorMiddleware_InPlaceBodyEditApplied asserts the write-back still catches
+// a plugin that edits req.Body in place rather than assigning a new slice: the body is written
+// back when its bytes differ, not when the slice header does.
+func TestTransportInterceptorMiddleware_InPlaceBodyEditApplied(t *testing.T) {
+	for _, phase := range bodyTestPhases {
+		t.Run(phase.name, func(t *testing.T) {
+			config := preAuthTestConfig(phase.plugin(func(req *schemas.HTTPRequest) {
+				copy(req.Body[len(`{"model":"`):], "GPT")
+			}))
+			var handlerBody string
+			phase.middleware(config)(func(ctx *fasthttp.RequestCtx) {
+				handlerBody = string(ctx.Request.Body())
+			})(preAuthTestCtx())
+			if handlerBody != `{"model":"GPT-4"}` {
+				t.Errorf("handler body = %q, want the in-place edit applied", handlerBody)
+			}
+		})
+	}
+}
+
 type fakeResponseHeadersPlugin struct {
 	name     string
 	hook     func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error
@@ -5801,6 +6034,49 @@ func BenchmarkBasePathMiddleware(b *testing.B) {
 			ctx.Request.SetRequestURI("/v1/chat/completions?stream=true")
 			_ = ctx.Request.URI()
 			noop(ctx)
+		}
+	})
+}
+
+// BenchmarkTransportInterceptorMiddlewareBody measures what the transport plugin phases cost per
+// request body: a 17 MB multipart upload (over fasthttp's in-memory limit, so its file sits in a
+// temp file) and a small JSON body, the common case. The handler reads the uploaded file the way
+// the Files API parser does. Request setup runs with the timer stopped.
+func BenchmarkTransportInterceptorMiddlewareBody(b *testing.B) {
+	config := preAuthTestConfig(&fakeBodyPlugin{})
+	chain := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return
+		}
+		f, err := form.File["file"][0].Open()
+		if err != nil {
+			b.Fatal(err)
+		}
+		f.Close()
+	}))
+	b.Run("multipart-17MB", func(b *testing.B) {
+		raw := multipartUploadTestRequest(b, 17<<20)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			ctx := multipartUploadTestCtx(b, raw)
+			b.StartTimer()
+			chain(ctx)
+			b.StopTimer()
+			ctx.Request.Reset()
+			b.StartTimer()
+		}
+	})
+	b.Run("json-small", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			ctx := preAuthTestCtx()
+			b.StartTimer()
+			chain(ctx)
 		}
 	})
 }
