@@ -69,6 +69,10 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 	defer decisionCtx.Cancel()
 	started := time.Now()
 	resp, bifrostErr := (*decide)(decisionCtx, r.decisionRequest(input))
+	if resp == nil && bifrostErr == nil {
+		// Made before the call is recorded, so its log row is an error row.
+		bifrostErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision request returned no response"}}
+	}
 	if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
 		schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, r.call(started, resp, bifrostErr))
 	}
@@ -78,9 +82,6 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 			message = bifrostErr.Error.Message
 		}
 		return discoveryRankResponse{}, fmt.Errorf("decision request to %s/%s failed: %s", r.provider, r.model, message)
-	}
-	if resp == nil {
-		return discoveryRankResponse{}, errors.New("decision request returned no response")
 	}
 	return decisionRankResponse(input, resp)
 }
@@ -160,8 +161,9 @@ func decisionCandidateText(c discoveryCandidate) string {
 // decisionRankResponse rewrites a decision answer into the ranker contract:
 // each choice probability is that candidate's relevance and the predicate's
 // probability is the sufficiency. An answer with no probabilities ranks only
-// the chosen candidate, at its confidence, or 1 when it reports none. The caller
-// validates the result against the request like an external ranker's answer.
+// the chosen candidate, at its confidence, or 1 when it reports none; a
+// confidence outside [0, 1] is an error. The caller validates the result
+// against the request like an external ranker's answer.
 func decisionRankResponse(req discoveryRankRequest, resp *schemas.BifrostDecisionResponse) (discoveryRankResponse, error) {
 	out := discoveryRankResponse{Version: discoveryRankVersion, Revision: req.Revision}
 	relevant, ok := decisionAnswerNamed(resp.Answers, discoveryDecisionRelevantQuestion)
@@ -186,7 +188,10 @@ func decisionRankResponse(req discoveryRankRequest, resp *schemas.BifrostDecisio
 			return out, errors.New("decision response has an empty choice")
 		}
 		relevance := 1.0
-		if c := relevant.Confidence; c != nil && validDiscoveryProbability(*c) {
+		if c := relevant.Confidence; c != nil {
+			if !validDiscoveryProbability(*c) {
+				return out, fmt.Errorf("decision response has confidence %v outside [0, 1]", *c)
+			}
 			relevance = *c
 		}
 		out.Candidates = []discoveryRankScore{{ID: id, Relevance: &relevance}}

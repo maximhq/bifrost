@@ -291,6 +291,36 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_CodeModeDiscoveryRanker pins that the schema
+// mirrors MCPCodeModeDiscoveryRanker.Validate's cross-field rules.
+func TestValidateConfigSchema_CodeModeDiscoveryRanker(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ranker string
+		valid  bool
+	}{
+		"empty":                        {`{}`, true},
+		"url and token file":           {`{"url":"https://ranker.example/rank","token_file":"/run/token"}`, true},
+		"decision model with fallback": {`{"decision_model":"openai/gpt-5-nano","fallbacks":["anthropic/claude-haiku"]}`, true},
+		"decision model, empty url":    {`{"decision_model":"openai/gpt-5-nano","url":"","token_file":""}`, true},
+		"empty fallbacks":              {`{"fallbacks":[]}`, true},
+		"decision model and url":       {`{"decision_model":"openai/gpt-5-nano","url":"https://ranker.example/rank"}`, false},
+		"decision model and token":     {`{"decision_model":"openai/gpt-5-nano","token_file":"/run/token"}`, false},
+		"fallbacks without model":      {`{"fallbacks":["openai/gpt-5-nano"]}`, false},
+		"fallbacks with only a url":    {`{"url":"https://ranker.example/rank","fallbacks":["openai/gpt-5-nano"]}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := `{"mcp":{"tool_manager_config":{"code_mode_discovery_ranker":` + tc.ranker + `}}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected %s to pass validation, got %v", tc.ranker, err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatalf("expected %s to fail validation", tc.ranker)
+			}
+		})
+	}
+}
+
 func TestValidateConfigSchema_CustomSchemaURL(t *testing.T) {
 	schema := loadLocalSchema(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

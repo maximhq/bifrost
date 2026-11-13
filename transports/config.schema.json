@@ -11065,7 +11065,69 @@
               "description": "Bound on one ranking call in seconds. 0 uses the default of 5.",
               "default": 0
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "decision_model"
+                ],
+                "properties": {
+                  "decision_model": {
+                    "minLength": 1
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "url"
+                      ],
+                      "properties": {
+                        "url": {
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "token_file"
+                      ],
+                      "properties": {
+                        "token_file": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "fallbacks"
+                ],
+                "properties": {
+                  "fallbacks": {
+                    "minItems": 1
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "decision_model"
+                ],
+                "properties": {
+                  "decision_model": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     },

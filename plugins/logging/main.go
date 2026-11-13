@@ -4181,14 +4181,12 @@ func (p *LoggerPlugin) logDiscoveryRankerCalls(ctx *schemas.BifrostContext) {
 			usage := *call.Usage
 			entry.TokenUsageParsed = &usage
 			if p.pricingManager != nil {
-				inputTokens, outputTokens := max(usage.PromptTokens, 0), max(usage.CompletionTokens, 0)
-				cost := p.pricingManager.CalculateRoutingCallCost(schemas.BifrostRoutingCall{
-					RequestType:  schemas.DecisionRequest,
-					ProviderUsed: &provider,
-					ModelUsed:    &model,
-					InputTokens:  &inputTokens,
-					OutputTokens: &outputTokens,
-				}, nil)
+				// Priced from the full usage, as a decision request's own row is:
+				// a provider-reported cost wins, otherwise the tokens (cached ones
+				// at their cache rates) plus any flat per-request fee. The scope
+				// is the serving provider only, since the call is not the caller's.
+				cost := p.pricingManager.CalculateCostForUsage(&usage, call.Provider, model, schemas.DecisionRequest,
+					&modelcatalog.PricingLookupScopes{Provider: provider, BilledAt: call.StartedAt})
 				entry.Cost = &cost
 			}
 		}

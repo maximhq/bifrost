@@ -179,6 +179,24 @@ func TestListToolFilesServerBindingGroupsTools(t *testing.T) {
 	}
 }
 
+func TestListToolFilesServerBindingCapsToolNames(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	for i := range discoveryMaxToolsPerFile + 4 {
+		manager.tools["github"] = append(manager.tools["github"], discoveryTestTool(fmt.Sprintf("report_%02d", i), "Build a report"))
+	}
+	out := listToolFiles(t, mode, `{"query":"report"}`)
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "servers/github.pyi") {
+			line = l
+		}
+	}
+	if strings.Count(line, "report_") != discoveryMaxToolsPerFile || !strings.Contains(line, ", +4 more") {
+		t.Fatalf("expected %d tool names and a +4 more summary, got %q\n%s", discoveryMaxToolsPerFile, line, out)
+	}
+}
+
 func TestListToolFilesLimitBounds(t *testing.T) {
 	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
 	call := func(args string) error {

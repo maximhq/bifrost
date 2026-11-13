@@ -210,6 +210,14 @@ func TestListToolFilesDecisionRankerFailuresFallBack(t *testing.T) {
 		"nothing relevant": func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 			return decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 0}, nil), nil
 		},
+		// With no probabilities, a confidence outside [0, 1] is malformed rather
+		// than a reason to rank the choice at full relevance.
+		"confidence above 1": func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+			return confidentChoice("servers/github/create_issue.pyi", 1.5), nil
+		},
+		"confidence below 0": func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+			return confidentChoice("servers/github/create_issue.pyi", -0.1), nil
+		},
 	}
 	for name, answer := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -243,6 +251,16 @@ func TestListToolFilesDecisionRankerFailuresFallBack(t *testing.T) {
 		}
 		assertLexicalFallback(t, out)
 	})
+}
+
+// confidentChoice answers with only a choice and its confidence.
+func confidentChoice(id string, confidence float64) *schemas.BifrostDecisionResponse {
+	return &schemas.BifrostDecisionResponse{Answers: []schemas.DecisionAnswer{{
+		Type:       schemas.DecisionTypeChoice,
+		Name:       schemas.Ptr(discoveryDecisionRelevantQuestion),
+		Choice:     &schemas.DecisionScalar{Str: schemas.Ptr(id)},
+		Confidence: &confidence,
+	}}}
 }
 
 func TestListToolFilesDecisionRankerCapsChoices(t *testing.T) {
@@ -300,6 +318,8 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 	for name, tc := range map[string]struct {
 		answer func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError)
 		want   schemas.MCPDiscoveryRankerCall
+		// wantError, when set, is the recorded error's message.
+		wantError string
 	}{
 		// A fallback answered, so the row names it rather than the configured model.
 		"answered by a fallback": {
@@ -324,6 +344,14 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 			},
 			want: schemas.MCPDiscoveryRankerCall{Provider: "typesafe", Model: "system-one"},
 		},
+		// No response and no error is recorded as a failed call.
+		"no response": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return nil, nil
+			},
+			want:      schemas.MCPDiscoveryRankerCall{Provider: "typesafe", Model: "system-one"},
+			wantError: "decision request returned no response",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
@@ -340,8 +368,15 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 				t.Fatalf("expected one recorded decision call, got %d", len(calls))
 			}
 			got := calls[0]
-			if got.Provider != tc.want.Provider || got.Model != tc.want.Model || got.Usage != tc.want.Usage || got.Error != tc.want.Error {
+			if got.Provider != tc.want.Provider || got.Model != tc.want.Model || got.Usage != tc.want.Usage {
 				t.Fatalf("recorded %+v, want %+v", got, tc.want)
+			}
+			if tc.wantError != "" {
+				if got.Error == nil || got.Error.Error == nil || got.Error.Error.Message != tc.wantError {
+					t.Fatalf("recorded error %+v, want %q", got.Error, tc.wantError)
+				}
+			} else if got.Error != tc.want.Error {
+				t.Fatalf("recorded error %+v, want %+v", got.Error, tc.want.Error)
 			}
 			if got.StartedAt.IsZero() || got.Latency <= 0 {
 				t.Fatalf("the call's start and latency were not recorded: %+v", got)
