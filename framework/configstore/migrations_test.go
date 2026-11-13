@@ -835,7 +835,7 @@ func TestMigrationAddTracingTables(t *testing.T) {
 	ctx := context.Background()
 	db := setupRDBTestStore(t).DB()
 	require.NoError(t, migrationAddTracingTables(ctx, db, testMigrationLogger))
-	for _, table := range []any{&tables.TableTraceProject{}, &tables.TableTracingKey{}} {
+	for _, table := range []any{&tables.TableTraceProject{}} {
 		assert.True(t, db.Migrator().HasTable(table))
 	}
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_tracing_tables").Error)

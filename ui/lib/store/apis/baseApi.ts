@@ -257,7 +257,6 @@ export const baseApi = createApi({
 		"RelayLogs",
 		"Traces",
 		"TraceProjects",
-		"TracingKeys",
 	],
 	endpoints: () => ({}),
 });
