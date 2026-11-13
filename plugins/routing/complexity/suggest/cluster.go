@@ -115,6 +115,7 @@ type Clusterer struct {
 	rng    *rand.Rand
 	groups []*Cluster
 	pool   []Member // requests that joined no cluster, waiting for a batch
+	sealed bool     // Assign has run: no new clusters are formed
 }
 
 // NewClusterer returns a clusterer that records, for each request, the live
@@ -262,6 +263,31 @@ func (cl *Cluster) refresh(maxMembers int) {
 	if len(cl.Members) > maxMembers {
 		cl.Members = slices.Clone(cl.Members[:maxMembers])
 	}
+}
+
+// Assign counts requests into the clusters already found without forming new
+// ones, for traffic beyond what a run can afford to cluster: each request
+// joins its nearest cluster when it is at least JoinSimilarity to the centre,
+// exactly as a request does between batches, and the rest are reported as
+// unmatched rather than pooled. The first call clusters what is still pooled
+// and merges; Add must not be called after it.
+//
+// Assignment costs one dot product per cluster per request and keeps no
+// vector beyond a cluster's MaxMembers, so it is O(requests * clusters) time
+// and O(1) extra memory per request.
+func (c *Clusterer) Assign(reqs []Request) (unmatched int) {
+	if !c.sealed {
+		c.clusterPool()
+		c.groups = mergeClusters(c.groups, c.opts.MergeSimilarity, c.opts.MaxMembers)
+		c.sealed = true
+	}
+	for start := 0; start < len(reqs); start += c.opts.BatchSize {
+		members := c.prepare(reqs[start:min(start+c.opts.BatchSize, len(reqs))])
+		for _, m := range c.join(members) {
+			unmatched += m.Count
+		}
+	}
+	return unmatched
 }
 
 // Clusters merges what was added and returns the clusters carrying at least

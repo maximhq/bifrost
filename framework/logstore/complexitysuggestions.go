@@ -46,6 +46,12 @@ const (
 	// now covers it.
 	ComplexitySuggestionStatusSuperseded = "superseded"
 
+	// ComplexitySuggestionRunQueued runs were taken from the schedule or asked
+	// for, and wait for a job runner (or this node) to start them.
+	ComplexitySuggestionRunQueued = "queued"
+	// ComplexitySuggestionRunSkipped runs were due but could not start, for
+	// the reason in Error; the schedule moved on to its next run.
+	ComplexitySuggestionRunSkipped = "skipped"
 	// ComplexitySuggestionRunRunning runs are in progress, or died without
 	// recording an outcome.
 	ComplexitySuggestionRunRunning = "running"

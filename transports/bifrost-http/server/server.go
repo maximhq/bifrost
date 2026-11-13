@@ -2641,8 +2641,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
 		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
-	s.applyRoutingLogRetention(plugin)
-	s.applyRoutingCaptureDeleteRecorder(plugin)
+	if routingPlugin, ok := plugin.(*routing.RoutingPlugin); ok {
+		s.wireRoutingSuggestions(routingPlugin)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -3878,8 +3879,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
-		s.applyRoutingLogRetention(routingPlugin)
-		s.applyRoutingCaptureDeleteRecorder(routingPlugin)
 	} else {
 		go s.dropCapturesOfDisabledRouting(s.Ctx) // off the boot path
 	}
@@ -3887,6 +3886,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Initialize Sidekiq runner for background jobs
 	if s.Config != nil && s.Config.ConfigStore != nil {
 		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
+		s.registerComplexitySuggestionsJob(s.SidekiqRunner)
+	}
+	// After the runner exists, so phrase suggestion runs are queued on it.
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		s.wireRoutingSuggestions(routingPlugin)
 	}
 
 	// Initialize the Agent Gateway once before either management or protocol

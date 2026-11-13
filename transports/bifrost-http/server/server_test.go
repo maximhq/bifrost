@@ -2441,6 +2441,11 @@ func TestApplyRoutingLogRetentionReadsTheLiveCleaner(t *testing.T) {
 	s.applyRoutingLogRetention(struct{}{}) // a plugin without the setter is left alone
 }
 
+// sharedVectorStore stands in for a vector store shared across nodes
+// (Weaviate, Qdrant, ...): request capture is off on a bare Chromem store,
+// which lives in one node's memory.
+type sharedVectorStore struct{ vectorstore.VectorStore }
+
 // unusedGovernance satisfies the routing engine's required governance for
 // tests that never route a request; any call would panic on the nil embed.
 type unusedGovernance struct{ routing.Governance }
@@ -2463,10 +2468,11 @@ func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
 	}, noopTestLogger{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ls.Close(ctx) })
-	vs, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
+	inner, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{
 		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
 	}, quiet)
 	require.NoError(t, err)
+	vs := sharedVectorStore{inner} // capture is off on a bare Chromem store
 	loggerPlugin, err := logging.Init(ctx, &logging.Config{}, noopTestLogger{}, ls, nil, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = loggerPlugin.Cleanup() })

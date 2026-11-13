@@ -207,3 +207,27 @@ func TestRepresentativesStartAtMedoidAndSpread(t *testing.T) {
 		seen[r.ID] = true
 	}
 }
+
+// Requests past the clustering budget are counted into the clusters found,
+// with their routing, and requests of an unseen type are reported unmatched
+// instead of forming a cluster.
+func TestClustererAssignCountsWithoutFormingClusters(t *testing.T) {
+	rng := rand.New(rand.NewSource(21))
+	live := []Phrase{{Tier: "SIMPLE", Text: "a phrase", Vector: anchor(0)}}
+	c := NewClusterer(ClusterOptions{BatchSize: 50, MinRequests: 10}, live, 0.4)
+	c.Add(typeRequests("a", 0, 8, rng))
+	unmatched := c.Assign(append(typeRequests("more-a", 0, 5, rng), typeRequests("new", 5, 4, rng)...))
+	if unmatched != 4 {
+		t.Fatalf("unmatched %d, want the 4 requests of the unseen type", unmatched)
+	}
+	if c.Assign(nil) != 0 {
+		t.Fatal("assigning nothing matches nothing")
+	}
+	got := c.Clusters()
+	if len(got) != 1 || got[0].Weight != 13 {
+		t.Fatalf("want one cluster of 13 (8 clustered + 5 assigned, clearing MinRequests 10), got %d clusters", len(got))
+	}
+	if got[0].CurrentRouting()["SIMPLE"] != 13 {
+		t.Errorf("assigned requests count toward today's routing: %v", got[0].CurrentRouting())
+	}
+}

@@ -291,6 +291,103 @@ func TestRequestCaptureSweepCountsOnlySuccessfulDeletes(t *testing.T) {
 	assert.Equal(t, 2, n, "only successful deletes count")
 }
 
+// ceilingStore behaves like Redis and Weaviate under a large window: a
+// filtered read stops at a result ceiling and then reports nothing more,
+// which looks exactly like the end of the data. Its unfiltered walk is
+// complete but, like a Redis key walk, may hand an entry back twice.
+type ceilingStore struct {
+	vectorstore.VectorStore
+	ceiling int
+}
+
+func (c *ceilingStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	results, next, err := c.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(queries) > 0 {
+		if len(results) > c.ceiling {
+			results = results[:c.ceiling]
+		}
+		return results, nil, nil
+	}
+	return append(results, results...), next, nil
+}
+
+// A suggestion run must see every request captured in its window, however
+// many there are: a backend's cap on filtered reads must not cut the window
+// short, and an entry a walk returns twice is still one request.
+func TestEachCapturedReadsTheWholeWindowPastAFilteredReadCeiling(t *testing.T) {
+	c := newCaptureTest(t)
+	inner := newCaptureTestStore(t)
+	ns := CaptureNamespace("openai", "m", 2, 1)
+	c.Configure(&CaptureConfig{SampleRate: 1})
+	ids := []string{"r1", "r2", "r3", "r4", "r5"}
+	for _, id := range ids {
+		c.offer(requestCtx(id), inner, ns, 2, []float32{1, 0})
+	}
+	waitWritten(t, c, int64(len(ids)))
+	store := &ceilingStore{VectorStore: inner, ceiling: 2}
+
+	now := time.Now()
+	var got []string
+	require.NoError(t, EachCaptured(context.Background(), store, ns, now.Add(-time.Hour), now.Add(time.Minute), func(page []CapturedRequest) error {
+		for _, r := range page {
+			got = append(got, r.LogID)
+			assert.Equal(t, []float32{1, 0}, r.Vector)
+		}
+		return nil
+	}))
+	assert.ElementsMatch(t, ids, got, "every captured request, once")
+
+	got = nil
+	require.NoError(t, EachCaptured(context.Background(), store, ns, now.Add(-2*time.Hour), now.Add(-time.Hour), func(page []CapturedRequest) error {
+		for _, r := range page {
+			got = append(got, r.LogID)
+		}
+		return nil
+	}))
+	assert.Empty(t, got, "the window still applies")
+}
+
+// vanishingStore serves one page of a namespace, then finds it gone, as when
+// the routing plugin's removal drops it mid-read.
+type vanishingStore struct{ vectorstore.VectorStore }
+
+func (vanishingStore) GetAll(_ context.Context, namespace string, _ []vectorstore.Query, _ []string, cursor *string, _ int64) ([]vectorstore.SearchResult, *string, error) {
+	if cursor != nil {
+		return nil, nil, fmt.Errorf("%w: namespace %s", vectorstore.ErrNotFound, namespace)
+	}
+	next := "page-2"
+	return []vectorstore.SearchResult{{
+		ID:     capturePointID("first"),
+		Vector: []float32{1, 0},
+		Properties: map[string]any{
+			captureMetadataKind: captureMetadataKindValue, captureMetadataTimestamp: time.Now().Unix(), captureMetadataLogID: "first",
+		},
+	}}, &next, nil
+}
+
+// A namespace missing from the start holds nothing yet, but one that goes
+// after a page was read leaves the window partial: that is an error, so a run
+// never reconciles suggestions against traffic it only half read.
+func TestEachCapturedFailsWhenTheNamespaceGoesMidRead(t *testing.T) {
+	ns := CaptureNamespace("openai", "m", 2, 1)
+	now := time.Now()
+	var pages int
+	err := EachCaptured(context.Background(), vanishingStore{}, ns, now.Add(-time.Hour), now.Add(time.Minute), func([]CapturedRequest) error {
+		pages++
+		return nil
+	})
+	require.ErrorIs(t, err, vectorstore.ErrNotFound)
+	assert.Equal(t, 1, pages, "the first page was read before the namespace went")
+
+	require.NoError(t, EachCaptured(context.Background(), newCaptureTestStore(t), ns, now.Add(-time.Hour), now, func([]CapturedRequest) error {
+		t.Fatal("a namespace that was never written has no pages")
+		return nil
+	}), "a namespace missing from the start is an empty window")
+}
+
 // BenchmarkRequestCaptureOffer isolates the hook's request-path cost from the
 // writer: off, sampled onto the queue (a drainer discards), and sampled with
 // the queue full (dropped).
