@@ -5451,6 +5451,59 @@ func TestMigrationAddOAuthIssuerBindingColumns(t *testing.T) {
 	assert.True(t, issuer == nil || *issuer == "", "an existing config stays unbound")
 }
 
+// TestMigrationAddMCPClientMetadataURLColumns adds both columns, keeps existing rows unmarked, and is a
+// no-op on a re-run.
+func TestMigrationAddMCPClientMetadataURLColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO oauth_configs (id) VALUES ('existing')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPClientMetadataURLColumns(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_client_metadata_url"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableOauthConfig{}, "client_metadata_document"))
+	var marked *bool
+	require.NoError(t, db.Table("oauth_configs").Select("client_metadata_document").Where("id = ?", "existing").Scan(&marked).Error)
+	assert.True(t, marked == nil || !*marked, "an existing config stays unmarked")
+}
+
+// TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait pins that on postgres the migration gives up on
+// a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of queueing every
+// later OAuth query behind it.
+func TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	_, err = reader.ExecContext(ctx, "SELECT * FROM oauth_configs")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientMetadataURLColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationAddOAuthIssuerBindingColumnsBoundsLockWait pins that on postgres the migration gives up
 // on a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of
 // queueing every later OAuth query behind it.
