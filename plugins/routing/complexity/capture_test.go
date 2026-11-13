@@ -977,9 +977,41 @@ func (c *cappedFilterStore) GetAll(ctx context.Context, namespace string, querie
 	return results, next, err
 }
 
+// searchCappedStore behaves like Redis under a large window: a read without
+// vectors is served by search, filtered or not, and answers nothing past a
+// result ceiling, which looks exactly like the end of the data. A read with
+// vectors walks the keys to the end, and may hand an entry back twice.
+type searchCappedStore struct {
+	vectorstore.VectorStore
+	ceiling     int
+	served      int
+	vectorReads int
+}
+
+func (s *searchCappedStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	if vectorstore.IncludeVectorsRequested(ctx) {
+		s.vectorReads++
+		results, next, err := s.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+		return append(results, results...), next, err
+	}
+	if cursor == nil {
+		s.served = 0
+	}
+	if s.served >= s.ceiling {
+		return nil, nil, nil
+	}
+	results, next, err := s.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+	if len(results) > s.ceiling-s.served {
+		results = results[:s.ceiling-s.served]
+	}
+	s.served += len(results)
+	return results, next, err
+}
+
 // CountCaptured must count every capture in the window, not one page of
-// them, on a store whose plain read cannot page past its first, and on one
-// whose filtered read fails past a result ceiling.
+// them, on a store whose plain read cannot page past its first, on one whose
+// filtered read fails past a result ceiling, and on one whose plain read ends
+// at that ceiling.
 func TestCountCapturedCountsPastOnePage(t *testing.T) {
 	ctx := context.Background()
 	inner := newCaptureTestStore(t)
@@ -1012,4 +1044,19 @@ func TestCountCapturedCountsPastOnePage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, n, got, "a full page with no cursor is not taken as the whole count")
 	assert.NotZero(t, single.vectorReads, "the recount pages through the vector read")
+
+	// A plain read that returned a search ceiling's worth of rows may have
+	// been cut there, so the window is counted again through the vector
+	// walk, where an entry handed back twice is still one request.
+	search := &searchCappedStore{VectorStore: inner, ceiling: captureReadPage}
+	got, err = countCaptured(ctx, search, ns, from, to, captureReadPage)
+	require.NoError(t, err)
+	assert.Equal(t, n, got, "a plain read that ends at a search ceiling is not taken as the whole count")
+	assert.NotZero(t, search.vectorReads)
+
+	under := &searchCappedStore{VectorStore: inner, ceiling: 10 * n}
+	got, err = countCaptured(ctx, under, ns, from, to, 10*n)
+	require.NoError(t, err)
+	assert.Equal(t, n, got)
+	assert.Zero(t, under.vectorReads, "a window under the ceiling is counted without reading vectors")
 }
