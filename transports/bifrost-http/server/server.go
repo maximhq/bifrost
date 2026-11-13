@@ -3161,6 +3161,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if evalsHandler := s.setupEvals(s.Ctx); evalsHandler != nil {
 		evalsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	if datasetsHandler := s.setupEvalDatasets(); datasetsHandler != nil {
+		datasetsHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	skillsHandler := handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore)
 	if skillsHandler != nil {
 		skillsHandler.RegisterRoutes(s.Router, middlewares...)

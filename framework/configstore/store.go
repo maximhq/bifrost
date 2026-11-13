@@ -1106,6 +1106,40 @@ type ConfigStore interface {
 	ListUnfinishedEvalExecutions(ctx context.Context) ([]tables.TableEvalExecution, error)
 	DeleteCompletedEvalExecutions(ctx context.Context, completedBefore time.Time) (int64, error)
 
+	// Evals - Datasets
+	ListEvalDatasets(ctx context.Context, params EvalDatasetListParams) ([]tables.TableEvalDataset, int64, error)
+	GetEvalDatasetCounts(ctx context.Context, datasetIDs []string) (map[string]EvalDatasetCounts, error)
+	GetEvalDataset(ctx context.Context, id string) (*tables.TableEvalDataset, error)
+	CreateEvalDataset(ctx context.Context, dataset *tables.TableEvalDataset, columns []tables.TableEvalDatasetColumn) error
+	UpdateEvalDataset(ctx context.Context, dataset *tables.TableEvalDataset) error
+	DeleteEvalDataset(ctx context.Context, id string) error
+	ListEvalDatasetColumns(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetColumn, error)
+	ListEvalDatasetRows(ctx context.Context, params EvalDatasetRowListParams) ([]tables.TableEvalDatasetRow, error)
+	CountEvalDatasetRows(ctx context.Context, datasetID string, version int, splitID, search string) (int64, error)
+	GetEvalDatasetRow(ctx context.Context, datasetID, rowID string, version int) (*tables.TableEvalDatasetRow, error)
+	ListEvalDatasetVersions(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetVersion, error)
+	GetEvalDatasetVersion(ctx context.Context, datasetID string, number int) (*tables.TableEvalDatasetVersion, error)
+	UpdateEvalDatasetVersion(ctx context.Context, datasetID string, number int, name, description string) error
+	DiffEvalDatasetVersions(ctx context.Context, datasetID string, from, to int, afterSeq int64, limit int) ([]EvalDatasetRowChange, error)
+	ListEvalDatasetSplits(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetSplit, error)
+	CountEvalDatasetSplitRows(ctx context.Context, datasetID string) (map[string]int64, error)
+	CreateEvalDatasetSplit(ctx context.Context, split *tables.TableEvalDatasetSplit) error
+	UpdateEvalDatasetSplit(ctx context.Context, split *tables.TableEvalDatasetSplit) error
+	DeleteEvalDatasetSplit(ctx context.Context, datasetID, splitID string) error
+	AddEvalDatasetSplitRows(ctx context.Context, datasetID, splitID string, rowIDs []string) (int64, error)
+	RemoveEvalDatasetSplitRows(ctx context.Context, datasetID, splitID string, rowIDs []string) (int64, error)
+	CreateEvalDatasetFile(ctx context.Context, file *tables.TableEvalDatasetFile) error
+	GetEvalDatasetFile(ctx context.Context, datasetID, fileID string) (*tables.TableEvalDatasetFile, error)
+	ListEvalDatasetFileKeys(ctx context.Context, datasetID string) ([]string, error)
+	ListEvalDatasetFolders(ctx context.Context) ([]tables.TableEvalDatasetFolder, error)
+	CreateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
+	UpdateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
+	DeleteEvalDatasetFolder(ctx context.Context, id string) error
+	SetEvalDatasetFolderParent(ctx context.Context, id string, parentID *string) error
+	SetEvalDatasetFolder(ctx context.Context, datasetID string, folderID *string) error
+	// WithEvalDataset is the only way to change a dataset's rows, columns and versions.
+	WithEvalDataset(ctx context.Context, datasetID string, fn func(tx EvalDatasetTx) error) error
+
 	// Sidekiq - generic durable background jobs
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)

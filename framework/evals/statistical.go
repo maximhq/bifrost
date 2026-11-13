@@ -109,6 +109,9 @@ func RegisterStatisticalEvaluators(engine *Engine, embedder Embedder) {
 	engine.Register(EvaluatorTypeStatistical, BuiltinSQLiteValidation, func(Definition, Config) (Evaluator, error) {
 		return sqliteValidationEvaluator{}, nil
 	})
+	engine.Register(EvaluatorTypeStatistical, BuiltinToolCallAccuracy, func(Definition, Config) (Evaluator, error) {
+		return toolCallAccuracyEvaluator{}, nil
+	})
 	for key, entry := range embeddingMetrics {
 		engine.Register(EvaluatorTypeStatistical, key, func(_ Definition, cfg Config) (Evaluator, error) {
 			statistical, ok := cfg.(*StatisticalConfig)

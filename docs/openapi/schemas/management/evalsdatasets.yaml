@@ -1,0 +1,788 @@
+# Dataset schemas
+
+DatasetColumnType:
+  type: string
+  enum:
+  - input
+  - expected_output
+  - expected_tool_calls
+  - expected_steps
+  - conversation_history
+  - scenario
+  - output
+  - variable
+  - tags
+  - file
+  description: What the column means to an evaluator. A file column holds files and images. Its cells are a JSON list of DatasetFile, and it fills a variable named after the column
+DatasetColumn:
+  type: object
+  description: A column of a dataset
+  properties:
+    id:
+      type: string
+      description: Column ID
+    dataset_id:
+      type: string
+      description: Dataset ID
+    name:
+      type: string
+      description: Unique in the dataset
+    type:
+      $ref: '#/DatasetColumnType'
+    position:
+      type: integer
+      description: Display order
+    created_at:
+      type: string
+      description: When it was created
+      format: date-time
+    updated_at:
+      type: string
+      description: When it last changed
+      format: date-time
+DatasetColumnInput:
+  type: object
+  description: A column to add or change
+  properties:
+    name:
+      type: string
+      description: Column name. A variable column cannot use the name of a typed variable such as input or output
+    type:
+      $ref: '#/DatasetColumnType'
+  required:
+  - name
+  - type
+DatasetSplit:
+  type: object
+  description: A named subset of a dataset
+  properties:
+    id:
+      type: string
+      description: Split ID
+    dataset_id:
+      type: string
+      description: Dataset ID
+    name:
+      type: string
+      description: Unique in the dataset
+    description:
+      type: string
+      description: What the split is for
+    row_count:
+      type: integer
+      description: Current rows in the split
+    created_at:
+      type: string
+      description: When it was created
+      format: date-time
+    updated_at:
+      type: string
+      description: When it last changed
+      format: date-time
+DatasetSummary:
+  type: object
+  description: A dataset in a listing
+  properties:
+    id: &id001
+      type: string
+      description: Dataset ID
+    name: &id002
+      type: string
+      description: Unique among datasets
+    description: &id003
+      type: string
+      description: What the dataset holds
+    tags: &id004
+      type: array
+      items:
+        type: string
+      description: Labels for filtering
+    folder_id: &id099
+      type: string
+      description: The folder the dataset is filed under. Absent when it is in none
+    head_version: &id005
+      type: integer
+      description: The last saved version number, 0 before the first save
+    draft_changes: &id006
+      type: integer
+      description: Edits made since the last saved version
+    max_versions: &id007
+      type: integer
+      description: The most saved versions to keep. Absent keeps every version
+    created_by: &id008
+      type: string
+      description: Who created it
+    created_at: &id009
+      type: string
+      description: When it was created
+      format: date-time
+    updated_at: &id010
+      type: string
+      description: When it last changed
+      format: date-time
+    column_count:
+      type: integer
+      description: Number of columns
+    row_count:
+      type: integer
+      description: Current number of rows
+    split_count:
+      type: integer
+      description: Number of splits
+Dataset:
+  type: object
+  description: A dataset with its draft columns and splits
+  properties:
+    id: *id001
+    name: *id002
+    description: *id003
+    tags: *id004
+    folder_id: *id099
+    head_version: *id005
+    draft_changes: *id006
+    max_versions: *id007
+    created_by: *id008
+    created_at: *id009
+    updated_at: *id010
+    columns:
+      type: array
+      items:
+        $ref: '#/DatasetColumn'
+    splits:
+      type: array
+      items:
+        $ref: '#/DatasetSplit'
+    row_count:
+      type: integer
+      description: Current number of rows
+DatasetInput:
+  type: object
+  description: Creates or updates a dataset. `template` and `columns` apply on create only
+  properties:
+    name:
+      type: string
+      description: Dataset name
+    description:
+      type: string
+      description: What the dataset holds
+    tags:
+      type: array
+      items:
+        type: string
+    folder_id:
+      type: string
+      description: The folder to create the dataset in. Used on create only. Move a dataset with the folder endpoint
+    max_versions:
+      type: integer
+      description: The most saved versions to keep, at least 1. Leave out to keep every version
+      minimum: 1
+    template:
+      type: string
+      description: A starting column set
+      enum:
+      - qa
+      - retrieval
+      - agent
+    columns:
+      type: array
+      items:
+        $ref: '#/DatasetColumnInput'
+      description: Columns to create, after the template's
+  required:
+  - name
+DatasetResponse:
+  type: object
+  description: One dataset
+  properties:
+    dataset:
+      $ref: '#/Dataset'
+DatasetListResponse:
+  type: object
+  description: A page of datasets
+  properties:
+    datasets:
+      type: array
+      items:
+        $ref: '#/DatasetSummary'
+    total:
+      type: integer
+      description: Datasets matching the filters
+    limit:
+      type: integer
+      description: Page size used
+    offset:
+      type: integer
+      description: Datasets skipped
+DatasetDuplicateRequest:
+  type: object
+  description: Names the copy
+  properties:
+    name:
+      type: string
+      description: Name of the copy. Defaults to the source name followed by "(copy)"
+DatasetColumnResponse:
+  type: object
+  description: One column
+  properties:
+    column:
+      $ref: '#/DatasetColumn'
+DatasetColumnOrderRequest:
+  type: object
+  description: The new column order
+  properties:
+    column_ids:
+      type: array
+      items:
+        type: string
+      description: Every column ID, once, in display order
+  required:
+  - column_ids
+DatasetRow:
+  type: object
+  description: One row of a dataset
+  properties:
+    id:
+      type: string
+      description: Row ID. It stays the same when the row is edited
+    seq:
+      type: integer
+      description: Order in the dataset. Deleted rows leave gaps
+    cells:
+      type: object
+      description: Column ID to cell value. Empty cells are left out
+      additionalProperties: &id012
+        type: string
+    created_at:
+      type: string
+      description: When the row was added
+      format: date-time
+DatasetRowsPage:
+  type: object
+  description: A page of rows
+  properties:
+    rows:
+      type: array
+      items:
+        $ref: '#/DatasetRow'
+    next_after:
+      type: integer
+      description: Pass as `after` for the next page. 0 on the last page
+    total:
+      type: integer
+      description: Rows the query matches across all pages, counting the split and the search when given
+    version:
+      type: integer
+      description: The version read. 0 is the draft
+DatasetAddRowsRequest:
+  type: object
+  description: Rows to add
+  properties:
+    rows:
+      type: array
+      items:
+        type: object
+        additionalProperties:
+          type: string
+        description: Column ID or column name to cell value
+      description: 1 to 1,000 rows
+    split_id:
+      type: string
+      description: Put the new rows in this split
+  required:
+  - rows
+DatasetWriteResult:
+  type: object
+  description: The outcome of a write
+  properties:
+    rows:
+      type: array
+      items:
+        $ref: '#/DatasetRow'
+    count:
+      type: integer
+      description: Rows written
+    version:
+      type: integer
+      description: The version the write was saved in. Absent when it stayed in the draft
+DatasetUpdateRowRequest:
+  type: object
+  description: Cells to change
+  properties:
+    cells:
+      type: object
+      additionalProperties:
+        type: string
+      description: Column ID or column name to the new value. An empty value clears the cell
+  required:
+  - cells
+DatasetRowResponse:
+  type: object
+  description: The updated row
+  properties:
+    row:
+      $ref: '#/DatasetRow'
+    version:
+      type: integer
+      description: The version the edit was saved in. Null when it stayed in the draft
+      nullable: true
+DatasetEditCellsRequest:
+  type: object
+  description: A paste or a range delete. At least one of updates and rows is required
+  properties:
+    updates:
+      type: array
+      description: Up to 1,000 existing rows to change
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+            description: The row ID
+          cells:
+            type: object
+            additionalProperties:
+              type: string
+            description: Column ID or column name to the new value. An empty value clears the cell
+        required:
+        - id
+        - cells
+    rows:
+      type: array
+      description: Up to 1,000 rows to append after the updates
+      items:
+        type: object
+        additionalProperties:
+          type: string
+        description: Column ID or column name to cell value
+    split_id:
+      type: string
+      description: Put the appended rows in this split
+DatasetEditCellsResult:
+  type: object
+  description: The rows a batch edit changed and added
+  properties:
+    updated:
+      type: array
+      items:
+        $ref: '#/DatasetRow'
+      description: The changed rows, in request order
+    added:
+      type: array
+      items:
+        $ref: '#/DatasetRow'
+      description: The appended rows
+    version:
+      type: integer
+      description: The version the edit was saved in. Absent when it stayed in the draft
+DatasetDeleteRowsRequest:
+  type: object
+  description: Rows to delete
+  properties:
+    row_ids:
+      type: array
+      items:
+        type: string
+      description: 1 to 1,000 row IDs
+  required:
+  - row_ids
+DatasetDeleteRowsResponse:
+  type: object
+  description: The outcome of a delete
+  properties:
+    deleted:
+      type: integer
+      description: Rows removed from the draft
+    version:
+      type: integer
+      description: The version the delete was saved in. Null when it stayed in the draft
+      nullable: true
+DatasetRowVariablesResponse:
+  type: object
+  description: The evaluator variables of a row
+  properties:
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: Variable name to value
+DatasetFromLogsRequest:
+  type: object
+  description: Logs to add as rows
+  properties:
+    log_ids:
+      type: array
+      items:
+        type: string
+      description: 1 to 500 request log IDs
+    split_id:
+      type: string
+      description: Put the new rows in this split
+  required:
+  - log_ids
+DatasetFromSessionsRequest:
+  type: object
+  description: Sessions to add as rows
+  properties:
+    session_ids:
+      type: array
+      items:
+        type: string
+      description: 1 to 100 session IDs
+    split_id:
+      type: string
+      description: Put the new rows in this split
+  required:
+  - session_ids
+DatasetSkipped:
+  type: object
+  description: A log or session that did not become a row
+  properties:
+    id:
+      type: string
+      description: The log or session ID
+    reason:
+      type: string
+      description: Why it was skipped
+DatasetCurateResult:
+  type: object
+  description: The outcome of adding rows from logs or sessions
+  properties:
+    rows_added:
+      type: integer
+      description: Rows added
+    skipped:
+      type: array
+      items:
+        $ref: '#/DatasetSkipped'
+    version:
+      type: integer
+      description: The version the rows were saved in. Absent when nothing was added
+DatasetImportResult:
+  type: object
+  description: The outcome of an import
+  properties:
+    rows_added:
+      type: integer
+      description: Rows imported
+    columns_created:
+      type: array
+      items:
+        type: string
+      description: Names of the columns the import created
+    version:
+      type: integer
+      description: The version the import was saved in
+DatasetImportPreview:
+  type: object
+  description: The head of a CSV with a suggested mapping
+  properties:
+    header:
+      type: array
+      items:
+        type: string
+      description: The first row
+    rows:
+      type: array
+      items:
+        type: array
+        items:
+          type: string
+      description: Up to five data rows
+    mapping:
+      type: array
+      items:
+        type: string
+      description: 'One entry per header field: the matching column ID, or an empty string'
+DatasetVersionColumn:
+  type: object
+  description: A column as a version recorded it
+  properties:
+    id:
+      type: string
+      description: Column ID
+    name:
+      type: string
+      description: Column name at that version
+    type:
+      $ref: '#/DatasetColumnType'
+    position:
+      type: integer
+      description: Display order
+DatasetVersion:
+  type: object
+  description: A saved version of a dataset
+  properties:
+    id:
+      type: string
+      description: Version ID
+    dataset_id:
+      type: string
+      description: Dataset ID
+    number:
+      type: integer
+      description: Version number. Never reused
+    name:
+      type: string
+      description: Optional label
+    description:
+      type: string
+      description: A note. Automatic saves say why they happened
+    columns:
+      type: array
+      items:
+        $ref: '#/DatasetVersionColumn'
+    row_count:
+      type: integer
+      description: Rows in this version
+    rows_added:
+      type: integer
+      description: Rows added since the version before
+    rows_changed:
+      type: integer
+      description: Rows changed since the version before
+    rows_removed:
+      type: integer
+      description: Rows removed since the version before
+    restored_from:
+      type: integer
+      description: The version this one was restored from
+    created_by:
+      type: string
+      description: Who saved it
+    created_at:
+      type: string
+      description: When it was saved
+      format: date-time
+    updated_at:
+      type: string
+      description: When its name or note last changed
+      format: date-time
+DatasetVersionInput:
+  type: object
+  description: A label for a version
+  properties:
+    name:
+      type: string
+      description: Optional label
+    description:
+      type: string
+      description: Optional note
+DatasetVersionResponse:
+  type: object
+  description: One version
+  properties:
+    version:
+      $ref: '#/DatasetVersion'
+DatasetVersionListResponse:
+  type: object
+  description: The saved versions, newest first
+  properties:
+    versions:
+      type: array
+      items:
+        $ref: '#/DatasetVersion'
+DatasetDiffColumn:
+  type: object
+  description: A column as one side of a diff has it
+  properties:
+    id:
+      type: string
+      description: Column ID
+    name:
+      type: string
+      description: Column name
+    type:
+      $ref: '#/DatasetColumnType'
+DatasetColumnChange:
+  type: object
+  description: A column that differs between two versions
+  properties:
+    change: &id011
+      type: string
+      enum:
+      - added
+      - removed
+      - changed
+    before:
+      $ref: '#/DatasetDiffColumn'
+    after:
+      $ref: '#/DatasetDiffColumn'
+DatasetRowChange:
+  type: object
+  description: A row that differs between two versions
+  properties:
+    row_id:
+      type: string
+      description: Row ID
+    seq:
+      type: integer
+      description: Order in the dataset
+    change: *id011
+    before:
+      type: object
+      description: Cells in the earlier version. Absent for an added row
+      additionalProperties: *id012
+    after:
+      type: object
+      description: Cells in the later version. Absent for a removed row
+      additionalProperties: *id012
+DatasetDiff:
+  type: object
+  description: What changed from one version to a later one
+  properties:
+    from:
+      type: integer
+      description: The earlier version. 0 is the empty dataset
+    to:
+      type: integer
+      description: The later version. `head_version + 1` is the draft
+    columns:
+      type: array
+      items:
+        $ref: '#/DatasetColumnChange'
+    rows:
+      type: array
+      items:
+        $ref: '#/DatasetRowChange'
+    next_after:
+      type: integer
+      description: Pass as `after` for the next page. 0 on the last page
+DatasetSplitInput:
+  type: object
+  description: Creates or updates a split
+  properties:
+    name:
+      type: string
+      description: Split name
+    description:
+      type: string
+      description: What the split is for
+  required:
+  - name
+DatasetSplitResponse:
+  type: object
+  description: One split
+  properties:
+    split:
+      $ref: '#/DatasetSplit'
+DatasetSplitRowsRequest:
+  type: object
+  description: Rows to add to and remove from a split
+  properties:
+    add:
+      type: array
+      items:
+        type: string
+      description: Row IDs to add
+    remove:
+      type: array
+      items:
+        type: string
+      description: Row IDs to remove
+DatasetSplitRowsResponse:
+  type: object
+  description: The outcome of a membership change
+  properties:
+    added:
+      type: integer
+      description: Rows that joined
+    removed:
+      type: integer
+      description: Rows that left
+DeletedResponse:
+  type: object
+  description: Confirms a delete
+  properties:
+    deleted:
+      type: boolean
+      description: Always true
+ReorderedResponse:
+  type: object
+  description: Confirms a reorder
+  properties:
+    reordered:
+      type: boolean
+      description: Always true
+DatasetFolder:
+  type: object
+  description: A folder that groups datasets in the UI
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    parent_id:
+      type: string
+      description: The folder this one sits in. Absent at the top level
+    description:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+DatasetFolderInput:
+  type: object
+  description: A folder to create or update
+  properties:
+    name:
+      type: string
+      description: The folder name. Unique among dataset folders
+    description:
+      type: string
+    parent_id:
+      type: string
+      description: The folder to create this one in. Used on create only. Move a folder with the parent endpoint
+  required:
+  - name
+DatasetFolderResponse:
+  type: object
+  properties:
+    folder:
+      $ref: '#/DatasetFolder'
+DatasetFolderListResponse:
+  type: object
+  properties:
+    folders:
+      type: array
+      items:
+        $ref: '#/DatasetFolder'
+DatasetMoveRequest:
+  type: object
+  description: Where to file the dataset
+  properties:
+    folder_id:
+      type: string
+      nullable: true
+      description: The folder to file the dataset under. Null files it under no folder
+DatasetFolderMoveRequest:
+  type: object
+  description: Where to put the folder
+  properties:
+    parent_id:
+      type: string
+      nullable: true
+      description: The folder to move this one into. Null moves it to the top level
+DatasetFile:
+  type: object
+  description: One file in a file cell. An uploaded file is named by its id. A file somewhere else is named by its url
+  properties:
+    id:
+      type: string
+      description: The uploaded file's ID
+    name:
+      type: string
+    content_type:
+      type: string
+    size:
+      type: integer
+      description: Size in bytes
+    url:
+      type: string
+      description: Where the file is read from. For an uploaded file, the path of the file endpoint
+DatasetFileResponse:
+  type: object
+  properties:
+    file:
+      $ref: '#/DatasetFile'

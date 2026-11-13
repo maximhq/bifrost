@@ -25,11 +25,13 @@ import { ColumnDef } from "@tanstack/react-table";
 import { showsPassthroughTag } from "../sheets/logDetailView.utils";
 import { PassthroughIcon } from "./passthroughTag";
 import { format, formatDistanceToNow } from "date-fns";
-import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowUpDown, ChevronRight, Database, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
+import { AddToDatasetDialog } from "@/app/workspace/evals/datasets/views/addToDatasetDialog";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 // Passed to useReactTable({ meta }) by the logs page so the expander column can
 // read/toggle chain expansion without threading props through column factories.
@@ -64,33 +66,75 @@ function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage
 	return { model, usage };
 }
 
-function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
+function LogActionsMenu({
+	log,
+	onDelete,
+	canDelete,
+	grouped,
+}: {
+	log: LogEntry;
+	onDelete: (log: LogEntry) => void;
+	canDelete: boolean;
+	grouped: boolean;
+}) {
 	const { t } = useTranslation("observability");
+	const { t: tConfig } = useTranslation("config");
 	const [isOpen, setIsOpen] = useState(false);
+	const [addOpen, setAddOpen] = useState(false);
+	// With rows grouped by session, a row stands for its whole session.
+	const sessionId = grouped ? log.session_id : undefined;
+	const canCurate = useRbac(RbacResource.Evaluators, RbacOperation.Update);
+	if (!canCurate && !canDelete) return null;
 
 	return (
-		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
-			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("logs.logActions")} className="h-7 w-7">
-					<MoreHorizontal className="h-4 w-4" />
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end">
-				<DropdownMenuItem
-					variant="destructive"
-					className="cursor-pointer"
-					data-testid="log-delete-btn"
-					onSelect={(e) => {
-						e.preventDefault();
-						onDelete(log);
-						setIsOpen(false);
-					}}
-				>
-					<Trash2 className="h-4 w-4" />
-					{t("labels.delete")}
-				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
+		<>
+			<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+				<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+					<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("logs.logActions")} className="h-7 w-7">
+						<MoreHorizontal className="h-4 w-4" />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+					{canCurate && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							data-testid="log-add-to-dataset-menu-item"
+							onSelect={() => {
+								setIsOpen(false);
+								setAddOpen(true);
+							}}
+						>
+							<Database className="h-4 w-4" />
+							{sessionId ? tConfig("evals.datasets.addTo.buttonSession") : tConfig("evals.datasets.addTo.button")}
+						</DropdownMenuItem>
+					)}
+					{canDelete && (
+						<DropdownMenuItem
+							variant="destructive"
+							className="cursor-pointer"
+							data-testid="log-delete-btn"
+							onSelect={(e) => {
+								e.preventDefault();
+								onDelete(log);
+								setIsOpen(false);
+							}}
+						>
+							<Trash2 className="h-4 w-4" />
+							{t("labels.delete")}
+						</DropdownMenuItem>
+					)}
+				</DropdownMenuContent>
+			</DropdownMenu>
+			{/* The dialog is outside the row's click target, so using it does not open the log. */}
+			<span onClick={(event) => event.stopPropagation()}>
+				<AddToDatasetDialog
+					open={addOpen}
+					onOpenChange={setAddOpen}
+					logIds={sessionId ? undefined : [log.id]}
+					sessionIds={sessionId ? [sessionId] : undefined}
+				/>
+			</span>
+		</>
 	);
 }
 
@@ -923,23 +967,23 @@ export const createColumns = (
 		},
 	}));
 
-	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
-		? [
-				{
-					id: "actions",
-					header: "",
-					size: 56,
-					cell: ({ row }) => {
-						const log = row.original;
-						return (
-							<div className="flex justify-center">
-								<LogActionsMenu log={log} onDelete={onDelete} />
-							</div>
-						);
-					},
-				},
-			]
-		: [];
+	// The menu holds "Add to dataset" as well as delete, so it is shown either way; it
+	// renders nothing for a user who can do neither.
+	const actionsColumn: ColumnDef<LogEntry>[] = [
+		{
+			id: "actions",
+			header: "",
+			size: 56,
+			cell: ({ row }) => {
+				const log = row.original;
+				return (
+					<div className="flex justify-center">
+						<LogActionsMenu log={log} onDelete={onDelete} canDelete={hasDeleteAccess} grouped={groupedView} />
+					</div>
+				);
+			},
+		},
+	];
 
 	return [...expandColumn, ...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];
 };

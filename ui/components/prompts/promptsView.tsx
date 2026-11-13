@@ -49,10 +49,10 @@ export default function PromptsView() {
 				<DeleteFolderDialog />
 				<DeletePromptDialog />
 				<PromptSheets />
-				<div className="bg-card max-h-[40dvh] shrink-0 overflow-auto rounded-md">
+				<div className="bg-card max-h-[40dvh] shrink-0 overflow-auto rounded-md border">
 					<PromptSidebar />
 				</div>
-				<div className="bg-card min-h-0 flex-1 overflow-auto rounded-md">
+				<div className="bg-card min-h-0 flex-1 overflow-auto rounded-md border">
 					{selectedPromptId ? (
 						<div className="flex min-h-full flex-col">
 							<PromptsViewHeader />
@@ -86,13 +86,13 @@ export default function PromptsView() {
 			<PromptSheets />
 
 			<ResizablePanelGroup direction="horizontal" className="h-full">
-				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-r-md">
+				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-md border">
 					<PromptSidebar />
 				</ResizablePanel>
 
 				<ResizableHandle className="mr-1 bg-transparent" />
 
-				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md">
+				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md border">
 					{selectedPromptId ? (
 						<div className="flex h-full flex-col">
 							<PromptsViewHeader />

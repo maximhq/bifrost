@@ -597,6 +597,10 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_evals_evaluator_tables"}, run: migrationAddEvalsEvaluatorTables},
 	{IDs: []string{"add_key_eval_columns"}, run: migrationAddKeyEvalColumns},
 	{IDs: []string{"add_evaluator_version_model_provider_column"}, run: migrationAddEvaluatorVersionModelProviderColumn},
+	{IDs: []string{"add_evals_dataset_tables"}, run: migrationAddEvalsDatasetTables},
+	{IDs: []string{"add_evals_dataset_folders"}, run: migrationAddEvalsDatasetFolders},
+	{IDs: []string{"add_evals_dataset_folder_parent"}, run: migrationAddEvalsDatasetFolderParent},
+	{IDs: []string{"add_evals_dataset_files"}, run: migrationAddEvalsDatasetFiles},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1261,6 +1265,98 @@ func migrationAddEvalsEvaluatorTables(ctx context.Context, db *gorm.DB, logger s
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping the evaluator tables would permanently delete user evaluators, their version history and recorded executions", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsDatasetTables creates the dataset tables: datasets, their columns,
+// saved versions, row records, splits and split membership. All are additive: older
+// binaries ignore them.
+func migrationAddEvalsDatasetTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_dataset_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			for _, table := range []any{
+				&tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetVersion{},
+				&tables.TableEvalDatasetRow{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{},
+			} {
+				if mgr.HasTable(table) {
+					continue
+				}
+				if err := mgr.CreateTable(table); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the dataset tables would permanently delete user datasets and their version history", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsDatasetFolders creates the dataset folders table and adds folder_id
+// to datasets. A datasets table created by the step above already has the column;
+// this covers one created before folders existed. Both changes are additive.
+func migrationAddEvalsDatasetFolders(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_dataset_folders"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableEvalDatasetFolder{}) {
+				if err := tx.Migrator().CreateTable(&tables.TableEvalDatasetFolder{}); err != nil {
+					return err
+				}
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableEvalDataset{}, "folder_id"); err != nil {
+				return fmt.Errorf("failed to add folder_id column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping dataset folders would lose how datasets are organized", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsDatasetFolderParent adds parent_id to dataset folders, which lets
+// folders nest. A folders table created by the step above already has the column;
+// this covers one created before folders could nest. Existing folders stay at the
+// top level, which is what a NULL parent means.
+func migrationAddEvalsDatasetFolderParent(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_dataset_folder_parent"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableEvalDatasetFolder{}, "parent_id"); err != nil {
+				return fmt.Errorf("failed to add parent_id column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping parent_id would flatten every nested dataset folder", migrationName)
+		},
+	})
+}
+
+// migrationAddEvalsDatasetFiles creates the table of files uploaded to datasets. It is
+// additive: older binaries ignore it.
+func migrationAddEvalsDatasetFiles(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_evals_dataset_files"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			if mgr.HasTable(&tables.TableEvalDatasetFile{}) {
+				return nil
+			}
+			return mgr.CreateTable(&tables.TableEvalDatasetFile{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the files table would permanently delete uploaded dataset files", migrationName)
 		},
 	})
 }

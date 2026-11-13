@@ -1,0 +1,1735 @@
+# Dataset paths
+
+datasets:
+  get:
+    operationId: listEvalDatasets
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List datasets
+    description: |
+      Returns datasets, newest first, each with its column, row and split counts.
+    tags:
+    - Datasets
+    parameters:
+    - name: search
+      in: query
+      required: false
+      description: Case-insensitive match on name or description
+      schema:
+        type: string
+    - name: tag
+      in: query
+      required: false
+      description: Only datasets with this exact tag
+      schema:
+        type: string
+    - name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 200. Defaults to 50
+      schema:
+        type: integer
+    - name: offset
+      in: query
+      required: false
+      description: Number of datasets to skip
+      schema:
+        type: integer
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetListResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  post:
+    operationId: createEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a dataset
+    description: |
+      Creates a dataset. Columns come from `columns`, from a `template` (qa, retrieval or agent), from both, or are added later.
+    tags:
+    - Datasets
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-by-id:
+  get:
+    operationId: getEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a dataset
+    description: |
+      Returns one dataset with its draft columns, its splits and its current row count.
+    tags:
+    - Datasets
+    parameters:
+    - &id001
+      name: id
+      in: path
+      required: true
+      description: Dataset ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  put:
+    operationId: updateEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a dataset
+    description: |
+      Changes the name, description, tags and `max_versions`. Lowering `max_versions` deletes the oldest versions over the new limit right away.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a dataset
+    description: |
+      Deletes a dataset with its rows, versions and splits. Its name becomes free for reuse.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-duplicate:
+  post:
+    operationId: duplicateEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Duplicate a dataset
+    description: |
+      Copies the columns, current rows and splits under a new name. The copy starts at version 1 and carries no history.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetDuplicateRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-columns:
+  post:
+    operationId: addEvalDatasetColumn
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add a column
+    description: |
+      Adds a column to the draft. A dataset has at most one column of each type, except `variable`, and at most 100 columns.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetColumnInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetColumnResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-columns-order:
+  put:
+    operationId: reorderEvalDatasetColumns
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Reorder columns
+    description: |
+      Sets the display order. `column_ids` must name every column once.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetColumnOrderRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/ReorderedResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-column:
+  put:
+    operationId: updateEvalDatasetColumn
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a column
+    description: |
+      Renames or retypes a column. Saved versions keep the column as it was.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - &id002
+      name: columnId
+      in: path
+      required: true
+      description: Column ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetColumnInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetColumnResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalDatasetColumn
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a column
+    description: |
+      Removes a column from the draft. No row is rewritten, and saved versions still show the column.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id002
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-rows:
+  get:
+    operationId: listEvalDatasetRows
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List rows
+    description: |
+      Returns a page of rows in order. Paging is by `after`, the `next_after` of the previous page, so a late page costs the same as the first.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - &id004
+      name: version
+      in: query
+      required: false
+      description: A saved version number to read. Leave out to read the draft
+      schema:
+        type: integer
+    - name: split
+      in: query
+      required: false
+      description: Only rows in this split (a split ID)
+      schema:
+        type: string
+    - name: search
+      in: query
+      required: false
+      description: Case-insensitive match on any cell
+      schema:
+        type: string
+    - name: after
+      in: query
+      required: false
+      description: Return rows after this sequence number. Use it to walk the whole dataset
+      schema:
+        type: integer
+    - name: offset
+      in: query
+      required: false
+      description: Skip this many rows, to read a page by row position. Cannot be combined with after
+      schema:
+        type: integer
+        minimum: 0
+    - name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 200. Defaults to 100
+      schema:
+        type: integer
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetRowsPage
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  post:
+    operationId: addEvalDatasetRows
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add rows
+    description: |
+      Appends up to 1,000 rows. Each row maps a column ID or a column name to a cell value. A cell of an `expected_tool_calls`, `conversation_history` or `tags` column must be valid JSON.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetAddRowsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetWriteResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-rows-batch:
+  post:
+    operationId: editEvalDatasetCells
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Edit many cells
+    description: |
+      Applies one spreadsheet edit that touches many cells, such as a paste or a range delete. It changes cells of up to 1,000 existing rows and appends up to 1,000 new rows, all in one transaction: if any cell is invalid, nothing is changed.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetEditCellsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetEditCellsResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-files:
+  post:
+    operationId: uploadEvalDatasetFile
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Upload a file
+    description: |
+      Uploads a file for the dataset's file cells. The request body is the file itself, and its type comes from the Content-Type header. The bytes are kept in the object store when the gateway has one. Without one they are kept in the config database, and a file may be 5 MB at most.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - name: name
+      in: query
+      required: true
+      description: The file name
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema:
+            type: string
+            format: binary
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFileResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-file:
+  get:
+    operationId: getEvalDatasetFile
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Download a file
+    description: |
+      Returns an uploaded file's bytes. PNG, JPEG, GIF, WebP, AVIF and BMP images are served to be shown in place. Every other type, SVG and HTML included, is served as a download, so an uploaded file never runs as a page of the gateway.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - name: fileId
+      in: path
+      required: true
+      description: The file ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: The file
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-rows-delete:
+  post:
+    operationId: deleteEvalDatasetRows
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete rows
+    description: |
+      Removes up to 1,000 rows from the draft. Saved versions that have them keep them.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetDeleteRowsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetDeleteRowsResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-rows-from-logs:
+  post:
+    operationId: addEvalDatasetRowsFromLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add rows from logs
+    description: |
+      Adds one row per request log, filled by column type: the last user message as the input, the earlier messages as the conversation history, the reply as the output and the tool calls the model made as the expected tool calls. Logs that are missing or were stored without content are skipped and listed. The added rows are saved as a new version. Needs a log store.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFromLogsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetCurateResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-rows-from-sessions:
+  post:
+    operationId: addEvalDatasetRowsFromSessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add rows from sessions
+    description: |
+      Adds one row per session. Every turn of the session goes into a variable column named `session`, which is created when the dataset has none. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFromSessionsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetCurateResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-row:
+  patch:
+    operationId: updateEvalDatasetRow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a row
+    description: |
+      Changes the cells named in `cells` and leaves the rest. An empty value clears a cell.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - &id003
+      name: rowId
+      in: path
+      required: true
+      description: Row ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetUpdateRowRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetRowResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-row-variables:
+  get:
+    operationId: getEvalDatasetRowVariables
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get the variables of a row
+    description: |
+      Returns the evaluator variables a row produces. Typed columns fill the variable of their type, `conversation_history` fills `history`, a `variable` column fills a variable with its own name, and an empty cell fills nothing.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id003
+    - *id004
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetRowVariablesResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-import:
+  post:
+    operationId: importEvalDatasetCSV
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Import a CSV
+    description: |
+      Imports a CSV sent as the request body. Its size is bounded by the gateway request body limit. The import is all or nothing: a bad row fails it with its line number and nothing is added. The imported rows are saved as a new version.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - name: has_header
+      in: query
+      required: false
+      description: Whether the first row is a header. Defaults to true
+      schema:
+        type: boolean
+    - name: mapping
+      in: query
+      required: false
+      description: 'JSON list that maps CSV fields to columns: `{"index": 0, "column_id": "..."}` for an existing column, or `{"index": 2, "name": "context", "type": "variable"}` to create one. Without it, the header is matched to the columns by name'
+      schema:
+        type: string
+    - name: create_columns
+      in: query
+      required: false
+      description: When there is no mapping, turn header fields that match no column into variable columns
+      schema:
+        type: boolean
+    - name: split_id
+      in: query
+      required: false
+      description: Put the imported rows in this split
+      schema:
+        type: string
+    requestBody:
+      required: true
+      description: The CSV file
+      content:
+        text/csv:
+          schema:
+            type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetImportResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-import-preview:
+  post:
+    operationId: previewEvalDatasetImport
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Preview a CSV import
+    description: |
+      Reads the header and the first rows of a CSV, and suggests which column each field maps to. The body may be only the start of the file.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      description: The CSV file, or its first bytes
+      content:
+        text/csv:
+          schema:
+            type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetImportPreview
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-export:
+  get:
+    operationId: exportEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Export a dataset
+    description: |
+      Streams the dataset, one version of it or one split of it as CSV or JSONL.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - name: format
+      in: query
+      required: false
+      description: Defaults to csv
+      schema:
+        type: string
+        enum:
+        - csv
+        - jsonl
+    - *id004
+    - name: split
+      in: query
+      required: false
+      description: Only rows in this split (a split ID)
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: The rows, streamed
+        content:
+          text/csv:
+            schema:
+              type: string
+          application/x-ndjson:
+            schema:
+              type: string
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-versions:
+  get:
+    operationId: listEvalDatasetVersions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List versions
+    description: |
+      Returns the saved versions of a dataset, newest first.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionListResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  post:
+    operationId: saveEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Save a version
+    description: |
+      Saves the draft as a version. Answers 409 when the draft has no changes. Versions are also saved automatically: after a bulk change, after 40 small edits, and by a restore.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-version:
+  get:
+    operationId: getEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a version
+    description: |
+      Returns one saved version with the columns it was saved with.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - &id005
+      name: number
+      in: path
+      required: true
+      description: Version number
+      schema:
+        type: integer
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  put:
+    operationId: updateEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a version
+    description: |
+      Changes a version's name and note. Its rows never change.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id005
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a version
+    description: |
+      Deletes a saved version and the row records only it needed. The latest version cannot be deleted. A deleted number is never reused.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id005
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-version-diff:
+  get:
+    operationId: diffEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Compare two versions
+    description: |
+      Returns what changed from an earlier version to this one: column changes, and a page of added, removed and changed rows. Use `draft` as the number to compare the unsaved draft.
+    tags:
+    - Datasets
+    parameters:
+    - name: number
+      in: path
+      required: true
+      description: Version number, or `draft`
+      schema:
+        type: string
+    - *id001
+    - name: against
+      in: query
+      required: false
+      description: The earlier version to compare with. Defaults to the saved version just before this one
+      schema:
+        type: integer
+    - name: after
+      in: query
+      required: false
+      description: Return row changes after this sequence number
+      schema:
+        type: integer
+    - name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 200. Defaults to 100
+      schema:
+        type: integer
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetDiff
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-version-restore:
+  post:
+    operationId: restoreEvalDatasetVersion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Restore a version
+    description: |
+      Makes the dataset equal to a saved version and saves the result as a new version. Edits waiting in the draft are saved first. History is never rewritten, so a restore can be undone by restoring again.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id005
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetVersionResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-splits:
+  post:
+    operationId: createEvalDatasetSplit
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a split
+    description: |
+      Adds a named subset to a dataset.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-split:
+  put:
+    operationId: updateEvalDatasetSplit
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a split
+    description: |
+      Renames or describes a split.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - &id006
+      name: splitId
+      in: path
+      required: true
+      description: Split ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalDatasetSplit
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a split
+    description: |
+      Deletes a split. Its rows stay in the dataset.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id006
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-split-rows:
+  post:
+    operationId: setEvalDatasetSplitRows
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add or remove split rows
+    description: |
+      Adds rows to a split and removes others, up to 1,000 each. Row IDs that are not current rows of the dataset are ignored.
+    tags:
+    - Datasets
+    parameters:
+    - *id001
+    - *id006
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitRowsRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetSplitRowsResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-folders:
+  get:
+    operationId: listEvalDatasetFolders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List dataset folders
+    description: |
+      Returns every dataset folder, by name. Folders nest through `parent_id` and only group datasets in the UI.
+    tags:
+    - Datasets
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderListResponse
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  post:
+    operationId: createEvalDatasetFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a dataset folder
+    description: |
+      Creates a folder. Folder names are unique.
+    tags:
+    - Datasets
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-folder:
+  put:
+    operationId: updateEvalDatasetFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a dataset folder
+    description: |
+      Changes a folder's name and description.
+    tags:
+    - Datasets
+    parameters:
+    - name: folderId
+      in: path
+      required: true
+      description: The folder ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderInput
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '409':
+        $ref: ../../openapi.yaml#/components/responses/Conflict
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+  delete:
+    operationId: deleteEvalDatasetFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a dataset folder
+    description: |
+      Removes a folder. What it holds is kept: its datasets and its folders move up into the folder it was in.
+    tags:
+    - Datasets
+    parameters:
+    - name: folderId
+      in: path
+      required: true
+      description: The folder ID
+      schema:
+        type: string
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DeletedResponse
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-dataset-folder:
+  put:
+    operationId: moveEvalDataset
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Move a dataset to a folder
+    description: |
+      Files a dataset under a folder, or under none when `folder_id` is null. It does not count as a change to the dataset's contents.
+    tags:
+    - Datasets
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The dataset ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetMoveRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+datasets-folder-parent:
+  put:
+    operationId: moveEvalDatasetFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Evaluators:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Move a dataset folder
+    description: |
+      Puts a folder inside another folder, or at the top level when `parent_id` is null. A folder cannot be moved into itself or into a folder inside it.
+    tags:
+    - Datasets
+    parameters:
+    - name: folderId
+      in: path
+      required: true
+      description: The folder ID
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderMoveRequest
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/evalsdatasets.yaml#/DatasetFolderResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
