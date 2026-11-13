@@ -2124,7 +2124,30 @@
 				"samplePercentRange": "Gib eine Stichprobenrate über 0 und höchstens 100 % ein",
 				"firstRunRequired": "Wählen Sie Datum und Uhrzeit für die erste Ausführung",
 				"modelRequired": "Wähle ein Modell für diesen Anbieter aus",
-				"providerRequired": "Wähle den Anbieter für dieses Modell aus"
+				"providerRequired": "Wähle den Anbieter für dieses Modell aus",
+				"runDialogTitle": "Vorschläge jetzt ausführen",
+				"runDialogDescription": "Liest den erfassten Traffic dieses Routers für ein gewähltes Zeitfenster und schlägt Phrasen dafür vor. Nichts ändert sich, bis Sie annehmen und speichern.",
+				"runWindowLabel": "Zeitfenster",
+				"runWindow": {
+					"24h": "Letzte 24 Stunden",
+					"7d": "Letzte 7 Tage",
+					"14d": "Letzte 14 Tage",
+					"30d": "Letzte 30 Tage"
+				},
+				"estimating": "Wird geschätzt…",
+				"estimateFailed": "Der Lauf konnte nicht geschätzt werden: {{error}}",
+				"estimateRequests_one": "{{formatted}} Anfrage im Zeitfenster",
+				"estimateRequests_other": "{{formatted}} Anfragen im Zeitfenster",
+				"estimateClustered_one": "{{formatted}} wird in Cluster gruppiert; die übrigen kommen zu einem passenden Cluster hinzu, sofern es einen gibt.",
+				"estimateClustered_other": "{{formatted}} werden in Cluster gruppiert; die übrigen kommen zu einem passenden Cluster hinzu, sofern es einen gibt.",
+				"estimateSkipped_one": "{{formatted}} weitere liegt über dem Limit des Laufs und wird nicht gezählt.",
+				"estimateSkipped_other": "{{formatted}} weitere liegen über dem Limit des Laufs und werden nicht gezählt.",
+				"estimateModelCalls_one": "Höchstens {{formatted}} Aufruf des Vorschlagsmodells",
+				"estimateModelCalls_other": "Höchstens {{formatted}} Aufrufe des Vorschlagsmodells",
+				"runInBackground": "Läuft im Hintergrund in Ihrem Gateway, außerhalb des Anfragepfads.",
+				"runStart": "Lauf starten",
+				"stale": "Früherer Phrasenbestand",
+				"staleTip": "Berechnet, bevor sich die Phrasenlisten zuletzt geändert haben. Testen Sie den Vorschlag mit den aktuellen Phrasen, bevor Sie ihn hinzufügen."
 			}
 		},
 		"editDescription": "Konfiguration der Routing-Regel aktualisieren",

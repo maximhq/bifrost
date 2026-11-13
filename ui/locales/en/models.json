@@ -2124,7 +2124,30 @@
 				"samplePercentRange": "Enter a sample rate above 0 and at most 100%",
 				"firstRunRequired": "Pick a date and time for the first run",
 				"modelRequired": "Select a model for this provider",
-				"providerRequired": "Select the provider for this model"
+				"providerRequired": "Select the provider for this model",
+				"runDialogTitle": "Run suggestions now",
+				"runDialogDescription": "Read this router's captured traffic for a window you pick and propose phrases for it. Nothing changes until you accept and save.",
+				"runWindowLabel": "Window",
+				"runWindow": {
+					"24h": "Last 24 hours",
+					"7d": "Last 7 days",
+					"14d": "Last 14 days",
+					"30d": "Last 30 days"
+				},
+				"estimating": "Estimating…",
+				"estimateFailed": "Could not estimate the run: {{error}}",
+				"estimateRequests_one": "{{formatted}} request in the window",
+				"estimateRequests_other": "{{formatted}} requests in the window",
+				"estimateClustered_one": "{{formatted}} is grouped into clusters; the rest join a cluster they match, if any.",
+				"estimateClustered_other": "{{formatted}} are grouped into clusters; the rest join a cluster they match, if any.",
+				"estimateSkipped_one": "{{formatted}} more is past the run's limit and not counted.",
+				"estimateSkipped_other": "{{formatted}} more are past the run's limit and not counted.",
+				"estimateModelCalls_one": "At most {{formatted}} suggestion-model call",
+				"estimateModelCalls_other": "At most {{formatted}} suggestion-model calls",
+				"runInBackground": "Runs in the background inside your gateway, outside the request path.",
+				"runStart": "Start run",
+				"stale": "Earlier phrase bank",
+				"staleTip": "Computed before the phrase lists last changed. Test it against the current phrases before adding it."
 			}
 		},
 		"editDescription": "Update the routing rule configuration",

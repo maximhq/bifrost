@@ -3385,10 +3385,19 @@ ComplexitySuggestionsSchedule:
 
 ComplexitySuggestion:
   type: object
-  description: One suggested set of phrases for a cluster of routed traffic.
+  description: One suggested set of phrases for a cluster of one model router's traffic.
   properties:
     id:
       type: string
+    router_id:
+      type: string
+      description: The model router whose traffic the suggestion came from.
+    router_version:
+      type: string
+      description: The router version (its phrase bank) the suggestion was computed against.
+    stale:
+      type: boolean
+      description: True when the router now serves a different version than the one the suggestion was computed against.
     status:
       type: string
       enum: [open, accepted, dismissed, superseded]
@@ -3449,6 +3458,14 @@ ComplexitySuggestionRun:
   properties:
     id:
       type: string
+    router_id:
+      type: string
+    router_version:
+      type: string
+    window_start:
+      type: string
+      format: date-time
+      description: Start of the window the run read; it ends at started_at.
     triggered_by:
       type: string
       enum: [schedule, manual]
@@ -3489,6 +3506,11 @@ ComplexitySuggestionRun:
 ComplexitySuggestionsList:
   type: object
   properties:
+    router_id:
+      type: string
+    router_version:
+      type: string
+      description: The version the router serves now.
     suggestions:
       type: array
       items:
@@ -3629,3 +3651,22 @@ ComplexitySessionConfig:
     enabled:
       type: boolean
       description: Enable monotonic session tier retention; default is false.
+
+ComplexitySuggestionRunEstimate:
+  type: object
+  properties:
+    requests:
+      type: integer
+      description: Captured requests in the window.
+    clustered:
+      type: integer
+      description: Size of the sample of the window the run would cluster, up to its clustering budget.
+    assigned:
+      type: integer
+      description: Requests outside the sample the run would try to assign to the clusters it finds. A request joins a cluster only if it is close enough to one, so fewer may end up counted.
+    skipped:
+      type: integer
+      description: Requests past the run's assignment bound, not counted.
+    max_model_calls:
+      type: integer
+      description: The most suggestion-model calls the run could make.

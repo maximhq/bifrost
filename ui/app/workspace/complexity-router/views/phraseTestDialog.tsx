@@ -77,7 +77,7 @@ export default function PhraseTestDialog({ suggestion, onOpenChange, canStage, o
 		if (!suggestion || cleaned.length === 0) return;
 		setError(null);
 		const test = ++testRef.current;
-		runTest({ phrases: cleaned.map((text) => ({ tier, text })), suggestion_id: suggestion.id })
+		runTest({ phrases: cleaned.map((text) => ({ tier, text })), suggestion_id: suggestion.id, routerId: suggestion.router_id })
 			.unwrap()
 			.then((answer) => {
 				if (testRef.current === test) setResult(answer);

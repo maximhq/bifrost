@@ -370,7 +370,8 @@ func (vanishingStore) GetAll(_ context.Context, namespace string, _ []vectorstor
 
 // A namespace missing from the start holds nothing yet, but one that goes
 // after a page was read leaves the window partial: that is an error, so a run
-// never reconciles suggestions against traffic it only half read.
+// never reconciles suggestions against traffic it only half read, and an
+// estimate never counts half a window as all of it.
 func TestEachCapturedFailsWhenTheNamespaceGoesMidRead(t *testing.T) {
 	ns := CaptureNamespace("openai", "m", 2, 1)
 	now := time.Now()
@@ -381,6 +382,12 @@ func TestEachCapturedFailsWhenTheNamespaceGoesMidRead(t *testing.T) {
 	})
 	require.ErrorIs(t, err, vectorstore.ErrNotFound)
 	assert.Equal(t, 1, pages, "the first page was read before the namespace went")
+
+	_, err = CountCaptured(context.Background(), vanishingStore{}, ns, now.Add(-time.Hour), now.Add(time.Minute))
+	require.ErrorIs(t, err, vectorstore.ErrNotFound, "a count cut short is not passed off as the whole window")
+	count, err := CountCaptured(context.Background(), newCaptureTestStore(t), ns, now.Add(-time.Hour), now)
+	require.NoError(t, err, "a namespace missing from the start counts nothing")
+	assert.Zero(t, count)
 
 	require.NoError(t, EachCaptured(context.Background(), newCaptureTestStore(t), ns, now.Add(-time.Hour), now, func([]CapturedRequest) error {
 		t.Fatal("a namespace that was never written has no pages")
@@ -829,4 +836,49 @@ func TestRequestCaptureCloseDrainsQueuedSamples(t *testing.T) {
 
 	c.offer(requestCtx("late"), store, ns, 2, []float32{1, 0})
 	assert.EqualValues(t, 50, c.Stats().Queued, "a closed capture refuses new samples")
+}
+
+// singlePageStore pages like Pinecone: a read that does not ask for vectors
+// returns one page and no cursor, however many entries match; a read that
+// does pages to the end.
+type singlePageStore struct {
+	vectorstore.VectorStore
+	vectorReads int
+}
+
+func (s *singlePageStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	if vectorstore.IncludeVectorsRequested(ctx) {
+		s.vectorReads++
+		return s.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+	}
+	results, _, err := s.VectorStore.GetAll(ctx, namespace, queries, selectFields, nil, limit)
+	return results, nil, err
+}
+
+// CountCaptured must count every capture in the window, not one page of
+// them, on a store whose plain read cannot page past its first.
+func TestCountCapturedCountsPastOnePage(t *testing.T) {
+	ctx := context.Background()
+	inner := newCaptureTestStore(t)
+	ns := CaptureNamespace("openai", "m", 2, 1)
+	require.NoError(t, inner.CreateNamespace(ctx, ns, 2, captureProperties))
+	now := time.Now()
+	const n = captureReadPage + 100
+	for i := range n {
+		id := fmt.Sprintf("req-%d", i)
+		require.NoError(t, inner.Add(ctx, ns, capturePointID(id), []float32{1, 0}, map[string]any{
+			captureMetadataKind: captureMetadataKindValue, captureMetadataTimestamp: now.Unix(), captureMetadataLogID: id,
+		}))
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+
+	got, err := CountCaptured(ctx, inner, ns, from, to)
+	require.NoError(t, err)
+	assert.Equal(t, n, got, "a store that pages its plain reads is counted without reading vectors")
+
+	single := &singlePageStore{VectorStore: inner}
+	got, err = CountCaptured(ctx, single, ns, from, to)
+	require.NoError(t, err)
+	assert.Equal(t, n, got, "a full page with no cursor is not taken as the whole count")
+	assert.NotZero(t, single.vectorReads, "the recount pages through the vector read")
 }

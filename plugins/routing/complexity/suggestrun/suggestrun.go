@@ -65,8 +65,18 @@ type Store interface {
 	ListComplexitySuggestions(ctx context.Context, filter logstore.ComplexitySuggestionFilter) ([]logstore.ComplexitySuggestion, error)
 	ReconcileComplexitySuggestions(ctx context.Context, writes []logstore.ComplexitySuggestionWrite) ([]string, error)
 	UpsertComplexitySuggestionRun(ctx context.Context, run *logstore.ComplexitySuggestionRun) error
-	ListComplexitySuggestionRuns(ctx context.Context, ids []string, limit int) ([]logstore.ComplexitySuggestionRun, error)
-	PruneComplexitySuggestionRuns(ctx context.Context, keep int) (int64, error)
+	InsertComplexitySuggestionRun(ctx context.Context, run *logstore.ComplexitySuggestionRun) (bool, error)
+	ListComplexitySuggestionRuns(ctx context.Context, filter logstore.ComplexitySuggestionRunFilter, limit int) ([]logstore.ComplexitySuggestionRun, error)
+	PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error)
+}
+
+// Traffic is where a run finds the requests one router served in its window,
+// with their vectors. With one router that is everything captured in the
+// router's embedding space, which is what a run reads when Settings.Traffic is
+// nil; with several, the requests are selected from the logs by router and
+// their vectors fetched by log ID.
+type Traffic interface {
+	EachRequest(ctx context.Context, from, to time.Time, fn func([]complexity.CapturedRequest) error) error
 }
 
 // Texts returns the request text of the given logs, keyed by log ID. A log
@@ -77,8 +87,19 @@ type Texts func(ctx context.Context, logIDs []string) (map[string]string, error)
 type Settings struct {
 	RunID       string
 	TriggeredBy string
-	Now         time.Time // the window ends here; zero means time.Now
-	Lookback    time.Duration
+	// RouterID names the router whose traffic is read and whose suggestions
+	// are written; required. RouterVersion is the version it serves, and
+	// defaults to the space's phrase bank.
+	RouterID      string
+	RouterVersion string
+	Now           time.Time // the window ends here; zero means time.Now
+	// Lookback is how far back captured traffic is kept. Window is how much of
+	// it this run reads; zero, or anything longer, reads all of it.
+	Lookback time.Duration
+	Window   time.Duration
+	// Traffic supplies the router's requests; nil scans the space's captured
+	// requests.
+	Traffic Traffic
 	// MaxClustered is the clustered sample's size; the rest of the window is
 	// assigned.
 	MaxClustered       int
@@ -131,10 +152,24 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 	if s.MaxSuggestedClusters <= 0 {
 		s.MaxSuggestedClusters = DefaultMaxSuggestedClusters
 	}
+	if s.RouterID == "" {
+		return Result{}, errors.New("suggestion run needs a router")
+	}
+	if s.RouterVersion == "" {
+		if v, ok := space.(interface{ ServedVersion() string }); ok {
+			s.RouterVersion = v.ServedVersion()
+		}
+	}
+	if s.Window <= 0 || s.Window > s.Lookback {
+		s.Window = s.Lookback
+	}
+	if s.Traffic == nil {
+		s.Traffic = capturedTraffic{space}
+	}
 	run := logstore.ComplexitySuggestionRun{
-		ID: s.RunID, TriggeredBy: s.TriggeredBy, Status: logstore.ComplexitySuggestionRunRunning,
+		ID: s.RunID, RouterID: s.RouterID, RouterVersion: s.RouterVersion, TriggeredBy: s.TriggeredBy, Status: logstore.ComplexitySuggestionRunRunning,
 		EmbeddingSignature: space.Namespace(), Model: s.Model, PromptHash: PromptHash(s.Instructions, s.Guidance),
-		StartedAt: s.Now,
+		StartedAt: s.Now, WindowStart: s.Now.Add(-s.Window),
 	}
 	if err := store.UpsertComplexitySuggestionRun(ctx, &run); err != nil {
 		return Result{}, fmt.Errorf("record suggestion run: %w", err)
@@ -156,7 +191,7 @@ func Run(ctx context.Context, space Space, store Store, texts Texts, llm suggest
 	if recordErr := store.UpsertComplexitySuggestionRun(recordCtx, &run); recordErr != nil {
 		err = errors.Join(err, fmt.Errorf("record suggestion run outcome: %w", recordErr))
 	}
-	_, _ = store.PruneComplexitySuggestionRuns(recordCtx, keepRuns)
+	_, _ = store.PruneComplexitySuggestionRuns(recordCtx, s.RouterID, keepRuns)
 	result.Run = run
 	return result, err
 }
@@ -165,10 +200,10 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	if llm == nil {
 		return Result{}, errors.New("no suggestion model: set the suggestions provider and model, or configure the llm block")
 	}
-	if s.MaxClustered <= 0 || s.Lookback <= 0 {
-		return Result{}, errors.New("suggestion run needs a positive lookback and cluster budget")
+	if s.MaxClustered <= 0 || s.Window <= 0 {
+		return Result{}, errors.New("suggestion run needs a positive window and cluster budget")
 	}
-	from, to := s.Now.Add(-s.Lookback), s.Now
+	from, to := s.Now.Add(-s.Window), s.Now
 	live := livePhrases(space.LivePhrases())
 	if len(live) == 0 {
 		return Result{}, complexity.ErrNoServingGeneration
@@ -181,7 +216,7 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	rng := rand.New(rand.NewSource(s.Seed))
 	sample := make([]suggest.Request, 0, min(s.MaxClustered, 4096))
 	var seen int
-	if err := space.EachCaptured(ctx, from, to, func(page []complexity.CapturedRequest) error {
+	if err := s.Traffic.EachRequest(ctx, from, to, func(page []complexity.CapturedRequest) error {
 		for _, r := range page {
 			seen++
 			req := suggest.Request{ID: r.LogID, Count: 1, Vector: unit(r.Vector)}
@@ -208,7 +243,7 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 		}
 		sample = nil
 		limit := assignFactor * s.MaxClustered
-		if err := space.EachCaptured(ctx, from, to, func(page []complexity.CapturedRequest) error {
+		if err := s.Traffic.EachRequest(ctx, from, to, func(page []complexity.CapturedRequest) error {
 			batch := make([]suggest.Request, 0, len(page))
 			for _, r := range page {
 				if _, ok := inSample[r.LogID]; ok {
@@ -232,7 +267,7 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 
 	// 3. Match clusters to stored suggestions; only open, superseded and new
 	//    ones go to the model.
-	stored, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{})
+	stored, err := store.ListComplexitySuggestions(ctx, logstore.ComplexitySuggestionFilter{RouterID: s.RouterID})
 	if err != nil {
 		return result, fmt.Errorf("read stored suggestions: %w", err)
 	}
@@ -263,7 +298,9 @@ func run1(ctx context.Context, space Space, store Store, texts Texts, llm sugges
 	}
 
 	// 5. Reconcile.
-	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, space.Namespace(), s.RunID, s.Now)
+	writes, created, refreshed, superseded := reconcile(suggestions, plan, stored, rowScope{
+		routerID: s.RouterID, routerVersion: s.RouterVersion, namespace: space.Namespace(), runID: s.RunID,
+	}, s.Now)
 	// A suggestion the user accepted or dismissed while the run was going is
 	// left as they decided, and not counted as refreshed or superseded.
 	skipped, err := store.ReconcileComplexitySuggestions(ctx, writes)
@@ -381,13 +418,19 @@ func matchClusters(clusters []*suggest.Cluster, stored []logstore.ComplexitySugg
 	return plan
 }
 
+// rowScope is what every row a run writes is stamped with.
+type rowScope struct {
+	routerID, routerVersion, namespace, runID string
+}
+
 // reconcile turns the run's suggestions into rows to write and counts what
 // changed.
 //
 // Each write to an existing row carries the status the run read it at, so the
 // store writes it only while it is still there (see
 // ReconcileComplexitySuggestions).
-func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logstore.ComplexitySuggestion, namespace, runID string, now time.Time) (writes []logstore.ComplexitySuggestionWrite, created, refreshed, superseded int) {
+func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logstore.ComplexitySuggestion, scope rowScope, now time.Time) (writes []logstore.ComplexitySuggestionWrite, created, refreshed, superseded int) {
+	namespace := scope.namespace
 	supersede := func(row logstore.ComplexitySuggestion) {
 		from := row.Status
 		row.Status = logstore.ComplexitySuggestionStatusSuperseded
@@ -422,7 +465,7 @@ func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logsto
 		} else {
 			created++
 		}
-		fillSuggestion(&row, sg, namespace, runID, now)
+		fillSuggestion(&row, sg, scope, now)
 		writes = append(writes, logstore.ComplexitySuggestionWrite{Suggestion: row, From: from})
 	}
 	// Open suggestions this run did not propose again are superseded: their
@@ -440,7 +483,8 @@ func reconcile(suggestions []suggest.Suggestion, plan matchPlan, stored []logsto
 }
 
 // fillSuggestion writes one suggestion's content into a row.
-func fillSuggestion(row *logstore.ComplexitySuggestion, sg suggest.Suggestion, namespace, runID string, now time.Time) {
+func fillSuggestion(row *logstore.ComplexitySuggestion, sg suggest.Suggestion, scope rowScope, now time.Time) {
+	row.RouterID, row.RouterVersion = scope.routerID, scope.routerVersion
 	row.Status = logstore.ComplexitySuggestionStatusOpen
 	row.ResolvedAt = nil
 	row.Tier, row.Category, row.Reason, row.Confidence = sg.Tier, string(sg.Category), sg.Reason, sg.Confidence
@@ -448,13 +492,21 @@ func fillSuggestion(row *logstore.ComplexitySuggestion, sg suggest.Suggestion, n
 	row.Coverage = sg.Coverage
 	row.NearestPhrase, row.NearestTier, row.NearestSimilarity = sg.Nearest.Text, sg.Nearest.Tier, float64(sg.NearestSim)
 	row.Centroid = logstore.EncodeWarpVector(sg.Cluster.Centroid)
-	row.EmbeddingSignature, row.RunID, row.LastSeenAt = namespace, runID, now
+	row.EmbeddingSignature, row.RunID, row.LastSeenAt = scope.namespace, scope.runID, now
 	_ = row.SetPhrases(sg.Phrases)
 	ids := make([]string, 0, len(sg.Examples))
 	for _, m := range sg.Examples {
 		ids = append(ids, m.ID)
 	}
 	_ = row.SetExampleLogIDs(ids)
+}
+
+// capturedTraffic reads everything captured in a space, which is one router's
+// traffic while a gateway has one router.
+type capturedTraffic struct{ space Space }
+
+func (t capturedTraffic) EachRequest(ctx context.Context, from, to time.Time, fn func([]complexity.CapturedRequest) error) error {
+	return t.space.EachCaptured(ctx, from, to, fn)
 }
 
 func livePhrases(phrases []complexity.SuggestionPhrase) []suggest.Phrase {
@@ -488,4 +540,40 @@ func dot(a, b []float32) float32 {
 		s += a[i] * b[i]
 	}
 	return s
+}
+
+// Estimate is what a run over a window would do, before it runs.
+type Estimate struct {
+	Requests int `json:"requests"` // requests in the window
+	// Clustered is the size of the sample the run would cluster; Assigned is
+	// how many more it would try to assign to the clusters found (a request
+	// joins one only if it is close enough); Skipped are past the bound.
+	Clustered int `json:"clustered"`
+	Assigned  int `json:"assigned"`
+	Skipped   int `json:"skipped"`
+	// MaxModelCalls bounds the suggestion model's calls: at most two per
+	// cluster sent, and at most MaxSuggestedClusters clusters are sent.
+	MaxModelCalls int `json:"max_model_calls"`
+}
+
+// EstimateRun sizes a run of these settings over requests requests. The
+// cluster count is not known before clustering, so the model-call bound
+// assumes every cluster is the smallest one kept: MinClusterRequests, or the
+// clusterer's default when it is not set, as in Run.
+func EstimateRun(requests int, s Settings) Estimate {
+	maxSuggested := s.MaxSuggestedClusters
+	if maxSuggested <= 0 {
+		maxSuggested = DefaultMaxSuggestedClusters
+	}
+	e := Estimate{Requests: requests, Clustered: min(requests, max(0, s.MaxClustered))}
+	rest := requests - e.Clustered
+	e.Assigned = min(rest, assignFactor*max(0, s.MaxClustered))
+	e.Skipped = rest - e.Assigned
+	minCluster := s.MinClusterRequests
+	if minCluster <= 0 {
+		minCluster = suggest.DefaultMinClusterRequests
+	}
+	clusters := (e.Clustered + e.Assigned) / minCluster
+	e.MaxModelCalls = 2 * min(clusters, maxSuggested)
+	return e
 }

@@ -2124,7 +2124,30 @@
 				"samplePercentRange": "Introduza uma taxa de amostragem superior a 0 e no máximo 100%",
 				"firstRunRequired": "Escolha a data e a hora da primeira execução",
 				"modelRequired": "Selecione um modelo para este fornecedor",
-				"providerRequired": "Selecione o fornecedor deste modelo"
+				"providerRequired": "Selecione o fornecedor deste modelo",
+				"runDialogTitle": "Executar sugestões agora",
+				"runDialogDescription": "Lê o tráfego capturado deste encaminhador no período que escolher e propõe frases. Nada muda até aceitar e guardar.",
+				"runWindowLabel": "Período",
+				"runWindow": {
+					"24h": "Últimas 24 horas",
+					"7d": "Últimos 7 dias",
+					"14d": "Últimos 14 dias",
+					"30d": "Últimos 30 dias"
+				},
+				"estimating": "A estimar…",
+				"estimateFailed": "Não foi possível estimar a execução: {{error}}",
+				"estimateRequests_one": "{{formatted}} pedido no período",
+				"estimateRequests_other": "{{formatted}} pedidos no período",
+				"estimateClustered_one": "{{formatted}} é agrupado em clusters; os restantes juntam-se a um cluster correspondente, se houver.",
+				"estimateClustered_other": "{{formatted}} são agrupados em clusters; os restantes juntam-se a um cluster correspondente, se houver.",
+				"estimateSkipped_one": "Mais {{formatted}} ultrapassa o limite da execução e não é contado.",
+				"estimateSkipped_other": "Mais {{formatted}} ultrapassam o limite da execução e não são contados.",
+				"estimateModelCalls_one": "No máximo {{formatted}} chamada ao modelo de sugestões",
+				"estimateModelCalls_other": "No máximo {{formatted}} chamadas ao modelo de sugestões",
+				"runInBackground": "Corre em segundo plano no seu gateway, fora do caminho dos pedidos.",
+				"runStart": "Iniciar execução",
+				"stale": "Banco de frases anterior",
+				"staleTip": "Calculada antes da última alteração às listas de frases. Teste-a com as frases atuais antes de a adicionar."
 			}
 		},
 		"editDescription": "Atualizar a configuração da regra de encaminhamento",

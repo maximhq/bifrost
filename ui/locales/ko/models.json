@@ -2122,7 +2122,30 @@
 				"samplePercentRange": "0보다 크고 100% 이하인 샘플링 비율을 입력하세요",
 				"firstRunRequired": "첫 실행 날짜와 시간을 선택하세요",
 				"modelRequired": "이 제공업체의 모델을 선택하세요",
-				"providerRequired": "이 모델의 제공업체를 선택하세요"
+				"providerRequired": "이 모델의 제공업체를 선택하세요",
+				"runDialogTitle": "지금 제안 실행",
+				"runDialogDescription": "선택한 기간 동안 이 라우터가 받은 트래픽을 읽고 문구를 제안합니다. 승인하고 저장하기 전에는 아무것도 바뀌지 않습니다.",
+				"runWindowLabel": "기간",
+				"runWindow": {
+					"24h": "최근 24시간",
+					"7d": "최근 7일",
+					"14d": "최근 14일",
+					"30d": "최근 30일"
+				},
+				"estimating": "추정하는 중…",
+				"estimateFailed": "실행을 추정할 수 없습니다: {{error}}",
+				"estimateRequests_one": "기간 내 요청 {{formatted}}건",
+				"estimateRequests_other": "기간 내 요청 {{formatted}}건",
+				"estimateClustered_one": "{{formatted}}건은 클러스터로 묶고 나머지는 일치하는 클러스터가 있으면 그 클러스터에 더합니다.",
+				"estimateClustered_other": "{{formatted}}건은 클러스터로 묶고 나머지는 일치하는 클러스터가 있으면 그 클러스터에 더합니다.",
+				"estimateSkipped_one": "{{formatted}}건은 실행 한도를 넘어 집계하지 않습니다.",
+				"estimateSkipped_other": "{{formatted}}건은 실행 한도를 넘어 집계하지 않습니다.",
+				"estimateModelCalls_one": "제안 모델 호출 최대 {{formatted}}회",
+				"estimateModelCalls_other": "제안 모델 호출 최대 {{formatted}}회",
+				"runInBackground": "게이트웨이 안에서 요청 경로 밖의 백그라운드로 실행됩니다.",
+				"runStart": "실행 시작",
+				"stale": "이전 문구 목록",
+				"staleTip": "문구 목록이 마지막으로 바뀌기 전에 계산되었습니다. 추가하기 전에 현재 문구로 테스트하세요."
 			}
 		},
 		"editDescription": "라우팅 규칙 구성 업데이트",

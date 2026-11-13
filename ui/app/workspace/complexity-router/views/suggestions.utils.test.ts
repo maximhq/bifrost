@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { isSuggestionRunInProgress, type EditableKeywordConfig, type Suggestion, type SuggestionRun } from "@/lib/types/complexityRouter";
 import {
 	addPhrases,
+	availableWindows,
 	categoryCounts,
 	filterSuggestions,
 	newPhrases,
@@ -20,6 +21,9 @@ const bank: EditableKeywordConfig = {
 function suggestion(id: string, category: Suggestion["category"], phrases: string[], reason = ""): Suggestion {
 	return {
 		id,
+		router_id: "default",
+		router_version: "v1",
+		stale: false,
 		status: "open",
 		tier: "SIMPLE",
 		phrases,
@@ -87,5 +91,13 @@ describe("isSuggestionRunInProgress", () => {
 			expect(isSuggestionRunInProgress(run(status)), status).toBe(false);
 		}
 		expect(isSuggestionRunInProgress(undefined)).toBe(false);
+	});
+});
+
+describe("run windows", () => {
+	test("offers only windows the lookback still holds", () => {
+		expect(availableWindows(7)).toEqual(["24h", "7d"]);
+		expect(availableWindows(30)).toEqual(["24h", "7d", "14d", "30d"]);
+		expect(availableWindows(1)).toEqual(["24h"]);
 	});
 });
