@@ -39,9 +39,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+	audioTracks,
 	buildThread,
 	buildTraceTree,
 	messagesOf,
+	deletableTrace,
+	isCompleteMessageList,
 	shouldPollTrace,
 	spanAttachments,
 	spanUsage,
@@ -50,7 +53,7 @@ import {
 } from "../traceTree";
 import { formatCost, formatDuration, formatTokens, prettyValue, spanKindMeta } from "./format";
 import CollapsibleBox from "@/app/workspace/logs/views/collapsibleBox";
-import { AttachmentList } from "./attachments";
+import { AttachmentList, ConversationPlayer } from "./attachments";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface TraceViewerProps {
@@ -87,7 +90,7 @@ function OpenInLogsLink({ to, id, label }: { to: "/workspace/logs" | "/workspace
 		<Link
 			to={to}
 			search={{ selected_log: id }}
-			className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 rounded-sm border px-2 py-1 text-xs whitespace-nowrap"
+			className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs whitespace-nowrap"
 			data-testid="trace-open-in-logs"
 		>
 			{label}
@@ -97,11 +100,11 @@ function OpenInLogsLink({ to, id, label }: { to: "/workspace/logs" | "/workspace
 }
 
 /** A span this gateway served opens the gateway's own log, exactly as Agent Logs embeds it. */
-function EmbeddedGatewayLLMLog({ logId }: { logId: string }) {
+function EmbeddedGatewayLLMLog({ logId, fallback }: { logId: string; fallback: React.ReactNode }) {
 	const { t } = useTranslation("observability");
 	const { data, isLoading, isError } = useGetLogByIdQuery({ id: logId });
 	if (isLoading) return <DetailLoader />;
-	if (isError || !data) return null;
+	if (isError || !data) return <LinkedLogFallback>{fallback}</LinkedLogFallback>;
 	return (
 		<LogDetailView
 			log={data}
@@ -111,17 +114,28 @@ function EmbeddedGatewayLLMLog({ logId }: { logId: string }) {
 	);
 }
 
-function EmbeddedGatewayMCPLog({ logId }: { logId: string }) {
+function EmbeddedGatewayMCPLog({ logId, fallback }: { logId: string; fallback: React.ReactNode }) {
 	const { t } = useTranslation("observability");
 	const { data, isLoading, isError } = useGetMCPLogByIdQuery(logId);
 	if (isLoading) return <DetailLoader />;
-	if (isError || !data) return null;
+	if (isError || !data) return <LinkedLogFallback>{fallback}</LinkedLogFallback>;
 	return (
 		<MCPLogDetailView
 			log={data}
 			variant="embedded"
 			headerEnd={<OpenInLogsLink to="/workspace/mcp-logs" id={logId} label={t("agentLogs.trace.openInMCPLogs")} />}
 		/>
+	);
+}
+
+/** The span's own detail, shown when the gateway log it links to cannot be loaded. */
+function LinkedLogFallback({ children }: { children: React.ReactNode }) {
+	const { t } = useTranslation("observability");
+	return (
+		<div className="flex h-full flex-col" data-testid="trace-viewer-linked-log-fallback">
+			<p className="text-muted-foreground border-b px-4 py-2 text-xs">{t("agentLogs.trace.partial")}</p>
+			<div className="min-h-0 flex-1">{children}</div>
+		</div>
 	);
 }
 
@@ -152,9 +166,16 @@ export function TraceViewer({
 	const open = Boolean(projectId && traceId);
 	// A trace is polled while it is arriving and until it settles, then left alone: see shouldPollTrace.
 	const [polling, setPolling] = useState(true);
-	const { data, isLoading, error, fulfilledTimeStamp } = useGetTraceQuery(
+	// currentData is the result for this trace only: while another trace loads, the one shown before
+	// is not rendered (or deleted) in its place. Reopening a trace refetches it.
+	const {
+		currentData: data,
+		isFetching,
+		error,
+		fulfilledTimeStamp,
+	} = useGetTraceQuery(
 		{ projectId: projectId ?? "", traceId: traceId ?? "" },
-		{ skip: !open, pollingInterval: open && polling ? 5000 : 0, skipPollingIfUnfocused: true },
+		{ skip: !open, pollingInterval: open && polling ? 5000 : 0, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true },
 	);
 	// fulfilledTimeStamp changes on every fetch, also when the trace came back unchanged and data
 	// kept its identity: without it a trace opened just before it settled would be polled forever.
@@ -260,15 +281,17 @@ export function TraceViewer({
 			);
 		if (!selected) return <div className="text-muted-foreground p-6 text-sm">{t("tracing.viewer.noSpans")}</div>;
 		const link = linkOf(selected);
-		if (link?.log_kind === "llm") return <EmbeddedGatewayLLMLog key={link.log_id} logId={link.log_id} />;
-		if (link?.log_kind === "mcp") return <EmbeddedGatewayMCPLog key={link.log_id} logId={link.log_id} />;
-		return <SpanDetail span={selected} detail={data} extras={renderSpanExtras?.(data, selected)} />;
+		const spanDetail = <SpanDetail span={selected} detail={data} extras={renderSpanExtras?.(data, selected)} />;
+		if (link?.log_kind === "llm") return <EmbeddedGatewayLLMLog key={link.log_id} logId={link.log_id} fallback={spanDetail} />;
+		if (link?.log_kind === "mcp") return <EmbeddedGatewayMCPLog key={link.log_id} logId={link.log_id} fallback={spanDetail} />;
+		return spanDetail;
 	})();
 
 	return (
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
 			<SheetContent
 				className="border-secondary flex w-full flex-col gap-0 overflow-hidden border p-0 sm:max-w-[90%] 2xl:max-w-[80%]"
+				data-radius="md"
 				data-testid="trace-viewer"
 			>
 				<div className="border-b" data-testid="trace-viewer-topbar">
@@ -287,7 +310,7 @@ export function TraceViewer({
 						</div>
 						{traceId && (
 							<div
-								className="bg-muted/50 flex min-w-0 items-center gap-1.5 rounded-sm py-0.5 pr-0.5 pl-2 text-xs"
+								className="bg-muted/50 flex min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-0.5 pl-2 text-xs"
 								data-testid="trace-viewer-id"
 							>
 								<span className="text-muted-foreground shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
@@ -309,7 +332,7 @@ export function TraceViewer({
 							<button
 								type="button"
 								onClick={() => copyLink(window.location.href)}
-								className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs"
+								className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs"
 								data-testid="trace-viewer-copy-link"
 							>
 								<LinkIcon className="size-3.5" />
@@ -321,9 +344,10 @@ export function TraceViewer({
 								type="button"
 								aria-label={t("tracing.settings.deleteTrace")}
 								data-testid="trace-viewer-delete-button"
-								disabled={!trace}
+								disabled={!deletableTrace(trace, projectId ?? "", traceId ?? "")}
 								onClick={async () => {
-									if (!trace || !window.confirm(t("tracing.settings.deleteTraceConfirm"))) return;
+									if (!trace || !deletableTrace(trace, projectId ?? "", traceId ?? "")) return;
+									if (!window.confirm(t("tracing.settings.deleteTraceConfirm"))) return;
 									try {
 										await deleteTrace({ projectId: trace.project_id, traceId: trace.trace_id }).unwrap();
 										onClose();
@@ -343,7 +367,7 @@ export function TraceViewer({
 					</div>
 					{/* The same counters in the same order on every trace, zeros included, so moving between
 					    traces never reflows the header. The row keeps its height while a trace loads. */}
-					<div className="flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 px-4 pb-3 text-xs" data-testid="trace-viewer-summary">
+					<div className="flex min-h-7 flex-wrap items-center gap-x-4 gap-y-1.5 px-4 pb-3 text-xs" data-testid="trace-viewer-summary">
 						{trace && (
 							<>
 								<Summary label={t("agentLogs.trace.latency")} value={formatDuration(trace.duration_ms)} />
@@ -375,7 +399,7 @@ export function TraceViewer({
 									data-testid="trace-viewer-errors"
 								>
 									<span
-										className={cn("size-1.5 self-center rounded-sm", trace.error_count > 0 ? "bg-chart-error" : "bg-border")}
+										className={cn("size-1.5 self-center rounded-md", trace.error_count > 0 ? "bg-chart-error" : "bg-border")}
 										aria-hidden="true"
 									/>
 									{t("agentLogs.trace.errors")}
@@ -401,7 +425,7 @@ export function TraceViewer({
 							onClick={() => setView(value)}
 							data-testid={`trace-viewer-${value}-tab`}
 							className={cn(
-								"inline-flex h-8 items-center gap-1.5 rounded-sm px-2.5 text-[13px] font-medium",
+								"inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium",
 								view === value ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
 							)}
 						>
@@ -416,7 +440,7 @@ export function TraceViewer({
 						</label>
 					)}
 				</div>
-				{isLoading && <DetailLoader />}
+				{isFetching && !data && <DetailLoader />}
 				{Boolean(error) && !data && (
 					<div className="text-destructive flex flex-1 items-center justify-center text-sm">{t("tracing.viewer.loadFailed")}</div>
 				)}
@@ -424,7 +448,7 @@ export function TraceViewer({
 					<div className="flex min-h-0 flex-1 flex-col md:flex-row">
 						<div className="flex max-h-[45vh] min-h-0 w-full shrink-0 flex-col border-b md:max-h-none md:w-[380px] md:border-r md:border-b-0">
 							<div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
-								<label className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 rounded-sm border px-2 py-1">
+								<label className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1">
 									<Search className="size-3.5 shrink-0" />
 									<span className="sr-only">{t("agentLogs.trace.findSpan")}</span>
 									<input
@@ -470,7 +494,7 @@ export function TraceViewer({
 											{node.depth > 0 && (
 												<span className="bg-border absolute top-0 bottom-0 w-px" style={{ left: node.depth * 16 - 4 }} aria-hidden="true" />
 											)}
-											<div className={cn("flex items-center rounded-sm pr-1", isSelected ? "bg-muted" : "hover:bg-muted/60")}>
+											<div className={cn("flex items-center rounded-md pr-1", isSelected ? "bg-muted" : "hover:bg-muted/60")}>
 												<button
 													type="button"
 													onClick={() => {
@@ -480,24 +504,24 @@ export function TraceViewer({
 													className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left"
 													data-testid={`trace-span-row-${span.span_id}`}
 												>
-													<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", style.tile)}>
+													<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", style.tile)}>
 														<Icon className="size-3.5" />
 													</span>
 													<span className="flex min-w-0 flex-1 flex-col">
 														<span className="flex min-w-0 items-center gap-1.5">
 															<span className="truncate text-[13px] font-medium">{label(span)}</span>
 															{usage.linked && (
-																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																<span className="bg-background text-muted-foreground shrink-0 rounded-md border px-1 text-[10px] font-medium">
 																	{t("tracing.viewer.gatewayBadge")}
 																</span>
 															)}
 															{node.orphan && (
-																<span className="bg-background text-muted-foreground shrink-0 rounded-sm border px-1 text-[10px] font-medium">
+																<span className="bg-background text-muted-foreground shrink-0 rounded-md border px-1 text-[10px] font-medium">
 																	{t("tracing.viewer.partial")}
 																</span>
 															)}
 															{span.status === "error" && (
-																<span className="bg-chart-error/10 text-chart-error-ink shrink-0 rounded-sm px-1 text-[10px] font-semibold uppercase">
+																<span className="bg-chart-error/10 text-chart-error-ink shrink-0 rounded-md px-1 text-[10px] font-semibold uppercase">
 																	{t("agentLogs.trace.error")}
 																</span>
 															)}
@@ -532,7 +556,7 @@ export function TraceViewer({
 													<button
 														type="button"
 														onClick={() => toggle(span.span_id)}
-														className="text-muted-foreground hover:text-foreground hover:bg-background flex size-7 shrink-0 items-center justify-center rounded-sm"
+														className="text-muted-foreground hover:text-foreground hover:bg-background flex size-7 shrink-0 items-center justify-center rounded-md"
 														aria-label={t(isOpen ? "agentLogs.trace.collapse" : "agentLogs.trace.expand", { name: span.name })}
 														data-testid={`trace-span-toggle-${span.span_id}`}
 													>
@@ -590,7 +614,7 @@ function ValueBlock({ label, value, testId }: { label: string; value?: string; t
 						}}
 					/>
 				) : (
-					<div className="px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap">{pretty}</div>
+					<div className="max-h-[450px] overflow-y-auto px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap">{pretty}</div>
 				)}
 			</CollapsibleBox>
 		</div>
@@ -610,23 +634,34 @@ const THREAD_ROLES: Record<string, { icon: typeof Sparkles; tile: string }> = {
  */
 function ThreadView({ messages, onOpenSpan }: { messages: ThreadMessage[]; onOpenSpan: (spanId: string) => void }) {
 	const { t } = useTranslation("observability");
+	const tracks = useMemo(() => audioTracks(messages), [messages]);
+	const [playingTrack, setPlayingTrack] = useState(-1);
+	const playingMessage = playingTrack >= 0 ? tracks[playingTrack]?.messageIndex : undefined;
 	if (messages.length === 0) return <p className="text-muted-foreground p-2 text-sm">{t("tracing.viewer.noThread")}</p>;
 	return (
 		<div className="mx-auto flex max-w-3xl flex-col py-1" data-testid="trace-viewer-thread">
+			<div className="bg-background sticky top-0 z-10 pb-2 empty:hidden">
+				<ConversationPlayer tracks={tracks} onTrackChange={setPlayingTrack} />
+			</div>
 			{messages.map((message, index) => {
 				const previous = messages[index - 1];
 				const grouped = previous?.role === message.role && previous.spanId === message.spanId;
-				const role = THREAD_ROLES[message.role] ?? THREAD_ROLES.assistant;
+				// Own keys only: a role named "constructor" must not read Object.prototype.constructor.
+				const role = Object.hasOwn(THREAD_ROLES, message.role) ? THREAD_ROLES[message.role] : THREAD_ROLES.assistant;
 				const Icon = role.icon;
 				return (
 					<div
 						key={`${message.spanId}-${index}`}
-						className={cn("group hover:bg-muted/50 flex gap-3 rounded-sm px-3", grouped ? "py-0.5" : "mt-2 pt-2 pb-0.5")}
+						className={cn(
+							"group hover:bg-muted/50 flex gap-3 rounded-md px-3",
+							grouped ? "py-0.5" : "mt-2 pt-2 pb-0.5",
+							index === playingMessage && "bg-muted",
+						)}
 						data-testid={`trace-viewer-thread-message-${index}`}
 					>
 						<div className="w-7 shrink-0">
 							{!grouped && (
-								<span className={cn("mt-0.5 flex size-7 items-center justify-center rounded-sm", role.tile)} aria-hidden="true">
+								<span className={cn("mt-0.5 flex size-7 items-center justify-center rounded-md", role.tile)} aria-hidden="true">
 									<Icon className="size-3.5" />
 								</span>
 							)}
@@ -684,6 +719,10 @@ function Conversation({ span }: { span: TraceSpan }) {
 		);
 	}
 	const reply = output.length > 0 ? output : span.output ? [{ role: "assistant", text: span.output }] : [];
+	// When the messages leave part of the payload out (a tool call, a part with no text), the raw
+	// value stays below them, so nothing the span holds is hidden.
+	const rawInput = input.length > 0 && !isCompleteMessageList(span.input);
+	const rawOutput = output.length > 0 && !isCompleteMessageList(span.output);
 	return (
 		<div className="flex flex-col gap-3" data-testid="trace-span-conversation">
 			{input.length === 0 && <ValueBlock label={t("tracing.columns.input")} value={span.input} testId="trace-span-input" />}
@@ -692,7 +731,7 @@ function Conversation({ span }: { span: TraceSpan }) {
 					<span className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{message.role}</span>
 					<div
 						className={cn(
-							"rounded-sm px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
+							"rounded-md px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap",
 							message.role === "user" ? "bg-muted" : message.role === "system" ? "border border-dashed" : "border",
 						)}
 					>
@@ -700,6 +739,8 @@ function Conversation({ span }: { span: TraceSpan }) {
 					</div>
 				</div>
 			))}
+			{rawInput && <ValueBlock label={t("tracing.columns.input")} value={span.input} testId="trace-span-input-raw" />}
+			{rawOutput && <ValueBlock label={t("tracing.columns.output")} value={span.output} testId="trace-span-output-raw" />}
 		</div>
 	);
 }
@@ -741,14 +782,14 @@ function SpanDetail({
 				</span>
 			</div>
 			{span.status === "error" && (
-				<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-xs font-medium">
-					<span className="bg-chart-error size-1.5 rounded-sm" aria-hidden="true" />
+				<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs font-medium">
+					<span className="bg-chart-error size-1.5 rounded-md" aria-hidden="true" />
 					{t("tracing.viewer.error")}
 				</span>
 			)}
-			<div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-sm border p-4 sm:grid-cols-2" data-testid="trace-span-identity">
+			<div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-md border p-4 sm:grid-cols-2" data-testid="trace-span-identity">
 				<div className="flex min-w-0 items-center gap-2 sm:col-span-2">
-					<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-sm", meta.tile)}>
+					<span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", meta.tile)}>
 						<Icon className="size-3.5" />
 					</span>
 					<span className="truncate font-medium">{span.name || span.span_id}</span>
@@ -771,7 +812,7 @@ function SpanDetail({
 			</div>
 
 			{/* Only the numbers this span has: a missing value is left out, not shown as "-". */}
-			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-sm border p-4 md:grid-cols-4" data-testid="trace-span-metrics">
+			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-md border p-4 md:grid-cols-4" data-testid="trace-span-metrics">
 				<Metric label={t("tracing.columns.duration")} value={formatDuration(span.duration_ms)} />
 				{usage.tokens > 0 && <Metric label={t("tracing.columns.tokens")} value={formatTokens(usage.tokens)} />}
 				{hasCost && (

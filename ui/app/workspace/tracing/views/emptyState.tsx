@@ -13,15 +13,19 @@ function setupFor(endpoints: Record<string, string>, mode: KeyMode): { sdk: stri
 	// With no auth there is no key line at all: nothing to send.
 	const key = mode === "admin" ? "<username>:<password>" : mode === "apiKey" ? "<tracing API key>" : "";
 	const line = (name: string, value: string) => (value ? `\n${name}=${value}` : "");
+	// The Langfuse SDK turns itself off without both keys, so both are always set. Bifrost reads the
+	// secret key as the credential: the dashboard password, the API key, or anything when auth is off.
+	const langfuseKeys =
+		mode === "admin"
+			? { public: "<username>", secret: "<password>" }
+			: mode === "apiKey"
+				? { public: "bifrost", secret: "<tracing API key>" }
+				: { public: "pk-unused", secret: "sk-unused" };
 	return [
 		{ sdk: "Braintrust", setup: `BRAINTRUST_APP_URL=${endpoints.braintrust}${line("BRAINTRUST_API_KEY", key)}` },
 		{
 			sdk: "Langfuse",
-			setup: `LANGFUSE_BASE_URL=${endpoints.langfuse}${
-				mode === "admin"
-					? line("LANGFUSE_PUBLIC_KEY", "<username>") + line("LANGFUSE_SECRET_KEY", "<password>")
-					: line("LANGFUSE_SECRET_KEY", key)
-			}`,
+			setup: `LANGFUSE_BASE_URL=${endpoints.langfuse}${line("LANGFUSE_PUBLIC_KEY", langfuseKeys.public)}${line("LANGFUSE_SECRET_KEY", langfuseKeys.secret)}`,
 		},
 		{ sdk: "Arize / Phoenix", setup: `endpoint=${endpoints.arize}/v1/traces${line("api_key", key)}` },
 		{
@@ -64,17 +68,27 @@ export function TracingEmptyState() {
 				</Button>
 			)}
 			<div className="grid w-full max-w-3xl gap-2 text-left md:grid-cols-2">
-				{rows.map((row) => (
-					<div key={row.sdk} className="rounded-md border p-3" data-testid={`tracing-empty-setup-${row.sdk.split(" ")[0].toLowerCase()}`}>
-						<div className="mb-1 flex items-center justify-between">
-							<span className="text-sm font-medium">{row.sdk}</span>
-							<Button variant="ghost" size="icon" className="size-7" aria-label={`Copy ${row.sdk}`} onClick={() => copy(row.setup)}>
-								<Copy className="size-3.5" />
-							</Button>
+				{rows.map((row) => {
+					const slug = row.sdk.split(" ")[0].toLowerCase();
+					return (
+						<div key={row.sdk} className="rounded-md border p-3" data-testid={`tracing-empty-setup-${slug}`}>
+							<div className="mb-1 flex items-center justify-between">
+								<span className="text-sm font-medium">{row.sdk}</span>
+								<Button
+									variant="ghost"
+									size="icon"
+									className="size-7"
+									aria-label={t("tracing.empty.copySetup", { sdk: row.sdk })}
+									data-testid={`tracing-empty-copy-button-${slug}`}
+									onClick={() => copy(row.setup)}
+								>
+									<Copy className="size-3.5" />
+								</Button>
+							</div>
+							<pre className="text-muted-foreground text-xs break-all whitespace-pre-wrap">{row.setup}</pre>
 						</div>
-						<pre className="text-muted-foreground text-xs break-all whitespace-pre-wrap">{row.setup}</pre>
-					</div>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);
