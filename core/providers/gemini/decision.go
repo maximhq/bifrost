@@ -148,7 +148,7 @@ func geminiDecisionMessages(messages []schemas.DecisionInputMessage) (GeminiDeci
 	var input geminiDecisionInputBuilder
 	for i, message := range messages {
 		if i > 0 {
-			input.addText("\n")
+			input.addLayout("\n")
 		}
 		if isGeminiDecisionToolItem(message) {
 			text, err := geminiDecisionToolItemText(message)
@@ -164,7 +164,7 @@ func geminiDecisionMessages(messages []schemas.DecisionInputMessage) (GeminiDeci
 			return GeminiDecisionInput{}, providerUtils.InvalidRequestErrorf("decision message %d sets both text and parts; send one", i)
 		}
 		if labelled {
-			input.addText(geminiDecisionRole(message) + ": ")
+			input.addLayout(geminiDecisionRole(message) + ": ")
 		}
 		if message.Content.Text != nil {
 			input.addText(*message.Content.Text)
@@ -230,17 +230,29 @@ func geminiDecisionToolItemText(item schemas.DecisionInputMessage) (string, erro
 }
 
 // geminiDecisionInputBuilder collects content blocks, merging adjacent text
-// into one block.
+// into one block. It tracks whether any message contributed content, apart
+// from the separators and role labels it lays out itself.
 type geminiDecisionInputBuilder struct {
-	blocks  []GeminiInteractionsContent
-	pending strings.Builder
+	blocks     []GeminiInteractionsContent
+	pending    strings.Builder
+	hasContent bool
 }
 
 func (b *geminiDecisionInputBuilder) addText(text string) {
+	if strings.TrimSpace(text) != "" {
+		b.hasContent = true
+	}
+	b.pending.WriteString(text)
+}
+
+// addLayout adds text the builder lays out between and before messages, which
+// is not content of its own.
+func (b *geminiDecisionInputBuilder) addLayout(text string) {
 	b.pending.WriteString(text)
 }
 
 func (b *geminiDecisionInputBuilder) addMedia(block GeminiInteractionsContent) {
+	b.hasContent = true
 	b.flush()
 	b.blocks = append(b.blocks, block)
 }
@@ -255,8 +267,12 @@ func (b *geminiDecisionInputBuilder) flush() {
 }
 
 // build returns the input: a string when there is no media, the blocks
-// otherwise.
+// otherwise, and an empty input when no message contributed content, so
+// labels and separators alone do not pass as one.
 func (b *geminiDecisionInputBuilder) build() GeminiDecisionInput {
+	if !b.hasContent {
+		return GeminiDecisionInput{}
+	}
 	if len(b.blocks) == 0 {
 		text := b.pending.String()
 		return GeminiDecisionInput{Text: &text}

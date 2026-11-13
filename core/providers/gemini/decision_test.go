@@ -288,6 +288,11 @@ func TestToGeminiDecisionRequestRejects(t *testing.T) {
 			{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("")}},
 			{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{{Type: schemas.DecisionInputPartTypeText}}}},
 		}}, want: "carries no content"},
+		// Two roles get role labels; the labels alone are not content.
+		"messages without content from two roles": {input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+			{Role: "system", Content: schemas.DecisionInputContent{Text: schemas.Ptr("")}},
+			{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr(" ")}},
+		}}, want: "carries no content"},
 		"non-image data URL": {input: inMessage(decisionImage("data:application/pdf;base64,JVBERi0=")), want: "not an image type"},
 		"image in instructions after an unrecognized element": {
 			input: schemas.DecisionInput{Text: schemas.Ptr("x")},
