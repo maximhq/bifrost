@@ -42,6 +42,11 @@ func init() {
 	})
 }
 
+// pathUnescape decodes a path segment an SDK escaped: a prompt or dataset name.
+func pathUnescape(segment string) (string, error) {
+	return url.PathUnescape(segment)
+}
+
 // promptMessage is one message of a stored prompt version, in the chat shape SDKs expect.
 type promptMessage struct {
 	Role    string `json:"role"`

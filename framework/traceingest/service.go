@@ -82,6 +82,7 @@ type Principal struct {
 	LogContent        bool
 	CanCreateProjects bool
 	CanReadPrompts    bool
+	CanUseDatasets    bool
 	// AllProjects lets the principal write to any project. Tracing keys never have it.
 	AllProjects bool
 }
@@ -239,7 +240,7 @@ func (s *Service) Authenticate(ctx context.Context, value string) (*Principal, e
 func principalFromKey(key *tables.TableTracingKey) *Principal {
 	return &Principal{
 		KeyID: key.ID, ProjectIDs: key.ProjectIDs, DefaultProjectID: key.DefaultProjectID, VirtualKeyIDs: key.VirtualKeyIDs,
-		LogContent: key.LogContent, CanCreateProjects: key.CanCreateProjects, CanReadPrompts: key.CanReadPrompts,
+		LogContent: key.LogContent, CanCreateProjects: key.CanCreateProjects, CanReadPrompts: key.CanReadPrompts, CanUseDatasets: key.CanUseDatasets,
 	}
 }
 

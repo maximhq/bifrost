@@ -2106,6 +2106,7 @@
 			"allProjects": "All existing projects",
 			"canCreateProjects": "May create projects",
 			"canReadPrompts": "May read prompts from the prompt repository (get_prompt, load_prompt)",
+			"canUseDatasets": "May create evals datasets and add and read their rows, and record experiment runs",
 			"logContent": "Store input and output",
 			"createKey": "Create tracing key",
 			"pointSDK": "Point your SDK at Bifrost",

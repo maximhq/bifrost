@@ -12,6 +12,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/evals/datasets"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -44,6 +45,7 @@ type TraceIngestHandler struct {
 	authenticator TraceIngestAuthenticator
 	forwarder     *traceingest.Forwarder
 	prompts       TracePromptStore
+	datasets      *datasets.Service
 }
 
 // NewTraceIngestHandler builds the handler over the shared ingest service.

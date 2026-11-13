@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/evals/datasets"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/stretchr/testify/assert"
@@ -418,4 +421,86 @@ func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
 	write.Request.SetBody([]byte(`{"name":"x","prompt":"y"}`))
 	env.router.Handler(write)
 	assert.Equal(t, fasthttp.StatusForbidden, write.Response.StatusCode(), "a tracing key never writes a prompt, even one that may read them")
+}
+
+// TestSDKDatasetCallsFillEvalsDatasets pins the SDK dataset routes: a key uses datasets only when
+// given that permission, Braintrust's init_dataset() and its rows land in an evals dataset, and
+// Langfuse's create_dataset(), create_dataset_item() and get_dataset() read and write the same kind.
+func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
+	ctx := context.Background()
+	env := newTracesAPITestEnv(t)
+	service := datasets.NewService(env.config, nil)
+	env.ingest.SetDatasetService(service)
+	var project struct {
+		Project tables.TableTraceProject `json:"project"`
+	}
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
+	newKey := func(allowed bool) string {
+		var key struct {
+			Value string `json:"value"`
+		}
+		require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "default_project_id": project.Project.ID, "can_use_datasets": allowed}, &key))
+		return key.Value
+	}
+	send := func(method, uri, auth, body string) (int, map[string]any) {
+		reqCtx := &fasthttp.RequestCtx{}
+		reqCtx.Request.Header.SetMethod(method)
+		reqCtx.Request.SetRequestURI(uri)
+		reqCtx.Request.Header.Set("Authorization", auth)
+		reqCtx.Request.SetBody([]byte(body))
+		env.router.Handler(reqCtx)
+		var decoded map[string]any
+		_ = sonic.Unmarshal(reqCtx.Response.Body(), &decoded)
+		return reqCtx.Response.StatusCode(), decoded
+	}
+
+	status, _ := send("POST", "/tracing/braintrust/api/dataset/register", "Bearer "+newKey(false), `{"project_name":"agent","dataset_name":"golden"}`)
+	assert.Equal(t, fasthttp.StatusForbidden, status, "a tracing key uses datasets only when given that permission")
+
+	auth := "Bearer " + newKey(true)
+	status, registered := send("POST", "/tracing/braintrust/api/dataset/register", auth, `{"project_name":"agent","dataset_name":"golden","description":"regression set"}`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	datasetID := registered["dataset"].(map[string]any)["id"].(string)
+	_, again := send("POST", "/tracing/braintrust/api/dataset/register", auth, `{"project_name":"agent","dataset_name":"golden"}`)
+	assert.Equal(t, datasetID, again["dataset"].(map[string]any)["id"], "registering the same name returns the same dataset")
+
+	flush := `{"rows":[
+		{"id":"rec-1","dataset_id":"` + datasetID + `","project_id":"` + project.Project.ID + `","span_id":"rec-1","root_span_id":"rec-1","input":{"question":"2+2"},"expected":"4","metadata":{"difficulty":"easy"},"created":"2026-11-12T10:00:00Z"},
+		{"id":"rec-2","dataset_id":"` + datasetID + `","span_id":"rec-2","root_span_id":"rec-2","input":"capital of France?","expected":"Paris"}
+	],"api_version":2}`
+	status, _ = send("POST", "/tracing/braintrust/logs3", auth, flush)
+	require.Equal(t, fasthttp.StatusOK, status)
+	page, err := service.Rows(ctx, datasetID, datasets.RowQuery{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), page.Total)
+	spans, err := env.store.ListTraceSpans(ctx, project.Project.ID, "rec-1")
+	require.NoError(t, err)
+	assert.Empty(t, spans, "a dataset record is not stored as a trace")
+
+	lf := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+strings.TrimPrefix(auth, "Bearer ")))
+	status, created := send("POST", "/tracing/langfuse/api/public/v2/datasets", lf, `{"name":"support cases","description":"from tickets"}`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	for _, required := range []string{"id", "name", "projectId", "createdAt", "updatedAt"} {
+		assert.Contains(t, created, required)
+	}
+	status, item := send("POST", "/tracing/langfuse/api/public/dataset-items", lf, `{"datasetName":"support cases","input":{"ticket":"refund"},"expectedOutput":"Refund issued","metadata":{"tier":"gold"}}`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.NotEmpty(t, item["id"])
+	assert.Equal(t, map[string]any{"ticket": "refund"}, item["input"], "structured input comes back as the JSON it was sent as")
+	status, fetched := send("GET", "/tracing/langfuse/api/public/v2/datasets/support%20cases", lf, "")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, created["id"], fetched["id"])
+	status, items := send("GET", "/tracing/langfuse/api/public/dataset-items?datasetName=support%20cases&page=1&limit=10", lf, "")
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Len(t, items["data"].([]any), 1)
+	listed := items["data"].([]any)[0].(map[string]any)
+	assert.Equal(t, "Refund issued", listed["expectedOutput"])
+	assert.Equal(t, map[string]any{"tier": "gold"}, listed["metadata"])
+	assert.Equal(t, "ACTIVE", listed["status"])
+	assert.EqualValues(t, 1, items["meta"].(map[string]any)["totalItems"])
+	status, _ = send("GET", "/tracing/langfuse/api/public/v2/datasets/absent", lf, "")
+	assert.Equal(t, fasthttp.StatusNotFound, status)
+	status, all := send("GET", "/tracing/langfuse/api/public/v2/datasets", lf, "")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Len(t, all["data"].([]any), 2)
 }
