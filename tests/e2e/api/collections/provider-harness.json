@@ -321235,7 +321235,7 @@
       "description": "Gemini's dedicated transcription model gemini-3.5-transcribe returns the transcript in candidates[].content.parts[].audioTranscription.text and sends no text part. ToBifrostTranscriptionResponse (core/providers/gemini/transcription.go) and the TranscriptionStream loop (core/providers/gemini/gemini.go) read only part.Text, so /v1/audio/transcriptions answered 200 with \"text\": \"\" and billed usage, and a streamed request emitted no delta and a done event with empty text. Both paths now read the transcript through transcriptText(), which prefers audioTranscription.text and falls back to text parts, so general models such as gemini-2.5-flash are unchanged (8.4.K covers them). The cases send tests/e2e/api/fixtures/sample.mp3, which says \"Hello, this is a sample test.\", on the native route, the OpenAI drop-in route and the native route with stream=true, and assert the transcript is present. Each case is red before the change (empty transcript) and green after. The GenAI drop-in does not reach this code: /genai generateContent is a chat request, not a transcription request.",
       "item": [
         {
-          "name": "349.1 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription)",
+          "name": "349.1 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription) - #10017",
           "event": [
             {
               "listen": "test",
@@ -321286,7 +321286,7 @@
           }
         },
         {
-          "name": "349.2 gemini/gemini-3.5-transcribe OpenAI drop-in /openai/v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription)",
+          "name": "349.2 gemini/gemini-3.5-transcribe OpenAI drop-in /openai/v1/audio/transcriptions returns the audioTranscription transcript (gemini audio transcription) - #10017",
           "event": [
             {
               "listen": "test",
@@ -321338,7 +321338,7 @@
           }
         },
         {
-          "name": "349.3 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions stream=true streams the audioTranscription transcript (gemini audio transcription)",
+          "name": "349.3 gemini/gemini-3.5-transcribe native /v1/audio/transcriptions stream=true streams the audioTranscription transcript (gemini audio transcription) - #10017",
           "event": [
             {
               "listen": "test",
