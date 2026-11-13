@@ -2490,18 +2490,13 @@
 			"title": "Routeurs",
 			"pageDescription": "Classez les requêtes par complexité et envoyez chaque niveau vers son propre modèle.",
 			"newRouter": "Nouveau routeur",
-			"editDetails": "Modifier les détails",
 			"viewLogs": "Voir les journaux",
-			"editDetailsTitle": "Modifier les détails du routeur",
 			"actionsAria": "Actions pour le routeur {{name}}",
-			"editDetailsDescription": "Le nom et la description affichés partout où ce routeur apparaît.",
 			"namePlaceholder": "ex. : Assistant d’ingénierie",
 			"descriptionLabel": "Description",
 			"descriptionPlaceholder": "À quoi sert ce routeur",
 			"createRouter": "Créer le routeur",
 			"created": "Routeur créé",
-			"detailsSaved": "Détails du routeur enregistrés",
-			"detailsSaveFailed": "Impossible d’enregistrer les détails du routeur : {{error}}",
 			"columnName": "Nom",
 			"columnRequests": "Requêtes · 7 j",
 			"columnActive": "Actif",
@@ -2563,13 +2558,14 @@
 				},
 				"status": {
 					"offTitle": "Ce routeur est désactivé",
-					"offDetail": "Activez-le depuis la liste des routeurs.",
+					"offDetail": "Activez-le pour qu’il commence à prendre en charge les requêtes correspondant à son routage.",
 					"onTitle": "Ce routeur est activé",
 					"noTrafficTitle": "Aucun trafic routé ici",
 					"noTrafficDetail": "Aucune requête n'a correspondu au routage de ce routeur au cours des 7 derniers jours.",
 					"servingTitle": "Prend des requêtes",
 					"servingDetail": "Les requêtes qui correspondent à son routage sont classées et envoyées vers le modèle de leur niveau.",
-					"viewRequests": "Voir les requêtes"
+					"viewRequests": "Voir les requêtes",
+					"turnOn": "Activer"
 				}
 			},
 			"models": {
@@ -2582,17 +2578,22 @@
 				"weightPositive": "Chaque poids doit être supérieur à 0.",
 				"weightsMustSum": "La somme des poids de ce niveau doit être égale à 1 (actuellement {{total}})."
 			},
+			"sheet": {
+				"title": "Modifier le routeur",
+				"description": "Son nom et sa description, s’il est activé et les requêtes qu’il prend en charge.",
+				"enabledLabel": "Activer le routeur",
+				"enabledHelp": "Tant qu’il est désactivé, le routeur ne prend en charge aucune requête.",
+				"saved": "Routeur enregistré",
+				"saveFailed": "Impossible d’enregistrer le routeur : {{error}}"
+			},
 			"routing": {
 				"description": "Choisissez les requêtes que prend ce routeur.",
 				"orderNote": "Les règles de routage s'exécutent en premier : les routeurs voient chaque requête telle que les règles l'ont laissée. Le premier routeur qui correspond la prend : portée la plus étroite d'abord, puis priorité la plus basse.",
-				"sheetTitle": "Modifier le routage",
 				"everyRequest": "Toutes les requêtes de la portée",
 				"priorityHelp": "La valeur la plus basse est essayée en premier dans une portée. Les routeurs ont leurs propres priorités, distinctes de celles des règles de routage.",
 				"priorityInvalid": "Saisissez un nombre entier de 0 à 1000.",
 				"conditionLabel": "Condition",
-				"conditionHelp": "Laissez vide pour prendre toutes les requêtes de la portée. Testez le champ modèle pour que les applications demandent ce routeur par son nom. Le niveau ne peut pas être utilisé ici : le routeur le décide après avoir pris la requête.",
-				"saved": "Routage enregistré",
-				"saveFailed": "Impossible d'enregistrer le routage : {{error}}"
+				"conditionHelp": "Laissez vide pour prendre toutes les requêtes de la portée. Testez le champ modèle pour que les applications demandent ce routeur par son nom. Le niveau ne peut pas être utilisé ici : le routeur le décide après avoir pris la requête."
 			}
 		}
 	},
