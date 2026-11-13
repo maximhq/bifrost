@@ -312,6 +312,7 @@ When a scope header is present, only the named customer is charged, rate-limited
 - `x-bf-customer-id` takes precedence over `x-bf-customer-name` when both are sent.
 - Surrounding whitespace is trimmed, and the header name is **case-insensitive** (like all Bifrost headers).
 - Send no customer-scope header to charge and enforce all of the team's customers (the default).
+- When the [entity access profile mode](/enterprise/access-profiles#restrict-mode) is **Restrict**, both headers are ignored: every customer caps and is charged for the request, and no header is validated or rejected.
 
 ### Examples
 
