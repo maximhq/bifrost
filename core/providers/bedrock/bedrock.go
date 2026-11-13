@@ -1317,7 +1317,8 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		ctx,
 		request,
 		func() (*BedrockConverseRequest, error) {
-			return ToBedrockChatCompletionRequest(ctx, request)
+			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1519,7 +1520,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		ctx,
 		request,
 		func() (*BedrockConverseRequest, error) {
-			return ToBedrockChatCompletionRequest(ctx, request)
+			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1882,7 +1884,8 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		ctx,
 		request,
 		func() (*BedrockConverseRequest, error) {
-			return ToBedrockResponsesRequest(ctx, request)
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1978,7 +1981,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		ctx,
 		request,
 		func() (*BedrockConverseRequest, error) {
-			return ToBedrockResponsesRequest(ctx, request)
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
