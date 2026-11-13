@@ -6,7 +6,7 @@ The suite is a Go module of its own, run with `GOWORK=off`. It spends real token
 
 ## Running
 
-The gateway reads provider credentials from the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY` / `AZURE_ENDPOINT`, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`, and `ELEVENLABS_API_KEY`. The Azure resource needs a realtime deployment and a transcription deployment, named `gpt-realtime` and `gpt-4o-transcribe` by default. The region must offer Nova 2 Sonic, for example `us-east-1`, and the account needs access to `amazon.nova-2-sonic-v1:0`. Bedrock API keys cannot sign Nova's bidirectional stream, so the AWS credentials must be IAM ones.
+The gateway reads provider credentials from the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY` / `AZURE_ENDPOINT`, and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`, `ELEVENLABS_API_KEY` and `SONIOX_API_KEY`. The Azure resource needs a realtime deployment and a transcription deployment, named `gpt-realtime` and `gpt-4o-transcribe` by default. The region must offer Nova 2 Sonic, for example `us-east-1`, and the account needs access to `amazon.nova-2-sonic-v1:0`. Bedrock API keys cannot sign Nova's bidirectional stream, so the AWS credentials must be IAM ones.
 
 ```bash
 # from the repo root: start a gateway on this folder's profile (the databases land in tests/realtime/data/)
@@ -56,6 +56,7 @@ Provider failures that cannot be produced on demand against a real provider, suc
 | `turn_test.go` | healthy OpenAI turns: text replies, server-VAD turns started by speech, tool-call round trips, one row per response |
 | `nova_test.go` | Nova 2 Sonic: text and voice turns, and its fixed session configuration |
 | `elevenlabs_test.go` | ElevenLabs: Scribe transcription sessions translated to OpenAI events and logged, the `bifrost.*` extension events sent only to a session that opts in, an agent session still relayed as it is, a Scribe model refused without the transcription intent |
+| `soniox_test.go` | Soniox: real-time transcription sessions translated to OpenAI events and logged, a client commit ending a segment, the words extension event sent only to a session that opts in, settings fixed once the connection starts, an async model refused |
 | `azure_test.go` | Azure OpenAI: text and voice turns, transcription sessions, deployment aliases, client secrets, an unknown deployment |
 | `failure_test.go` | the client leaving mid-turn, a provider error event, a model the provider refuses |
 | `protocol_test.go` | client events refused or rewritten: a second concurrent response, malformed JSON, binary frames, model prefixes in `session.update`, transcription sessions |

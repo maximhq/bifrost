@@ -59,6 +59,8 @@ func postVirtualKey(name string, spec keySpec) (virtualKey, error) {
 			map[string]any{"provider": "azure", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
 			// Named, not "*": a wildcard allows the models the catalog lists for the provider, and it has no Scribe realtime model yet.
 			map[string]any{"provider": "elevenlabs", "weight": 1.0, "allowed_models": []string{"scribe_v2_realtime", "scribe_v3_live"}, "key_ids": []string{"*"}},
+			// Named for the same reason. stt-async-v6 is allowed so the test of a model Soniox cannot serve in realtime reaches the provider.
+			map[string]any{"provider": "soniox", "weight": 1.0, "allowed_models": []string{"stt-rt-v5", "stt-rt-v6", "stt-async-v6"}, "key_ids": []string{"*"}},
 		},
 	}
 	if spec.budgetUSD > 0 {

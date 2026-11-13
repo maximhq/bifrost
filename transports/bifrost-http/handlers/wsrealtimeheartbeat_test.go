@@ -897,6 +897,39 @@ func TestRealtimeTranslatorOpensBeforeEitherSideSpeaks(t *testing.T) {
 	require.Equal(t, "session", session.ProviderSessionID())
 }
 
+// TestRealtimeTranslatorWritesBinaryProviderFrames checks a translation's provider frames reach the
+// provider in order, as the message type the translator marked: text by default, binary when asked.
+func TestRealtimeTranslatorWritesBinaryProviderFrames(t *testing.T) {
+	gateway := newLiveOwnerTestGateway(t, nil)
+	server, _, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	upstream, providerConn := dialLiveTestUpstream(t)
+	session := bfws.NewSession(nil)
+	defer session.Close()
+	opening := schemas.RealtimeTranslation{Provider: []json.RawMessage{json.RawMessage(`{"setup":true}`)}}
+	opening.AddProviderBinary([]byte{0x00, 0xff, 0x10})
+	opening.Provider = append(opening.Provider, json.RawMessage(`{"type":"finalize"}`))
+	handler := &WSRealtimeHandler{client: gateway.client, config: gateway.config}
+
+	require.NoError(t, handler.openRealtimeTranslator(newRealtimeClientConn(server), session, upstream, &scriptedRealtimeTranslator{open: opening}, openAIRealtimeWire, liveCallerCtx(t, ""), schemas.OpenAI, "model", schemas.Key{}, false))
+
+	want := []struct {
+		messageType int
+		data        []byte
+	}{
+		{ws.TextMessage, []byte(`{"setup":true}`)},
+		{ws.BinaryMessage, []byte{0x00, 0xff, 0x10}},
+		{ws.TextMessage, []byte(`{"type":"finalize"}`)},
+	}
+	for i, frame := range want {
+		require.NoError(t, providerConn.SetReadDeadline(time.Now().Add(3*time.Second)))
+		messageType, data, err := providerConn.ReadMessage()
+		require.NoError(t, err)
+		require.Equal(t, frame.messageType, messageType, "frame %d", i)
+		require.Equal(t, frame.data, data, "frame %d", i)
+	}
+}
+
 // TestRealtimeTranslatorRelaysProviderFrames checks a provider frame, text or binary, reaches the client as
 // the OpenAI event the translator made of it, through the turn pipeline, and that the provider frames the
 // translator asked for are written upstream.

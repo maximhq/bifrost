@@ -368,8 +368,23 @@ type RealtimeSessionProvider interface {
 
 // RealtimeTranslation is the output of one RealtimeTranslator step: the frames to write, in order.
 type RealtimeTranslation struct {
-	Provider []json.RawMessage // frames for the provider, in its native protocol
-	Client   []json.RawMessage // events for the client, in the OpenAI Realtime protocol
+	Provider       []json.RawMessage // frames for the provider, in its native protocol
+	ProviderBinary []bool            // ProviderBinary[i] marks Provider[i] as a binary frame; frames past its end are text
+	Client         []json.RawMessage // events for the client, in the OpenAI Realtime protocol
+}
+
+// AddProviderBinary queues a binary frame for the provider, after the frames already queued.
+func (t *RealtimeTranslation) AddProviderBinary(frame []byte) {
+	for len(t.ProviderBinary) < len(t.Provider) {
+		t.ProviderBinary = append(t.ProviderBinary, false)
+	}
+	t.Provider = append(t.Provider, frame)
+	t.ProviderBinary = append(t.ProviderBinary, true)
+}
+
+// IsProviderBinary reports whether Provider[i] is a binary frame.
+func (t RealtimeTranslation) IsProviderBinary(i int) bool {
+	return i < len(t.ProviderBinary) && t.ProviderBinary[i]
 }
 
 // RealtimeTranslator translates one realtime connection between the OpenAI Realtime protocol the
