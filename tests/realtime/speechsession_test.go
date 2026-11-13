@@ -299,6 +299,26 @@ func TestSpeech_ProviderErrorEndsTheSession(t *testing.T) {
 	}
 }
 
+// A session the provider fails after it took the client's text is still billed for that text, which the provider was
+// asked to speak. Soniox's speech model has no price in the datasheet yet, so only ElevenLabs' sessions are billed.
+func TestSpeech_FailedSessionIsStillBilledForItsText(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{budgetUSD: 1})
+	c, _ := markedSpeech(t, "elevenlabs", "error", dial{vk: vk}, nil)
+
+	c.send(speechText("Say something that fails."), speechFlush())
+
+	frames := c.collect("error")
+	assertError(t, frames[len(frames)-1], anyType, "")
+	c.drain(frameTimeout)
+	row := waitSpeechRows(t, vk, 1)[0]
+	assert.Equal(t, "error", row.Status)
+	// The key's budget is charged for the 25 characters, far above this floor; the log row of a failed session
+	// carries no cost.
+	waitBudgetUsage(t, vk.BudgetID, 1e-6)
+}
+
 // A provider connection that dies without a word ends the session with an error, not a hang.
 func TestSpeech_ProviderDropEndsTheSession(t *testing.T) {
 	for provider := range speechProviders {

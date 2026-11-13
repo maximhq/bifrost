@@ -1,14 +1,21 @@
 package realtime
 
 import (
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -702,4 +709,419 @@ func TestElevenlabs_NativeRESTVoiceCannotLeaveItsPath(t *testing.T) {
 		resp, data := elevenlabsCall(t, http.MethodPost, path, vk.Value, elevenlabsSpeechBody("hi"))
 		assert.GreaterOrEqual(t, resp.StatusCode, 400, "POST %s: %s", path, data)
 	}
+}
+
+// elevenlabsSocket is an ElevenLabs client's socket through the gateway: frames in ElevenLabs' own protocol, the
+// key in xi-api-key, as its SDKs and raw clients send them.
+type elevenlabsSocket struct {
+	t         *testing.T
+	conn      *websocket.Conn
+	frames    chan gjson.Result // closed when the gateway closes the connection
+	closeCode atomic.Int64      // the close code the gateway sent, once frames is closed
+	writeMu   sync.Mutex
+}
+
+func elevenlabsSocketURL(path, query string) string {
+	return "ws" + strings.TrimPrefix(gatewayURL, "http") + "/elevenlabs" + path + "?" + query
+}
+
+func dialElevenlabs(t *testing.T, path, query, key string) *elevenlabsSocket {
+	t.Helper()
+	header := http.Header{}
+	if key != "" {
+		header.Set("xi-api-key", key)
+	}
+	conn, resp, err := (&websocket.Dialer{HandshakeTimeout: frameTimeout}).Dial(elevenlabsSocketURL(path, query), header)
+	require.NoError(t, err, "upgrade refused: %s", responseBody(resp))
+	s := &elevenlabsSocket{t: t, conn: conn, frames: make(chan gjson.Result, 1024)}
+	go s.read()
+	t.Cleanup(func() { _ = conn.Close() })
+	return s
+}
+
+// refusedElevenlabs asserts the gateway refuses the upgrade at the HTTP layer, and returns the status and body.
+func refusedElevenlabs(t *testing.T, path, query, key string) (int, gjson.Result) {
+	t.Helper()
+	header := http.Header{}
+	if key != "" {
+		header.Set("xi-api-key", key)
+	}
+	conn, resp, err := websocket.DefaultDialer.Dial(elevenlabsSocketURL(path, query), header)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("the gateway upgraded the connection, want a refusal")
+	}
+	require.NotNil(t, resp, "dial: %v", err)
+	return resp.StatusCode, gjson.Parse(responseBody(resp))
+}
+
+func (s *elevenlabsSocket) read() {
+	defer close(s.frames)
+	for {
+		_, raw, err := s.conn.ReadMessage()
+		if err != nil {
+			var closeErr *websocket.CloseError
+			if errors.As(err, &closeErr) {
+				s.closeCode.Store(int64(closeErr.Code))
+			}
+			return
+		}
+		s.frames <- gjson.ParseBytes(raw)
+	}
+}
+
+func (s *elevenlabsSocket) send(frame string) {
+	s.t.Helper()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	require.NoError(s.t, s.conn.WriteMessage(websocket.TextMessage, []byte(frame)))
+}
+
+// until returns the frames up to and including the first whose field has the value.
+func (s *elevenlabsSocket) until(field, value string) []gjson.Result {
+	s.t.Helper()
+	var got []gjson.Result
+	timeout := time.After(turnTimeout)
+	for {
+		select {
+		case frame, ok := <-s.frames:
+			if !ok {
+				s.t.Fatalf("the gateway closed the connection (code %d) before a frame with %s=%q; got %d frames: %v", s.closeCode.Load(), field, value, len(got), got)
+			}
+			got = append(got, frame)
+			if frame.Get(field).Str == value {
+				return got
+			}
+		case <-timeout:
+			s.t.Fatalf("no frame with %s=%q within %s; got %v", field, value, turnTimeout, got)
+		}
+	}
+}
+
+// untilFlag returns the frames up to and including the first whose field is true.
+func (s *elevenlabsSocket) untilFlag(field string) []gjson.Result {
+	s.t.Helper()
+	var got []gjson.Result
+	timeout := time.After(turnTimeout)
+	for {
+		select {
+		case frame, ok := <-s.frames:
+			if !ok {
+				s.t.Fatalf("the gateway closed the connection (code %d) before a frame with %s; got %v", s.closeCode.Load(), field, got)
+			}
+			got = append(got, frame)
+			if frame.Get(field).Bool() {
+				return got
+			}
+		case <-timeout:
+			s.t.Fatalf("no frame with %s within %s; got %v", field, turnTimeout, got)
+		}
+	}
+}
+
+// expectClosed waits for the gateway to close the connection, and returns the frames before it and the close code.
+func (s *elevenlabsSocket) expectClosed() ([]gjson.Result, int) {
+	s.t.Helper()
+	var got []gjson.Result
+	timeout := time.After(turnTimeout)
+	for {
+		select {
+		case frame, ok := <-s.frames:
+			if !ok {
+				return got, int(s.closeCode.Load())
+			}
+			got = append(got, frame)
+		case <-timeout:
+			s.t.Fatalf("the gateway did not close the connection within %s; got %v", turnTimeout, got)
+		}
+	}
+}
+
+// streamAudio plays a 24 kHz recording into a Scribe session as input_audio_chunk frames at real-time pace, then keeps
+// sending silence like an open microphone, until the test ends.
+func (s *elevenlabsSocket) streamAudio(wavPath string) {
+	s.t.Helper()
+	wav, err := os.ReadFile(wavPath)
+	require.NoError(s.t, err)
+	dataAt := strings.Index(string(wav), "data")
+	require.Positive(s.t, dataAt, "%s has no data chunk", wavPath)
+	pcm := wav[dataAt+8:]
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(audioChunk)
+		defer ticker.Stop()
+		silence := make([]byte, audioChunkLen)
+		for offset := 0; ; offset += audioChunkLen {
+			chunk := silence
+			if offset < len(pcm) {
+				chunk = pcm[offset:min(offset+audioChunkLen, len(pcm))]
+			}
+			frame := `{"message_type":"input_audio_chunk","audio_base_64":"` + base64.StdEncoding.EncodeToString(chunk) + `","commit":false,"sample_rate":24000}`
+			s.writeMu.Lock()
+			err := s.conn.WriteMessage(websocket.TextMessage, []byte(frame))
+			s.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	s.t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+}
+
+// scribeQuery is the query an ElevenLabs SDK builds for a Scribe session, with a label the fake finds it by.
+func scribeQuery(model, label string, extra ...string) string {
+	query := url.Values{"model_id": {model}, "audio_format": {"pcm_24000"}, "commit_strategy": {"vad"}, "language_code": {label}, "vad_silence_threshold_secs": {"0.6"}}
+	return query.Encode() + strings.Join(append([]string{""}, extra...), "&")
+}
+
+// An ElevenLabs client's Scribe session is relayed as it is: every option of its query reaches Scribe, repeated ones
+// included, its credential does not, and the transcript comes back in Scribe's own frames. The segment is logged
+// under the client's virtual key with the audio it carried.
+func TestElevenlabs_NativeScribeSessionIsRelayedAndLogged(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	label, marker := fakeLabel("")
+	query := scribeQuery("scribe_v3_live", label, "include_timestamps=true", "keyterms=bifrost", "keyterms=jio", "enable_logging=false", "token=sutkn_must_not_pass")
+
+	s := dialElevenlabs(t, "/v1/speech-to-text/realtime", query, vk.Value)
+	started := s.until("message_type", "session_started")
+	assert.Equal(t, "fake-scribe-session", started[len(started)-1].Get("session_id").Str)
+	s.streamAudio("testdata/ask-weather.wav")
+	frames := s.until("message_type", "committed_transcript")
+	assert.Equal(t, fakeTranscript, frames[len(frames)-1].Get("text").Str)
+	withTimestamps := s.until("message_type", "committed_transcript_with_timestamps")
+	assert.Equal(t, "word", withTimestamps[len(withTimestamps)-1].Get("words.0.type").Str, "Scribe's own frames reach the client as they are")
+
+	upstream := fake.eleven.WaitScribe(t, marker)
+	assert.Equal(t, "scribe_v3_live", upstream.Query().Get("model_id"))
+	assert.Equal(t, "pcm_24000", upstream.Query().Get("audio_format"))
+	assert.Equal(t, "true", upstream.Query().Get("include_timestamps"))
+	assert.Equal(t, []string{"bifrost", "jio"}, upstream.Query()["keyterms"])
+	assert.Equal(t, "false", upstream.Query().Get("enable_logging"))
+	assert.False(t, upstream.Query().Has("token"), "a client's own credential never goes upstream")
+	assert.Equal(t, fakeElevenKey, upstream.Header("xi-api-key"), "Scribe gets the provider key")
+	for name, values := range upstream.Headers() {
+		for _, value := range values {
+			assert.NotContains(t, value, vk.Value, "the client's virtual key must not reach Scribe in %s", name)
+		}
+	}
+	assert.Positive(t, upstream.AudioBytes())
+
+	row := waitTurnRows(t, vk, 1)[0]
+	assert.Equal(t, "success", row.Status)
+	assert.Equal(t, "elevenlabs", row.Provider)
+	assert.Equal(t, "scribe_v3_live", row.Model)
+	assert.Equal(t, vk.ID, row.VirtualKeyID)
+	assert.Contains(t, row.raw.Raw, fakeTranscript, "the row holds the segment's transcript")
+	assert.Positive(t, row.raw.Get("cost_breakdown.input_cost_details.audio_cost").Float(), "Scribe reports no usage, so the segment is billed by the audio the gateway counted")
+}
+
+// A native Scribe session is refused the way Scribe refuses: at the handshake for a missing credential or model, and
+// by a frame and a close for a key that may not use the model, before any audio goes upstream.
+func TestElevenlabs_NativeScribeRefusals(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	label, marker := fakeLabel("")
+	query := scribeQuery("scribe_v3_live", label)
+
+	status, body := refusedElevenlabs(t, "/v1/speech-to-text/realtime", query, "")
+	assert.Equal(t, 401, status)
+	assert.NotEmpty(t, body.Get("detail.status").Str, "ElevenLabs' error shape: %s", body.Raw)
+
+	vk := createVirtualKey(t, keySpec{})
+	status, body = refusedElevenlabs(t, "/v1/speech-to-text/realtime", "audio_format=pcm_24000", vk.Value)
+	assert.Equal(t, 400, status)
+	assert.Contains(t, body.Get("detail.message").Str, "model_id")
+
+	restricted := createVirtualKey(t, keySpec{elevenModels: []string{"scribe_v2_realtime"}})
+	s := dialElevenlabs(t, "/v1/speech-to-text/realtime", query, restricted.Value)
+	s.streamAudio("testdata/ask-weather.wav")
+	frames, code := s.expectClosed()
+	require.NotEmpty(t, frames)
+	refusal := frames[len(frames)-1]
+	assert.Equal(t, "auth_error", refusal.Get("message_type").Str)
+	assert.Contains(t, refusal.Get("error").Str, "is not allowed for virtual key")
+	assert.Equal(t, websocket.ClosePolicyViolation, code)
+	for _, frame := range frames {
+		assert.NotEqual(t, "committed_transcript", frame.Get("message_type").Str, "nothing was transcribed")
+	}
+	assert.Zero(t, fake.eleven.WaitScribe(t, marker).AudioBytes(), "a refused segment's audio is never forwarded")
+
+	forged := dialElevenlabs(t, "/v1/speech-to-text/realtime", query, "sk-bf-forged-"+marker)
+	frames, code = forged.expectClosed()
+	require.NotEmpty(t, frames)
+	assert.Equal(t, "auth_error", frames[len(frames)-1].Get("message_type").Str)
+	assert.Equal(t, websocket.ClosePolicyViolation, code)
+}
+
+// Each segment is a request against the key's limits: the next one after the limit is refused with Scribe's rate
+// limit frame, and the segment before it is logged.
+func TestElevenlabs_NativeScribeRequestLimitStopsTheNextSegment(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{maxRequests: 1})
+	label, _ := fakeLabel("")
+
+	s := dialElevenlabs(t, "/v1/speech-to-text/realtime", scribeQuery("scribe_v3_live", label), vk.Value)
+	s.streamAudio("testdata/ask-weather.wav")
+
+	frames, code := s.expectClosed()
+
+	var types []string
+	for _, frame := range frames {
+		types = append(types, frame.Get("message_type").Str)
+	}
+	assert.Contains(t, types, "committed_transcript", "the first segment is served")
+	assert.Equal(t, "rate_limited", frames[len(frames)-1].Get("message_type").Str)
+	assert.Equal(t, websocket.CloseTryAgainLater, code)
+	rows := waitTurnRows(t, vk, 2)
+	assert.Equal(t, "success", rows[0].Status)
+	assert.Equal(t, "error", rows[1].Status, "the refused segment leaves a row of its own")
+}
+
+// An error Scribe sends reaches the client in its own frame, and the segment it ended is logged as failed.
+func TestElevenlabs_NativeScribeProviderErrorReachesTheClient(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	label, _ := fakeLabel("error")
+
+	s := dialElevenlabs(t, "/v1/speech-to-text/realtime", scribeQuery("scribe_v3_live", label), vk.Value)
+	s.streamAudio("testdata/ask-weather.wav")
+	frames := s.until("message_type", "quota_exceeded")
+
+	assert.Equal(t, "fake: the quota is exhausted", frames[len(frames)-1].Get("error").Str)
+	assert.Equal(t, "error", waitTurnRows(t, vk, 1)[0].Status)
+}
+
+// dialogueRegistration is the first frame of a text-to-dialogue session, which registers its voice.
+func dialogueRegistration(voice string) string {
+	return `{"voices":[` + strconv.Quote(voice) + `],"voice_settings":{"stability":0.4}}`
+}
+
+// dialogueInput is a frame of text to speak.
+func dialogueInput(voice, text string, extra string) string {
+	return `{"inputs":[{"text":` + strconv.Quote(text) + `,"voice_id":` + strconv.Quote(voice) + `,"new_turn":true}]` + extra + `}`
+}
+
+// An ElevenLabs client's text-to-dialogue session is relayed as it is, and billed by the characters it sent: eleven_v4_turbo
+// is served on this socket only.
+func TestElevenlabs_NativeDialogueSessionIsRelayedAndBilledByCharacters(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	var costs []float64
+	for _, text := range []string{"Hello there.", "Hello there.Hello there."} {
+		voice, marker := fakeLabel("")
+		s := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", "model_id=eleven_v4_turbo&output_format=pcm_24000&language_code=en&token=sutkn_must_not_pass", vk.Value)
+		s.send(dialogueRegistration(voice))
+		s.send(dialogueInput(voice, text, ""))
+		s.send(`{"flush":true}`)
+		frames := s.untilFlag("is_final_audio_for_turn")
+		assert.NotEmpty(t, frames)
+		s.send(`{"close_socket":true}`)
+		frames, code := s.expectClosed()
+		assert.Equal(t, websocket.CloseNormalClosure, code)
+		require.NotEmpty(t, frames)
+		assert.True(t, frames[len(frames)-1].Get("is_final").Bool(), "the provider's last frame reaches the client as it is")
+
+		upstream := fake.eleven.WaitTTS(t, marker, 0)
+		assert.Equal(t, "eleven_v4_turbo", upstream.Query().Get("model_id"))
+		assert.Equal(t, "pcm_24000", upstream.Query().Get("output_format"))
+		assert.Equal(t, "en", upstream.Query().Get("language_code"))
+		assert.False(t, upstream.Query().Has("token"), "a client's own credential never goes upstream")
+		assert.Equal(t, fakeElevenKey, upstream.Header("xi-api-key"))
+		assert.Equal(t, voice, upstream.Registration().Get("voices.0").Str)
+		assert.Equal(t, []string{text}, upstream.Inputs())
+		costs = append(costs, waitSpeechRows(t, vk, len(costs)+1)[len(costs)].Cost)
+	}
+	require.Len(t, costs, 2)
+	assert.Positive(t, costs[0], "the model has a price per character")
+	assert.InDelta(t, 2*costs[0], costs[1], costs[0]/1000, "the second session sent twice the characters, so it costs twice")
+	for _, row := range waitSpeechRows(t, vk, 2) {
+		assert.Equal(t, "success", row.Status)
+		assert.Equal(t, "eleven_v4_turbo", row.Model)
+		assert.Equal(t, vk.ID, row.VirtualKeyID)
+	}
+}
+
+// A text-to-dialogue session is one request, admitted when it opens: a missing credential is refused at the
+// handshake, a model the key may not use or a spent request limit by a frame and a close.
+func TestElevenlabs_NativeDialogueRefusalsComeBeforeAnythingOpens(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	query := "model_id=eleven_v4_turbo"
+
+	status, body := refusedElevenlabs(t, "/v1/text-to-dialogue/stream-input", query, "")
+	assert.Equal(t, 401, status)
+	assert.NotEmpty(t, body.Get("detail.status").Str, "ElevenLabs' error shape: %s", body.Raw)
+	vk := createVirtualKey(t, keySpec{})
+	status, body = refusedElevenlabs(t, "/v1/text-to-dialogue/stream-input", "output_format=pcm_24000", vk.Value)
+	assert.Equal(t, 400, status)
+	assert.Contains(t, body.Get("detail.message").Str, "model_id")
+
+	restricted := createVirtualKey(t, keySpec{elevenModels: []string{"scribe_v2_realtime"}})
+	s := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", query, restricted.Value)
+	frames, code := s.expectClosed()
+	require.NotEmpty(t, frames)
+	assert.Contains(t, frames[len(frames)-1].Get("error").Str, "is not allowed for virtual key")
+	assert.Equal(t, websocket.ClosePolicyViolation, code)
+
+	limited := createVirtualKey(t, keySpec{maxRequests: 1})
+	voice, _ := fakeLabel("")
+	first := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", query, limited.Value)
+	first.send(dialogueRegistration(voice))
+	first.send(dialogueInput(voice, "Say first.", ""))
+	first.send(`{"close_socket":true}`)
+	_, code = first.expectClosed()
+	assert.Equal(t, websocket.CloseNormalClosure, code)
+	waitSpeechRows(t, limited, 1)
+
+	second := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", query, limited.Value)
+	frames, code = second.expectClosed()
+	require.NotEmpty(t, frames)
+	assert.Equal(t, int64(websocket.CloseTryAgainLater), int64(frames[len(frames)-1].Get("code").Int()))
+	assert.Equal(t, websocket.CloseTryAgainLater, code)
+}
+
+// The text-to-dialogue socket is ElevenLabs only, so a model of another provider is refused.
+func TestElevenlabs_NativeDialogueRefusesAnotherProvidersModel(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+
+	s := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", "model_id=openai/gpt-4o", vk.Value)
+	frames, code := s.expectClosed()
+
+	require.NotEmpty(t, frames)
+	assert.Contains(t, frames[len(frames)-1].Get("error").Str, "openai")
+	assert.NotEqual(t, websocket.CloseNormalClosure, code)
+}
+
+// A session ElevenLabs ends with an error reaches the client with its own frame and close, and is logged as failed.
+func TestElevenlabs_NativeDialogueProviderErrorReachesTheClient(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, keySpec{})
+	voice, _ := fakeLabel("error")
+
+	s := dialElevenlabs(t, "/v1/text-to-dialogue/stream-input", "model_id=eleven_v4_turbo", vk.Value)
+	s.send(dialogueRegistration(voice))
+	s.send(dialogueInput(voice, "Hello there.", ""))
+	frames, code := s.expectClosed()
+
+	require.NotEmpty(t, frames)
+	assert.Equal(t, "fake: this voice is not allowed", frames[len(frames)-1].Get("error").Str)
+	assert.Equal(t, websocket.ClosePolicyViolation, code)
+	assert.Equal(t, "error", waitSpeechRows(t, vk, 1)[0].Status)
 }

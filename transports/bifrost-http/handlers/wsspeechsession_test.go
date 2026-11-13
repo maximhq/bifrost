@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // fakeSpeechSession records the calls the relay makes and plays back the events a test queues.
@@ -371,11 +372,23 @@ func TestSpeechSessionUnitIsOneSpeechStreamRequest(t *testing.T) {
 	unit, bifrostErr = openSpeechSessionUnit(client, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "speech_2", req)
 	require.Nil(t, bifrostErr)
 	failure := newRealtimeWireBifrostError(502, "server_error", "provider hung up")
+	recorder.postUsage = nil
 	unit.settle(req, key, 7, failure)
 	assert.Equal(t, 2, recorder.posts)
 	require.NotNil(t, recorder.postErr)
 	assert.Equal(t, 502, *recorder.postErr.StatusCode)
 	assert.Equal(t, schemas.RequestType(""), failure.ExtraFields.RequestType, "the error sent to the client is not rewritten")
+	require.NotNil(t, recorder.postUsage, "the characters the client sent are billed when the provider fails the session")
+	assert.Equal(t, 7, recorder.postUsage.InputChars)
+
+	// A session that failed before any text was sent has nothing to bill.
+	unit, bifrostErr = openSpeechSessionUnit(client, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "speech_3", req)
+	require.Nil(t, bifrostErr)
+	recorder.postUsage = nil
+	unit.settle(req, key, 0, failure)
+	assert.Equal(t, 3, recorder.posts)
+	require.NotNil(t, recorder.postErr)
+	assert.Nil(t, recorder.postUsage)
 }
 
 // BenchmarkSpeechSessionWriteEvent is the gateway's own cost of one audio event, a 16 KiB frame of
@@ -398,5 +411,263 @@ func BenchmarkSpeechSessionWriteEvent(b *testing.B) {
 		if err := run.write(event); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The characters of a text-to-dialogue frame are the text of its inputs, counted in runes; frames that carry
+// no text, such as the registration and the flush, are free.
+func TestElevenlabsFrameChars(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame string
+		want        int
+	}{
+		{"one input", `{"inputs":[{"text":"Hello there.","voice_id":"v1"}]}`, 12},
+		{"several inputs", `{"inputs":[{"text":"Hello","voice_id":"v1"},{"text":" wörld","voice_id":"v2","new_turn":true}]}`, 11},
+		{"runes, not bytes", `{"inputs":[{"text":"नमस्ते","voice_id":"v1"}]}`, 6},
+		{"a single-voice frame", `{"text":"Hello","flush":true}`, 5},
+		{"the registration", `{"voices":["v1"],"voice_settings":{"stability":0.5}}`, 0},
+		{"a flush", `{"flush":true}`, 0},
+		{"a keep-alive", `{"keep_alive":true}`, 0},
+		{"a close", `{"close_socket":true}`, 0},
+		{"text that is not a string", `{"inputs":[{"text":7}],"text":null}`, 0},
+		{"not JSON", `{"inputs":`, 0},
+	} {
+		if got := elevenlabsFrameChars([]byte(tc.frame)); got != tc.want {
+			t.Errorf("%s: %d characters, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// BenchmarkElevenlabsFrameChars is the gateway's cost of counting one text frame of a text-to-dialogue session,
+// the only per-frame work its relay adds on the client side.
+func BenchmarkElevenlabsFrameChars(b *testing.B) {
+	frame := []byte(`{"inputs":[{"text":"Namaste, this is a sentence of the kind a voice agent speaks.","voice_id":"21m00Tcm4TlvDq8ikWAM","new_turn":false}]}`)
+	b.SetBytes(int64(len(frame)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if elevenlabsFrameChars(frame) == 0 {
+			b.Fatal("no characters counted")
+		}
+	}
+}
+
+// runElevenlabsDialogueRelay relays a client and a provider socket pair through the session's relays, and returns
+// the app's end of each, the run and a channel that closes when the relays end.
+func runElevenlabsDialogueRelay(t *testing.T) (app, provider *ws.Conn, run *elevenlabsDialogueRun, ended chan struct{}) {
+	t.Helper()
+	clientSide, app, cleanupClient := dialRealtimeTestConn(t)
+	t.Cleanup(cleanupClient)
+	providerSide, provider, cleanupProvider := dialRealtimeTestConn(t)
+	t.Cleanup(cleanupProvider)
+	run = &elevenlabsDialogueRun{clientConn: newRealtimeClientConn(clientSide), upstream: providerSide}
+	ended = make(chan struct{})
+	go func() {
+		defer close(ended)
+		_ = runRealtimeRelays(clientSide, run.relayClient, run.relayUpstream, func() {
+			_ = run.clientConn.Close()
+			_ = providerSide.Close()
+		})
+	}()
+	return app, provider, run, ended
+}
+
+// The relay passes frames both ways as they are, and bills the text the provider accepted.
+func TestElevenlabsDialogueRelaysFramesAsTheyAreAndCountsTheText(t *testing.T) {
+	app, provider, run, ended := runElevenlabsDialogueRelay(t)
+
+	frames := []string{
+		`{"voices":["v1"],"voice_settings":{"stability":0.4}}`,
+		`{"inputs":[{"text":"Hello ","voice_id":"v1"}]}`,
+		`{"inputs":[{"text":"world.","voice_id":"v1","new_turn":true}],"flush":true}`,
+	}
+	for _, frame := range frames {
+		if err := app.WriteMessage(ws.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		_, got, err := provider.ReadMessage()
+		if err != nil || string(got) != frame {
+			t.Fatalf("the provider got %q (%v), want the frame as sent: %q", got, err, frame)
+		}
+	}
+	for _, frame := range []string{`{"audio":"QUJD","is_final_audio_for_turn":false}`, `{"audio":"","is_final_audio_for_turn":true}`, `{"is_final":true}`} {
+		if err := provider.WriteMessage(ws.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		_, got, err := app.ReadMessage()
+		if err != nil || string(got) != frame {
+			t.Fatalf("the client got %q (%v), want the frame as sent: %q", got, err, frame)
+		}
+	}
+	if got := run.chars.Load(); got != 12 {
+		t.Errorf("characters = %d, want 12", got)
+	}
+
+	_ = app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second))
+	// Closing a hijacked test connection does not interrupt its pending read, so the provider's end of the pair goes too.
+	time.AfterFunc(200*time.Millisecond, func() { _ = provider.Close() })
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relays did not end when the client left")
+	}
+	if failure := run.failure.Load(); failure != nil {
+		t.Errorf("a client that leaves is not a failure: %v", failure)
+	}
+}
+
+// A provider that ends the session with a code other than a normal one has failed it, and the client reads the
+// provider's own close, its code and reason.
+func TestElevenlabsDialogueRecordsAProviderCloseAsAFailure(t *testing.T) {
+	app, provider, run, ended := runElevenlabsDialogueRelay(t)
+
+	_ = provider.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.ClosePolicyViolation, "Invalid voice"), time.Now().Add(time.Second))
+
+	_ = app.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err := app.ReadMessage()
+	var closeErr *ws.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != ws.ClosePolicyViolation || closeErr.Text != "Invalid voice" {
+		t.Fatalf("the client read %v, want the provider's close 1008 \"Invalid voice\"", err)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relays did not end when the provider closed")
+	}
+	if failure := run.failure.Load(); failure == nil || failure.StatusCode == nil || *failure.StatusCode != 502 {
+		t.Errorf("failure = %+v, want a 502", failure)
+	}
+}
+
+// A provider that drops with no close frame sent no code: 1006 is only what the read reports, and a close frame may
+// not carry it, so the client reads the gateway's own failure and a valid close instead of a frame it cannot parse.
+func TestElevenlabsDialogueTurnsAnAbruptProviderDropIntoAGatewayFailure(t *testing.T) {
+	app, provider, run, ended := runElevenlabsDialogueRelay(t)
+
+	_ = provider.UnderlyingConn().Close()
+
+	_ = app.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, frame, err := app.ReadMessage()
+	require.NoError(t, err, "the client reads the gateway's error frame first")
+	var failureFrame struct {
+		Error string `json:"error"`
+		Code  int    `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(frame, &failureFrame), string(frame))
+	assert.Equal(t, ws.CloseInternalServerErr, failureFrame.Code)
+	assert.NotEmpty(t, failureFrame.Error)
+
+	_, _, err = app.ReadMessage()
+	var closeErr *ws.CloseError
+	require.True(t, errors.As(err, &closeErr), "the client then reads a close, got %v", err)
+	assert.Equal(t, ws.CloseInternalServerErr, closeErr.Code, "a close with a code a frame may carry")
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relays did not end when the provider dropped")
+	}
+	if failure := run.failure.Load(); failure == nil || failure.StatusCode == nil || *failure.StatusCode != 502 {
+		t.Errorf("failure = %+v, want a 502", failure)
+	}
+}
+
+// gatedFailingUpstream fails both of its directions once the test lets it.
+type gatedFailingUpstream struct{ release chan struct{} }
+
+func (u *gatedFailingUpstream) ReadMessage() (int, []byte, error) {
+	<-u.release
+	return 0, nil, errors.New("connection reset")
+}
+
+func (u *gatedFailingUpstream) WriteMessage(int, []byte) error {
+	<-u.release
+	return errors.New("broken pipe")
+}
+
+func (u *gatedFailingUpstream) Close() error { return nil }
+
+// A provider that drops while the client is still sending fails both relays at once, the read of the provider and the
+// write to it. The settlement records one failure, and the relays do not race to set it.
+func TestElevenlabsDialogueRelaysFailTogetherWithoutRacing(t *testing.T) {
+	clientSide, app, cleanupClient := dialRealtimeTestConn(t)
+	t.Cleanup(cleanupClient)
+	upstream := &gatedFailingUpstream{release: make(chan struct{})}
+	run := &elevenlabsDialogueRun{clientConn: newRealtimeClientConn(clientSide), upstream: upstream}
+	if err := app.WriteMessage(ws.TextMessage, []byte(`{"text":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var relays sync.WaitGroup
+	for _, relay := range []func() error{run.relayClient, run.relayUpstream} {
+		relays.Add(1)
+		go func() {
+			defer relays.Done()
+			_ = relay()
+		}()
+	}
+	close(upstream.release)
+	relays.Wait()
+
+	if failure := run.failure.Load(); failure == nil || failure.StatusCode == nil || *failure.StatusCode != 502 {
+		t.Fatalf("failure = %+v, want a 502", failure)
+	}
+}
+
+// A failure the gateway reports is a frame in the shape each ElevenLabs socket uses, and then a close.
+func TestElevenlabsSocketErrorFrames(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		write  func(*realtimeClientConn, *schemas.BifrostError)
+		status int
+		want   string
+		code   int
+	}{
+		{"scribe budget", writeElevenlabsScribeError, 402, `{"message_type":"quota_exceeded","error":"budget spent"}`, ws.CloseInternalServerErr},
+		{"scribe rate limit", writeElevenlabsScribeError, 429, `{"message_type":"rate_limited","error":"slow down"}`, ws.CloseTryAgainLater},
+		{"scribe model blocked", writeElevenlabsScribeError, 403, `{"message_type":"auth_error","error":"model is not allowed"}`, ws.ClosePolicyViolation},
+		{"scribe bad request", writeElevenlabsScribeError, 400, `{"message_type":"invalid_request","error":"bad query"}`, ws.CloseInvalidFramePayloadData},
+		{"scribe server fault", writeElevenlabsScribeError, 500, `{"message_type":"error","error":"oops"}`, ws.CloseInternalServerErr},
+		{"dialogue refusal", writeElevenlabsDialogueError, 403, `{"error":"model is not allowed","code":1008}`, ws.ClosePolicyViolation},
+		{"dialogue rate limit", writeElevenlabsDialogueError, 429, `{"error":"slow down","code":1013}`, ws.CloseTryAgainLater},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+			defer cleanup()
+			messages := map[string]string{
+				`{"message_type":"quota_exceeded","error":"budget spent"}`:     "budget spent",
+				`{"message_type":"rate_limited","error":"slow down"}`:          "slow down",
+				`{"message_type":"auth_error","error":"model is not allowed"}`: "model is not allowed",
+				`{"message_type":"invalid_request","error":"bad query"}`:       "bad query",
+				`{"message_type":"error","error":"oops"}`:                      "oops",
+				`{"error":"model is not allowed","code":1008}`:                 "model is not allowed",
+				`{"error":"slow down","code":1013}`:                            "slow down",
+			}
+
+			tc.write(newRealtimeClientConn(bifrostSide), newRealtimeWireBifrostError(tc.status, "decision", messages[tc.want]))
+
+			_ = app.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, got, err := app.ReadMessage()
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("frame = %q (%v), want %q", got, err, tc.want)
+			}
+			_, _, err = app.ReadMessage()
+			var closeErr *ws.CloseError
+			if !errors.As(err, &closeErr) || closeErr.Code != tc.code {
+				t.Fatalf("close = %v, want code %d", err, tc.code)
+			}
+		})
+	}
+}
+
+// A refused handshake is written in ElevenLabs' error shape.
+func TestSendElevenlabsHandshakeError(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+
+	sendElevenlabsHandshakeError(ctx, newRealtimeWireBifrostError(401, "invalid_api_key", "a virtual key is required"))
+
+	if ctx.Response.StatusCode() != 401 {
+		t.Errorf("status = %d, want 401", ctx.Response.StatusCode())
+	}
+	if got, want := string(ctx.Response.Body()), `{"detail":{"status":"invalid_api_key","message":"a virtual key is required"}}`; got != want {
+		t.Errorf("body = %s, want %s", got, want)
 	}
 }

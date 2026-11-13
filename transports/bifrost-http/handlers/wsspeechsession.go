@@ -60,6 +60,8 @@ func NewWSSpeechSessionHandler(client *bifrost.Bifrost, config *lib.Config, pool
 // RegisterRoutes registers the speech session endpoint.
 func (h *WSSpeechSessionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/v1/audio/speech/stream", lib.ChainMiddlewares(h.handleUpgrade, middlewares...))
+	// An ElevenLabs client's text-to-dialogue socket, on the /elevenlabs base URL its SDK is given.
+	r.GET(elevenlabsDialoguePath, lib.ChainMiddlewares(h.handleElevenlabsDialogueUpgrade, middlewares...))
 }
 
 // Close closes active speech sessions.
@@ -476,13 +478,14 @@ func (u *speechSessionUnit) settle(req *schemas.BifrostSpeechRequest, key schema
 		}
 	}()
 	var resp *schemas.BifrostResponse
-	if bifrostErr == nil {
+	if bifrostErr == nil || chars > 0 {
 		resp = &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
 			Type:        schemas.SpeechStreamResponseTypeDone,
 			Usage:       &schemas.SpeechUsage{InputChars: chars},
 			ExtraFields: schemas.BifrostResponseExtraFields{Latency: time.Since(u.startedAt).Milliseconds()},
 		}}
-	} else {
+	}
+	if bifrostErr != nil {
 		// The post-hooks annotate the error they settle; the client's copy stays as it was sent.
 		postErr := *bifrostErr
 		bifrostErr = &postErr
