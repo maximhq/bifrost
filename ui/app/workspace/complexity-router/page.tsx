@@ -44,7 +44,7 @@ import {
 	decisionCriteriaFromDefaults,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
-	toAnalyzerPayload,
+	toComplexityConfigPayload,
 	toFormValues,
 	shouldSeedLLMPrompt,
 } from "./formSchema";
@@ -418,7 +418,7 @@ export default function ComplexityRouterPage() {
 		// The helper preserves saved sheet-only settings and omits session when
 		// disabled. Nil is already the wire-level disabled state; avoiding the
 		// additive field keeps unrelated edits compatible with older gateways.
-		const payload = toAnalyzerPayload(values, data);
+		const payload = toComplexityConfigPayload(values, data);
 		updateConfig(payload)
 			.unwrap()
 			.then((res) => {

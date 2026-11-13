@@ -188,6 +188,54 @@ test.describe('Complexity Router', () => {
       await expect(page.getByTestId('complexity-router-decision-sheet')).toContainText('Confidence threshold')
       await expect(page.getByTestId('complexity-router-decision-min-confidence-input')).toHaveValue('0.7')
     })
+
+    // Phrase suggestions are a model router's: the complexity config is saved
+    // without a suggestions block, even one it was stored with earlier, which
+    // the gateway would refuse.
+    test('should save the complexity config without phrase suggestions', async ({ page }) => {
+      decisionProvider = 'openai'
+      savedModel = 'gpt-6-luna'
+      decisionModels = ['gpt-6-luna']
+      chatModels = ['gpt-4o-mini']
+      const saved: Record<string, unknown>[] = []
+      // Registered after beforeEach, so it answers first.
+      await page.route(
+        (url) => url.pathname === '/api/routing/complexity-analyzer-config',
+        async (route) => {
+          if (route.request().method() === 'PUT') {
+            const body = route.request().postDataJSON()
+            saved.push(body)
+            return route.fulfill({ json: body })
+          }
+          await route.fulfill({
+            json: {
+              classifier: 'decision',
+              keywords: { simple_keywords: ['simple'], medium_keywords: ['medium'], complex_keywords: ['complex'] },
+              decision: { provider: 'openai', model: 'gpt-6-luna', previous_message_count: 2, timeout: '3000ms', min_confidence: 0.7 },
+              // As a gateway from before suggestions moved to routers served it.
+              suggestions: {
+                enabled: true,
+                sample_rate: 0.1,
+                lookback_days: 7,
+                provider: 'openai',
+                model: 'gpt-5',
+                tier: { classifier: 'decision', provider: 'typesafe', model: 'jev-latest' },
+              },
+            },
+          })
+        },
+      )
+      await page.goto('/workspace/complexity-router')
+      await page.getByTestId('complexity-router-decision-settings-button').click()
+      const threshold = page.getByTestId('complexity-router-decision-min-confidence-input')
+      await expect(threshold).toHaveValue('0.7', { timeout: 5000 })
+      await threshold.fill('0.8')
+      await page.getByTestId('complexity-router-decision-sheet-save-button').click()
+
+      await expect.poll(() => saved.length, { timeout: 5000 }).toBe(1)
+      expect(saved[0]).not.toHaveProperty('suggestions')
+      expect((saved[0].decision as { min_confidence: number }).min_confidence).toBe(0.8)
+    })
   })
   test.describe('Phrase Suggestions', () => {
     // Everything the page reads about the router and its suggestions is mocked,

@@ -7061,9 +7061,6 @@
         },
         "session": {
           "$ref": "#/$defs/complexity_session_config"
-        },
-        "suggestions": {
-          "$ref": "#/$defs/complexity_suggestions_config"
         }
       },
       "required": [
@@ -7143,75 +7140,6 @@
                 }
               }
             }
-          },
-          "then": {
-            "required": [
-              "llm"
-            ]
-          }
-        },
-        {
-          "description": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise.",
-          "if": {
-            "properties": {
-              "suggestions": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "enabled"
-                ]
-              }
-            },
-            "required": [
-              "suggestions"
-            ]
-          },
-          "then": {
-            "required": [
-              "semantic"
-            ],
-            "not": {
-              "required": [
-                "classifier"
-              ],
-              "properties": {
-                "classifier": {
-                  "enum": [
-                    "decision",
-                    "llm"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        {
-          "description": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
-          "if": {
-            "properties": {
-              "suggestions": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "enabled"
-                ],
-                "not": {
-                  "required": [
-                    "provider",
-                    "model"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "suggestions"
-            ]
           },
           "then": {
             "required": [
@@ -7591,7 +7519,7 @@
     },
     "complexity_suggestions_config": {
       "type": "object",
-      "description": "Phrase suggestions for the semantic router. When enabled, a sample of the vectors the semantic classifier already computes for classified requests is kept, under each request's log ID, so suggestions can cluster real traffic in the router's embedding space. Only the vector and routing metadata are stored; request text stays in the logs. Capture requires a top-level vector_store: vectors are written only there, never to the embedded storage the semantic classifier can use, so without one nothing is captured. Captured vectors are deleted with their logs, and an hourly cleanup removes those older than lookback_days or the log retention, whichever is shorter. A vector can therefore outlast that limit until the next cleanup, up to an hour, and longer while the vector store is unavailable, since failed deletes are only retried at later cleanups. Turning suggestions off stops sampling but keeps cleaning up what was captured on the configured lookback_days. Removing or disabling the routing plugin deletes every captured vector.",
+      "description": "Phrase suggestions for a semantic model router (the complexity analyzer config makes none). When enabled, a sample of the vectors the semantic classifier already computes for classified requests is kept, under each request's log ID, so suggestions can cluster real traffic in the router's embedding space. Only the vector and routing metadata are stored; request text stays in the logs. Capture requires a top-level vector_store: vectors are written only there, never to the embedded storage the semantic classifier can use, so without one nothing is captured. Captured vectors are deleted with their logs, and an hourly cleanup removes those older than lookback_days or the log retention, whichever is shorter. A vector can therefore outlast that limit until the next cleanup, up to an hour, and longer while the vector store is unavailable, since failed deletes are only retried at later cleanups. Turning suggestions off stops sampling but keeps cleaning up what was captured on the configured lookback_days. Removing or disabling the routing plugin deletes every captured vector.",
       "properties": {
         "enabled": {
           "type": "boolean",
