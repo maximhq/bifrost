@@ -16,6 +16,7 @@ func setupEvalDatasetTestStore(t *testing.T) *RDBConfigStore {
 	require.NoError(t, store.DB().AutoMigrate(
 		&tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetVersion{},
 		&tables.TableEvalDatasetRow{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFolder{}, &tables.TableEvalDatasetFile{},
+		&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{},
 	))
 	return store
 }

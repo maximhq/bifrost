@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -433,6 +434,11 @@ func (s *RDBConfigStore) SetEvalDatasetFolder(ctx context.Context, datasetID str
 func (s *RDBConfigStore) DeleteEvalDataset(ctx context.Context, id string) error {
 	if _, err := s.GetEvalDataset(ctx, id); err != nil {
 		return err
+	}
+	if runs, err := s.CountEvalRunsOnDataset(ctx, id, 0); err != nil {
+		return err
+	} else if runs > 0 {
+		return ErrEvalDatasetHasRuns
 	}
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
@@ -1191,6 +1197,14 @@ func (w *evalDatasetTx) DeleteVersion(number int) error {
 	if number == w.dataset.HeadVersion {
 		return ErrEvalDatasetLatestVersion
 	}
+	// A version that a test run reads is that run's record of what it measured.
+	inUse, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(inUse, number) {
+		return ErrEvalDatasetVersionInUse
+	}
 	result := w.tx.Where("dataset_id = ? AND number = ?", w.dataset.ID, number).Delete(&tables.TableEvalDatasetVersion{})
 	if result.Error != nil {
 		return result.Error
@@ -1214,7 +1228,16 @@ func (w *evalDatasetTx) PruneVersions() error {
 	if excess <= 0 {
 		return nil
 	}
-	if err := w.tx.Where("dataset_id = ? AND number IN ?", w.dataset.ID, numbers[:excess]).
+	// Versions that test runs read are stepped over: they stay until the runs go.
+	inUse, err := evalRunDatasetVersions(w.tx, w.dataset.ID)
+	if err != nil {
+		return err
+	}
+	prune := slices.DeleteFunc(slices.Clone(numbers[:excess]), func(number int) bool { return slices.Contains(inUse, number) })
+	if len(prune) == 0 {
+		return nil
+	}
+	if err := w.tx.Where("dataset_id = ? AND number IN ?", w.dataset.ID, prune).
 		Delete(&tables.TableEvalDatasetVersion{}).Error; err != nil {
 		return err
 	}
