@@ -321848,7 +321848,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{baseUrl}}/claude-code/oauth/token",
+            "url": "{{baseUrl}}/gateway/claude-code/oauth/token",
             "body": {
               "mode": "urlencoded",
               "urlencoded": [
