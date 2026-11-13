@@ -108625,6 +108625,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109083,6 +109092,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109369,6 +109387,15 @@
             }
           },
           {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "delivery_id",
             "in": "query",
             "required": false,
@@ -109650,6 +109677,15 @@
             "name": "push_config_id",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "caller_correlation_id",
+            "in": "query",
+            "required": false,
+            "description": "Operations whose caller sent this x-bf-agent-correlation-id (an agent's A2A task ID when it follows the integration guide).",
             "schema": {
               "type": "string"
             }
@@ -116329,6 +116365,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116541,6 +116581,10 @@
           "push_config_id": {
             "type": "string"
           },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
+          },
           "delivery_id": {
             "type": "string"
           },
@@ -116752,6 +116796,10 @@
           },
           "push_config_id": {
             "type": "string"
+          },
+          "caller_correlation_id": {
+            "type": "string",
+            "description": "The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller."
           },
           "delivery_id": {
             "type": "string"
@@ -125087,13 +125135,13 @@
           "alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -125110,13 +125158,13 @@
           "normalized_alignment": {
             "type": "object",
             "properties": {
-              "char_start_times_ms": {
+              "character_start_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"
                 }
               },
-              "char_end_times_ms": {
+              "character_end_times_seconds": {
                 "type": "array",
                 "items": {
                   "type": "number"

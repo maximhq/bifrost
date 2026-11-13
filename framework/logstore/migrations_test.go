@@ -1521,6 +1521,28 @@ func TestMigrationAddRelayLogLargePayloadResponse(t *testing.T) {
 	require.Equal(t, int64(1), count)
 }
 
+func TestCallerCorrelationIDColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "caller-correlation-id.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"), "the migration adds the column")
+	require.True(t, db.Migrator().HasIndex(&AgentLog{}, "idx_agent_logs_caller_correlation_id"), "the migration adds the index")
+	require.NoError(t, callerCorrelationIDColumnMigration(ctx, testLogger{}).Migrate(db), "the migration is idempotent")
+
+	now := time.Now().UTC()
+	caller := "task-parent"
+	require.NoError(t, db.Create(&AgentLog{ID: "agent-1", Timestamp: now, CreatedAt: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "req-1", CallerCorrelationID: &caller}).Error)
+	err = callerCorrelationIDColumnMigration(ctx, testLogger{}).Rollback(db)
+	require.Error(t, err, "rollback must refuse while caller_correlation_id holds a value")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"), "caller_correlation_id survives a refused rollback")
+
+	require.NoError(t, db.Model(&AgentLog{}).Where("id = ?", "agent-1").Update("caller_correlation_id", nil).Error)
+	require.NoError(t, callerCorrelationIDColumnMigration(ctx, testLogger{}).Rollback(db), "an empty column rolls back")
+	assert.False(t, db.Migrator().HasColumn(&AgentLog{}, "caller_correlation_id"))
+}
+
 func TestRoundTripIDColumnMigration_NonRollbackable(t *testing.T) {
 	ctx := context.Background()
 	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "round-trip-id.db")}, testLogger{})

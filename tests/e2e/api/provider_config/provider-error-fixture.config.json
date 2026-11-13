@@ -1,4 +1,7 @@
 {
+  "client": {
+    "enforce_auth_on_inference": false
+  },
   "framework": {
     "pricing": {
       "pricing_url": "http://127.0.0.1:8791/pricing.json",
@@ -20,6 +23,8 @@
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
             "upstream-extra-content",
+            "upstream-transcribe-empty",
+            "upstream-transcribe-newline",
             "gpt-5-pro"
           ],
           "weight": 1
