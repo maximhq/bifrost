@@ -47,6 +47,7 @@ const (
 // The relay calls it one step at a time, so it holds no locks.
 type liveTranslator struct {
 	model     string
+	modelPath string // how the setup names the model when it is not "models/<model>"
 	config    *liveConfig
 	phase     livePhase
 	sentSetup []byte
@@ -102,14 +103,30 @@ type liveMessage struct {
 }
 
 func newLiveTranslator(model string) (*liveTranslator, error) {
-	config, err := newLiveConfig(model, &liveSessionUpdate{})
+	return newLiveTranslatorWithModelPath(model, "")
+}
+
+// newLiveTranslatorWithModelPath builds a translator whose setup names the model by modelPath, for a Live
+// host that does not address models as the Gemini API's "models/<model>", such as Vertex AI.
+func newLiveTranslatorWithModelPath(model, modelPath string) (*liveTranslator, error) {
+	t := &liveTranslator{model: model, modelPath: modelPath, calls: map[string]string{}}
+	config, err := t.newConfig(&liveSessionUpdate{})
 	if err != nil {
 		return nil, err
 	}
-	t := &liveTranslator{model: model, config: config, calls: map[string]string{}}
+	t.config = config
 	t.sessionID = t.id("sess_")
 	t.config.session.ID = t.sessionID
 	return t, nil
+}
+
+// newConfig resolves a session.update into the setup this connection sends.
+func (t *liveTranslator) newConfig(update *liveSessionUpdate) (*liveConfig, error) {
+	config, err := newLiveConfig(t.model, update)
+	if err == nil && t.modelPath != "" {
+		config.setup.Model = t.modelPath
+	}
+	return config, err
 }
 
 func (t *liveTranslator) id(prefix string) string {
@@ -233,7 +250,7 @@ func (t *liveTranslator) sessionUpdate(out *liveOutput, event *schemas.BifrostRe
 	if err != nil {
 		return err
 	}
-	config, err := newLiveConfig(t.model, update)
+	config, err := t.newConfig(update)
 	if err != nil {
 		return err
 	}

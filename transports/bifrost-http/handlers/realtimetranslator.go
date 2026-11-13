@@ -35,13 +35,13 @@ func realtimeClientProtocol(provider schemas.RealtimeProvider, model, intent str
 }
 
 // newRealtimeTranslator builds the connection's translator, or returns nil when the provider's frames are
-// relayed as they are.
-func newRealtimeTranslator(provider schemas.RealtimeProvider, key schemas.Key, model, intent string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+// relayed as they are. The provider is given the connection's context, which carries what the model alias
+// resolved to, such as its project and region.
+func newRealtimeTranslator(ctx *schemas.BifrostContext, provider schemas.RealtimeProvider, key schemas.Key, model, intent string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
 	if !translatesRealtime(provider, model, intent) {
 		return nil, nil
 	}
-	translating := provider.(schemas.RealtimeTranslatorProvider)
-	translator, bifrostErr := translating.NewRealtimeTranslator(key, model)
+	translator, bifrostErr := provider.(schemas.RealtimeTranslatorProvider).NewRealtimeTranslator(ctx, key, model)
 	if bifrostErr == nil && translator == nil {
 		return nil, newRealtimeWireBifrostError(500, "server_error", "provider returned no realtime translator")
 	}

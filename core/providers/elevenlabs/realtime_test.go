@@ -103,7 +103,7 @@ func TestRealtimeWebSocketURLSendsScribeToItsOwnEndpoint(t *testing.T) {
 	require.Equal(t, 400, *bifrostErr.StatusCode)
 	require.Contains(t, bifrostErr.Error.Message, "intent=transcription")
 
-	translator, bifrostErr := provider.NewRealtimeTranslator(schemas.Key{}, "agent_123")
+	translator, bifrostErr := provider.NewRealtimeTranslator(nil, schemas.Key{}, "agent_123")
 	require.Nil(t, translator)
 	require.NotNil(t, bifrostErr, "an agent id has no translator")
 }

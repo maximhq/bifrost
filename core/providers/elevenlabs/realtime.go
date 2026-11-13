@@ -35,7 +35,7 @@ func (provider *ElevenlabsProvider) TranslatesRealtime(model, intent string) boo
 }
 
 // NewRealtimeTranslator builds the translator of a Scribe transcription session.
-func (provider *ElevenlabsProvider) NewRealtimeTranslator(_ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+func (provider *ElevenlabsProvider) NewRealtimeTranslator(_ *schemas.BifrostContext, _ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
 	if !isScribeRealtimeModel(model) {
 		return nil, providerUtils.NewBifrostBadRequestError("elevenlabs translates realtime sessions of its scribe models only, not " + model)
 	}

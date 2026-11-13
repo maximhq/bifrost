@@ -69,13 +69,27 @@ func (provider *GeminiProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostCont
 
 // NewRealtimeTranslator returns the per-connection translator between the OpenAI Realtime protocol
 // the client speaks and Live's frames.
-func (provider *GeminiProvider) NewRealtimeTranslator(_ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+func (provider *GeminiProvider) NewRealtimeTranslator(_ *schemas.BifrostContext, _ schemas.Key, model string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
 	if strings.TrimSpace(model) == "" {
 		return nil, providerUtils.NewBifrostOperationError("model is required for a gemini live session", nil)
 	}
 	translator, err := newLiveTranslator(model)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create the gemini live translator", err)
+	}
+	return translator, nil
+}
+
+// NewLiveTranslatorForModelPath returns the per-connection translator for a Live host that names models by
+// a resource path, such as Vertex AI's projects/<project>/locations/<location>/publishers/google/models/<model>.
+// model is the short name the client sees, and modelPath is what the setup frame carries.
+func NewLiveTranslatorForModelPath(model, modelPath string) (schemas.RealtimeTranslator, error) {
+	if strings.TrimSpace(model) == "" || strings.TrimSpace(modelPath) == "" {
+		return nil, errors.New("a live session needs a model and the path that names it")
+	}
+	translator, err := newLiveTranslatorWithModelPath(model, modelPath)
+	if err != nil {
+		return nil, err
 	}
 	return translator, nil
 }

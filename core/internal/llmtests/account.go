@@ -432,6 +432,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
+				// The Live models are served from the "us" multi-region pool.
+				Models: []string{"gemini-3.8-live"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION_LIVE", "us")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
+				},
+			},
+			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"veo-3.1-generate-preview"},
 				Weight: 1.0,

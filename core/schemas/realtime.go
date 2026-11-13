@@ -414,9 +414,10 @@ type RealtimeTranslator interface {
 // The relay then applies the OpenAI Realtime rules (turn start, forwarding, usage) to the translated
 // stream instead of the provider's own, and does not call the provider's ToBifrostRealtimeEvent or
 // ToProviderRealtimeEvent for WebSocket connections. Translation is WebSocket only, so the provider
-// must report SupportsRealtimeWebRTC as false. model is the resolved model, after aliasing.
+// must report SupportsRealtimeWebRTC as false. model is the resolved model, after aliasing, and ctx is the
+// connection's context, which carries what the alias resolved to, such as a project or a region.
 type RealtimeTranslatorProvider interface {
-	NewRealtimeTranslator(key Key, model string) (RealtimeTranslator, *BifrostError)
+	NewRealtimeTranslator(ctx *BifrostContext, key Key, model string) (RealtimeTranslator, *BifrostError)
 }
 
 // RealtimeTranslationSelector is optional for a RealtimeTranslatorProvider that serves some sessions

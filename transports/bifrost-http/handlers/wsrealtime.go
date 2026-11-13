@@ -570,7 +570,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	var translator schemas.RealtimeTranslator
 	if !clientConn.native {
 		var translatorErr *schemas.BifrostError
-		if translator, translatorErr = newRealtimeTranslator(rtProvider, key, model, intent); translatorErr != nil {
+		if translator, translatorErr = newRealtimeTranslator(bifrostCtx, rtProvider, key, model, intent); translatorErr != nil {
 			clientConn.writeRealtimeError(translatorErr)
 			return
 		}
