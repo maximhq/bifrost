@@ -3,6 +3,7 @@ package huggingface
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -88,7 +89,7 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 
 			// Handle extra params for nebius
 			if bifrostReq.Params.ExtraParams != nil {
-				req.ExtraParams = bifrostReq.Params.ExtraParams
+				req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 				// Map num_inference_steps
 				if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_inference_steps"]); ok {
 					delete(req.ExtraParams, "num_inference_steps")
@@ -125,7 +126,7 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 			Inputs: bifrostReq.Input.Prompt,
 		}
 		if bifrostReq.Params != nil {
-			req.ExtraParams = bifrostReq.Params.ExtraParams
+			req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		}
 		return req, nil
 
@@ -196,7 +197,7 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 
 			// Parse fal-ai specific params from ExtraParams
 			if bifrostReq.Params.ExtraParams != nil {
-				req.ExtraParams = bifrostReq.Params.ExtraParams
+				req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 				// Map guidance_scale
 				if v, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
 					delete(req.ExtraParams, "guidance_scale")
@@ -231,7 +232,7 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 		}
 
 		if bifrostReq.Params != nil {
-			req.ExtraParams = bifrostReq.Params.ExtraParams
+			req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if bifrostReq.Params.ResponseFormat != nil {
 				req.ResponseFormat = bifrostReq.Params.ResponseFormat
 			}
@@ -268,7 +269,7 @@ func ToHuggingFaceImageStreamRequest(bifrostReq *schemas.BifrostImageGenerationR
 	}
 
 	if bifrostReq.Params != nil {
-		req.ExtraParams = bifrostReq.Params.ExtraParams
+		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		// Map n to num_images for fal-ai
 		if bifrostReq.Params.N != nil {
 			req.NumImages = bifrostReq.Params.N
@@ -550,7 +551,7 @@ func ToHuggingFaceImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) 
 	// Check for explicit override in ExtraParams
 	var useMultiImage *bool
 	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
-		req.ExtraParams = bifrostReq.Params.ExtraParams
+		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		if v, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_image_urls"]); ok {
 			delete(req.ExtraParams, "use_image_urls")
 			useMultiImage = v
