@@ -121,7 +121,8 @@
 		"searching": "Searching…",
 		"loadingMore": "Loading more…",
 		"useModel": "Use <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blocked"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} blocked",
+		"templateUnknownGroup": "References capture group {{group}}, which the pattern does not define"
 	},
 	"providerSelect": {
 		"select": "Select provider",
@@ -377,7 +378,8 @@
 		"baseUrlIsRequiredForThisProvider": "Base URL is required for this provider",
 		"baseUrlMustStartWithHttpOrHttps": "Base URL must start with http:// or https://",
 		"atLeastOneApiKeyIsRequired": "At least one API key is required",
-		"apiKeyValueCannotBeEmpty": "API key value cannot be empty"
+		"apiKeyValueCannotBeEmpty": "API key value cannot be empty",
+		"deploymentPatternInvalid": "A deployment pattern is invalid or its model ID uses a capture group the pattern does not define"
 	},
 	"permissionDenied": {
 		"create": "You don't have permission to create {{entity}}.",

@@ -255,7 +255,11 @@
 			"vertexEndpoint": "ID o URL del endpoint de Vertex",
 			"vertexEndpointHint": "El ID de modelo de arriba es el nombre del modelo servido que se envía en el cuerpo. Usa las credenciales de Google de esta clave. Admite chat y la conversión de Responses a chat.",
 			"vertexEndpointPlaceholder": "2222222222 o https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Introduce un ID de endpoint de Vertex o pega una URL de endpoint compatible."
+			"vertexEndpointInvalid": "Introduce un ID de endpoint de Vertex o pega una URL de endpoint compatible.",
+			"patternBadge": "Patrón",
+			"patternHint": "Empieza un nombre con regex: para cubrir muchos modelos. En el ID del modelo, $1 inserta el primer grupo de captura: regex:(claude-.*) con global.anthropic.$1 envía claude-opus-5 como global.anthropic.claude-opus-5. Los modelos permitidos de la clave también deben incluir esos nombres.",
+			"canonicalPatternPlaceholder": "por ejemplo $1",
+			"canonicalModelNamePatternHint": "El nombre canónico usado para el enrutamiento y los precios. Puede usar grupos de captura como $1. Si se deja vacío, se usa el ID de modelo expandido."
 		},
 		"saveChanges": "Guardar cambios",
 		"saving": "Salvando...",
@@ -727,6 +731,7 @@
 			"projectIdOptional": "Identificación del proyecto (opcional)",
 			"mantleProjectHelp": "Inferencia de los escoceses y lista de modelos a un proyecto específico de Bedrock (enviado como el encabezado OpenAI-Project / antropic-workspace-id). Dejar vacío para utilizar el proyecto predeterminado de la cuenta.",
 			"oauthM2mHelp": "Databricks recomienda OAuth machine-to-machine para la producción. Tokens se acuñan desde el punto final del espacio de trabajo O ID C y se refrescan automáticamente.",
+			"databricksScopesHelp": "Déjelo vacío para solicitar all-apis. Si el secreto OAuth de la entidad de servicio se creó con scopes, indíquelos aquí. Databricks rechaza una solicitud de token que nombre un scope que el secreto no tiene. Model Serving necesita model-serving, Unity AI Gateway necesita ai-gateway y las decisiones necesitan ai-functions.",
 			"vllmUrlPlaceholder": "http://vllm-server:8000",
 			"vllmModelPlaceholder": "meta-llama/Llama-3-70b-hf",
 			"databricksWorkspacePlaceholder": "https://dbc-1234abcd-5678.cloud.databricks.com",
@@ -1349,6 +1354,8 @@
 		"deletedAfterExpiry": "· se elimina automáticamente tras caducar",
 		"viewSpend": "Ver gasto",
 		"noAgentsGranted": "Sin agentes autorizados",
+		"virtualMcps": "MCP virtuales",
+		"noVirtualMcpsAssigned": "No hay MCP virtuales asignados",
 		"fiscalYearStarts": "El año fiscal empieza en {{month}}",
 		"assignedUserEmail": "Correo electrónico del usuario asignado",
 		"leavesGoverningOwner": "Los proveedores, presupuestos y límites de solicitudes de esta clave proceden del perfil de acceso de su propietario; no tiene configuración propia.",
@@ -2163,7 +2170,7 @@
 	},
 	"budgetUsageReset": {
 		"title": "¿Restablecer el uso del presupuesto?",
-		"description": "Has cambiado el importe del presupuesto o la frecuencia de restablecimiento de este {{owner}}. Restablece el uso actual a 0 o conserva los contadores existentes. En ambos casos, la ventana de restablecimiento mantiene su inicio y fin actuales."
+		"description": "Cambiaste los presupuestos de este {{owner}}. Restablecer pone a 0 el uso actual de cada presupuesto. Conservar mantiene los contadores existentes. La ventana de reinicio conserva su inicio y fin actuales en ambos casos."
 	},
 	"decisionModel": {
 		"searchDecisionModels": "Buscar modelos de decisión…",

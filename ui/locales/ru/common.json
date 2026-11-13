@@ -125,7 +125,8 @@
 		"searching": "Поиск…",
 		"loadingMore": "Загрузка ещё…",
 		"useModel": "Использовать <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}"
+		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}",
+		"templateUnknownGroup": "Ссылается на группу захвата {{group}}, которой нет в шаблоне"
 	},
 	"providerSelect": {
 		"select": "Выберите провайдер",
@@ -599,7 +600,8 @@
 		"baseUrlIsRequiredForThisProvider": "Для этого провайдера необходимо указать базовый URL",
 		"baseUrlMustStartWithHttpOrHttps": "Базовый URL должен начинаться с http:// или https://",
 		"atLeastOneApiKeyIsRequired": "Необходимо указать хотя бы один API-ключ",
-		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым"
+		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым",
+		"deploymentPatternInvalid": "Шаблон развёртывания недействителен или ID модели использует группу захвата, которой нет в шаблоне"
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",

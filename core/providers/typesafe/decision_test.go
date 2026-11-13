@@ -1851,14 +1851,17 @@ func TestToTypesafeDecisionRequestListOnlyDetails(t *testing.T) {
 	}
 }
 
-// TestToTypesafeDecisionRequestRejectsNonTextInput pins that an image, or a
-// part of a type Bifrost does not model such as audio, is a 400 for the
+// TestToTypesafeDecisionRequestRejectsNonTextInput pins that an image, a file,
+// or a part of a type Bifrost does not model such as audio, is a 400 for the
 // Typesafe attempt rather than its encoding sent as state, so a fallback that
-// reads it can serve the request. The audio part is synthetic.
+// reads it can serve the request. Every Typesafe-based provider (Cloudflare,
+// Perplexity, OpenRouter, Databricks, Baseten, Ollama, vLLM, SGLang) sends a
+// file through this converter. The audio part is synthetic.
 func TestToTypesafeDecisionRequestRejectsNonTextInput(t *testing.T) {
 	for partType, input := range map[string]string{
 		"input_image": `[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
 		"input_audio": `[{"role":"user","content":[{"type":"input_text","text":"listen"},{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]`,
+		"input_file":  `[{"role":"user","content":[{"type":"input_text","text":"read"},{"type":"input_file","data":"JVBERg==","mime_type":"application/pdf"}]}]`,
 		"untyped":     `[{"role":"user","content":[{"image_url":"data:image/png;base64,AAAA"}]}]`,
 	} {
 		req := &schemas.BifrostDecisionRequest{
