@@ -1133,14 +1133,9 @@ expect_render_failure "model routers: schema requires semantic for enabled sugge
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":true,"provider":"openai","model":"gpt-4.1-mini"}}]'
 expect_render_failure "model routers: schema requires a model for enabled suggestions" "llm" \
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support","keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},"suggestions":{"enabled":true}}]'
-# The complexity config's phrase suggestion settings pass the schema and render under its key.
-check_config "complexity analyzer: suggestions render under governance.complexity_analyzer_config" \
-  'assert cfg["governance"]["complexity_analyzer_config"]["suggestions"] == {"enabled": True, "lookback_days": 7, "provider": "openai", "model": "gpt-4.1-mini"}, "suggestions changed: %r" % cfg["governance"]["complexity_analyzer_config"].get("suggestions")' \
-  --set-json 'bifrost.governance.complexityAnalyzerConfig={"keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},"suggestions":{"enabled":true,"lookback_days":7,"provider":"openai","model":"gpt-4.1-mini"}}'
-expect_render_failure "complexity analyzer: schema requires semantic for enabled suggestions" "semantic" \
-  --set-json 'bifrost.governance.complexityAnalyzerConfig={"keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":true,"provider":"openai","model":"gpt-4.1-mini"}}'
-expect_render_failure "complexity analyzer: schema requires a model for enabled suggestions" "llm" \
-  --set-json 'bifrost.governance.complexityAnalyzerConfig={"keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},"suggestions":{"enabled":true}}'
+# Phrase suggestions are set per model router; the complexity config takes none.
+expect_render_failure "complexity analyzer: schema rejects suggestions, which only model routers make" "suggestions" \
+  --set-json 'bifrost.governance.complexityAnalyzerConfig={"keywords":{"simple_keywords":["a"],"medium_keywords":["b"],"complex_keywords":["c"]},"suggestions":{"enabled":true,"lookback_days":7}}'
 
 # 10. ServiceMonitor
 echo ""

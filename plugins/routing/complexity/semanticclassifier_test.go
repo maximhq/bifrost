@@ -1258,7 +1258,15 @@ func readySemanticClassifier(tb testing.TB) *SemanticClassifier {
 // configured as Bifrost's top-level vector store (nil for none).
 func readySemanticClassifierWithStore(tb testing.TB, configured vectorstore.VectorStore) *SemanticClassifier {
 	tb.Helper()
+	return readySemanticClassifierFor(tb, configured, testCaptureRouter)
+}
+
+// readySemanticClassifierFor is readySemanticClassifierWithStore for the model
+// router routerID; empty is a classifier that serves no router.
+func readySemanticClassifierFor(tb testing.TB, configured vectorstore.VectorStore, routerID string) *SemanticClassifier {
+	tb.Helper()
 	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	classifier.SetCaptureRouter(routerID)
 	tb.Cleanup(func() { _ = classifier.Close() })
 	classifier.SetEmbeddingFunc(testSemanticEmbedding)
 	if configured != nil {
@@ -1274,6 +1282,23 @@ func readySemanticClassifierWithStore(tb testing.TB, configured vectorstore.Vect
 		time.Sleep(5 * time.Millisecond)
 	}
 	return classifier
+}
+
+// A classifier that serves no model router, such as the Complexity Router
+// page's config, captures nothing even with capture wired and on.
+func TestSemanticClassifierWithoutRouterCapturesNothing(t *testing.T) {
+	configured := newCaptureTestStore(t)
+	classifier := readySemanticClassifierFor(t, configured, "")
+	capture := newCaptureTest(t)
+	capture.Configure(&CaptureConfig{SampleRate: 1})
+	classifier.SetRequestCapture(capture)
+
+	result, err := classifier.Classify(requestCtx("req-1"), ComplexityInput{LastUserText: "medium request"})
+	require.NoError(t, err)
+	require.NotNil(t, result, "it still classifies without a router")
+	assert.Equal(t, TierMedium, result.Tier)
+	assert.Zero(t, capture.Stats().Queued)
+	assert.True(t, classifier.Serving(), "it still serves without capture")
 }
 
 // TestSemanticClassifierCapturesClassifiedRequests checks the capture hook
@@ -1294,7 +1319,7 @@ func TestSemanticClassifierCapturesClassifiedRequests(t *testing.T) {
 	waitWritten(t, capture, 1)
 
 	_, store, namespace := classifier.captureTarget()
-	assert.Equal(t, CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1), namespace)
+	assert.Equal(t, CaptureNamespace(testCaptureRouter, "openai", "test-embedding-model", testSemanticDimension, 1), namespace)
 	assert.Same(t, configured, store, "captures go to the configured vector store")
 	got, err := store.GetChunk(context.Background(), namespace, capturePointID("req-42"))
 	require.NoError(t, err)
@@ -1315,7 +1340,7 @@ func TestSemanticClassifierCapturesClassifiedRequests(t *testing.T) {
 // its captured vector removed from the configured store.
 func TestSemanticClassifierForgetsCapturesWithNothingServing(t *testing.T) {
 	store := newCaptureTestStore(t)
-	ns := CaptureNamespace("openai", "m", 2, 1)
+	ns := CaptureNamespace(testCaptureRouter, "openai", "m", 2, 1)
 	capture := newCaptureTest(t)
 	capture.Configure(&CaptureConfig{SampleRate: 1})
 	capture.offer(requestCtx("req-7"), store, ns, 2, []float32{1, 0})
@@ -1350,7 +1375,7 @@ func TestSemanticClassifierCleansCapturesWhileInactive(t *testing.T) {
 		require.NoError(t, err)
 	}
 	waitWritten(t, capture, 2)
-	namespace := CaptureNamespace("openai", "test-embedding-model", testSemanticDimension, 1)
+	namespace := CaptureNamespace(testCaptureRouter, "openai", "test-embedding-model", testSemanticDimension, 1)
 
 	off := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
 	off.Semantic = nil

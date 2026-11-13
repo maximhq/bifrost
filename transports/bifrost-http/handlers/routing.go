@@ -379,8 +379,17 @@ func (h *RoutingHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, defaults)
 		return
 	}
-	SendJSON(ctx, cfg)
+	// A suggestions block saved before they moved to model routers is not
+	// served: it does nothing, and a client that saves back what it read
+	// would be refused for it.
+	served := *cfg
+	served.Suggestions = nil
+	SendJSON(ctx, served)
 }
+
+// complexityConfigSuggestionsError refuses a suggestions block on the
+// complexity analyzer config: phrase suggestions are made for model routers.
+const complexityConfigSuggestionsError = "phrase suggestions are set per model router (suggestions on /api/routing/model-routers/{id}), not on the complexity analyzer config"
 
 func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
@@ -397,6 +406,10 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request format: multiple JSON values")
+		return
+	}
+	if payload.Suggestions != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, complexityConfigSuggestionsError)
 		return
 	}
 

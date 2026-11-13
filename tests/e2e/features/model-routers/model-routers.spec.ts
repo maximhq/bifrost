@@ -305,110 +305,24 @@ test.describe('Routers', () => {
     expect(routingBodies[0]).not.toHaveProperty('enabled')
   })
 
-  test('should classify labelled requests on the Test tab', async ({ page }) => {
-    let classifyBody: Record<string, unknown> | undefined
-    await page.route(
-      (url) => url.pathname === '/api/routing/model-routers/support/classify',
-      (route) => {
-        classifyBody = route.request().postDataJSON() as Record<string, unknown>
-        return route.fulfill({
-          json: {
-            router_id: 'support',
-            router_name: 'Support',
-            classifier: 'decision',
-            results: [
-              { index: 0, id: '1', text: 'hi', expected_tier: 'SIMPLE', correct: true, tier: 'SIMPLE', mechanism: 'decision', model: 'typesafe/jev-latest', confidence: 0.92 },
-              { index: 1, id: '2', text: 'design a cache', expected_tier: 'COMPLEX', correct: false, tier: 'MEDIUM', mechanism: 'decision' },
-            ],
-            summary: { total: 2, tiers: { SIMPLE: 1, MEDIUM: 1, COMPLEX: 0, UNCLASSIFIED: 0 }, labeled: 2, correct: 1, accuracy: 0.5 },
-          },
-        })
-      },
-    )
-    await page.goto('/workspace/model-routers?router=support&tab=test')
-    await page.getByTestId('model-router-test-input').fill('SIMPLE: hi\nCOMPLEX: design a cache')
-    await page.getByTestId('model-router-test-run').click()
-
-    await expect(page.getByTestId('model-router-test-accuracy')).toContainText('1 of 2')
-    // The model that answered, beside how; the tier's routing target in its own column.
-    await expect(page.getByTestId('model-router-test-decided-by-0')).toHaveText('Decision model · typesafe/jev-latest · 0.92')
-    await expect(page.getByTestId('model-router-test')).toContainText('Routes to')
-    await expect(page.getByTestId('model-router-test-result-0')).toContainText('openai/gpt-4o-mini')
-    await expect(page.getByTestId('model-router-test-result-1')).toContainText('expected')
-    expect(classifyBody).toEqual({
-      inputs: [
-        { id: '1', text: 'hi', expected_tier: 'SIMPLE' },
-        { id: '2', text: 'design a cache', expected_tier: 'COMPLEX' },
-      ],
-    })
-  })
-
-  test('should not show a run\'s answers under text edited while it ran', async ({ page }) => {
-    let release: () => void = () => {}
-    const held = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    await page.route(
-      (url) => url.pathname === '/api/routing/model-routers/support/classify',
-      async (route) => {
-        await held
-        return route.fulfill({
-          json: {
-            router_id: 'support',
-            router_name: 'Support',
-            classifier: 'semantic',
-            results: [{ index: 0, id: '1', text: 'hi', tier: 'SIMPLE', mechanism: 'semantic', score: 0.93 }],
-            summary: { total: 1, tiers: { SIMPLE: 1, MEDIUM: 0, COMPLEX: 0, UNCLASSIFIED: 0 }, labeled: 0, correct: 0 },
-          },
-        })
-      },
-    )
-    await page.goto('/workspace/model-routers?router=support&tab=test')
-    const input = page.getByTestId('model-router-test-input')
-    await input.fill('hi')
-    await page.getByTestId('model-router-test-run').click()
-    await input.fill('design a cache')
-    release()
-    // The run for "hi" ended, but its answers are not for "design a cache".
-    await expect(page.getByTestId('model-router-test-run')).toBeEnabled()
-    await expect(page.getByTestId('model-router-test-summary')).toHaveCount(0)
-    await expect(page.getByTestId('model-router-test-result-0')).toHaveCount(0)
-  })
-
-  test('should count a router as tested only once a Test run succeeds', async ({ page }) => {
-    let fail = true
-    await page.route(
-      (url) => url.pathname === '/api/routing/model-routers/billing/classify',
-      (route) =>
-        fail
-          ? route.fulfill({ status: 503, json: { is_bifrost_error: false, error: { message: 'the decision model is unavailable' } } })
-          : route.fulfill({
-              json: {
-                router_id: 'billing',
-                router_name: 'Billing',
-                classifier: 'semantic',
-                results: [{ index: 0, id: '1', text: 'hi', tier: 'SIMPLE', mechanism: 'semantic', score: 0.93 }],
-                summary: { total: 1, tiers: { SIMPLE: 1, MEDIUM: 0, COMPLEX: 0, UNCLASSIFIED: 0 }, labeled: 0, correct: 0 },
-              },
-            }),
-    )
-    await page.goto('/workspace/model-routers?router=billing&tab=test')
-    await page.getByTestId('model-router-test-input').fill('hi')
-    await page.getByTestId('model-router-test-run').click()
-    await expect(page.getByTestId('model-router-test-error')).toContainText(/the decision model is unavailable/i)
-    await page.getByTestId('model-router-tab-overview').click()
-    await expect(page.getByTestId('model-router-setup-test')).toHaveAttribute('data-done', 'false')
-
-    fail = false
-    await page.getByTestId('model-router-tab-test').click()
-    await page.getByTestId('model-router-test-input').fill('hi')
-    await page.getByTestId('model-router-test-run').click()
-    await expect(page.getByTestId('model-router-test-summary')).toBeVisible()
-    await page.getByTestId('model-router-tab-overview').click()
-    await expect(page.getByTestId('model-router-setup-test')).toHaveAttribute('data-done', 'true')
-  })
-
   test('should point the Complexity Router page at Routers', async ({ page }) => {
+    // The Complexity Router page reads its own saved config and classifier
+    // status, which are mocked like the routers so the notice does not depend
+    // on what the gateway holds.
+    await page.route(
+      (url) => url.pathname === '/api/routing/complexity-analyzer-config',
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        await route.fulfill({ json: { classifier: 'semantic', keywords: KEYWORDS } })
+      },
+    )
+    await page.route(
+      (url) => url.pathname === '/api/routing/complexity-analyzer-status',
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        await route.fulfill({ json: { state: 'ready', loaded: 3, total: 3, cached_phrases: 3 } })
+      },
+    )
     await page.goto('/workspace/complexity-router')
     await expect(page.getByTestId('complexity-router-routers-notice')).toBeVisible()
     await page.getByTestId('complexity-router-routers-notice-link').click()

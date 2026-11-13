@@ -20,7 +20,8 @@ import (
 // routing rules read complexity_tier from, is served by the plugin's own
 // fields, the ones it had before routers existed; complexityRuntime views
 // them as a runtime with no id, so one classification path serves both.
-// Request capture and phrase suggestions follow that config only.
+// Request capture and phrase suggestions are a model router's only: each
+// captures its own classified requests (see complexitycapture.go).
 type modelRouterRuntime struct {
 	id             string // "" for the Complexity Router page's config
 	name           *atomic.Pointer[string]
@@ -29,7 +30,8 @@ type modelRouterRuntime struct {
 	sessionEnabled *atomic.Bool
 	semantic       *complexity.SemanticClassifier
 	llm            *complexity.LLMClassifier
-	shared         bool // a view over the plugin's own fields, closed by Cleanup
+	capture        *complexity.RequestCapture // nil for the Complexity Router page's config, or when capture is not started
+	shared         bool                       // a view over the plugin's own fields, closed by Cleanup
 }
 
 // modelRouterState is the state a model router owns.
@@ -173,6 +175,7 @@ func applyRouterConfig(rt *modelRouterRuntime, resolved *complexity.AnalyzerConf
 		}
 		rt.semantic.Configure(semanticConfig)
 	}
+	configureRouterCapture(rt, resolved)
 	if rt.llm != nil {
 		rt.llm.Configure(resolved)
 	}
@@ -181,8 +184,8 @@ func applyRouterConfig(rt *modelRouterRuntime, resolved *complexity.AnalyzerConf
 // newModelRouterRuntime builds a router's classifiers with the collaborators
 // the plugin's own classifier was given: the warm coordinator, the embedding
 // width store, the generation registry, and whatever embedding and chat
-// executors are wired. Request capture is not wired: phrase suggestions are
-// made for the Complexity Router page's config only.
+// executors are wired, and a request capture of its own for phrase
+// suggestions.
 func (p *RoutingPlugin) newModelRouterRuntime(id string) *modelRouterRuntime {
 	ctx := p.runtimeCtx
 	if ctx == nil {
@@ -208,6 +211,7 @@ func (p *RoutingPlugin) newModelRouterRuntime(id string) *modelRouterRuntime {
 	} else if store != nil {
 		semantic.SetConfiguredStore(store)
 	}
+	capture := p.newRouterCapture(id, semantic)
 	llm := complexity.NewLLMClassifier(p.logger)
 	if p.chatExecutor() != nil {
 		llm.SetChatFunc(p.classifyComplexityTextViaLLM)
@@ -220,18 +224,23 @@ func (p *RoutingPlugin) newModelRouterRuntime(id string) *modelRouterRuntime {
 		sessionEnabled: &state.sessionEnabled,
 		semantic:       semantic,
 		llm:            llm,
+		capture:        capture,
 	}
 }
 
-// close stops a router's classifiers. The Complexity Router page's are the
-// plugin's and are closed by Cleanup.
+// close stops a router's classifiers and lets its capture finish writing what
+// it queued. The Complexity Router page's are the plugin's and are closed by
+// Cleanup.
 func (rt *modelRouterRuntime) close(logger schemas.Logger) {
-	if rt.shared || rt.semantic == nil {
+	if rt.shared {
 		return
 	}
-	if err := rt.semantic.Close(); err != nil && logger != nil {
-		logger.Warn("[Routing] failed to close model router %q semantic classifier: %v", rt.id, err)
+	if rt.semantic != nil {
+		if err := rt.semantic.Close(); err != nil && logger != nil {
+			logger.Warn("[Routing] failed to close model router %q semantic classifier: %v", rt.id, err)
+		}
 	}
+	rt.capture.Close()
 }
 
 // ReloadModelRouter serves a saved router: built the first time it is seen
@@ -317,8 +326,9 @@ func (p *RoutingPlugin) SetModelRouterTargets(id string, targets []configstoreTa
 	return nil
 }
 
-// RemoveModelRouter stops serving a router and closes its classifiers.
-// Removing one not served is a no-op.
+// RemoveModelRouter stops serving a deleted router, closes its classifiers
+// and drops what it captured. Removing one not served still drops its
+// captures, which another node may have written.
 func (p *RoutingPlugin) RemoveModelRouter(id string) error {
 	p.routersMu.Lock()
 	if p.routerMatcher != nil {
@@ -339,6 +349,7 @@ func (p *RoutingPlugin) RemoveModelRouter(id string) error {
 	if exists {
 		rt.close(p.logger)
 	}
+	p.dropRouterCaptures(id)
 	return nil
 }
 

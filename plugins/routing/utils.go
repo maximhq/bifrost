@@ -78,7 +78,17 @@ func resolveAnalyzerConfigFromStoreOrArg(
 	override *complexity.AnalyzerConfig,
 ) *complexity.AnalyzerConfig {
 	if override != nil {
-		cfg, err := complexity.ValidateAndNormalize(override)
+		// The config makes no phrase suggestions (see
+		// storeComplexityAnalyzerConfig), so a suggestions block written before
+		// they moved to model routers is not validated: one without a model
+		// would otherwise reject the whole override. The caller's copy keeps it.
+		checked := override
+		if override.Suggestions != nil {
+			withoutSuggestions := *override
+			withoutSuggestions.Suggestions = nil
+			checked = &withoutSuggestions
+		}
+		cfg, err := complexity.ValidateAndNormalize(checked)
 		if err != nil {
 			if logger != nil {
 				logger.Warn("invalid complexity analyzer config from routing config: %v", err)

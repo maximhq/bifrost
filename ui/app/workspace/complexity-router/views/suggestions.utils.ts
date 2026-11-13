@@ -164,6 +164,8 @@ export function runInProgress(run: Pick<SuggestionRun, "status"> | undefined): b
 export function runProgress(run: Pick<SuggestionRun, "status" | "stage" | "clusters_asked" | "clusters_done">): number {
 	if (run.status === "queued") return 0;
 	switch (run.stage) {
+		case "backfilling":
+			return 0.02;
 		case "reading":
 			return 0.05;
 		case "clustering":
@@ -225,9 +227,13 @@ export function runBreakdown(run: SuggestionRun): BreakdownRow[] {
 	return rows.filter((row) => row.kind !== "minus" || row.value > 0);
 }
 
-// draftBank is the whole draft phrase bank as an impact replay takes it.
-export function draftBank(keywords: EditableKeywordConfig): { tier: DecisionTier; text: string }[] {
-	return COMPLEXITY_TIER_VALUES.flatMap((tier) =>
-		keywords[TIER_LIST_KEYS[tier]].filter((text) => text.trim() !== "").map((text) => ({ tier, text })),
-	);
+// stagedAdditions is the staged suggestions' phrases by tier, as an impact
+// replay takes them: added to the router's saved phrases for the replay only.
+export function stagedAdditions(staged: StagedSuggestion[]): Partial<Record<DecisionTier, string[]>> {
+	const out: Partial<Record<DecisionTier, string[]>> = {};
+	for (const entry of staged) {
+		const phrases = entry.phrases.map((text) => text.trim()).filter((text) => text !== "");
+		if (phrases.length > 0) out[entry.tier] = [...(out[entry.tier] ?? []), ...phrases];
+	}
+	return out;
 }

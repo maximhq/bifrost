@@ -305,7 +305,7 @@ complexity:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.
     tags:
       - Routing
     requestBody:
@@ -594,12 +594,11 @@ complexity-suggestions:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: status
         in: query
         required: false
@@ -670,12 +669,11 @@ complexity-suggestion:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -723,12 +721,11 @@ complexity-suggestion-status:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: suggestion_id
         in: path
         required: true
@@ -794,12 +791,11 @@ complexity-suggestion-test:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
     requestBody:
       required: true
       content:
@@ -860,12 +856,11 @@ complexity-suggestion-runs:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: limit
         in: query
         required: false
@@ -935,12 +930,11 @@ complexity-suggestion-runs:
           type: string
           example: 7d
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
     responses:
       '404':
         description: The model router does not exist
@@ -998,12 +992,11 @@ complexity-suggestion-run-estimate:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router the suggestions belong to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: window
         in: query
         required: false
@@ -1547,12 +1540,11 @@ complexity-suggestion-run-cancel:
         schema:
           type: string
       - name: router_id
-        in: query
-        required: false
-        description: The model router the run belongs to. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
     responses:
       '200':
         description: Run cancelled, or asked to stop
@@ -1591,9 +1583,9 @@ complexity-suggestion-impact:
         | `Governance:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
-    summary: Replay a draft phrase bank against recent traffic
+    summary: Check what phrases would do to recent traffic
     description: |
-      Routes the router's captured requests from the window, by nearest phrase, against the live phrase bank and against a draft bank, and reports what would change without saving anything: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.
+      Adds the phrases given, by tier, to the router's saved phrases for this replay only, routes the router's captured requests from the window, by nearest phrase, against the saved bank and against the bank with the phrases added, and reports what would change. Nothing is saved: the phrases are dropped after the replay, and only the add phrases endpoint saves phrases. A phrase its tier already holds is skipped and reported; one another tier holds is refused. A window that reaches back before the router captured requests is first filled from its logs. Reported: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.
 
       Only requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.
     tags:
@@ -1603,12 +1595,11 @@ complexity-suggestion-impact:
       - BasicAuth: []
     parameters:
       - name: router_id
-        in: query
-        required: false
-        description: The model router to replay. Defaults to the gateway's one router, `default`; an unknown router is 404.
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
         schema:
           type: string
-          default: default
       - name: window
         in: query
         required: false
@@ -1630,7 +1621,7 @@ complexity-suggestion-impact:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionImpact'
       '400':
-        description: An empty or oversized draft, a phrase without text or a valid tier, or a window that is not a duration or is longer than the lookback
+        description: No phrases, an empty or too-long phrase, an unknown tier, a phrase another tier already holds, a bank past its phrase limit, or a window that is not a duration or is longer than the lookback
         content:
           application/json:
             schema:
@@ -1655,6 +1646,77 @@ complexity-suggestion-impact:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
         description: The router has no warmed phrase bank, or suggestions are not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-router-phrases:
+  post:
+    operationId: addModelRouterPhrases
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add phrases to a model router
+    description: |
+      Appends phrases, by tier, to the router's saved phrase bank and serves it; the one phrase suggestion endpoint that changes routing. A phrase its tier already holds is skipped and reported. A phrase another tier holds, a bank past its phrase limit, or a suggestion named that is not the router's or not open refuses the request, and nothing is saved. Once the phrases are saved, the suggestions named are marked accepted: the phrases stay saved even when one cannot be (a run superseded it meanwhile, or its status could not be written), and `accepted` lists only those that were. The router is served again even when every phrase was already there, so a retry after a failed reload reaches it. Unknown fields are refused with 400. Changed phrases are re-embedded in the background, as any phrase save is.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/AddModelRouterPhrasesRequest'
+    responses:
+      '200':
+        description: Phrases added and the router served
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/AddModelRouterPhrasesResponse'
+      '400':
+        description: No phrases, an empty or too-long phrase, an unknown tier, a tier given twice, a phrase another tier already holds, or a bank past its phrase limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The router, or a suggestion named, does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: A suggestion named is not open, or the stored router is one this version cannot read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestions named could not be read, the save failed, or the phrases were saved but the router could not be served; a retry saves nothing more and reaches the reload again
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: suggestion_ids were sent while phrase suggestions are unavailable (no routing plugin or log store)
         content:
           application/json:
             schema:

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,7 @@ type ComplexitySuggestionScheduleStore interface {
 
 // complexitySuggestions is the plugin's suggestion-run state.
 type complexitySuggestions struct {
+	backfills sync.Map // router id -> chan struct{}: one backfill per router at a time
 	deps      atomic.Pointer[complexitySuggestionDeps]
 	jobs      atomic.Pointer[complexitySuggestionJobs]
 	schedules atomic.Pointer[ComplexitySuggestionScheduleStore]
@@ -203,14 +205,13 @@ type complexitySuggestionJobMeta struct {
 	Message       string `json:"message,omitempty"`
 }
 
-// suggestionRouter is one router suggestions are made for: its settings and
-// the classifier serving its phrase bank. A gateway has one today, the
-// default router, built from the plugin's own config and classifier; several
-// routers add entries here and nothing else in this file changes.
+// suggestionRouter is one model router suggestions are made for: its settings
+// and the classifier serving its phrase bank, which captures its requests.
 type suggestionRouter struct {
 	id         string
 	config     *complexity.AnalyzerConfig
 	classifier *complexity.SemanticClassifier
+	capture    *complexity.RequestCapture // where a backfill from logs writes
 }
 
 // ErrUnknownComplexityRouter is a suggestion call for a router that does not
@@ -220,19 +221,32 @@ var ErrUnknownComplexityRouter = errors.New("no such model router")
 // ErrComplexitySuggestionWindow is a run window outside what is kept.
 var ErrComplexitySuggestionWindow = errors.New("the run window must be at least one second and no longer than the suggestions lookback")
 
-// suggestionRouters lists the routers suggestions are made for.
+// suggestionRouters lists the routers suggestions are made for: every model
+// router this node serves, by ID. Whether one has suggestions on, and is
+// semantic, is checked where it matters (a run, the schedule), so a router
+// with them off still lists what it had. The Complexity Router page's config
+// is not one: it captures nothing.
 func (p *RoutingPlugin) suggestionRouters() []suggestionRouter {
-	return []suggestionRouter{{id: complexity.DefaultRouterID, config: p.complexityConfig.Load(), classifier: p.semanticClassifier}}
+	routers := p.modelRouters()
+	out := make([]suggestionRouter, 0, len(routers))
+	for _, rt := range routers {
+		out = append(out, suggestionRouterOf(rt))
+	}
+	slices.SortFunc(out, func(a, b suggestionRouter) int { return strings.Compare(a.id, b.id) })
+	return out
 }
 
 // suggestionRouter finds one router by ID.
 func (p *RoutingPlugin) suggestionRouter(id string) (suggestionRouter, bool) {
-	for _, r := range p.suggestionRouters() {
-		if r.id == id {
-			return r, true
-		}
+	rt, ok := p.modelRouter(id)
+	if !ok {
+		return suggestionRouter{}, false
 	}
-	return suggestionRouter{}, false
+	return suggestionRouterOf(rt), true
+}
+
+func suggestionRouterOf(rt *modelRouterRuntime) suggestionRouter {
+	return suggestionRouter{id: rt.id, config: rt.config.Load(), classifier: rt.semantic, capture: rt.capture}
 }
 
 // complexitySuggestionPartition keeps one router's runs in order and apart
@@ -622,7 +636,19 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if err != nil {
 		return suggestrun.Estimate{}, err
 	}
-	return suggestrun.EstimateRun(count, settings), nil
+	// What a run would first embed from logs, as it would plan it.
+	var backfill int
+	if deps := p.suggestionDeps(); deps != nil && router.capture != nil {
+		logs, _ := deps.store.(ComplexitySuggestionRouterLogs)
+		plan, err := p.planBackfill(ctx, router, space, logs, now.Add(-window), now, backfillLimit(router))
+		if err != nil {
+			return suggestrun.Estimate{}, err
+		}
+		backfill = min(plan.missing, backfillLimit(router))
+	}
+	estimate := suggestrun.EstimateRun(count+backfill, settings)
+	estimate.Backfill = backfill
+	return estimate, nil
 }
 
 // TestComplexitySuggestionPhrases routes examples with and without phrases
@@ -912,6 +938,10 @@ func (p *RoutingPlugin) ComplexitySuggestionImpact(ctx context.Context, routerID
 		window = settings.Lookback
 	}
 	now := time.Now()
+	// The replay reads the window as a run would: filled from logs first.
+	if _, err := p.backfillWindow(ctx, router, space, p.suggestionDeps(), now.Add(-window), now); err != nil {
+		return suggestrun.Impact{}, 0, err
+	}
 	impact, err := suggestrun.ReplayImpact(ctx, space, suggestrun.ImpactSettings{
 		From: now.Add(-window), To: now, MinSimilarity: space.MinSimilarity, DraftMinSimilarity: draftMinSimilarity, Draft: draft, Seed: now.UnixNano(),
 	})
@@ -1148,6 +1178,14 @@ func (p *RoutingPlugin) newSuggestionTierDecider(router suggestionRouter) (sugge
 	return &suggest.LLMTierDecider{LLM: adapter, Prompt: prompt}, key, adapter.totalCost, nil
 }
 
+// suggestionDeps is what runs read and write through, nil until set.
+func (p *RoutingPlugin) suggestionDeps() *complexitySuggestionDeps {
+	if p.suggestions == nil {
+		return nil
+	}
+	return p.suggestions.deps.Load()
+}
+
 // runComplexitySuggestions runs one router's suggestion run against its
 // serving embedding space with its current settings.
 func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta complexitySuggestionJobMeta) (suggestrun.Result, error) {
@@ -1205,7 +1243,13 @@ func (p *RoutingPlugin) runComplexitySuggestions(ctx context.Context, meta compl
 		return deps.texts(ctx, ids, space.MessageHistoryCount)
 	}
 	s.Cancelled = func(ctx context.Context) bool { return p.suggestionRunCancelled(ctx, meta.RunID) }
+	s.Backfill = func(ctx context.Context, from, to time.Time) (int, error) {
+		return p.backfillWindow(ctx, router, space, deps, from, to)
+	}
 	result, err := suggestrun.Run(ctx, space, deps.store, texts, llm, s)
+	if err == nil && result.Backfilled > 0 {
+		p.logger.Info("[Routing] phrase suggestion run %s: embedded %d of the window's requests from their logs first", meta.RunID, result.Backfilled)
+	}
 	if err == nil && result.Unmatched > 0 {
 		p.logger.Info("[Routing] phrase suggestion run %s: %d of %d assigned requests matched no cluster; raise max_clustered_requests to cluster more of the window",
 			meta.RunID, result.Unmatched, result.Assigned)

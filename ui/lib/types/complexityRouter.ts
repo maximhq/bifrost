@@ -229,38 +229,6 @@ export interface ModelRouter extends AnalyzerConfig {
 	routing: ModelRouterRouting;
 }
 
-// One statement to classify with a router; expected_tier labels it so the
-// answer can be checked.
-export interface ModelRouterClassifyInput {
-	id?: string;
-	text: string;
-	previous_user_messages?: string[];
-	expected_tier?: DecisionTier;
-}
-
-// What a router decided for one statement, as it is served now.
-export interface ModelRouterClassifyResult {
-	index: number;
-	id?: string;
-	text: string;
-	expected_tier?: string;
-	correct?: boolean;
-	tier?: string;
-	mechanism: string;
-	score?: number;
-	confidence?: number;
-	matched_exemplar?: string;
-	model?: string;
-}
-
-export interface ModelRouterClassifyResponse {
-	router_id: string;
-	router_name: string;
-	classifier: string;
-	results: ModelRouterClassifyResult[];
-	summary: { total: number; tiers: Record<string, number>; labeled: number; correct: number; accuracy?: number };
-}
-
 // What a new router starts from, before anything is saved.
 export interface ModelRouterDefaults {
 	config: AnalyzerConfig;
@@ -627,9 +595,6 @@ export const DEFAULT_SUGGESTION_START_AT = "1970-01-01T03:00:00Z";
 // The intervals the gateway accepts, as config.json and the API spell them.
 export const SUGGESTION_EVERY_PATTERN = /^([1-9]|1[0-9]|2[0-3])h$|^([1-9]|[12][0-9]|30)d$|^[1-4]w$/;
 
-// The router suggestions belong to until a gateway can define several.
-export const DEFAULT_COMPLEXITY_ROUTER_ID = "default";
-
 // Run windows offered for "Run now"; the ones longer than the lookback are
 // left out, since the vectors they would read are gone.
 export const SUGGESTION_RUN_WINDOWS = ["24h", "7d", "14d", "30d"] as const;
@@ -671,7 +636,7 @@ export interface Suggestion {
 // phrase matches.
 export const UNMATCHED_TIER = "none";
 
-export const SUGGESTION_RUN_STAGES = ["reading", "clustering", "suggesting", "saving"] as const;
+export const SUGGESTION_RUN_STAGES = ["backfilling", "reading", "clustering", "suggesting", "saving"] as const;
 export type SuggestionRunStage = (typeof SUGGESTION_RUN_STAGES)[number];
 
 export interface SuggestionRun {
@@ -742,25 +707,6 @@ export interface SuggestionDetail {
 	examples: SuggestionExample[];
 }
 
-export interface PhraseRouting {
-	tier: string;
-	phrase: string;
-	similarity: number;
-	accepted: boolean;
-	candidate: boolean;
-}
-
-export interface PhraseTestRequest {
-	phrases: { tier: DecisionTier; text: string }[];
-	suggestion_id?: string;
-	log_ids?: string[];
-}
-
-export interface PhraseTestResult {
-	phrases: { tier: string; text: string; nearest_existing: PhraseRouting }[];
-	examples: { log_id: string; text: string; current: PhraseRouting; with_phrases: PhraseRouting; changed: boolean }[];
-	taken_over: number;
-}
 export interface SuggestionImpactChange {
 	log_id: string;
 	from: string;
@@ -809,6 +755,10 @@ export interface SuggestionRunEstimate {
 	assigned: number;
 	skipped: number;
 	max_model_calls: number;
+	// How many of the window's requests a run would first embed from their
+	// logs, because they came before the router captured them; counted in
+	// requests.
+	backfill?: number;
 }
 
 /** One model for one tier of a model router. Omitting provider or model keeps the request's value. */

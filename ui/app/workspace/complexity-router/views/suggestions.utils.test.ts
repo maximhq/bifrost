@@ -4,7 +4,7 @@ import {
 	addPhrases,
 	availableWindows,
 	categoryCounts,
-	draftBank,
+	stagedAdditions,
 	filterSuggestions,
 	newPhrases,
 	proposedTier,
@@ -150,6 +150,10 @@ describe("runs", () => {
 		expect(runInProgress(run({ status: "queued" }))).toBe(true);
 		expect(runInProgress(run({ status: "cancelled" }))).toBe(false);
 		expect(runProgress(run({ status: "queued" }))).toBe(0);
+		expect(runProgress(run({ status: "running", stage: "backfilling" }))).toBeGreaterThan(0);
+		expect(runProgress(run({ status: "running", stage: "backfilling" }))).toBeLessThan(
+			runProgress(run({ status: "running", stage: "reading" })),
+		);
 		expect(runProgress(run({ status: "running", stage: "reading" }))).toBeCloseTo(0.05);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 10, clusters_done: 5 }))).toBeCloseTo(0.6);
 		expect(runProgress(run({ status: "running", stage: "suggesting", clusters_asked: 0, clusters_done: 0 }))).toBeCloseTo(0.3);
@@ -191,11 +195,14 @@ describe("runs", () => {
 	});
 });
 
-describe("draft bank", () => {
-	test("every non-blank phrase with its tier", () => {
-		expect(draftBank({ simple_keywords: ["a", " "], medium_keywords: [], complex_keywords: ["c"] })).toEqual([
-			{ tier: "SIMPLE", text: "a" },
-			{ tier: "COMPLEX", text: "c" },
-		]);
+describe("staged additions", () => {
+	test("the staged phrases by tier, trimmed, blanks left out", () => {
+		expect(
+			stagedAdditions([
+				{ id: "s1", tier: "SIMPLE", phrases: ["a", " "] },
+				{ id: "s2", tier: "COMPLEX", phrases: [" c "] },
+				{ id: "s3", tier: "SIMPLE", phrases: ["b"] },
+			]),
+		).toEqual({ SIMPLE: ["a", "b"], COMPLEX: ["c"] });
 	});
 });

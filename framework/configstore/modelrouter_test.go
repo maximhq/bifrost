@@ -2,8 +2,10 @@ package configstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -416,4 +418,206 @@ func TestMigrationAddModelRouterSuggestionTierColumns(t *testing.T) {
 	assert.True(t, back.Suggestions.Enabled)
 	assert.Equal(t, 14, back.Suggestions.LookbackDays)
 	assert.Nil(t, back.Suggestions.Tier, "no tier block was saved, so none reads back")
+}
+
+// EditModelRouter edits the router as stored when it runs, under its row
+// lock: two edits that each add a phrase both land, where reading, editing
+// and saving apart would let the second overwrite the first. An edit that
+// changes nothing writes nothing.
+func TestEditModelRouterBuildsOnTheStoredRouter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+	stale, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+
+	add := func(phrase string) func(*ModelRouter) (bool, error) {
+		return func(r *ModelRouter) (bool, error) {
+			r.Keywords.SimpleKeywords = append(r.Keywords.SimpleKeywords, phrase)
+			return true, nil
+		}
+	}
+	_, err = store.EditModelRouter(ctx, "support", add("first added"))
+	require.NoError(t, err)
+	// A second edit started from the same read as the first still sees it.
+	_, err = store.EditModelRouter(ctx, "support", add("second added"))
+	require.NoError(t, err)
+	got, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, append(append([]string{}, stale.Keywords.SimpleKeywords...), "first added", "second added"), got.Keywords.SimpleKeywords)
+
+	var row tables.TableModelRouter
+	require.NoError(t, store.DB().First(&row, "id = ?", "support").Error)
+	unchanged, err := store.EditModelRouter(ctx, "support", func(*ModelRouter) (bool, error) { return false, nil })
+	require.NoError(t, err)
+	assert.Equal(t, got.Keywords, unchanged.Keywords)
+	var after tables.TableModelRouter
+	require.NoError(t, store.DB().First(&after, "id = ?", "support").Error)
+	assert.True(t, row.UpdatedAt.Equal(after.UpdatedAt), "nothing is written for an edit that changed nothing")
+
+	refused := errors.New("refused")
+	_, err = store.EditModelRouter(ctx, "support", func(r *ModelRouter) (bool, error) {
+		r.Keywords.SimpleKeywords = nil
+		return false, refused
+	})
+	require.ErrorIs(t, err, refused)
+	_, err = store.EditModelRouter(ctx, "missing", add("x"))
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestValidateModelRouterIdentityLimits pins the edges of the identity rules
+// the store's identity cases leave out: the longest id and name that still
+// save, a name counted in characters rather than bytes so a non-Latin name gets
+// the full 255, and the punctuation an id may and may not carry.
+func TestValidateModelRouterIdentityLimits(t *testing.T) {
+	longestID := strings.Repeat("a", 64)
+	longestName := strings.Repeat("語", 255) // 765 bytes
+	cases := []struct {
+		name, id, routerName string
+		wantErr              string
+	}{
+		{"id of 64 characters", longestID, "Support", ""},
+		{"id with dashes, underscores, digits and capitals", "Support_Team-2", "Support", ""},
+		{"id with a dot", "support.team", "Support", "may contain only letters, digits, '-' and '_'"},
+		{"id with a non-ASCII letter", "süpport", "Support", "may contain only letters, digits, '-' and '_'"},
+		{"name of 255 multibyte characters", "support", longestName, ""},
+		{"name of 256 multibyte characters", "support", longestName + "語", "at most 255 characters, got 256"},
+		{"limits are checked after trimming", "  " + longestID + "  ", "  " + longestName + "  ", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateModelRouterIdentity(&ModelRouter{ID: tc.id, Name: tc.routerName})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+
+	t.Run("id, name and description are trimmed in place", func(t *testing.T) {
+		router := ModelRouter{ID: " support ", Name: "\tSupport desk\n", Description: "  Tickets and chat  "}
+		require.NoError(t, ValidateModelRouterIdentity(&router))
+		assert.Equal(t, "support", router.ID)
+		assert.Equal(t, "Support desk", router.Name)
+		assert.Equal(t, "Tickets and chat", router.Description)
+	})
+
+	t.Run("the longest id and name save and read back whole", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter(longestID, longestName)))
+		got, err := store.GetModelRouter(ctx, longestID)
+		require.NoError(t, err)
+		assert.Equal(t, longestID, got.ID)
+		assert.Equal(t, longestName, got.Name)
+	})
+}
+
+// TestModelRouterNameUniqueness pins how two routers' names are compared.
+// Surrounding whitespace is not part of a name, so a padded copy of a taken
+// name is taken too, on create and on rename. Letter case is part of it: the
+// store keeps `Support` and `support` as two routers.
+func TestModelRouterNameUniqueness(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a name that differs only by surrounding whitespace is taken", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter("other", "  Support\t")), ErrAlreadyExists)
+		_, err := store.GetModelRouter(ctx, "other")
+		require.ErrorIs(t, err, ErrNotFound)
+
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
+		require.ErrorIs(t, store.UpdateModelRouter(ctx, testModelRouter("billing", " Support ")), ErrAlreadyExists)
+		got, err := store.GetModelRouter(ctx, "billing")
+		require.NoError(t, err)
+		assert.Equal(t, "Billing", got.Name, "a refused rename keeps the name")
+
+		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter(" support ", "Another")), ErrAlreadyExists,
+			"an id is compared trimmed as well")
+	})
+
+	t.Run("names that differ only by letter case are separate routers", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support-lower", "support")))
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
+		require.NoError(t, store.UpdateModelRouter(ctx, testModelRouter("billing", "SUPPORT")))
+
+		routers, err := store.GetModelRouters(ctx)
+		require.NoError(t, err)
+		names := make(map[string]string, len(routers))
+		for _, router := range routers {
+			names[router.ID] = router.Name
+		}
+		assert.Equal(t, map[string]string{"support": "Support", "support-lower": "support", "billing": "SUPPORT"}, names)
+	})
+}
+
+// TestGetModelRoutersListsOldestFirstWithRoutingAndTargets pins what the list
+// returns: routers in the order they were created, not by id or name, and each
+// one whole, with its own routing and its own targets, as a single read gives.
+func TestGetModelRoutersListsOldestFirstWithRoutingAndTargets(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	zeta := testModelRouter("zeta", "Zeta")
+	zeta.Routing = &ModelRouterRouting{Enabled: true, Scope: "team", ScopeID: bifrost.Ptr("team-1"), CelExpression: `model == "gpt-4o"`, Priority: 4}
+	require.NoError(t, store.CreateModelRouter(ctx, zeta))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("alpha", "Alpha")))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("middle", "Middle")))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "zeta", testModelRouterTargets()))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "alpha", []tables.TableModelRouterTarget{
+		{Tier: tables.ModelRouterTierMedium, Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1},
+	}))
+	// Creation times set apart by hand, in an order no sort by id or name gives.
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i, id := range []string{"zeta", "alpha", "middle"} {
+		require.NoError(t, store.DB().Model(&tables.TableModelRouter{}).Where("id = ?", id).
+			UpdateColumn("created_at", created.Add(time.Duration(i)*time.Hour)).Error)
+	}
+
+	listed, err := store.GetModelRouters(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 3)
+	for i, id := range []string{"zeta", "alpha", "middle"} {
+		assert.Equal(t, id, listed[i].ID, "oldest first")
+		single, err := store.GetModelRouter(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, *single, listed[i], "the list gives the router a single read gives")
+	}
+	assert.Equal(t, zeta.Routing, listed[0].Routing)
+	assert.Len(t, listed[0].Targets, 3)
+	assert.Equal(t, &ModelRouterRouting{Scope: "global", Priority: 0}, listed[1].Routing)
+	require.Len(t, listed[1].Targets, 1)
+	assert.Equal(t, "gpt-4o", derefStr(listed[1].Targets[0].Model))
+	assert.Equal(t, &ModelRouterRouting{Scope: "global", Priority: 1}, listed[2].Routing)
+	assert.Empty(t, listed[2].Targets, "a router without targets lists with none")
+}
+
+// TestDeleteModelRouterFreesNameAndPriority pins that deleting a router gives
+// back everything it held: its priority can go to another router, and its id
+// and name can be used for a new router, which starts from scratch with the
+// default routing and none of the deleted router's targets.
+func TestDeleteModelRouterFreesNameAndPriority(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	held := ModelRouterRouting{Enabled: true, Scope: "global", Priority: 3}
+
+	support := testModelRouter("support", "Support")
+	support.Routing = &held
+	require.NoError(t, store.CreateModelRouter(ctx, support))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "support", testModelRouterTargets()))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
+	require.ErrorIs(t, store.SetModelRouterRouting(ctx, "billing", held), ErrModelRouterPriorityTaken)
+
+	require.NoError(t, store.DeleteModelRouter(ctx, " support "), "the id is trimmed")
+	require.NoError(t, store.SetModelRouterRouting(ctx, "billing", held), "the deleted router's priority is free")
+
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")), "its id and name are free")
+	got, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+	assert.Equal(t, &ModelRouterRouting{Scope: "global", Priority: 4}, got.Routing, "the new router gets the default routing, not the old one")
+	assert.Empty(t, got.Targets, "the deleted router's targets do not come back")
 }

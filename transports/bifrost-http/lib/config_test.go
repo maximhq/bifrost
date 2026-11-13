@@ -20032,6 +20032,10 @@ var excludedGoFields = map[string]map[string]bool{
 		"mcp_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
+	// Phrase suggestions are a model router's: the type is shared with
+	// model_routers entries, whose schema has suggestions, and the complexity
+	// analyzer config's schema refuses them.
+	"configstore.ComplexityAnalyzerConfig": {"suggestions": true},
 	// GovernanceConfig - some fields are internal/enterprise
 	"configstore.GovernanceConfig": {
 		"model_configs": true, // Internal

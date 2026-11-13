@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"slices"
 	"strconv"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"strings"
 )
 
 // Request capture keeps a sample of the vectors the semantic classifier
@@ -122,19 +122,58 @@ type CaptureStats struct {
 // changes: vectors of the old input are not comparable with the new.
 const captureInputVersion = 1
 
-// CaptureNamespace names the capture namespace for one embedding space: the
-// embedding model, and the slice of each request it embeds. Two routers share
-// captured vectors only when both match, because only then is the vector the
-// same; a router that embeds more turns of history writes to its own space.
+// CaptureNamespace names the capture namespace of one model router in one
+// embedding space: the embedding model, and the slice of each request it
+// embeds. A router's namespaces are its own, so its suggestion runs read only
+// the requests it classified, and deleting a router drops its captures; a new
+// embedding space starts a fresh namespace, because old vectors are not
+// comparable with new ones. An empty router ID names nothing: only model
+// routers capture.
 //
 // A captured vector carries no routing verdict (tier, similarity): those are
-// one router's view of the request, they are on its log, and a suggestion run
-// recomputes them against its router's phrase bank. The underscore +
-// hexadecimal suffix is accepted by every backend.
-func CaptureNamespace(provider schemas.ModelProvider, model string, dimension, messageHistoryCount int) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "complexity-capture-v2\x00%s\x00%s\x00%d\x00%d\x00%d",
+// the router's view of the request at the time, they are on its log, and a
+// suggestion run recomputes them against the current phrase bank. The
+// underscore + hexadecimal parts are accepted by every backend.
+func CaptureNamespace(routerID string, provider schemas.ModelProvider, model string, dimension, messageHistoryCount int) string {
+	if routerID == "" {
+		return ""
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "complexity-capture-v3\x00%s\x00%s\x00%d\x00%d\x00%d",
 		provider, model, dimension, max(1, messageHistoryCount), captureInputVersion))
-	return CaptureNamespacePrefix + "_" + hex.EncodeToString(sum[:16])
+	return CaptureRouterPrefix(routerID) + hex.EncodeToString(sum[:16])
+}
+
+// CaptureRouterPrefix starts every capture namespace of one model router.
+func CaptureRouterPrefix(routerID string) string {
+	return CaptureNamespacePrefix + "_" + CaptureRouterKey(routerID) + "_"
+}
+
+// CaptureRouterKey stands for a router ID in its namespace names: a
+// fixed-width hash, since an ID can hold characters a backend refuses in a
+// name.
+func CaptureRouterKey(routerID string) string {
+	sum := sha256.Sum256([]byte("complexity-capture-router\x00" + routerID))
+	return hex.EncodeToString(sum[:8])
+}
+
+// CaptureNamespaceRouterKey returns the router key of a capture namespace,
+// and false for one that is not a router's: one written before captures were
+// per router.
+func CaptureNamespaceRouterKey(namespace string) (string, bool) {
+	rest, ok := strings.CutPrefix(namespace, CaptureNamespacePrefix+"_")
+	if !ok {
+		return "", false
+	}
+	key, space, ok := strings.Cut(rest, "_")
+	if !ok || len(key) != 16 || len(space) != 32 || !isHex(key) || !isHex(space) {
+		return "", false
+	}
+	return key, true
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 type captureItem struct {
@@ -225,6 +264,122 @@ func (c *RequestCapture) Enabled() bool {
 	return c != nil && c.threshold.Load() != 0
 }
 
+// sampledAt reports whether a request falls in the sample a threshold cuts.
+// The draw is a hash of the request ID, not a random number, so the same
+// request is always in or out of a router's sample: a suggestion run's
+// backfill from logs then picks exactly the requests live capture would
+// have, and fills the gaps of a window without sampling it twice. FNV-1a,
+// finished with SplitMix64 so IDs that differ only in their last characters
+// still spread evenly, without allocating on the request path.
+func sampledAt(requestID string, t uint64) bool {
+	if t == math.MaxUint64 {
+		return true
+	}
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(requestID); i++ {
+		h ^= uint64(requestID[i])
+		h *= 1099511628211
+	}
+	h ^= h >> 30
+	h *= 0xbf58476d1ce4e5b9
+	h ^= h >> 27
+	h *= 0x94d049bb133111eb
+	h ^= h >> 31
+	return h < t
+}
+
+// CaptureSampled reports whether live capture at rate would keep the request,
+// for a backfill that must pick the same requests.
+func CaptureSampled(requestID string, rate float64) bool {
+	if rate <= 0 || math.IsNaN(rate) {
+		return false
+	}
+	if rate >= 1 {
+		return sampledAt(requestID, math.MaxUint64)
+	}
+	return sampledAt(requestID, uint64(rate*float64(math.MaxUint64)))
+}
+
+// HoldForBackfill marks requests a backfill is about to read and write as
+// pending, as a queued live sample is, so a Forget that runs while their
+// backfill is in flight is applied to it: WriteBackfilled skips a request
+// forgotten before its write, and deletes one forgotten while it was being
+// written. Hold before the request's text is read, and give every held
+// request back through WriteBackfilled or ReleaseBackfill.
+func (c *RequestCapture) HoldForBackfill(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	for _, id := range ids {
+		c.pending[id]++
+	}
+}
+
+// ReleaseBackfill gives back held requests the backfill will not write.
+func (c *RequestCapture) ReleaseBackfill(ids []string) {
+	if c == nil {
+		return
+	}
+	for _, id := range ids {
+		c.donePending(id)
+	}
+}
+
+// WriteBackfilled stores the vectors of requests embedded after the fact from
+// their logs, under the same point IDs and metadata live capture uses, so a
+// later backfill or a live write of the same request overwrites rather than
+// doubles it. Each request is stamped with when it was logged, which is what
+// windows and the age sweep read. Every request must have been held with
+// HoldForBackfill; each is given back here, whether or not it was written, so
+// a request whose log was deleted in the meantime leaves no vector behind.
+func (c *RequestCapture) WriteBackfilled(ctx context.Context, store vectorstore.VectorStore, namespace string, dimension int, requests []CapturedRequest) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	if c == nil {
+		return errors.New("no request capture to backfill into")
+	}
+	written := 0
+	defer func() {
+		for _, r := range requests[written:] {
+			c.donePending(r.LogID)
+		}
+	}()
+	if store == nil || namespace == "" {
+		return nil
+	}
+	if err := c.ensure(ctx, store, namespace, dimension); err != nil {
+		return err
+	}
+	for i, r := range requests {
+		if c.isForgotten(r.LogID) {
+			written = i + 1
+			c.donePending(r.LogID)
+			c.forgotten.Add(1)
+			continue
+		}
+		err := store.Add(ctx, namespace, capturePointID(r.LogID), r.Vector, map[string]any{
+			captureMetadataKind:      captureMetadataKindValue,
+			captureMetadataTimestamp: r.At.Unix(),
+			captureMetadataLogID:     r.LogID,
+		})
+		if err != nil {
+			c.mu.Lock()
+			c.ensured = false
+			c.mu.Unlock()
+			return fmt.Errorf("add backfilled vector: %w", err)
+		}
+		written = i + 1
+		if c.donePending(r.LogID) {
+			c.undo(captureItem{id: r.LogID, store: store, namespace: namespace})
+			c.forgotten.Add(1)
+		}
+	}
+	return nil
+}
+
 // offer is called on the request path once a request has been classified. It
 // never blocks and never allocates on its own: off is one atomic load, and a
 // sampled request costs a random draw, a context lookup and a channel send.
@@ -235,14 +390,11 @@ func (c *RequestCapture) offer(ctx context.Context, store vectorstore.VectorStor
 		return
 	}
 	t := c.threshold.Load()
-	if t == 0 || store == nil || len(vector) == 0 {
-		return
-	}
-	if t != math.MaxUint64 && rand.Uint64() >= t {
+	if t == 0 || store == nil || namespace == "" || len(vector) == 0 {
 		return
 	}
 	id, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
-	if id == "" {
+	if id == "" || !sampledAt(id, t) {
 		return
 	}
 	item := captureItem{id: id, vector: vector, store: store, namespace: namespace, dimension: dimension, at: time.Now().Unix()}
@@ -665,6 +817,16 @@ func (c *RequestCapture) Sweep(ctx context.Context, store vectorstore.VectorStor
 	if err != nil {
 		return 0, err
 	}
+	return SweepCaptureNamespaces(ctx, store, namespaces, cutoff)
+}
+
+// SweepCaptureNamespaces deletes captured vectors older than cutoff in the
+// given namespaces, for an upkeep that keeps each router's captures for its
+// own lookback. A namespace that is gone is skipped.
+func SweepCaptureNamespaces(ctx context.Context, store vectorstore.VectorStore, namespaces []string, cutoff time.Time) (int, error) {
+	if store == nil {
+		return 0, nil
+	}
 	var total int
 	var errs []error
 	for _, ns := range namespaces {
@@ -696,6 +858,54 @@ func (c *RequestCapture) Sweep(ctx context.Context, store vectorstore.VectorStor
 		}
 	}
 	return total, errors.Join(errs...)
+}
+
+// ListCaptureNamespaces lists every capture namespace in store.
+func ListCaptureNamespaces(ctx context.Context, store vectorstore.VectorStore) ([]string, error) {
+	return captureNamespaces(ctx, store, "")
+}
+
+// CaptureStore returns where captured requests may be kept: store, unless it
+// is missing or Chromem (see SemanticClassifier.captureStoreLocked).
+func CaptureStore(store vectorstore.VectorStore) vectorstore.VectorStore {
+	if store == nil || isLocalChromemStore(store) {
+		return nil
+	}
+	return store
+}
+
+// MarkForgotten makes the writer drop samples of ids it still has queued,
+// whose logs were deleted, without deleting anything from the store: a
+// plugin with a capture per router marks every router's, then deletes once.
+func (c *RequestCapture) MarkForgotten(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.markForgotten(ids)
+}
+
+// DropRouter deletes every capture namespace of one model router, for a
+// router that was deleted.
+func (c *RequestCapture) DropRouter(ctx context.Context, store vectorstore.VectorStore, routerID string) error {
+	if store == nil || routerID == "" {
+		return nil
+	}
+	namespaces, err := store.ListNamespaces(ctx, CaptureRouterPrefix(routerID))
+	if err != nil {
+		return fmt.Errorf("list capture namespaces of router %s: %w", routerID, err)
+	}
+	var errs []error
+	for _, ns := range namespaces {
+		if err := store.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("drop capture namespace %s: %w", ns, err))
+		}
+	}
+	if c != nil {
+		c.mu.Lock()
+		c.ensured = false
+		c.mu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 // Stats reports what capture has done since it started.

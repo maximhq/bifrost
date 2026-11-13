@@ -65,10 +65,11 @@ const (
 
 	// The stages a running run reports, in order, so a reader can show how
 	// far it got.
-	ComplexitySuggestionRunStageReading    = "reading"    // sampling the window's requests
-	ComplexitySuggestionRunStageClustering = "clustering" // grouping them and counting the rest in
-	ComplexitySuggestionRunStageSuggesting = "suggesting" // asking the models about each group
-	ComplexitySuggestionRunStageSaving     = "saving"     // reconciling with the stored suggestions
+	ComplexitySuggestionRunStageBackfilling = "backfilling" // embedding the window's requests from before capture, from their logs
+	ComplexitySuggestionRunStageReading     = "reading"     // sampling the window's requests
+	ComplexitySuggestionRunStageClustering  = "clustering"  // grouping them and counting the rest in
+	ComplexitySuggestionRunStageSuggesting  = "suggesting"  // asking the models about each group
+	ComplexitySuggestionRunStageSaving      = "saving"      // reconciling with the stored suggestions
 
 	// ComplexitySuggestionUnmatchedTier keys the requests of a suggestion's
 	// CurrentRouting that matched no phrase above the floor.
@@ -338,6 +339,12 @@ type ComplexitySuggestionStore interface {
 	// request by: its provider, model, token counts and the tier it was routed
 	// to, for the logs the caller may see. A log that is gone is left out.
 	ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error)
+
+	// EachComplexityRouterLog pages through the requests a model router took
+	// from from through to (both included), oldest first, a page at a time:
+	// root logs only, so a request whose fallbacks logged attempts counts
+	// once. It stops at fn's first error.
+	EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error
 }
 
 // ComplexityReplayUsage is one logged request as an impact replay prices it.
@@ -349,6 +356,17 @@ type ComplexityReplayUsage struct {
 	CompletionTokens int64   `gorm:"column:completion_tokens"`
 	ComplexityTier   *string `gorm:"column:complexity_tier"`
 }
+
+// ComplexityRouterLog is one request a model router took, as a suggestion
+// run's backfill pages through them: its log ID and when it was logged.
+type ComplexityRouterLog struct {
+	ID        string    `gorm:"column:id"`
+	Timestamp time.Time `gorm:"column:timestamp"`
+}
+
+// complexityRouterLogPage is how many logs one EachComplexityRouterLog page
+// reads: IDs and timestamps only, so a page is small.
+var complexityRouterLogPage = 5000
 
 // complexityReplayUsageBatch bounds the IDs one usage read binds.
 const complexityReplayUsageBatch = 1000
@@ -743,6 +761,41 @@ func (s *RDBLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []
 		}
 	}
 	return nil
+}
+
+// EachComplexityRouterLog pages a router's root logs in the window by
+// (timestamp, id), so a page boundary never skips or repeats a row that
+// shares a timestamp with the one before it.
+func (s *RDBLogStore) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error {
+	var afterTS time.Time
+	var afterID string
+	for {
+		query := s.ScopedDB(ctx).Model(&Log{}).
+			Select("id", "timestamp").
+			Where("model_router_id = ? AND (parent_request_id IS NULL OR parent_request_id = id) AND timestamp >= ? AND timestamp <= ?", routerID, from, to).
+			// A request logged with content logging off has no text to read
+			// back, so it can never be backfilled; kept in, it would be picked
+			// again on every pass, ahead of older requests that can be.
+			Where("content_hidden = ?", false)
+		if afterID != "" {
+			query = query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", afterTS, afterTS, afterID)
+		}
+		var page []ComplexityRouterLog
+		if err := query.Order("timestamp ASC, id ASC").Limit(complexityRouterLogPage).Find(&page).Error; err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		if err := fn(page); err != nil {
+			return err
+		}
+		if len(page) < complexityRouterLogPage {
+			return nil
+		}
+		last := page[len(page)-1]
+		afterTS, afterID = last.Timestamp, last.ID
+	}
 }
 
 // ListComplexityReplayUsage reads the usage of the given logs within the
