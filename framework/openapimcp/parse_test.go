@@ -28,8 +28,9 @@ func TestParse_OpenAPI30Fixture(t *testing.T) {
 	assert.True(t, doc.SecuritySchemes["Bearer"].Supported)
 	assert.Equal(t, "bearer", doc.SecuritySchemes["Bearer"].Scheme)
 	assert.True(t, doc.SecuritySchemes["Basic"].Supported)
-	assert.False(t, doc.SecuritySchemes["OAuth"].Supported)
-	assert.Contains(t, doc.SecuritySchemes["OAuth"].Reason, "oauth2")
+	assert.True(t, doc.SecuritySchemes["OAuth"].Supported, "an oauth2 scheme is met by the client's OAuth bearer")
+	assert.Empty(t, doc.SecuritySchemes["OAuth"].Reason)
+	assert.Nil(t, doc.SecuritySchemes["OAuth"].OAuth, "an implicit flow has no authorization code endpoints to default from")
 	assert.Equal(t, []SecurityRequirement{{"ApiKeyAuth": {}}}, doc.GlobalSecurity)
 
 	// Deterministic walk: sorted paths, fixed method order.
@@ -99,7 +100,7 @@ func TestParse_Swagger2Fixture(t *testing.T) {
 	assert.Equal(t, "http", basic.Type, "swagger basic maps onto http/basic")
 	assert.Equal(t, "basic", basic.Scheme)
 	assert.True(t, basic.Supported)
-	assert.False(t, doc.SecuritySchemes["Petstore_OAuth"].Supported)
+	assert.True(t, doc.SecuritySchemes["Petstore_OAuth"].Supported)
 
 	list := findOp(t, doc, "GET", "/pets")
 	require.Len(t, list.Params, 3)
@@ -181,7 +182,8 @@ func TestParse_OpenAPI32Fixture(t *testing.T) {
 	events := findOp(t, doc, "POST", "/events")
 	assert.Contains(t, events.Unsupported, "streaming request body")
 
-	assert.False(t, doc.SecuritySchemes["Device"].Supported)
+	assert.True(t, doc.SecuritySchemes["Device"].Supported, "any oauth2 flow is met by the client's OAuth bearer")
+	assert.Nil(t, doc.SecuritySchemes["Device"].OAuth, "a device flow has no authorization code endpoints to default from")
 	assert.True(t, doc.SecuritySchemes["Bearer"].Supported)
 }
 
@@ -475,4 +477,51 @@ func TestParse_LiteralRefInInstanceDataIsNotAReference(t *testing.T) {
 "responses":{"200":{"description":"ok"}}}}}}`), ParseOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, findOp(t, doc, "POST", "/s").Unsupported)
+}
+
+// TestParse_OAuthSchemes: oauth2 and openIdConnect schemes are supported (the
+// bearer comes from the client's OAuth auth type) and keep the authorization
+// code endpoints and scopes an OAuth client can default its oauth_config from.
+// mutualTLS stays unsupported.
+func TestParse_OAuthSchemes(t *testing.T) {
+	doc, err := Parse([]byte(`{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"components":{"securitySchemes":{
+ "Code":{"type":"oauth2","flows":{
+   "implicit":{"authorizationUrl":"https://auth.example.com/implicit","scopes":{"x":""}},
+   "authorizationCode":{"authorizationUrl":"https://auth.example.com/authorize","tokenUrl":"https://auth.example.com/token","scopes":{"write":"w","read":"r"}}}},
+ "Relative":{"type":"oauth2","flows":{"authorizationCode":{"authorizationUrl":"/authorize","tokenUrl":"/token","scopes":{}}}},
+ "OIDC":{"type":"openIdConnect","openIdConnectUrl":"https://auth.example.com/.well-known/openid-configuration"},
+ "MTLS":{"type":"mutualTLS"}}},
+"paths":{"/a":{"get":{"responses":{"200":{"description":"ok"}}}}}}`), ParseOptions{})
+	require.NoError(t, err)
+
+	code := doc.SecuritySchemes["Code"]
+	assert.True(t, code.Supported)
+	require.NotNil(t, code.OAuth)
+	assert.Equal(t, "https://auth.example.com/authorize", code.OAuth.AuthorizationURL, "the authorization code flow is the one an OAuth client runs")
+	assert.Equal(t, "https://auth.example.com/token", code.OAuth.TokenURL)
+	assert.Equal(t, []string{"read", "write"}, code.OAuth.Scopes)
+
+	relative := doc.SecuritySchemes["Relative"]
+	assert.True(t, relative.Supported)
+	assert.Nil(t, relative.OAuth, "a relative endpoint is not guessed at")
+
+	oidc := doc.SecuritySchemes["OIDC"]
+	assert.True(t, oidc.Supported)
+	require.NotNil(t, oidc.OAuth)
+	assert.Equal(t, "https://auth.example.com/.well-known/openid-configuration", oidc.OAuth.OpenIDConnectURL)
+
+	assert.False(t, doc.SecuritySchemes["MTLS"].Supported)
+	assert.Contains(t, doc.SecuritySchemes["MTLS"].Reason, "mutualTLS")
+
+	v2, err := Parse([]byte(`{"swagger":"2.0","info":{"title":"t","version":"1"},"host":"api.example.com",
+"securityDefinitions":{"Code":{"type":"oauth2","flow":"accessCode","authorizationUrl":"https://auth.example.com/authorize","tokenUrl":"https://auth.example.com/token","scopes":{"read":"r"}}},
+"paths":{"/a":{"get":{"responses":{"200":{"description":"ok"}}}}}}`), ParseOptions{})
+	require.NoError(t, err)
+	v2code := v2.SecuritySchemes["Code"]
+	assert.True(t, v2code.Supported)
+	require.NotNil(t, v2code.OAuth)
+	assert.Equal(t, "https://auth.example.com/authorize", v2code.OAuth.AuthorizationURL, "swagger accessCode is the authorization code flow")
+	assert.Equal(t, "https://auth.example.com/token", v2code.OAuth.TokenURL)
+	assert.Equal(t, []string{"read"}, v2code.OAuth.Scopes)
 }
