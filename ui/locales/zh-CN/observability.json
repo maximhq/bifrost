@@ -1924,6 +1924,24 @@
 		"overCounted": "测量的耗时总和（{{measured}}）超过计算的额外开销（{{overhead}}），上游累加器可能重复计数。"
 	},
 	"tracing": {
+		"review": {
+			"tab": "Review",
+			"activityTab": "Activity",
+			"scoreName": "Score name",
+			"scoreValue": "Value (number or label)",
+			"note": "Note",
+			"addScore": "Add score",
+			"noScores": "No scores on this span yet.",
+			"deleteScore": "Delete score",
+			"by": "by {{author}}",
+			"sourceSdk": "SDK",
+			"sourceEvaluator": "Evaluator",
+			"sourceHuman": "Reviewer",
+			"commentPlaceholder": "Leave a note for your team",
+			"addComment": "Comment",
+			"noComments": "No comments on this span yet.",
+			"deleteComment": "Delete comment"
+		},
 		"title": "Tracing",
 		"subtitle": "Traces pushed by your observability SDKs. A model call served by this gateway is counted once, with the gateway's numbers.",
 		"searchPlaceholder": "Search name, input or output",
