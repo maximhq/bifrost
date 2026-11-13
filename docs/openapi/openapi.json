@@ -118120,7 +118120,8 @@
           "typesafe",
           "minimax",
           "byteplus",
-          "baseten"
+          "baseten",
+          "kimchi"
         ]
       },
       "Fallback": {
