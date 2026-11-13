@@ -255,7 +255,25 @@ export default function TracingPage() {
 								onChange={(event) => setSearchDraft(event.target.value)}
 							/>
 						</form>
-						<Tabs value={url.view} onValueChange={(view) => setUrl({ view, offset: 0, sort_by: "timestamp", order: "desc" })}>
+						<Tabs
+							value={url.view}
+							// A tab switch starts the view clean: it drops what a session or experiment drill-down
+							// set and any open trace. Sidebar filters stay, since they are visible and shared.
+							onValueChange={(view) =>
+								setUrl({
+									view,
+									session_id: null,
+									experiment: null,
+									trace_id: null,
+									project: null,
+									trace: null,
+									span: null,
+									offset: 0,
+									sort_by: null,
+									order: null,
+								})
+							}
+						>
 							<TabsList className="h-7.5">
 								<TabsTrigger value="traces" className="text-xs" data-testid="tracing-traces-tab">
 									{t("tracing.tabs.traces")}
