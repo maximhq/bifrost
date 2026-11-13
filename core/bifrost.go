@@ -6155,7 +6155,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider/model after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
-	validateErr := validateRequestAfterPreRequestHooks(req)
+	validateErr := validateRequestAfterPreRequestHooks(ctx, req)
 	bifrost.endCoreSpan(preDispatchSpan)
 	if validateErr != nil {
 		// Returning before tryRequest skips the downstream log drain, so flush
@@ -6377,7 +6377,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
-	validateErr := validateRequestAfterPreRequestHooks(req)
+	validateErr := validateRequestAfterPreRequestHooks(ctx, req)
 	bifrost.endCoreSpan(preDispatchSpan)
 	if validateErr != nil {
 		// Returning before tryStreamRequest skips the downstream log drain, so
