@@ -9,6 +9,7 @@ import (
 	"hash"
 	"math"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -946,6 +947,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			databricksConfig := &schemas.DatabricksKeyConfig{
 				APIFormat:          key.DatabricksKeyConfig.APIFormat,
 				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+				Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
 			}
 			// The workspace URL is a hostname, not a credential — surface it in
 			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
@@ -2037,6 +2039,14 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.SessionSettings = settingsHash
 	}
 
+	if normalized.Suggestions != nil {
+		settingsHash, err := hashComplexityValue(normalized.Suggestions)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash suggestions settings: %w", err)
+		}
+		hashes.SuggestionsSettings = settingsHash
+	}
+
 	return hashes, nil
 }
 
@@ -2332,6 +2342,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	if m.MaxProtocolVersion != "" {
 		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
 	}
+	// Only true contributes, so a file edit of this flag syncs while clients without code mode keep their hash.
+	if m.IsCodeModeClient {
+		hash.Write([]byte("is_code_mode_client:true"))
+	}
+	// Inherit contributes nothing, so existing hashes are unchanged.
+	if m.ServerTypeOnSlug != schemas.MCPServerTypeOnSlugInherit {
+		hash.Write([]byte("server_type_on_slug:" + m.ServerTypeOnSlug.String()))
+	}
 	// nil (expose all) contributes nothing; [] and listed entries do.
 	for _, list := range []struct {
 		name  string
@@ -2460,6 +2478,24 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// MCPClientHashMatchesLegacyCodeMode reports whether storedHash is this client's hash under the formula of
+// builds that did not hash is_code_mode_client. GenerateMCPClientHash now does when it is true, so the
+// first restart after the upgrade sees a mismatch for every such client even when config.json is untouched;
+// reconciliation calls this before treating that mismatch as a file edit, so UI and API edits survive.
+// storedCodeMode must be true too: without code mode both formulas agree, so a stored client without it
+// that now declares it is a file edit, not an old hash.
+func MCPClientHashMatchesLegacyCodeMode(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
+	if storedHash == "" || !m.IsCodeModeClient || !storedCodeMode {
+		return false, nil
+	}
+	m.IsCodeModeClient = false
+	legacy, err := GenerateMCPClientHash(m)
+	if err != nil {
+		return false, err
+	}
+	return legacy == storedHash, nil
 }
 
 // GenerateWebhookEndpointHash generates a SHA256 hash of a webhook endpoint's

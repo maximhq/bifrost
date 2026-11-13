@@ -12,6 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -23,6 +24,9 @@ type gatewayToolIndex struct {
 	aggregateMeta map[string]*mcp.Meta          // _meta with ui:// URIs namespaced by client, for aggregate /mcp
 	aliases       map[string][]gatewayToolAlias // server-given name -> the tools it can stand for
 	refusal       map[string]struct{}           // server-given names installed as hidden tools so a refusal can explain itself
+
+	serverTypesOnSlug  map[string]lib.MCPClientCodeModes // clients whose own /mcp/<slug> overrides code mode, by name
+	codeModeOnlyOnSlug bool                              // the code-mode tools are installed only for a slug override
 }
 
 // gatewayToolAlias is a tool a server-given (unprefixed) name can stand for. MCP Apps call tools by the
@@ -254,6 +258,12 @@ func (h *MCPServerHandler) resolveToolAlias(ctx context.Context, bare string) (g
 	var candidates []gatewayToolAlias
 	if index := h.toolIndex.Load(); index != nil {
 		candidates = index.aliases[bare]
+		if len(index.serverTypesOnSlug) > 0 {
+			perCaller := h.perCaller.Load()
+			candidates = slices.DeleteFunc(slices.Clone(candidates), func(c gatewayToolAlias) bool {
+				return index.hiddenByCodeMode(ctx, perCaller, c.name)
+			})
+		}
 	}
 	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client != "" {
 		if i := slices.IndexFunc(candidates, func(c gatewayToolAlias) bool { return c.client == client }); i >= 0 {

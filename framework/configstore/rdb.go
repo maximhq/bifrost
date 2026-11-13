@@ -111,6 +111,12 @@ func lockClientConfigRow(tx *gorm.DB) error {
 	}
 }
 
+// budgetNamesNoOwner reports whether a budget write names none of the owner columns.
+func budgetNamesNoOwner(budget *tables.TableBudget) bool {
+	return budget.TeamID == nil && budget.VirtualKeyID == nil && budget.ProviderConfigID == nil &&
+		budget.ModelConfigID == nil && budget.CustomerID == nil && budget.BusinessUnitID == nil
+}
+
 // lockBudgetOwner locks the owning governance parent before mutating a budget row.
 func lockBudgetOwner(ctx context.Context, txDB *gorm.DB, budget tables.TableBudget) error {
 	switch {
@@ -1803,6 +1809,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Name:                   dbClient.Name,
 					EndpointSlug:           dbClient.EndpointSlug,
 					IsCodeModeClient:       dbClient.IsCodeModeClient,
+					ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 					ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:       dbClient.ConnectionString,
 					StdioConfig:            dbClient.StdioConfig,
@@ -1871,6 +1878,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -2331,6 +2339,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Name:                   dbClient.Name,
 		EndpointSlug:           dbClient.EndpointSlug,
 		IsCodeModeClient:       dbClient.IsCodeModeClient,
+		ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 		ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:       dbClient.ConnectionString,
 		StdioConfig:            dbClient.StdioConfig,
@@ -2414,6 +2423,15 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 		return ErrNotFound
 	}
 	return nil
+}
+
+// UpdateMCPClientConfigHash moves a client's config_hash from oldHash to newHash and writes nothing else, so
+// it never overwrites a concurrent edit. It reports false when the stored hash is no longer oldHash.
+func (s *RDBConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	res := s.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).
+		Where("client_id = ? AND config_hash = ?", clientID, oldHash).
+		Update("config_hash", newHash)
+	return res.RowsAffected > 0, res.Error
 }
 
 // UpdateMCPClientDiscovery writes only the discovery columns, so a background refresh never races a
@@ -2523,6 +2541,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			Name:                   clientConfigCopy.Name,
 			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
+			ServerTypeOnSlug:       clientConfigCopy.ServerTypeOnSlug,
 			ConnectionType:         string(clientConfigCopy.ConnectionType),
 			ConnectionString:       clientConfigCopy.ConnectionString,
 			StdioConfig:            clientConfigCopy.StdioConfig,
@@ -2755,6 +2774,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		updates := map[string]interface{}{
 			"name":                       clientConfigCopy.Name,
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
+			"server_type_on_slug":        clientConfigCopy.ServerTypeOnSlug,
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
 			"prompts_to_expose_json":     promptsToExposeJSON,
@@ -6219,6 +6239,13 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// A write that names no owner at all keeps the business unit the row already has: a budget a
+		// unit links by budget_id is written here naming no owner, and saving the row as given would
+		// detach it from its unit with nothing on the unit's side to notice. A write that names any
+		// owner is an ownership change and is applied as given.
+		if budgetNamesNoOwner(budget) {
+			budget.BusinessUnitID = existing.BusinessUnitID
+		}
 		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
 		if existing.ModelConfigID != nil {
 			budget.ModelConfigID = existing.ModelConfigID
@@ -7674,6 +7701,7 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.DecisionSettings = semanticRow.ConfigHashes.DecisionSettings
 	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
 	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
+	hashes.SuggestionsSettings = semanticRow.ConfigHashes.SuggestionsSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil
 }
 

@@ -100,9 +100,10 @@ type GovernanceData struct {
 	Providers    []*configstoreTables.TableProvider            `json:"providers"`
 }
 
-// BusinessUnitGovernance holds in-memory budget and rate limit data for a business unit
+// BusinessUnitGovernance names the budgets and rate limit a business unit holds itself, as the
+// in-memory store publishes them. BudgetIDs carries one id per reset window, like a team's.
 type BusinessUnitGovernance struct {
-	BudgetID    *string
+	BudgetIDs   []string
 	RateLimitID *string
 }
 
