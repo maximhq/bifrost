@@ -622,6 +622,14 @@ type OverheadSpanConsumer interface {
 	ConsumesOverheadSpans() bool
 }
 
+// GatewayTraceConsumer is an optional interface an ObservabilityPlugin implements to say it records
+// gateway requests only: request logs and request metrics. Traces that arrive from an observability
+// SDK (Braintrust, Langfuse, Arize, OTLP) are not handed to it, so SDK spans never count as gateway
+// traffic. Every other connector receives them. Unimplemented means the plugin receives both.
+type GatewayTraceConsumer interface {
+	ConsumesGatewayTracesOnly() bool
+}
+
 // RawPayloadConsumer opts a connector into raw provider bodies. Unimplemented means no.
 type RawPayloadConsumer interface {
 	ConsumesRawPayloads() bool

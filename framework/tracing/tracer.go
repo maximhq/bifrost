@@ -1397,64 +1397,96 @@ func (t *Tracer) exportAndRelease(completedTrace *schemas.Trace, slots []*obsPlu
 		// when there are no breakdown spans to strip.
 		connectorTrace := exportTrace.WithoutOverheadBreakdownSpans()
 
-		// Fan out rather than iterate: every connector receives the trace on its own
-		// goroutine, so a connector doing blocking network I/O can never delay another.
-		// This used to be a sequential loop, where only the builtin plugin ordering
-		// (logging before otel) kept a stalled exporter from sitting in front of the
-		// logging plugin's DB enqueue — accidental protection that any custom or
-		// reordered connector would have removed.
-		var wg sync.WaitGroup
-		for _, slot := range slots {
-			// Non-blocking acquire. A saturated connector is skipped and counted; parking
-			// yet another goroutine on it is exactly the failure this cap exists to stop.
-			select {
-			case slot.sem <- struct{}{}:
-			default:
-				// Throttled: at saturation this fires once per request, which would make
-				// the logging itself a second source of load.
-				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
-					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
-						slot.name, cap(slot.sem), exportTrace.TraceID, n)
-				}
-				continue
+		t.injectAll(slots, exportTrace.TraceID, func(slot *obsPluginSlot) *schemas.Trace {
+			// Opt-in consumers (the logging plugin) get the full trace incl. overhead
+			// breakdown spans; every other connector gets the stripped copy.
+			if consumer, ok := slot.plugin.(schemas.OverheadSpanConsumer); ok && consumer.ConsumesOverheadSpans() {
+				return exportTrace
 			}
-			wg.Add(1)
-			go func(slot *obsPluginSlot) {
-				defer wg.Done()
-				defer func() { <-slot.sem }()
-				// Isolate each plugin callback — one bad observability backend should
-				// not crash the server or prevent other plugins from receiving the trace.
-				defer func() {
-					if r := recover(); r != nil && t.logger != nil {
-						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
-					}
-				}()
-				injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
-				defer cancel()
-				// Opt-in consumers (the logging plugin) get the full trace incl. overhead
-				// breakdown spans; every other connector gets the stripped copy.
-				traceForPlugin := connectorTrace
-				if consumer, ok := slot.plugin.(schemas.OverheadSpanConsumer); ok && consumer.ConsumesOverheadSpans() {
-					traceForPlugin = exportTrace
-				}
-				if err := slot.plugin.Inject(injectCtx, traceForPlugin); err != nil && t.logger != nil {
-					if errors.Is(err, context.DeadlineExceeded) {
-						t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, exportTrace.TraceID, slot.injectTimeout)
-					} else {
-						t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
-					}
-				}
-			}(slot)
-		}
-		// Join before the deferred ReleaseTrace runs: connectors read exportTrace, and
-		// the pooled trace it was snapshotted from must not be recycled underneath them.
-		wg.Wait()
+			return connectorTrace
+		})
+
+		// injectAll joins before the deferred ReleaseTrace runs: connectors read exportTrace,
+		// and the pooled trace it was snapshotted from must not be recycled underneath them.
 
 		// Every connector has returned, so the snapshot's spans can be recycled.
 		// This assumes Inject does not retain the trace past its return; the
 		// built-in connectors all convert or marshal synchronously.
 		exportTrace.ReleaseSnapshot()
 	}
+}
+
+// injectAll hands a trace to every connector, each on its own goroutine, and waits for all of them.
+// traceFor picks the trace a connector receives; nil skips it.
+//
+// Fan out rather than iterate: a connector doing blocking network I/O can never delay another. This
+// used to be a sequential loop, where only the builtin plugin ordering (logging before otel) kept a
+// stalled exporter from sitting in front of the logging plugin's DB enqueue - accidental protection
+// that any custom or reordered connector would have removed.
+func (t *Tracer) injectAll(slots []*obsPluginSlot, traceID string, traceFor func(slot *obsPluginSlot) *schemas.Trace) {
+	var wg sync.WaitGroup
+	for _, slot := range slots {
+		traceForPlugin := traceFor(slot)
+		if traceForPlugin == nil {
+			continue
+		}
+		// Non-blocking acquire. A saturated connector is skipped and counted; parking
+		// yet another goroutine on it is exactly the failure this cap exists to stop.
+		select {
+		case slot.sem <- struct{}{}:
+		default:
+			// Throttled: at saturation this fires once per request, which would make
+			// the logging itself a second source of load.
+			if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
+				t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
+					slot.name, cap(slot.sem), traceID, n)
+			}
+			continue
+		}
+		wg.Add(1)
+		go func(slot *obsPluginSlot) {
+			defer wg.Done()
+			defer func() { <-slot.sem }()
+			// Isolate each plugin callback - one bad observability backend should
+			// not crash the server or prevent other plugins from receiving the trace.
+			defer func() {
+				if r := recover(); r != nil && t.logger != nil {
+					t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
+				}
+			}()
+			injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
+			defer cancel()
+			if err := slot.plugin.Inject(injectCtx, traceForPlugin); err != nil && t.logger != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, traceID, slot.injectTimeout)
+				} else {
+					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
+				}
+			}
+		}(slot)
+	}
+	wg.Wait()
+}
+
+// ExportTrace hands a trace that did not come from a gateway request - one received from an
+// observability SDK - to the same connectors gateway traffic goes to, with the same per-connector
+// concurrency cap and inject timeout. Plugins that record gateway requests only are skipped (see
+// schemas.GatewayTraceConsumer). It returns once every connector has returned. The trace is the
+// caller's and is not pooled or changed.
+func (t *Tracer) ExportTrace(_ context.Context, trace *schemas.Trace) {
+	if t == nil || trace == nil {
+		return
+	}
+	var slots []*obsPluginSlot
+	if loaded := t.obsPlugins.Load(); loaded != nil {
+		slots = *loaded
+	}
+	t.injectAll(slots, trace.TraceID, func(slot *obsPluginSlot) *schemas.Trace {
+		if consumer, ok := slot.plugin.(schemas.GatewayTraceConsumer); ok && consumer.ConsumesGatewayTracesOnly() {
+			return nil
+		}
+		return trace
+	})
 }
 
 // FlushExpiredTrace exports a trace the TTL sweep is about to discard. A trace only

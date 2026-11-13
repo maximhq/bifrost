@@ -135,8 +135,7 @@ export function ProjectsDialog({
 }
 
 /**
- * One project: its metrics over the last 30 days, then its details, which can be edited. Saving
- * sends back the fields this sheet does not show unchanged, because the update replaces the project.
+ * One project: its metrics over the last 30 days, then its details, which can be edited.
  */
 export function ProjectSheet({
 	project,
@@ -186,9 +185,6 @@ export function ProjectSheet({
 					name: name.trim(),
 					description: description.trim(),
 					retention_days: retentionValue,
-					masking_rules: project.masking_rules,
-					evaluators: project.evaluators,
-					forward: project.forward,
 				},
 			}).unwrap();
 			toast.success(t("tracing.settings.saved"));

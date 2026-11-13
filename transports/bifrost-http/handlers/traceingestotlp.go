@@ -11,7 +11,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -58,22 +57,11 @@ func (h *TraceIngestHandler) receiveOTLP(ctx *fasthttp.RequestCtx, source string
 		SendError(ctx, fasthttp.StatusBadRequest, "malformed OTLP trace export: "+err.Error())
 		return
 	}
-	projects, err := h.ingestOTLP(principal, source, resources, string(ctx.Request.Header.Peek("x-project-name")), resourceNamesProject)
-	if err != nil {
+	if err := h.ingestOTLP(principal, source, resources, string(ctx.Request.Header.Peek("x-project-name")), resourceNamesProject); err != nil {
 		h.fail(ctx, err)
 		return
 	}
-	h.forward(ctx, source, otlpForwardPath(source), projects...)
 	writeOTLPSuccess(ctx, isJSON)
-}
-
-// otlpForwardPath is the path an OTLP export of this source is replayed to, below the upstream's
-// base URL: the path the vendor's own SDK posts to.
-func otlpForwardPath(source string) string {
-	if source == logstore.TraceSourceLangfuse {
-		return "/api/public/otel/v1/traces"
-	}
-	return "/v1/traces"
 }
 
 // writeOTLPSuccess answers with an empty ExportTraceServiceResponse in the request's encoding.
@@ -95,7 +83,7 @@ var otlpProjectAttributes = []string{"openinference.project.name", "arize.projec
 // ingestOTLP stores decoded resources. Each resource goes to the project it names. explicitProject,
 // from a request header, overrides every resource and must resolve. A name taken from a resource
 // attribute is a hint: when the key cannot use it, the next hint is tried, then the key's default.
-func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool) ([]*tables.TableTraceProject, error) {
+func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source string, resources []otlpResource, explicitProject string, resourceNamesProject bool) error {
 	storeCtx, cancel := ingestContext()
 	defer cancel()
 	byProject := make(map[string][]*traceingest.SpanPart)
@@ -127,25 +115,23 @@ func (h *TraceIngestHandler) ingestOTLP(principal *traceingest.Principal, source
 			lastErr = err
 		}
 		if projectID == "" {
-			return nil, lastErr
+			return lastErr
 		}
 		for _, span := range resource.Spans {
 			span.Resource = resource.Attributes
 			byProject[projectID] = append(byProject[projectID], traceingest.MapOTelSpan(span))
 		}
 	}
-	projects := make([]*tables.TableTraceProject, 0, len(byProject))
 	for projectID, parts := range byProject {
 		project, err := h.service.ResolveProject(storeCtx, principal, projectID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := h.service.Ingest(storeCtx, principal, project, source, parts); err != nil {
-			return nil, err
+			return err
 		}
-		projects = append(projects, project)
 	}
-	return projects, nil
+	return nil
 }
 
 // decodeOTLP decodes an ExportTraceServiceRequest. OTLP/JSON is not plain protobuf JSON: ids are

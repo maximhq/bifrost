@@ -985,6 +985,10 @@ func (p *PrometheusPlugin) observeOverhead(labels []string, overhead time.Durati
 // the completed trace, using labels PostLLMHook stashed in pendingOverheadLabels (so it
 // shares the scalar metric's labels plus overhead_component). The breakdown needs the
 // finalized span tree, which only exists here; the scalar overhead is recorded in HTTPTransportPostHook.
+// ConsumesGatewayTracesOnly keeps traces received from observability SDKs out of request metrics:
+// they are not requests this gateway served.
+func (p *PrometheusPlugin) ConsumesGatewayTracesOnly() bool { return true }
+
 func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil

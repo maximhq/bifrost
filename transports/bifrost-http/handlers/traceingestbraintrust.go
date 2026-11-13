@@ -247,21 +247,17 @@ func (h *TraceIngestHandler) braintrustLogs3(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
-	rowIDs, projects, err := h.ingestBraintrustRows(principal, rows)
+	rowIDs, err := h.ingestBraintrustRows(principal, rows)
 	if err != nil {
 		h.fail(ctx, err)
 		return
-	}
-	if !isOverflow {
-		// An overflow flush is a reference to an upload, not the rows: there is nothing to replay.
-		h.forward(ctx, logstore.TraceSourceBraintrust, "/logs3", projects...)
 	}
 	SendJSON(ctx, map[string]any{"row_ids": rowIDs})
 }
 
 // ingestBraintrustRows stores the rows of one flush. A row that cannot be mapped is skipped, never
 // a reason to refuse the flush: the SDK would resend every row of it.
-func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Principal, rows []any) ([]string, []*tables.TableTraceProject, error) {
+func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Principal, rows []any) ([]string, error) {
 	storeCtx, cancel := ingestContext()
 	defer cancel()
 	rowIDs := make([]string, 0, len(rows))
@@ -287,11 +283,10 @@ func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Princip
 		}
 		byProject[projectRef] = append(byProject[projectRef], mapped)
 	}
-	projects := make([]*tables.TableTraceProject, 0, len(byProject))
 	for projectRef, mappedRows := range byProject {
 		project, err := h.service.ResolveProject(storeCtx, principal, projectRef)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		// Feedback and comments name their span by row id: find the span each one means.
 		var targets []string
@@ -310,7 +305,7 @@ func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Princip
 		if len(targets) > 0 {
 			found, err := h.service.Store().FindTraceSpansByRowIDs(storeCtx, project.ID, targets)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			for _, span := range found {
 				byRowID[span.RowID] = span
@@ -333,14 +328,13 @@ func (h *TraceIngestHandler) ingestBraintrustRows(principal *traceingest.Princip
 			parts = append(parts, row.Part)
 		}
 		if err := h.service.Ingest(storeCtx, principal, project, logstore.TraceSourceBraintrust, parts); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if err := h.service.AddComments(storeCtx, principal, project.ID, comments); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		projects = append(projects, project)
 	}
-	return rowIDs, projects, nil
+	return rowIDs, nil
 }
 
 // braintrustUploadTarget hands the SDK a URL to PUT a file to, in the shape of a presigned
@@ -446,7 +440,7 @@ func (h *TraceIngestHandler) braintrustOTLP(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	}
-	if _, err := h.ingestOTLP(principal, logstore.TraceSourceBraintrust, resources, project, false); err != nil {
+	if err := h.ingestOTLP(principal, logstore.TraceSourceBraintrust, resources, project, false); err != nil {
 		h.fail(ctx, err)
 		return
 	}

@@ -200,30 +200,36 @@ func TestIngestGroupsConcurrentRequestsIntoFewCommits(t *testing.T) {
 	assert.Len(t, spans, requests)
 }
 
-// TestIngestAppliesContentSwitchAndMasking pins content control: a key with content off stores no
-// input or output, in the span and in the kept part alike, and masking rules rewrite stored text.
-func TestIngestAppliesContentSwitchAndMasking(t *testing.T) {
+// TestIngestRunsPartHooksAndAppliesTheContentSwitch pins the two content controls of ingest. A part
+// hook (enterprise masking registers one) rewrites a part before anything is stored, the kept part
+// included. A principal with content off stores no input or output, and the hooks do not run on it.
+func TestIngestRunsPartHooksAndAppliesTheContentSwitch(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t, Config{})
-	env.project.MaskingRules = []tables.TraceMaskingRule{{Name: "email", Pattern: `[\w.]+@[\w.]+`, Replacement: "[email]"}}
-	env.project.UpdatedAt = time.Now()
+	var seen []string
+	env.service.AddPartHook(func(_ context.Context, project *tables.TableTraceProject, part *SpanPart) {
+		seen = append(seen, project.ID+"/"+part.SpanID)
+		if text, ok := part.Output.(string); ok {
+			part.Output = strings.ReplaceAll(text, "a@b.co", "[email]")
+		}
+	})
 	require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{
-		{TraceID: "t1", SpanID: "s", Name: "x", StartTime: at(0), Input: map[string]any{"messages": []any{"mail a@b.co now"}}, Output: "sent to a@b.co", Metadata: map[string]any{"owner": "a@b.co"}},
+		{TraceID: "t1", SpanID: "s", Name: "x", StartTime: at(0), Output: "sent to a@b.co"},
 	}))
+	assert.Equal(t, []string{"p1/s"}, seen)
 	spans, err := env.store.ListTraceSpans(ctx, "p1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, `{"messages":["mail [email] now"]}`, spans[0].Input)
 	assert.Equal(t, "sent to [email]", spans[0].Output)
-	assert.Equal(t, "[email]", spans[0].MetadataParsed["owner"])
 	parts, err := env.store.ListTraceSpanParts(ctx, "p1", "t1", "s")
 	require.NoError(t, err)
-	assert.NotContains(t, parts[0].Payload, "a@b.co", "the kept part is masked too")
+	assert.NotContains(t, parts[0].Payload, "a@b.co", "the kept part is rewritten too")
 
 	quiet := *env.key
 	quiet.LogContent = false
 	require.NoError(t, env.service.Ingest(ctx, &quiet, env.project, logstore.TraceSourceOTel, []*SpanPart{
 		{TraceID: "t2", SpanID: "s", Name: "x", StartTime: at(0), Input: "secret", Output: "secret", PromptTokens: 3},
 	}))
+	assert.Len(t, seen, 1, "hooks do not run on content that is not stored")
 	spans, err = env.store.ListTraceSpans(ctx, "p1", "t2")
 	require.NoError(t, err)
 	assert.Empty(t, spans[0].Input)
@@ -292,87 +298,111 @@ func TestRetentionAndRateLimit(t *testing.T) {
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 7), *spans[0].ExpiresAt, time.Minute)
 }
 
-// fakeEvaluator scores every trace 0.9 and counts its calls.
-type fakeEvaluator struct {
-	mu    sync.Mutex
-	calls []map[string]string
+// fakeExporter records what is handed to the connectors.
+type fakeExporter struct {
+	mu     sync.Mutex
+	traces []*schemas.Trace
 }
 
-func (f *fakeEvaluator) EvaluateTrace(_ context.Context, _ string, variables map[string]string) (*TraceEvaluation, error) {
+func (f *fakeExporter) ExportTrace(_ context.Context, trace *schemas.Trace) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, variables)
-	return &TraceEvaluation{Value: new(0.9), Reasoning: "grounded"}, nil
+	f.traces = append(f.traces, trace)
 }
 
-func (f *fakeEvaluator) count() int {
+func (f *fakeExporter) take() []*schemas.Trace {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.calls)
+	taken := f.traces
+	f.traces = nil
+	return taken
 }
 
-// TestEvaluatorRulesScoreACompletedTraceOnce pins online evaluation: a rule scores a trace when it
-// completes, never while it is still arriving, never twice, never outside its sample, and never
-// past its daily cap. The result is a score on the trace, written by the evaluator.
-func TestEvaluatorRulesScoreACompletedTraceOnce(t *testing.T) {
+// TestCompletedTracesAreHookedAndExportedToConnectors pins what happens when a trace's rollup is
+// rebuilt. Trace hooks (enterprise evaluators register one) see every completed trace, and never one
+// still arriving. The connectors receive a completed trace's spans once: a later rollup sends only
+// spans they have not seen.
+func TestCompletedTracesAreHookedAndExportedToConnectors(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t, Config{})
-	evaluator := &fakeEvaluator{}
-	env.service.SetTraceEvaluator(evaluator)
-	env.project.Evaluators = []tables.TraceEvaluatorRule{
-		{EvaluatorID: "ev-faithful", Name: "faithfulness", SampleRate: 1, DailyCap: 2, Enabled: true},
-		{EvaluatorID: "ev-off", SampleRate: 1, Enabled: false},
-		{EvaluatorID: "ev-never", SampleRate: 0, Enabled: true},
-	}
-	ingest := func(traceID string, end *time.Time) {
-		require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceOTel, []*SpanPart{{TraceID: traceID, SpanID: "root", Name: "run", Kind: logstore.TraceSpanKindTask, StartTime: at(0), EndTime: end, Input: "question", Output: "answer", Expected: "answer"}}))
+	env := newTestEnv(t, Config{RollupInterval: time.Hour})
+	exporter := &fakeExporter{}
+	env.service.SetExporter(exporter)
+	var hooked []string
+	env.service.AddTraceHook(func(_ context.Context, trace *logstore.Trace) { hooked = append(hooked, trace.TraceID) })
+	cost := 0.002
+	ingest := func(parts ...*SpanPart) {
+		require.NoError(t, env.service.Ingest(ctx, env.key, env.project, logstore.TraceSourceBraintrust, parts))
 		require.NoError(t, env.service.FlushRollups(ctx))
+		env.service.waitForExports()
 	}
 
-	ingest("running", nil)
-	time.Sleep(50 * time.Millisecond)
-	assert.Zero(t, evaluator.count(), "a trace that is still arriving is not scored")
+	// A child alone: the trace is still arriving, so nothing is hooked or exported.
+	ingest(&SpanPart{TraceID: "trace-1", SpanID: "llm-1", ParentSpanIDs: []string{"root-span"}, Name: "chat", Kind: logstore.TraceSpanKindLLM,
+		StartTime: at(10), EndTime: at(500), Model: "gpt-4o", Provider: "openai", PromptTokens: 12, CompletionTokens: 3, Cost: &cost,
+		Input: []any{map[string]any{"role": "user", "content": "hi"}}, Output: "hello", SessionID: "sess-1"})
+	assert.Empty(t, hooked)
+	assert.Empty(t, exporter.take())
 
-	ingest("t1", at(500))
-	require.Eventually(t, func() bool {
-		scores, _ := env.store.ListTraceScores(ctx, "p1", "t1")
-		return len(scores) == 1
-	}, 3*time.Second, 10*time.Millisecond)
-	scores, err := env.store.ListTraceScores(ctx, "p1", "t1")
-	require.NoError(t, err)
-	assert.Equal(t, "faithfulness", scores[0].Name)
-	assert.Equal(t, logstore.TraceAuthorEvaluator, scores[0].Source)
-	assert.Equal(t, 0.9, *scores[0].Value)
-	assert.Equal(t, "grounded", scores[0].Comment)
-	evaluator.mu.Lock()
-	assert.Equal(t, map[string]string{"input": "question", "output": "answer", "expected_output": "answer"}, evaluator.calls[0])
-	evaluator.mu.Unlock()
-
-	// The score marks the trace dirty; the rollup that follows must not score it again.
-	require.NoError(t, env.service.FlushRollups(ctx))
-	require.NoError(t, env.service.FlushRollups(ctx))
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, 1, evaluator.count(), "a trace is scored once per rule")
-	trace, err := env.store.FindTrace(ctx, "p1", "t1")
-	require.NoError(t, err)
-	assert.Equal(t, 0.9, trace.ScoresParsed["faithfulness"])
-
-	ingest("t2", at(500))
-	require.Eventually(t, func() bool { return evaluator.count() == 2 }, 3*time.Second, 10*time.Millisecond)
-	ingest("t3", at(500))
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, 2, evaluator.count(), "the daily cap stops the third trace")
-
-	assert.True(t, sampled("any", "ev", 1))
-	assert.False(t, sampled("any", "ev", 0))
-	assert.Equal(t, sampled("trace-a", "ev", 0.5), sampled("trace-a", "ev", 0.5), "a trace is in the sample or out of it for good")
-	in := 0
-	for i := range 2000 {
-		if sampled(string(rune('a'+i%26))+string(rune('a'+i/26%26))+string(rune('a'+i/676)), "ev", 0.25) {
-			in++
+	ingest(&SpanPart{TraceID: "trace-1", SpanID: "root-span", Name: "agent", Kind: logstore.TraceSpanKindAgent, StartTime: at(0), EndTime: at(900)})
+	assert.Equal(t, []string{"trace-1"}, hooked)
+	exported := exporter.take()
+	require.Len(t, exported, 1)
+	trace := exported[0]
+	require.Len(t, trace.Spans, 2)
+	assert.Len(t, trace.TraceID, 32, "a non-hex trace id is turned into a W3C-sized hex id")
+	assert.Equal(t, "trace-1", trace.Attributes[AttrTraceOriginalID])
+	assert.Equal(t, TraceOriginSDK, trace.Attributes[AttrTraceOrigin])
+	assert.Equal(t, logstore.TraceSourceBraintrust, trace.Attributes[AttrTraceSource])
+	assert.Equal(t, "p1", trace.Attributes[AttrTraceProjectID])
+	assert.Equal(t, "sess-1", trace.Attributes[schemas.TraceAttrSessionID])
+	require.NotNil(t, trace.RootSpan)
+	assert.Equal(t, "agent", trace.RootSpan.Name)
+	var llm *schemas.Span
+	for _, span := range trace.Spans {
+		if span.Name == "chat" {
+			llm = span
 		}
 	}
-	assert.InDelta(t, 500, in, 120, "the sample is close to its rate")
+	require.NotNil(t, llm)
+	assert.Len(t, llm.SpanID, 16)
+	assert.Equal(t, trace.RootSpan.SpanID, llm.ParentID, "parents follow the normalized ids")
+	assert.Equal(t, schemas.SpanKindLLMCall, llm.Kind)
+	assert.Equal(t, "gpt-4o", llm.Attributes[schemas.AttrRequestModel])
+	assert.Equal(t, "openai", llm.Attributes[schemas.AttrProviderName])
+	assert.Equal(t, 12, llm.Attributes[schemas.AttrInputTokens])
+	assert.Equal(t, 3, llm.Attributes[schemas.AttrOutputTokens])
+	assert.Equal(t, cost, llm.Attributes[schemas.AttrUsageCost])
+	assert.Equal(t, `[{"content":"hi","role":"user"}]`, llm.Attributes[schemas.AttrInputMessages])
+	assert.Equal(t, "llm-1", llm.Attributes[AttrSpanOriginalID])
+
+	// Nothing new: no second export. A late span: only it is sent.
+	require.NoError(t, env.service.FlushRollups(ctx))
+	env.service.waitForExports()
+	assert.Empty(t, exporter.take())
+	ingest(&SpanPart{TraceID: "trace-1", SpanID: "tool-1", ParentSpanIDs: []string{"root-span"}, Name: "search", Kind: logstore.TraceSpanKindTool,
+		StartTime: at(600), EndTime: at(700), Status: logstore.TraceSpanStatusError, Error: "timeout"})
+	exported = exporter.take()
+	require.Len(t, exported, 1)
+	require.Len(t, exported[0].Spans, 1)
+	tool := exported[0].Spans[0]
+	assert.Equal(t, "search", tool.Name)
+	assert.Equal(t, schemas.SpanStatusError, tool.Status)
+	assert.Equal(t, "timeout", tool.StatusMsg)
+	assert.Equal(t, trace.TraceID, exported[0].TraceID, "a late span joins the same connector trace")
+}
+
+// TestConnectorIDs pins the id rule of the export: a hex id of the right size is kept, anything else
+// becomes a stable hex hash of it, so every connector gets a valid W3C id and the same span maps to
+// the same id each time.
+func TestConnectorIDs(t *testing.T) {
+	assert.Equal(t, "0af7651916cd43dd8448eb211c80319c", connectorID("0af7651916cd43dd8448eb211c80319c", 32))
+	assert.Equal(t, "b7ad6b7169203331", connectorID("b7ad6b7169203331", 16))
+	uuid := connectorID("3dd99e2c-8219-4246-b3b3-a0e6b7d24283", 32)
+	assert.Len(t, uuid, 32)
+	assert.Equal(t, uuid, connectorID("3dd99e2c-8219-4246-b3b3-a0e6b7d24283", 32))
+	assert.NotEqual(t, connectorID("span-root", 16), connectorID("span-rooT", 16))
+	assert.Regexp(t, `^[0-9a-f]{16}$`, connectorID("span-root", 16))
+	assert.Equal(t, "", connectorID("", 16))
 }
 
 // benchTrace builds one OTLP-shaped trace of n spans under a fresh trace id.
