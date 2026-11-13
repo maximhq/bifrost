@@ -22,7 +22,7 @@ import (
 const tracesMaxLimit = 500
 
 // TracesHandler is the dashboard's API for Tracing: the trace list and detail, the overview, and
-// the management of tracing projects and tracing keys. It reads what the ingest endpoints wrote.
+// tracing project settings. It reads what the ingest endpoints wrote.
 type TracesHandler struct {
 	store  logstore.TraceStore
 	config configstore.ConfigStore
@@ -48,10 +48,6 @@ func (h *TracesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.POST("/api/traces/projects", lib.ChainMiddlewares(h.createProject, middlewares...))
 	r.PUT("/api/traces/projects/{id}", lib.ChainMiddlewares(h.updateProject, middlewares...))
 	r.DELETE("/api/traces/projects/{id}", lib.ChainMiddlewares(h.deleteProject, middlewares...))
-	r.GET("/api/traces/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
-	r.POST("/api/traces/keys", lib.ChainMiddlewares(h.createKey, middlewares...))
-	r.PUT("/api/traces/keys/{id}", lib.ChainMiddlewares(h.updateKey, middlewares...))
-	r.DELETE("/api/traces/keys/{id}", lib.ChainMiddlewares(h.deleteKey, middlewares...))
 	r.GET("/api/traces/trace/{project_id}/{trace_id}", lib.ChainMiddlewares(h.getTrace, middlewares...))
 	r.GET("/api/traces/uploads/{id}", lib.ChainMiddlewares(h.getUpload, middlewares...))
 	for _, register := range tracesHandlerExtensions {
@@ -306,14 +302,16 @@ func (h *TracesHandler) getTrace(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"trace": trace, "spans": spans, "links": links, "scores": scores, "comments": comments})
 }
 
-// connect returns what the Connect panel shows: the URL each SDK should be pointed at.
+// connect returns the URL each SDK is pointed at, and whether SDKs must send the dashboard credentials.
 func (h *TracesHandler) connect(ctx *fasthttp.RequestCtx) {
 	base := ""
 	if h.ingest != nil {
 		base = h.ingest.publicBaseURL(ctx)
 	}
 	uploads := h.store.TraceUploadsAvailable()
+	authRequired := h.ingest != nil && h.ingest.credentials != nil && h.ingest.credentials.IsDashboardAuthActive()
 	SendJSON(ctx, map[string]any{
+		"auth_required": authRequired,
 		"base_url": base,
 		"endpoints": map[string]string{
 			logstore.TraceSourceBraintrust: base + tracingPrefix + "/braintrust",
@@ -424,7 +422,7 @@ func (h *TracesHandler) updateProject(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"project": project})
 }
 
-// deleteProject removes a project, the bindings keys hold to it, and every trace stored under it.
+// deleteProject removes a project and every trace stored under it.
 func (h *TracesHandler) deleteProject(ctx *fasthttp.RequestCtx) {
 	id, _ := ctx.UserValue("id").(string)
 	storeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -432,30 +430,6 @@ func (h *TracesHandler) deleteProject(ctx *fasthttp.RequestCtx) {
 	if _, err := h.config.GetTraceProject(storeCtx, id); err != nil {
 		h.fail(ctx, "delete tracing project", err)
 		return
-	}
-	keys, err := h.config.ListTracingKeys(storeCtx)
-	if err != nil {
-		h.fail(ctx, "delete tracing project", err)
-		return
-	}
-	for _, key := range keys {
-		if !key.AllowsProject(id) && key.DefaultProjectID != id {
-			continue
-		}
-		kept := make([]string, 0, len(key.ProjectIDs))
-		for _, projectID := range key.ProjectIDs {
-			if projectID != id {
-				kept = append(kept, projectID)
-			}
-		}
-		key.ProjectIDs = kept
-		if key.DefaultProjectID == id {
-			key.DefaultProjectID = ""
-		}
-		if err := h.config.UpdateTracingKey(storeCtx, key); err != nil {
-			h.fail(ctx, "delete tracing project", err)
-			return
-		}
 	}
 	// The project row goes first, so no new trace can land while the old ones are removed.
 	if err := h.config.DeleteTraceProject(storeCtx, id); err != nil {
@@ -480,137 +454,11 @@ func (h *TracesHandler) deleteProject(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"deleted": true})
 }
 
-// invalidate makes the ingest path re-read keys and projects after an edit.
+// invalidate makes the ingest path re-read projects after an edit.
 func (h *TracesHandler) invalidate() {
 	if h.ingest != nil {
-		h.ingest.service.InvalidateKeys()
+		h.ingest.service.InvalidateProjects()
 	}
-}
-
-func (h *TracesHandler) listKeys(ctx *fasthttp.RequestCtx) {
-	storeCtx, cancel := h.storeContext()
-	defer cancel()
-	keys, err := h.config.ListTracingKeys(storeCtx)
-	if err != nil {
-		h.fail(ctx, "list tracing keys", err)
-		return
-	}
-	SendJSON(ctx, map[string]any{"keys": keys})
-}
-
-// tracingKeyPayload is the editable part of a tracing key. The key's value is never accepted from
-// the caller: Bifrost generates it.
-type tracingKeyPayload struct {
-	Name              string   `json:"name"`
-	ProjectIDs        []string `json:"project_ids"`
-	DefaultProjectID  string   `json:"default_project_id"`
-	VirtualKeyIDs     []string `json:"virtual_key_ids"`
-	LogContent        *bool    `json:"log_content"`
-	CanCreateProjects bool     `json:"can_create_projects"`
-	CanReadPrompts    bool     `json:"can_read_prompts"`
-	CanUseDatasets    bool     `json:"can_use_datasets"`
-	Enabled           *bool    `json:"enabled"`
-}
-
-// validate checks the payload against the stored projects.
-func (h *TracesHandler) validateKey(ctx context.Context, payload *tracingKeyPayload) error {
-	payload.Name = strings.TrimSpace(payload.Name)
-	if payload.Name == "" || len(payload.Name) > 255 {
-		return fmt.Errorf("name is required and must be at most 255 characters")
-	}
-	if len(payload.ProjectIDs) == 0 && !payload.CanCreateProjects {
-		return fmt.Errorf("a tracing key needs at least one project, or permission to create projects")
-	}
-	for _, id := range payload.ProjectIDs {
-		if _, err := h.config.GetTraceProject(ctx, id); err != nil {
-			return fmt.Errorf("project %q does not exist", id)
-		}
-	}
-	if payload.DefaultProjectID != "" {
-		found := false
-		for _, id := range payload.ProjectIDs {
-			found = found || id == payload.DefaultProjectID
-		}
-		if !found {
-			return fmt.Errorf("default_project_id must be one of project_ids")
-		}
-	}
-	return nil
-}
-
-func (p *tracingKeyPayload) apply(key *tables.TableTracingKey) {
-	key.Name, key.ProjectIDs, key.DefaultProjectID, key.VirtualKeyIDs = p.Name, p.ProjectIDs, p.DefaultProjectID, p.VirtualKeyIDs
-	key.CanCreateProjects, key.CanReadPrompts, key.CanUseDatasets = p.CanCreateProjects, p.CanReadPrompts, p.CanUseDatasets
-	key.LogContent = p.LogContent == nil || *p.LogContent
-	key.Enabled = p.Enabled == nil || *p.Enabled
-}
-
-// createKey makes a tracing key and returns its value. This response is the only time the value is
-// shown: only its hash is stored.
-func (h *TracesHandler) createKey(ctx *fasthttp.RequestCtx) {
-	var payload tracingKeyPayload
-	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
-		return
-	}
-	storeCtx, cancel := h.storeContext()
-	defer cancel()
-	if err := h.validateKey(storeCtx, &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-	value, err := tables.NewTracingKeyValue()
-	if err != nil {
-		h.fail(ctx, "create tracing key", err)
-		return
-	}
-	key := &tables.TableTracingKey{}
-	payload.apply(key)
-	key.SetValue(value)
-	if err := h.config.CreateTracingKey(storeCtx, key); err != nil {
-		h.fail(ctx, "create tracing key", err)
-		return
-	}
-	SendJSON(ctx, map[string]any{"key": key, "value": value})
-}
-
-func (h *TracesHandler) updateKey(ctx *fasthttp.RequestCtx) {
-	id, _ := ctx.UserValue("id").(string)
-	var payload tracingKeyPayload
-	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
-		return
-	}
-	storeCtx, cancel := h.storeContext()
-	defer cancel()
-	if err := h.validateKey(storeCtx, &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-	key, err := h.config.GetTracingKey(storeCtx, id)
-	if err != nil {
-		h.fail(ctx, "update tracing key", err)
-		return
-	}
-	payload.apply(key)
-	if err := h.config.UpdateTracingKey(storeCtx, key); err != nil {
-		h.fail(ctx, "update tracing key", err)
-		return
-	}
-	h.invalidate()
-	SendJSON(ctx, map[string]any{"key": key})
-}
-
-func (h *TracesHandler) deleteKey(ctx *fasthttp.RequestCtx) {
-	id, _ := ctx.UserValue("id").(string)
-	storeCtx, cancel := h.storeContext()
-	defer cancel()
-	if err := h.config.DeleteTracingKey(storeCtx, id); err != nil {
-		h.fail(ctx, "delete tracing key", err)
-		return
-	}
-	h.invalidate()
-	SendJSON(ctx, map[string]any{"deleted": true})
 }
 
 // getUpload serves the bytes of a file an SDK uploaded beside its spans: a Braintrust attachment,

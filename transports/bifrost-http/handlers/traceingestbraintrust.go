@@ -63,7 +63,7 @@ func init() {
 }
 
 func (h *TraceIngestHandler) braintrustPrincipal(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
-	return h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization"))))
+	return h.authenticate(ctx)
 }
 
 // braintrustLogin answers the SDK's login. org_info.api_url is where the SDK sends everything

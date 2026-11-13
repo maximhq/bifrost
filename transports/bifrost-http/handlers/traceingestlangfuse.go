@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"errors"
 	"net/url"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/traceingest"
@@ -67,7 +69,7 @@ func writeJSONStatus(ctx *fasthttp.RequestCtx, status int, payload any) {
 // langfusePrincipal authenticates a Langfuse request. The SDK sends Basic public:secret; the
 // secret key is the tracing key and the public key is not checked.
 func (h *TraceIngestHandler) langfusePrincipal(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
-	return h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization"))))
+	return h.authenticate(ctx)
 }
 
 // langfuseIngestion handles a legacy event batch. The answer is always 207 with a result per
@@ -137,21 +139,48 @@ func (h *TraceIngestHandler) langfuseIngestion(ctx *fasthttp.RequestCtx) {
 	writeJSONStatus(ctx, fasthttp.StatusMultiStatus, map[string]any{"successes": successes, "errors": failures})
 }
 
-// langfuseCreateScore handles POST /api/public/scores.
+// langfuseCreateScore handles POST /api/public/scores. Older SDKs post one score and get its id
+// back. Langfuse 5 posts a JSON array of scores and expects 202 when all were taken, else 207 with
+// the counts and a message per rejected score.
 func (h *TraceIngestHandler) langfuseCreateScore(ctx *fasthttp.RequestCtx) {
 	principal, ok := h.langfusePrincipal(ctx)
 	if !ok {
 		return
 	}
-	var body map[string]any
-	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
-		langfuseError(ctx, fasthttp.StatusBadRequest, "invalid request body")
-		return
+	body := bytes.TrimSpace(ctx.PostBody())
+	batch := len(body) > 0 && body[0] == '['
+	var items []map[string]any
+	if batch {
+		if err := sonic.Unmarshal(body, &items); err != nil {
+			langfuseError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+			return
+		}
+	} else {
+		var item map[string]any
+		if err := sonic.Unmarshal(body, &item); err != nil {
+			langfuseError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+			return
+		}
+		items = []map[string]any{item}
 	}
-	_, score, err := traceingest.MapLangfuseEvent(&traceingest.LangfuseEvent{Type: "score-create", Body: body})
-	if err != nil {
-		langfuseError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+	var scores []*logstore.TraceScore
+	var rejected []map[string]any
+	for _, item := range items {
+		_, score, err := traceingest.MapLangfuseEvent(&traceingest.LangfuseEvent{Type: "score-create", Body: item})
+		if err != nil {
+			if !batch {
+				langfuseError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+			rejected = append(rejected, map[string]any{"message": err.Error()})
+			continue
+		}
+		stored := score.TraceScore(logstore.TraceAuthorSDK)
+		if stored.ID == "" {
+			// A score sent with no id gets one now, so the answer can name it.
+			stored.ID = uuid.NewString()
+		}
+		scores = append(scores, stored)
 	}
 	storeCtx, cancel := ingestContext()
 	defer cancel()
@@ -160,13 +189,19 @@ func (h *TraceIngestHandler) langfuseCreateScore(ctx *fasthttp.RequestCtx) {
 		h.fail(ctx, err)
 		return
 	}
-	stored := score.TraceScore(logstore.TraceAuthorSDK)
-	if err := h.service.AddScores(storeCtx, principal, project.ID, []*logstore.TraceScore{stored}); err != nil {
+	if err := h.service.AddScores(storeCtx, principal, project.ID, scores); err != nil {
 		h.fail(ctx, err)
 		return
 	}
 	h.forward(ctx, logstore.TraceSourceLangfuse, "/api/public/scores", project)
-	SendJSON(ctx, map[string]any{"id": stored.ID})
+	switch {
+	case !batch:
+		SendJSON(ctx, map[string]any{"id": scores[0].ID})
+	case len(rejected) == 0:
+		writeJSONStatus(ctx, fasthttp.StatusAccepted, map[string]any{"message": "Accepted"})
+	default:
+		writeJSONStatus(ctx, fasthttp.StatusMultiStatus, map[string]any{"accepted": len(scores), "rejected": len(rejected), "errors": rejected})
+	}
 }
 
 // langfuseCreateMedia hands the SDK an upload URL for a media file. The media id is derived from

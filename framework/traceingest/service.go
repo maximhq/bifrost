@@ -18,12 +18,12 @@ import (
 )
 
 var (
-	// ErrUnauthorized is returned when a request carries no tracing key or an unknown one.
-	ErrUnauthorized = errors.New("tracing key is missing or not valid")
-	// ErrForbidden is returned when a key names a project it is not bound to.
-	ErrForbidden = errors.New("tracing key cannot write to this project")
-	// ErrRateLimited is returned when a key sends spans faster than its cap.
-	ErrRateLimited = errors.New("tracing key is over its span rate limit")
+	// ErrUnauthorized is returned when dashboard auth is on and a request carries no valid credential.
+	ErrUnauthorized = errors.New("dashboard credentials are missing or not valid")
+	// ErrForbidden is returned when a scoped credential names a project it may not write to.
+	ErrForbidden = errors.New("this credential cannot write to this project")
+	// ErrRateLimited is returned when spans arrive faster than the configured cap.
+	ErrRateLimited = errors.New("trace ingest is over its span rate limit")
 	// ErrClosed is returned once the service has been closed.
 	ErrClosed = errors.New("trace ingest is closed")
 )
@@ -33,10 +33,6 @@ type ConfigStore interface {
 	GetTraceProject(ctx context.Context, id string) (*tables.TableTraceProject, error)
 	GetTraceProjectByName(ctx context.Context, name string) (*tables.TableTraceProject, error)
 	CreateTraceProject(ctx context.Context, project *tables.TableTraceProject) error
-	GetTracingKey(ctx context.Context, id string) (*tables.TableTracingKey, error)
-	GetTracingKeyByHash(ctx context.Context, hash string) (*tables.TableTracingKey, error)
-	UpdateTracingKey(ctx context.Context, key *tables.TableTracingKey) error
-	TouchTracingKey(ctx context.Context, id string, at time.Time) error
 }
 
 // Config tunes the ingest path. The zero value is usable.
@@ -49,8 +45,10 @@ type Config struct {
 	RollupInterval time.Duration
 	// PartRetention is how long a received part is kept for refolds. A span outlives its parts.
 	PartRetention time.Duration
-	// MaxSpansPerSecond caps each key. Zero means no cap.
+	// MaxSpansPerSecond caps ingest across all callers. Zero means no cap.
 	MaxSpansPerSecond int
+	// DefaultProjectName is the project a request that names none goes to. It is created on first use.
+	DefaultProjectName string
 	// RetentionDays returns the default trace retention, for projects that set none. Zero keeps forever.
 	RetentionDays func() int
 	// ContentLoggingDisabled reports the global content switch. When on, no span content is stored.
@@ -70,21 +68,30 @@ func (c Config) withDefaults() Config {
 	if c.PartRetention <= 0 {
 		c.PartRetention = 7 * 24 * time.Hour
 	}
+	if c.DefaultProjectName == "" {
+		c.DefaultProjectName = DefaultProjectName
+	}
 	return c
 }
 
-// Principal is who an ingest request acts as: a tracing key, or in enterprise a scoped API key.
+// DefaultProjectName is the project traces go to when the SDK names none.
+const DefaultProjectName = "default"
+
+// Principal is who an ingest request acts as. SDKs authenticate with the dashboard's own
+// credentials, which act as the admin: every project, created on first use. Enterprise can narrow a
+// principal to some projects, for a scoped API key.
 type Principal struct {
-	KeyID             string
+	// ProjectIDs are the projects a scoped principal may write to. Ignored when AllProjects is set.
 	ProjectIDs        []string
-	DefaultProjectID  string
-	VirtualKeyIDs     []string
 	LogContent        bool
 	CanCreateProjects bool
-	CanReadPrompts    bool
-	CanUseDatasets    bool
-	// AllProjects lets the principal write to any project. Tracing keys never have it.
-	AllProjects bool
+	AllProjects       bool
+}
+
+// AdminPrincipal is the principal of a request that passed dashboard auth, or of any request when
+// dashboard auth is off.
+func AdminPrincipal() *Principal {
+	return &Principal{LogContent: true, CanCreateProjects: true, AllProjects: true}
 }
 
 func (p *Principal) allows(projectID string) bool {
@@ -119,18 +126,11 @@ type Service struct {
 	closing  sync.Once
 
 	mu       sync.Mutex
-	keys     map[string]cachedKey  // by key hash
 	masks    map[string]cachedMask // by project id
 	projects map[string]cachedProject
-	rates    map[string]*rateWindow // by key id
-	touched  map[string]time.Time   // by key id
+	rate     rateWindow
 	// retries schedules another look at traces whose calls are not all linked yet.
 	retries map[logstore.TraceKey]matchRetry
-}
-
-type cachedKey struct {
-	principal *Principal
-	expires   time.Time
 }
 
 type cachedProject struct {
@@ -161,25 +161,19 @@ type rateWindow struct {
 type commitRequest struct {
 	parts  []*logstore.TraceSpanPart
 	spans  []*SpanPart // same order as parts
-	keyID  string
 	hidden bool
 	result chan error
 }
 
-const (
-	keyCacheTTL     = 30 * time.Second
-	missCacheTTL    = 5 * time.Second
-	projectCacheTTL = 30 * time.Second
-	keyTouchEvery   = time.Minute
-)
+const projectCacheTTL = 30 * time.Second
 
 // NewService builds the ingest service and starts its committer and rollup worker.
 func NewService(store logstore.TraceStore, config ConfigStore, cfg Config, logger schemas.Logger) *Service {
 	s := &Service{
 		store: store, config: config, cfg: cfg.withDefaults(), logger: logger,
 		requests: make(chan *commitRequest, 1024), done: make(chan struct{}),
-		keys: make(map[string]cachedKey), masks: make(map[string]cachedMask), projects: make(map[string]cachedProject),
-		rates: make(map[string]*rateWindow), touched: make(map[string]time.Time), retries: make(map[logstore.TraceKey]matchRetry),
+		masks: make(map[string]cachedMask), projects: make(map[string]cachedProject),
+		retries: make(map[logstore.TraceKey]matchRetry),
 	}
 	s.wg.Add(2)
 	go s.commitLoop()
@@ -201,89 +195,24 @@ func (s *Service) Close() {
 	s.wg.Wait()
 }
 
-// Authenticate resolves a tracing key value to its principal.
-func (s *Service) Authenticate(ctx context.Context, value string) (*Principal, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, ErrUnauthorized
-	}
-	hash := tables.HashTracingKey(value)
-	now := time.Now()
+// InvalidateProjects drops every cached project, so an edit in the dashboard takes effect now.
+func (s *Service) InvalidateProjects() {
 	s.mu.Lock()
-	cached, ok := s.keys[hash]
-	s.mu.Unlock()
-	if ok && now.Before(cached.expires) {
-		if cached.principal == nil {
-			return nil, ErrUnauthorized
-		}
-		s.touch(cached.principal.KeyID, now)
-		return cached.principal, nil
-	}
-	key, err := s.config.GetTracingKeyByHash(ctx, hash)
-	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		return nil, fmt.Errorf("failed to look up tracing key: %w", err)
-	}
-	if err != nil || !key.Enabled {
-		s.mu.Lock()
-		s.keys[hash] = cachedKey{expires: now.Add(missCacheTTL)}
-		s.mu.Unlock()
-		return nil, ErrUnauthorized
-	}
-	principal := principalFromKey(key)
-	s.mu.Lock()
-	s.keys[hash] = cachedKey{principal: principal, expires: now.Add(keyCacheTTL)}
-	s.mu.Unlock()
-	s.touch(principal.KeyID, now)
-	return principal, nil
-}
-
-func principalFromKey(key *tables.TableTracingKey) *Principal {
-	return &Principal{
-		KeyID: key.ID, ProjectIDs: key.ProjectIDs, DefaultProjectID: key.DefaultProjectID, VirtualKeyIDs: key.VirtualKeyIDs,
-		LogContent: key.LogContent, CanCreateProjects: key.CanCreateProjects, CanReadPrompts: key.CanReadPrompts, CanUseDatasets: key.CanUseDatasets,
-	}
-}
-
-// InvalidateKeys drops every cached key, so a key edited or deleted in the dashboard takes effect now.
-func (s *Service) InvalidateKeys() {
-	s.mu.Lock()
-	clear(s.keys)
 	clear(s.projects)
+	clear(s.masks)
 	s.mu.Unlock()
-}
-
-// touch records key use, at most once a minute per key, off the request path.
-func (s *Service) touch(keyID string, now time.Time) {
-	s.mu.Lock()
-	last := s.touched[keyID]
-	if now.Sub(last) < keyTouchEvery {
-		s.mu.Unlock()
-		return
-	}
-	s.touched[keyID] = now
-	s.mu.Unlock()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.config.TouchTracingKey(ctx, keyID, now.UTC()); err != nil && s.logger != nil {
-			s.logger.Debug("traceingest: failed to record tracing key use: %v", err)
-		}
-	}()
 }
 
 // ResolveProject finds the project a request names, by id or by name. An empty ref means the
-// principal's default project. A name that does not exist is created when the principal may create
-// projects, which is how the Braintrust and Langfuse SDKs register a project on first use.
+// default project. A name that does not exist is created when the principal may create projects,
+// which is how SDKs register a project on first use.
 func (s *Service) ResolveProject(ctx context.Context, principal *Principal, ref string) (*tables.TableTraceProject, error) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		ref = principal.DefaultProjectID
-	}
-	if ref == "" && len(principal.ProjectIDs) == 1 {
+	if ref == "" && !principal.AllProjects && len(principal.ProjectIDs) == 1 {
 		ref = principal.ProjectIDs[0]
 	}
 	if ref == "" {
-		return nil, fmt.Errorf("%w: the request names no project and the key has no default", ErrForbidden)
+		ref = s.cfg.DefaultProjectName
 	}
 	now := time.Now()
 	s.mu.Lock()
@@ -314,10 +243,10 @@ func (s *Service) ResolveProject(ctx context.Context, principal *Principal, ref 
 	return project, nil
 }
 
-// createProject makes the project a key named and binds the key to it.
+// createProject makes the project a request named.
 func (s *Service) createProject(ctx context.Context, principal *Principal, name string) (*tables.TableTraceProject, error) {
 	if !principal.CanCreateProjects {
-		return nil, fmt.Errorf("%w: project %q does not exist and the key may not create projects", ErrForbidden, name)
+		return nil, fmt.Errorf("%w: project %q does not exist", ErrForbidden, name)
 	}
 	project := &tables.TableTraceProject{Name: name}
 	if err := s.config.CreateTraceProject(ctx, project); err != nil {
@@ -331,41 +260,27 @@ func (s *Service) createProject(ctx context.Context, principal *Principal, name 
 		}
 		project = existing
 	}
-	if !principal.AllProjects && !principal.allows(project.ID) {
-		key, err := s.config.GetTracingKey(ctx, principal.KeyID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to bind tracing key to its new project: %w", err)
-		}
-		if !key.AllowsProject(project.ID) {
-			key.ProjectIDs = append(key.ProjectIDs, project.ID)
-			if err := s.config.UpdateTracingKey(ctx, key); err != nil {
-				return nil, fmt.Errorf("failed to bind tracing key to its new project: %w", err)
-			}
-		}
-		// The cached principal is shared by every request of this key, so it is replaced, not edited.
-		s.InvalidateKeys()
-		principal.ProjectIDs = append(append([]string{}, principal.ProjectIDs...), project.ID)
+	if !principal.allows(project.ID) {
+		return nil, ErrForbidden
 	}
 	return project, nil
 }
 
-// allowRate counts spans against the key's per-second cap.
-func (s *Service) allowRate(keyID string, spans int) bool {
-	if s.cfg.MaxSpansPerSecond <= 0 || keyID == "" {
+// allowRate counts spans against the per-second cap.
+func (s *Service) allowRate(spans int) bool {
+	if s.cfg.MaxSpansPerSecond <= 0 {
 		return true
 	}
 	second := time.Now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	window := s.rates[keyID]
-	if window == nil || window.second != second {
-		window = &rateWindow{second: second}
-		s.rates[keyID] = window
+	if s.rate.second != second {
+		s.rate = rateWindow{second: second}
 	}
-	if window.count+spans > s.cfg.MaxSpansPerSecond && window.count > 0 {
+	if s.rate.count+spans > s.cfg.MaxSpansPerSecond && s.rate.count > 0 {
 		return false
 	}
-	window.count += spans
+	s.rate.count += spans
 	return true
 }
 
@@ -431,14 +346,14 @@ func (s *Service) Ingest(ctx context.Context, principal *Principal, project *tab
 	if !principal.allows(project.ID) {
 		return ErrForbidden
 	}
-	if !s.allowRate(principal.KeyID, len(spans)) {
+	if !s.allowRate(len(spans)) {
 		return ErrRateLimited
 	}
 	hidden := !principal.LogContent || (s.cfg.ContentLoggingDisabled != nil && s.cfg.ContentLoggingDisabled())
 	rules := s.masksFor(project)
 	now := time.Now().UTC()
 	partExpiry := now.Add(s.cfg.PartRetention)
-	request := &commitRequest{keyID: principal.KeyID, hidden: hidden, result: make(chan error, 1)}
+	request := &commitRequest{hidden: hidden, result: make(chan error, 1)}
 	for _, span := range spans {
 		if err := span.Validate(); err != nil {
 			return err
@@ -624,7 +539,6 @@ func (s *Service) write(ctx context.Context, batch []*commitRequest) error {
 			span := part.Span(key.ProjectID, source[ref], stored)
 			request := meta[ref]
 			if stored == nil {
-				span.TracingKeyID = request.keyID
 				span.ExpiresAt = s.spanExpiry(project, time.Now().UTC())
 			} else if stored.Source != "" {
 				span.Source = stored.Source

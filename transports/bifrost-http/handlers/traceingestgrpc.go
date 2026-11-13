@@ -48,30 +48,25 @@ func (s *TraceIngestGRPCServer) Stop() {
 	s.server.GracefulStop()
 }
 
-// grpcCredential reads the tracing key from call metadata, in the same forms as the HTTP headers.
-func grpcCredential(md metadata.MD) string {
-	for _, value := range md.Get("authorization") {
-		if credential := bearerCredential(value); credential != "" {
-			return credential
-		}
-	}
-	for _, name := range []string{"api_key", "arize-api-key", "x-api-key", "x-bf-tracing-key"} {
+// grpcCredentials collects the credentials of a call from its metadata, from the same headers the
+// HTTP routes read.
+func grpcCredentials(md metadata.MD) []string {
+	var candidates []string
+	for _, name := range ingestCredentialHeaders {
 		for _, value := range md.Get(name) {
 			if strings.TrimSpace(value) != "" {
-				return strings.TrimSpace(value)
+				candidates = append(candidates, strings.TrimSpace(value))
 			}
 		}
 	}
-	return ""
+	return candidates
 }
 
 // Export stores one OTLP export. Like the HTTP route it rejects nothing it can decode, so the
 // answer never carries a partial success.
 func (s *TraceIngestGRPCServer) Export(ctx context.Context, request *collectortrace.ExportTraceServiceRequest) (*collectortrace.ExportTraceServiceResponse, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
-	storeCtx, cancel := ingestContext()
-	defer cancel()
-	principal, err := s.handler.service.Authenticate(storeCtx, grpcCredential(md))
+	principal, err := s.handler.authorize(grpcCredentials(md))
 	if err != nil {
 		return nil, grpcIngestError(err)
 	}
@@ -95,7 +90,7 @@ func (s *TraceIngestGRPCServer) Export(ctx context.Context, request *collectortr
 func grpcIngestError(err error) error {
 	switch {
 	case errors.Is(err, traceingest.ErrUnauthorized):
-		return status.Error(codes.Unauthenticated, "a valid tracing key is required")
+		return status.Error(codes.Unauthenticated, "send your Bifrost dashboard username and password as the API key")
 	case errors.Is(err, traceingest.ErrForbidden):
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, traceingest.ErrRateLimited):

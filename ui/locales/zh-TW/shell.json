@@ -10,7 +10,7 @@
 		"mcpLogs": "MCP 日誌",
 		"connectors": "聯結器",
 		"relayLogs": "轉送日誌",
-		"tracing": "鏈路追蹤",
+		"tracing": "追蹤",
 		"relays": "轉送",
 		"logsSettings": "日誌設定",
 		"models": "模型",
@@ -92,7 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "轉送呼叫及其成本",
-		"tracing": "由 Braintrust、Langfuse、Arize 與 OpenTelemetry SDK 推送的追蹤",
+		"tracing": "來自任意追蹤 SDK 的追蹤",
 		"relays": "以依路由計價的方式轉送非 LLM API",
 		"home": "你的用量、金鑰、預算和存取權限",
 		"observability": "請求日誌與監控",

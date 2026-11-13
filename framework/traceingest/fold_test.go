@@ -91,7 +91,7 @@ func TestFoldAppliesALateMergeOverTheStoredSpan(t *testing.T) {
 		ProjectID: "p1", TraceID: "t", SpanID: "s", Name: "chat", Kind: logstore.TraceSpanKindLLM, StartTime: start,
 		Input: `{"q":"hi"}`, MetadataParsed: map[string]any{"a": 1.0}, TagsParsed: []string{"prod"}, PromptTokens: 10,
 		Cost: new(0.004), CostEstimated: true, LinkMethod: "header", LinkSnapshotParsed: &logstore.TraceLinkSnapshot{TotalTokens: 99},
-		CreatedAt: start, TracingKeyID: "k1",
+		CreatedAt: start,
 	}
 	end := start.Add(time.Second)
 	late := &SpanPart{ID: "m", ReceivedAt: start.Add(time.Hour), IsMerge: true, TraceID: "t", SpanID: "s", EndTime: &end, Metadata: map[string]any{"b": 2.0}, Output: map[string]any{"text": "done"}}
@@ -111,5 +111,4 @@ func TestFoldAppliesALateMergeOverTheStoredSpan(t *testing.T) {
 	assert.Equal(t, "header", span.LinkMethod)
 	assert.Equal(t, 99, span.LinkSnapshotParsed.TotalTokens)
 	assert.Equal(t, start, span.CreatedAt)
-	assert.Equal(t, "k1", span.TracingKeyID)
 }

@@ -106,15 +106,15 @@ func promptSlug(name string) string {
 	return strings.TrimRight(slug.String(), "-")
 }
 
-// promptReader authenticates a prompt fetch. Reading prompts is a permission a tracing key has
-// only when it was given: by default a key writes traces and does nothing else.
+// promptReader authenticates a prompt fetch. A scoped principal (an enterprise API key bound to
+// some projects) does not read prompts, which belong to no project.
 func (h *TraceIngestHandler) promptReader(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
-	principal, ok := h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization"))))
+	principal, ok := h.authenticate(ctx)
 	if !ok {
 		return nil, false
 	}
-	if !principal.CanReadPrompts && !principal.AllProjects {
-		SendError(ctx, fasthttp.StatusForbidden, "this tracing key may not read prompts. Turn on prompt access for the key under Observability > Tracing.")
+	if !principal.AllProjects {
+		SendError(ctx, fasthttp.StatusForbidden, "this credential may not read prompts")
 		return nil, false
 	}
 	if h.prompts == nil {
@@ -273,10 +273,10 @@ func (h *TraceIngestHandler) langfuseListPrompts(ctx *fasthttp.RequestCtx) {
 }
 
 // promptWriteRefused answers an SDK that tries to create a prompt. Prompts are written in the
-// dashboard: a tracing key is not a credential that edits what production code runs.
+// prompt repository, where they are versioned and reviewed.
 func (h *TraceIngestHandler) promptWriteRefused(ctx *fasthttp.RequestCtx) {
-	if _, ok := h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization")))); ok {
-		SendError(ctx, fasthttp.StatusForbidden, "prompts are created in the Bifrost prompt repository, not through a tracing key")
+	if _, ok := h.authenticate(ctx); ok {
+		SendError(ctx, fasthttp.StatusForbidden, "prompts are created in the Bifrost prompt repository, not through an SDK")
 	}
 }
 

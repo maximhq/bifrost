@@ -2923,6 +2923,10 @@ func (s *BifrostHTTPServer) ensureTraceIngest() bool {
 		s.TraceIngest.SetPricer(s.Config.ModelCatalog)
 	}
 	s.TraceIngestHandler = handlers.NewTraceIngestHandler(s.TraceIngest, s.Config, logger)
+	// SDKs authenticate with the dashboard's own credentials. With dashboard auth off, none is needed.
+	if s.AuthMiddleware != nil {
+		s.TraceIngestHandler.SetCredentials(s.AuthMiddleware)
+	}
 	// Replays received requests to a project's upstream vendor, after Bifrost has stored them.
 	s.TraceForwarder = traceingest.NewForwarder(nil, logger)
 	s.TraceIngestHandler.SetForwarder(s.TraceForwarder)
@@ -3926,8 +3930,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
-	// Tracing ingest sits outside the LLM pipeline: SDKs authenticate with a tracing key, which the
-	// handler checks itself, so neither dashboard auth nor virtual-key auth applies to these routes.
+	// Tracing ingest sits outside the LLM pipeline. SDKs send the dashboard credentials as their API
+	// key, in whichever header the SDK uses, so the handler checks them itself.
 	s.RegisterTraceIngestRoutes(commonMiddlewares...)
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can

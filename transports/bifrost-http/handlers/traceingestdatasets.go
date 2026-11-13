@@ -50,15 +50,15 @@ func init() {
 	})
 }
 
-// datasetUser authenticates a dataset call. Using datasets is a permission a tracing key has only
-// when it was given: by default a key writes traces and does nothing else.
+// datasetUser authenticates a dataset call. A scoped principal (an enterprise API key bound to some
+// projects) does not use datasets, which belong to no project.
 func (h *TraceIngestHandler) datasetUser(ctx *fasthttp.RequestCtx) (*traceingest.Principal, bool) {
-	principal, ok := h.authenticate(ctx, bearerCredential(string(ctx.Request.Header.Peek("Authorization"))))
+	principal, ok := h.authenticate(ctx)
 	if !ok {
 		return nil, false
 	}
-	if !principal.CanUseDatasets && !principal.AllProjects {
-		SendError(ctx, fasthttp.StatusForbidden, "this tracing key may not use datasets. Turn on dataset access for the key under Observability > Tracing.")
+	if !principal.AllProjects {
+		SendError(ctx, fasthttp.StatusForbidden, "this credential may not use datasets")
 		return nil, false
 	}
 	if h.datasets == nil {
@@ -167,7 +167,7 @@ func (h *TraceIngestHandler) braintrustRegisterDataset(ctx *fasthttp.RequestCtx)
 // addBraintrustDatasetRows adds the dataset records of a logs3 flush to their evals datasets. A
 // record is a row with a dataset_id and no experiment. It returns how many rows it took.
 func (h *TraceIngestHandler) addBraintrustDatasetRows(ctx context.Context, principal *traceingest.Principal, rows []any) (int, error) {
-	if h.datasets == nil || (!principal.CanUseDatasets && !principal.AllProjects) {
+	if h.datasets == nil || !principal.AllProjects {
 		return 0, nil
 	}
 	byDataset := make(map[string][]map[string]string)

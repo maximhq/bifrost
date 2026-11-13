@@ -153,7 +153,6 @@ type TraceSpan struct {
 	Environment        string     `gorm:"type:varchar(128)" json:"environment,omitempty"`
 	ExperimentID       string     `gorm:"type:varchar(128)" json:"experiment_id,omitempty"`
 	DatasetID          string     `gorm:"type:varchar(128)" json:"dataset_id,omitempty"`
-	TracingKeyID       string     `gorm:"type:varchar(128)" json:"tracing_key_id,omitempty"`
 	ProviderResponseID string     `gorm:"type:varchar(255)" json:"provider_response_id,omitempty"`
 	LinkMethod         string     `gorm:"type:varchar(32)" json:"link_method,omitempty"`
 	LinkSnapshot       *string    `gorm:"type:text" json:"-"` // the gateway's numbers, copied when the link was made

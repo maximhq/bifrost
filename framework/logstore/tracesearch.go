@@ -178,6 +178,14 @@ func (s *RDBLogStore) applyTraceFilters(query *gorm.DB, filters TraceFilters) *g
 	if len(filters.Environments) > 0 {
 		query = query.Where("environment IN ?", filters.Environments)
 	}
+	// Kind and model live on spans: a trace matches when any of its spans does. A row-value IN
+	// works the same on Postgres, SQLite and ClickHouse, which has no correlated subqueries.
+	if len(filters.Kinds) > 0 {
+		query = query.Where("(project_id, trace_id) IN (SELECT project_id, trace_id FROM trace_spans WHERE kind IN ?)", filters.Kinds)
+	}
+	if len(filters.Models) > 0 {
+		query = query.Where("(project_id, trace_id) IN (SELECT project_id, trace_id FROM trace_spans WHERE model IN ?)", filters.Models)
+	}
 	for _, tag := range filters.Tags {
 		// Tags are stored as a JSON list of strings, so a tag is matched with its quotes.
 		query = s.traceLike(query, `"`+tag+`"`, "tags")

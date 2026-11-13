@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +42,7 @@ func newTracesAPITestEnv(t *testing.T) *tracesAPITestEnv {
 	require.NoError(t, err)
 	config, err := configstore.NewConfigStore(ctx, &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(dir, "config.db")}}, logger)
 	require.NoError(t, err)
-	service := traceingest.NewService(store, config, traceingest.Config{}, logger)
+	service := traceingest.NewService(store, config, traceingest.Config{DefaultProjectName: "agent"}, logger)
 	t.Cleanup(func() {
 		service.Close()
 		_ = store.Close(ctx)
@@ -74,10 +73,10 @@ func (e *tracesAPITestEnv) call(t *testing.T, method, uri string, body any, out 
 	return ctx.Response.StatusCode()
 }
 
-// TestTracingKeysAndProjectsAPI pins the management API: a key's value is returned once and never
-// again, a key must be bound to real projects, an edit reaches the ingest path at once, and
-// deleting a project removes its traces and the bindings keys held to it.
-func TestTracingKeysAndProjectsAPI(t *testing.T) {
+// TestTracingProjectsAndReadAPI pins the dashboard API: projects are created and validated, a trace
+// opens before its first rollup, the lists and overview read it, the connect info names each SDK's
+// URL and whether credentials are needed, and deleting a project removes its traces.
+func TestTracingProjectsAndReadAPI(t *testing.T) {
 	ctx := context.Background()
 	env := newTracesAPITestEnv(t)
 
@@ -91,29 +90,7 @@ func TestTracingKeysAndProjectsAPI(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": " "}, nil))
 	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "x", "retention_days": 0}, nil))
 
-	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "ci"}, nil), "a key with no project and no create permission can write nowhere")
-	assert.Equal(t, fasthttp.StatusBadRequest, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "ci", "project_ids": []string{"missing"}}, nil))
-	var keyResponse struct {
-		Key   map[string]any `json:"key"`
-		Value string         `json:"value"`
-	}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "ci", "project_ids": []string{projectID}, "default_project_id": projectID}, &keyResponse))
-	require.Contains(t, keyResponse.Value, tables.TracingKeyPrefix)
-	assert.NotContains(t, keyResponse.Key, "key_hash", "the hash is never sent to the dashboard")
-	keyID, _ := keyResponse.Key["id"].(string)
-
-	var listed struct {
-		Keys []map[string]any `json:"keys"`
-	}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "GET", "/api/traces/keys", nil, &listed))
-	require.Len(t, listed.Keys, 1)
-	raw, err := schemas.MarshalSorted(listed)
-	require.NoError(t, err)
-	assert.NotContains(t, string(raw), keyResponse.Value, "the value is shown once, at creation")
-	assert.Equal(t, true, listed.Keys[0]["log_content"], "content is stored unless the key says otherwise")
-
-	principal, err := env.service.Authenticate(ctx, keyResponse.Value)
-	require.NoError(t, err)
+	principal := traceingest.AdminPrincipal()
 	start := time.Now().UTC().Add(-time.Minute)
 	end := start.Add(time.Second)
 	require.NoError(t, env.service.Ingest(ctx, principal, &created.Project, logstore.TraceSourceOTel, []*traceingest.SpanPart{
@@ -149,25 +126,21 @@ func TestTracingKeysAndProjectsAPI(t *testing.T) {
 		assert.Equal(t, fasthttp.StatusOK, env.call(t, "GET", uri, nil, nil), uri)
 	}
 	var connect struct {
-		Endpoints map[string]string `json:"endpoints"`
+		Endpoints    map[string]string `json:"endpoints"`
+		AuthRequired bool              `json:"auth_required"`
 	}
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "GET", "/api/traces/connect", nil, &connect))
 	assert.Equal(t, "http://bifrost.test/tracing/braintrust", connect.Endpoints["braintrust"])
-
-	// Disabling the key in the dashboard stops ingest on the next request.
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "PUT", "/api/traces/keys/"+keyID, map[string]any{"name": "ci", "project_ids": []string{projectID}, "enabled": false}, nil))
-	_, err = env.service.Authenticate(ctx, keyResponse.Value)
-	assert.ErrorIs(t, err, traceingest.ErrUnauthorized)
+	assert.False(t, connect.AuthRequired, "with no dashboard auth, SDKs send no credential")
+	env.ingest.SetCredentials(&fakeDashboardAuth{active: true})
+	require.Equal(t, fasthttp.StatusOK, env.call(t, "GET", "/api/traces/connect", nil, &connect))
+	assert.True(t, connect.AuthRequired)
 
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", "/api/traces/projects/"+projectID, nil, nil))
 	spans, err := env.store.ListTraceSpans(ctx, projectID, "t1")
 	require.NoError(t, err)
 	assert.Empty(t, spans, "the project's traces go with it")
-	key, err := env.config.GetTracingKey(ctx, keyID)
-	require.NoError(t, err)
-	assert.Empty(t, key.ProjectIDs, "the key no longer points at the deleted project")
-	assert.Equal(t, fasthttp.StatusOK, env.call(t, "DELETE", "/api/traces/keys/"+keyID, nil, nil))
-	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "DELETE", "/api/traces/keys/"+keyID, nil, nil))
+	assert.Equal(t, fasthttp.StatusNotFound, env.call(t, "DELETE", "/api/traces/projects/"+projectID, nil, nil))
 }
 
 // TestTraceReviewScoresAndComments pins human review: a reviewer's score lands on the trace and in
@@ -284,17 +257,13 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 	require.Len(t, stored.Evaluators, 1, "an edit that does not send evaluators leaves the rules in place")
 	assert.Equal(t, 0.25, stored.Evaluators[0].SampleRate)
 
-	var key struct {
-		Value string `json:"value"`
-	}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "ci", "project_ids": []string{projectID}, "default_project_id": projectID}, &key))
 	forwarder := traceingest.NewForwarder(nil, logger)
 	defer forwarder.Close()
 	env.ingest.SetForwarder(forwarder)
 	reqCtx := &fasthttp.RequestCtx{}
 	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
 	reqCtx.Request.SetRequestURI("/tracing/otel/v1/traces")
-	reqCtx.Request.Header.Set("Authorization", key.Value)
+	reqCtx.Request.Header.Set("Authorization", traceTestKey)
 	reqCtx.Request.Header.SetContentType("application/x-protobuf")
 	reqCtx.Request.SetBody(otlpTestExport(t))
 	env.router.Handler(reqCtx)
@@ -324,10 +293,10 @@ func TestTraceProjectSettingsForwardAndDelete(t *testing.T) {
 	assert.Empty(t, parts, "the received parts go with the trace")
 }
 
-// TestSDKPromptFetchesAreServedFromThePromptRepository pins prompt fetches: a key reads prompts only
-// when it was given that permission, Langfuse's get_prompt and Braintrust's load_prompt both get
-// the prompt repository's messages and model settings, a version can be pinned, and a tracing key
-// never creates a prompt.
+// TestSDKPromptFetchesAreServedFromThePromptRepository pins prompt fetches: they need the dashboard
+// credentials when dashboard auth is on, Langfuse's get_prompt and Braintrust's load_prompt both get
+// the prompt repository's messages and model settings, a version can be pinned, and an SDK never
+// creates a prompt.
 func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
 	ctx := context.Background()
 	env := newTracesAPITestEnv(t)
@@ -349,13 +318,7 @@ func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
 		Project tables.TableTraceProject `json:"project"`
 	}
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
-	newKey := func(canRead bool) map[string]string {
-		var key struct {
-			Value string `json:"value"`
-		}
-		require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "can_read_prompts": canRead}, &key))
-		return map[string]string{"Authorization": "Bearer " + key.Value}
-	}
+	env.ingest.SetCredentials(&fakeDashboardAuth{active: true})
 	get := func(uri string, headers map[string]string) (int, map[string]any) {
 		reqCtx := &fasthttp.RequestCtx{}
 		reqCtx.Request.Header.SetMethod(fasthttp.MethodGet)
@@ -369,12 +332,10 @@ func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
 		return reqCtx.Response.StatusCode(), body
 	}
 
-	status, _ := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", newKey(false))
-	assert.Equal(t, fasthttp.StatusForbidden, status, "a tracing key reads prompts only when given that permission")
-	status, _ = get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", nil)
-	assert.Equal(t, fasthttp.StatusUnauthorized, status)
+	status, _ := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", nil)
+	assert.Equal(t, fasthttp.StatusUnauthorized, status, "with dashboard auth on, a prompt fetch needs the dashboard credentials")
 
-	reader := newKey(true)
+	reader := map[string]string{"Authorization": "Bearer " + traceTestKey}
 	status, latest := get("/tracing/langfuse/api/public/v2/prompts/Support%20Reply", reader)
 	require.Equal(t, fasthttp.StatusOK, status)
 	assert.Equal(t, "chat", latest["type"])
@@ -421,11 +382,11 @@ func TestSDKPromptFetchesAreServedFromThePromptRepository(t *testing.T) {
 	write.Request.Header.Set("Authorization", reader["Authorization"])
 	write.Request.SetBody([]byte(`{"name":"x","prompt":"y"}`))
 	env.router.Handler(write)
-	assert.Equal(t, fasthttp.StatusForbidden, write.Response.StatusCode(), "a tracing key never writes a prompt, even one that may read them")
+	assert.Equal(t, fasthttp.StatusForbidden, write.Response.StatusCode(), "an SDK never writes a prompt")
 }
 
-// TestSDKDatasetCallsFillEvalsDatasets pins the SDK dataset routes: a key uses datasets only when
-// given that permission, Braintrust's init_dataset() and its rows land in an evals dataset, and
+// TestSDKDatasetCallsFillEvalsDatasets pins the SDK dataset routes: they need the dashboard
+// credentials when dashboard auth is on, Braintrust's init_dataset() and its rows land in an evals dataset, and
 // Langfuse's create_dataset(), create_dataset_item() and get_dataset() read and write the same kind.
 func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
 	ctx := context.Background()
@@ -436,13 +397,7 @@ func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
 		Project tables.TableTraceProject `json:"project"`
 	}
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
-	newKey := func(allowed bool) string {
-		var key struct {
-			Value string `json:"value"`
-		}
-		require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{project.Project.ID}, "default_project_id": project.Project.ID, "can_use_datasets": allowed}, &key))
-		return key.Value
-	}
+	env.ingest.SetCredentials(&fakeDashboardAuth{active: true})
 	send := func(method, uri, auth, body string) (int, map[string]any) {
 		reqCtx := &fasthttp.RequestCtx{}
 		reqCtx.Request.Header.SetMethod(method)
@@ -455,10 +410,10 @@ func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
 		return reqCtx.Response.StatusCode(), decoded
 	}
 
-	status, _ := send("POST", "/tracing/braintrust/api/dataset/register", "Bearer "+newKey(false), `{"project_name":"agent","dataset_name":"golden"}`)
-	assert.Equal(t, fasthttp.StatusForbidden, status, "a tracing key uses datasets only when given that permission")
+	status, _ := send("POST", "/tracing/braintrust/api/dataset/register", "Bearer wrong", `{"project_name":"agent","dataset_name":"golden"}`)
+	assert.Equal(t, fasthttp.StatusUnauthorized, status, "with dashboard auth on, dataset calls need the dashboard credentials")
 
-	auth := "Bearer " + newKey(true)
+	auth := "Bearer " + traceTestKey
 	status, registered := send("POST", "/tracing/braintrust/api/dataset/register", auth, `{"project_name":"agent","dataset_name":"golden","description":"regression set"}`)
 	require.Equal(t, fasthttp.StatusOK, status)
 	datasetID := registered["dataset"].(map[string]any)["id"].(string)
@@ -478,7 +433,7 @@ func TestSDKDatasetCallsFillEvalsDatasets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, spans, "a dataset record is not stored as a trace")
 
-	lf := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+strings.TrimPrefix(auth, "Bearer ")))
+	lf := "Basic " + base64.StdEncoding.EncodeToString([]byte(traceTestUser+":"+traceTestPassword))
 	status, created := send("POST", "/tracing/langfuse/api/public/v2/datasets", lf, `{"name":"support cases","description":"from tickets"}`)
 	require.Equal(t, fasthttp.StatusOK, status)
 	for _, required := range []string{"id", "name", "projectId", "createdAt", "updatedAt"} {
@@ -518,11 +473,8 @@ func TestExperimentsAreListedWithTheirSummaries(t *testing.T) {
 	}
 	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/projects", map[string]any{"name": "agent"}, &project))
 	projectID := project.Project.ID
-	var key struct {
-		Value string `json:"value"`
-	}
-	require.Equal(t, fasthttp.StatusOK, env.call(t, "POST", "/api/traces/keys", map[string]any{"name": "k", "project_ids": []string{projectID}, "default_project_id": projectID, "can_use_datasets": true}, &key))
-	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("pk:"+key.Value))
+	env.ingest.SetCredentials(&fakeDashboardAuth{active: true})
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(traceTestUser+":"+traceTestPassword))
 	send := func(method, uri, body string) (int, map[string]any) {
 		reqCtx := &fasthttp.RequestCtx{}
 		reqCtx.Request.Header.SetMethod(method)

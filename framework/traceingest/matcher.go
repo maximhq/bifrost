@@ -156,7 +156,7 @@ func (s *Service) enrichTrace(ctx context.Context, key logstore.TraceKey) (retry
 		if span.EndTime != nil {
 			end = *span.EndTime
 		}
-		candidates, err := s.store.FindGatewayCallsByFingerprint(ctx, fingerprint, span.StartTime.Add(-matchSkew), end.Add(matchSkew), s.virtualKeysFor(ctx, span.TracingKeyID))
+		candidates, err := s.store.FindGatewayCallsByFingerprint(ctx, fingerprint, span.StartTime.Add(-matchSkew), end.Add(matchSkew), nil)
 		if err != nil {
 			return false, err
 		}
@@ -336,19 +336,6 @@ func sameModel(a, b string) bool {
 		return strings.ToLower(name)
 	}
 	return bare(a) == bare(b)
-}
-
-// virtualKeysFor returns the virtual keys a tracing key is bound to, which narrow the fingerprint
-// search to that key's own gateway traffic.
-func (s *Service) virtualKeysFor(ctx context.Context, tracingKeyID string) []string {
-	if tracingKeyID == "" {
-		return nil
-	}
-	key, err := s.config.GetTracingKey(ctx, tracingKeyID)
-	if err != nil {
-		return nil
-	}
-	return key.VirtualKeyIDs
 }
 
 // estimateCost prices a span from the model catalog. The provider is the one the span names, else

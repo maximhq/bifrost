@@ -92,7 +92,7 @@
 	},
 	"navDesc": {
 		"relayLogs": "Llamadas de relay y su costo",
-		"tracing": "Trazas enviadas por los SDK de Braintrust, Langfuse, Arize y OpenTelemetry",
+		"tracing": "Trazas de cualquier SDK de trazas",
 		"relays": "Retransmite API que no son de LLM con precios por ruta",
 		"home": "Tu uso, claves, presupuestos y acceso",
 		"observability": "Registros de solicitudes y monitorización",

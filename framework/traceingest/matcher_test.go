@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
@@ -157,16 +156,6 @@ func TestMatcherAcceptsAFingerprintOnlyWhenItIsUnique(t *testing.T) {
 	require.NoError(t, env.store.CreateIfNotExists(ctx, gatewayLog("twin-b", 5200, func(l *logstore.Log) { l.InputFingerprint = &twin })))
 	env.ingestAndMatch(t, &SpanPart{TraceID: "t2", SpanID: "llm", Name: "chat", Kind: logstore.TraceSpanKindLLM, Model: "gpt-4o", StartTime: at(5100), EndTime: at(5800), Input: "ping"})
 	assert.Empty(t, env.span(t, "t2", "llm").LinkMethod, "two candidates: the span stays unlinked")
-
-	// A key bound to virtual keys only matches that key's gateway traffic.
-	bound := TextFingerprint("scoped")
-	require.NoError(t, env.store.CreateIfNotExists(ctx, gatewayLog("someone-else", 9150, func(l *logstore.Log) { l.InputFingerprint, l.VirtualKeyID = &bound, new("vk-other") })))
-	env.config.addKey("bf-tr-bound", &tables.TableTracingKey{Name: "bound", ProjectIDs: []string{"p1"}, VirtualKeyIDs: []string{"vk-mine"}, LogContent: true, Enabled: true})
-	principal, err := env.service.Authenticate(ctx, "bf-tr-bound")
-	require.NoError(t, err)
-	require.NoError(t, env.service.Ingest(ctx, principal, env.project, logstore.TraceSourceOTel, []*SpanPart{{TraceID: "t3", SpanID: "llm", Kind: logstore.TraceSpanKindLLM, Model: "gpt-4o", StartTime: at(9100), EndTime: at(9800), Input: "scoped"}}))
-	require.NoError(t, env.service.FlushRollups(ctx))
-	assert.Empty(t, env.span(t, "t3", "llm").LinkMethod)
 }
 
 // TestMatcherWaitsForAGatewayRowThatIsNotFinal pins the snapshot rule: a gateway row still marked

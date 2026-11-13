@@ -1947,6 +1947,22 @@ func (m *AuthMiddleware) validSetupSession(value string, now time.Time) bool {
 	return hmac.Equal([]byte(sig), []byte(signSetupSession(setupSessionKey(*current), payload)))
 }
 
+// VerifyAdminCredentials reports whether username and password are the dashboard admin's. Trace
+// ingest uses it so SDKs authenticate with the same credentials as the dashboard.
+func (m *AuthMiddleware) VerifyAdminCredentials(username, password string) bool {
+	authConfig := m.authConfig.Load()
+	if authConfig == nil || authConfig.AdminUserName == nil || authConfig.AdminPassword == nil || username != authConfig.AdminUserName.GetValue() {
+		return false
+	}
+	matches, err := encrypt.CompareHash(authConfig.AdminPassword.GetValue(), password)
+	return err == nil && matches
+}
+
+// VerifySessionToken reports whether token is a live dashboard session.
+func (m *AuthMiddleware) VerifySessionToken(token string) bool {
+	return token != "" && m.store != nil && validateSession(nil, m.store, token)
+}
+
 // IsDashboardAuthActive reports whether an admin account exists and dashboard auth is on.
 func (m *AuthMiddleware) IsDashboardAuthActive() bool {
 	authConfig := m.authConfig.Load()
