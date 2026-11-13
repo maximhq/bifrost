@@ -328,7 +328,10 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 	for k, v := range openai.BearerAuthHeader(key) {
 		req.Header.Set(k, v)
 	}
-	req.SetBody(jsonData)
+	// Large-payload mode stages the client body as a stream; jsonData is nil then.
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, provider.GetProviderKey()) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -390,6 +393,11 @@ func (provider *XAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookR
 // form is OpenAI-shaped with the file field last, which xAI requires (fields after the
 // file are ignored); the response carries text, language, duration and words.
 func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	// /v1/stt answers with JSON only. The shared handler would copy the JSON body
+	// verbatim into the transcript for a plain-text format, so refuse those up front.
+	if request != nil && request.Params != nil && schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) {
+		return nil, providerUtils.NewBifrostBadRequestError("xAI transcription returns JSON only; response_format " + *request.Params.ResponseFormat + " is not supported, use json")
+	}
 	return openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
