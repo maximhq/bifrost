@@ -90,10 +90,23 @@ export interface SessionConfig {
 // cluster real traffic. Edited through config.json and the API until the
 // suggestions page exists; the complexity router page carries it through
 // saves unchanged.
+// Runs start at start_at and repeat every interval after it; start_at sets
+// the time of day.
+export interface SuggestionsSchedule {
+	every?: string; // "6h", "1d", "1w"; default "1d"
+	start_at?: string; // RFC 3339 first run; default 1970-01-01T03:00:00Z
+}
+
 export interface SuggestionsConfig {
 	enabled: boolean;
 	sample_rate?: number;
 	lookback_days?: number;
+	schedule?: SuggestionsSchedule;
+	max_clustered_requests?: number;
+	min_cluster_requests?: number;
+	provider?: string;
+	model?: string;
+	instructions?: string;
 }
 
 // The llm classifier has no warmup: it holds no corpus and makes its first

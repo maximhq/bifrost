@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
 
@@ -308,5 +309,13 @@ func TestCustomInstructionsCannotBypassLeakFilter(t *testing.T) {
 	}
 	if len(sg.Phrases) != 1 || sg.Phrases[0] != "refund for order" {
 		t.Fatalf("phrases %v, want the sanitized fallback", sg.Phrases)
+	}
+}
+
+// The config accepts exactly the instructions this package will use: a
+// longer limit there would save instructions a run then refuses.
+func TestInstructionsLimitMatchesConfig(t *testing.T) {
+	if MaxInstructionsChars != configstore.MaxComplexitySuggestionsInstructionsChars {
+		t.Fatalf("suggest.MaxInstructionsChars = %d, configstore allows %d", MaxInstructionsChars, configstore.MaxComplexitySuggestionsInstructionsChars)
 	}
 }

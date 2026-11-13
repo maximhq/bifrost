@@ -1323,6 +1323,9 @@ func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":0}`), &cfg), "sample_rate")
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"lookback_days":0}`), &cfg), "lookback_days")
 	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":null}`), &cfg), "sample_rate")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"max_clustered_requests":0}`), &cfg), "max_clustered_requests")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"min_cluster_requests":0}`), &cfg), "min_cluster_requests")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"min_cluster_requests":null}`), &cfg), "min_cluster_requests")
 
 	// Omitted fields still take the defaults.
 	cfg = ComplexitySuggestionsConfig{}
@@ -1360,6 +1363,52 @@ func TestComplexitySuggestionsConfigDefaultsAndValidation(t *testing.T) {
 	n := cfg.Normalized()
 	assert.False(t, n.SuggestionsEnabled())
 	require.NoError(t, n.Validate())
+}
+
+// The run settings decode strictly, take their defaults when omitted, and are
+// refused out of range.
+func TestComplexitySuggestionsRunSettings(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"every":"1w","start_at":"2026-11-06T04:30:00Z"},`+
+		`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`), &cfg))
+	start := time.Date(2026, time.November, 6, 4, 30, 0, 0, time.UTC)
+	assert.Equal(t, ComplexitySuggestionsConfig{
+		Enabled:              true,
+		Schedule:             &ComplexitySuggestionsSchedule{Every: "1w", StartAt: &start},
+		MaxClusteredRequests: 5000, MinClusterRequests: 10, Provider: "openai", Model: "gpt-5", Instructions: "be brief",
+	}, cfg)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`), &cfg), `unknown complexity suggestions schedule field "cron"`)
+
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Instructions: "   "}
+	n := analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, n.Suggestions.MaxClusteredRequests)
+	assert.Equal(t, DefaultComplexitySuggestionsMinClusterRequests, n.Suggestions.MinClusterRequests)
+	assert.Equal(t, &ComplexitySuggestionsSchedule{Every: "1d"}, n.Suggestions.Schedule, "a missing start stays missing; the default anchor is applied when slots are read")
+	assert.Empty(t, n.Suggestions.Instructions, "blank instructions use the shipped ones")
+
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: " OpenAI ", Model: "gpt-5"}
+	n = analyzer.Normalized()
+	assert.Equal(t, schemas.OpenAI, n.Suggestions.Provider, "standard provider names are lowercased like the other blocks'")
+	assert.Equal(t, ComplexitySuggestionsSchedule{Every: "1d"}, (*ComplexitySuggestionsConfig)(nil).EffectiveSchedule())
+	assert.True(t, (*ComplexitySuggestionsConfig)(nil).EffectiveSchedule().Start().Equal(DefaultComplexitySuggestionsStartAt), "daily at 03:00 UTC by default")
+
+	for name, bad := range map[string]ComplexitySuggestionsConfig{
+		"budget too small":       {Enabled: true, MaxClusteredRequests: 10},
+		"budget too large":       {Enabled: true, MaxClusteredRequests: MaxComplexitySuggestionsMaxClusteredRequests + 1},
+		"cluster minimum of one": {Enabled: true, MinClusterRequests: 1},
+		"provider without model": {Enabled: true, Provider: "openai"},
+		"model without provider": {Enabled: true, Model: "gpt-5"},
+		"instructions too long":  {Enabled: true, Instructions: strings.Repeat("x", MaxComplexitySuggestionsInstructionsChars+1)},
+		"hours past a day":       {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "24h"}},
+		"interval too long":      {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "31d"}},
+		"bad unit":               {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1m"}},
+	} {
+		analyzer.Suggestions = &bad
+		n := analyzer.Normalized()
+		assert.Error(t, n.Validate(), name)
+	}
 }
 
 // The suggestions block rides the semantic row as a top-level key, which the
@@ -1461,7 +1510,8 @@ func TestRDBConfigStore_ComplexitySuggestionsPersistenceAndReset(t *testing.T) {
 	got, err := store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, got.Suggestions)
-	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14}, *got.Suggestions)
+	assert.Equal(t, *testSuggestionsAnalyzerConfig().Normalized().Suggestions, *got.Suggestions, "stored with defaults filled in")
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, got.Suggestions.MaxClusteredRequests)
 	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
 
 	// A UI-style update omits hashes; the carry-over keeps them with the block.

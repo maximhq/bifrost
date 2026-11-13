@@ -13,8 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -2580,6 +2582,87 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name: "suggestions accept run settings",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"1w","start_at":"2026-11-06T04:30:00Z"},` +
+				`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`),
+		},
+		{
+			name:     "suggestions accept an hourly schedule",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"6h"}}`),
+		},
+		{
+			name:      "suggestions reject hours of a day or more",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"24h"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a malformed first run",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"1d","start_at":"tomorrow at 3"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject the old wall-clock fields",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"every":"1d","at":"03:00","timezone":"UTC"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject unknown schedule fields",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a provider without a model",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"openai"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only provider and model",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"  ","model":"\t"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only provider",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":" ","model":"gpt-5"}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a whitespace-only model",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"openai","model":"  "}`),
+			wantError: true,
+		},
+		{
+			// Go's regexp \S is ASCII-only, so a non-breaking space passed it,
+			// then strings.TrimSpace emptied the model and the config failed
+			// to load.
+			name:      "suggestions reject a Unicode-whitespace-only model",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"provider":"openai","model":"\u00a0"}`),
+			wantError: true,
+		},
+		{
+			name:     "suggestions accept a first run with fractional seconds and an offset",
+			analyzer: complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"start_at":"2028-02-29T23:59:59.5+05:30"}}`),
+		},
+		{
+			name:      "suggestions reject a first run on an impossible date",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-99-99T03:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a first run past the end of its month",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-04-31T03:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a first run at an impossible time",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"schedule":{"start_at":"2026-11-06T24:00:00Z"}}`),
+			wantError: true,
+		},
+		{
+			name:      "suggestions reject a cluster budget below 1000",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"suggestions":{"enabled":true,"max_clustered_requests":10}`),
+			wantError: true,
+		},
+		{
 			name:     "semantic fallback none does not require llm config",
 			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
 		},
@@ -2608,6 +2691,36 @@ func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
 				t.Fatalf("expected schema validation to pass: %v", err)
 			}
 		})
+	}
+}
+
+// TestSchemaSuggestionsModelMatchesGoTrimming pins the suggestions provider
+// and model patterns to strings.TrimSpace: every rune Go trims away is
+// rejected on its own, so a value the schema accepts is never emptied by
+// normalization, while real content padded with those runes still passes.
+func TestSchemaSuggestionsModelMatchesGoTrimming(t *testing.T) {
+	compiled := compileSchema(t)
+	validate := func(provider, model string) error {
+		block, err := json.Marshal(map[string]any{"enabled": true, "provider": provider, "model": model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return validateConfig(t, compiled, fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`,
+			complexityAnalyzerSchemaConfig(`,"suggestions":`+string(block))))
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !unicode.IsSpace(r) {
+			continue
+		}
+		if validate("openai", string(r)) == nil {
+			t.Errorf("model %U alone is trimmed to nothing, yet the schema accepted it", r)
+		}
+		if validate(string(r), "gpt-5") == nil {
+			t.Errorf("provider %U alone is trimmed to nothing, yet the schema accepted it", r)
+		}
+		if err := validate("openai", string(r)+"gpt-5"+string(r)); err != nil {
+			t.Errorf("model with %U around it keeps its content, yet the schema refused it: %v", r, err)
+		}
 	}
 }
 
@@ -4826,5 +4939,44 @@ func TestValidateConfigSchema_DatasheetOverrideConstraints(t *testing.T) {
 				t.Errorf("validation error = %v, want error = %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The schema's schedule patterns must accept exactly what the Go schedule
+// parser accepts, or config.json passes schema validation and then fails to
+// load (or the reverse).
+func TestConfigSchemaSuggestionsScheduleMatchesParser(t *testing.T) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(loadLocalSchema(t)))
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("config.schema.json", doc); err != nil {
+		t.Fatalf("add schema: %v", err)
+	}
+	schedule, err := c.Compile("config.schema.json#/$defs/complexity_suggestions_schedule")
+	if err != nil {
+		t.Fatalf("compile schedule schema: %v", err)
+	}
+	for _, unit := range []string{"h", "d", "w"} {
+		for n := 1; n <= 40; n++ {
+			every := fmt.Sprintf("%d%s", n, unit)
+			goErr := (&configstore.ComplexitySuggestionsSchedule{Every: every}).Validate()
+			schemaErr := schedule.Validate(map[string]any{"every": every})
+			if (goErr == nil) != (schemaErr == nil) {
+				t.Errorf("%s: parser error %v, schema error %v", every, goErr, schemaErr)
+			}
+		}
+	}
+	// start_at: the schema's pattern accepts exactly the RFC 3339 times the Go
+	// decoder does.
+	for _, start := range []string{"2026-11-12T03:00:00Z", "2026-11-12T08:30:00+05:30", "2026-11-12T03:00:00.5Z",
+		"2026-11-12T03:00Z", "2026-11-12 03:00:00Z", "2026-11-12", "tomorrow"} {
+		var decoded configstore.ComplexitySuggestionsSchedule
+		goErr := json.Unmarshal([]byte(`{"start_at":"`+start+`"}`), &decoded)
+		schemaErr := schedule.Validate(map[string]any{"start_at": start})
+		if (goErr == nil) != (schemaErr == nil) {
+			t.Errorf("start_at %s: decoder error %v, schema error %v", start, goErr, schemaErr)
+		}
 	}
 }
