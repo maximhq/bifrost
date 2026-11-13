@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	relayBodyOverridesSchema,
 	relayFormSchema,
 	relayOpenAPISpecUrlSchema,
 	relayRouteFormSchema,
@@ -12,6 +13,37 @@ import { emptyRelayForm } from "@/lib/utils/relayForm";
 // toast after a failed save.
 describe("relay form validation", () => {
 	const route = (path: string) => relayRouteFormSchema.safeParse({ method: "POST", path, headers: [], enabled: true });
+
+	it("refuses body overrides the gateway would refuse", () => {
+		const messages = (pairs: { name: string; value: string }[]) =>
+			(relayBodyOverridesSchema.safeParse(pairs).error?.issues ?? []).map((i) => i.message);
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "options.depth", value: '"advanced"' },
+				{ name: "", value: "" },
+			]),
+		).toEqual([]);
+		expect(messages([{ name: "depth", value: "advanced" }])).toEqual([
+			'Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)',
+		]);
+		expect(messages([{ name: "depth", value: "" }])).toEqual(["A body override needs a JSON value"]);
+		expect(messages([{ name: "", value: "true" }])).toEqual(["A body override needs a path"]);
+		expect(messages([{ name: "items.0", value: "1" }])[0]).toContain("no key made only of digits");
+		expect(messages([{ name: "items.#.id", value: "1" }])[0]).toContain("object keys separated by dots");
+		expect(
+			messages([
+				{ name: "include_usage", value: "true" },
+				{ name: "Include_Usage", value: "false" },
+			]),
+		).toEqual(["This field is already set (paths ignore letter case)"]);
+		expect(
+			messages([
+				{ name: "options", value: "{}" },
+				{ name: "options.depth", value: "1" },
+			]),
+		).toEqual(["options.depth is inside options, which is also set"]);
+	});
 
 	it("accepts the gateway's segment globs and rejects ** before the last segment", () => {
 		expect(route("/v1/*/status").success).toBe(true);

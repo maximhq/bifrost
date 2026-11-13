@@ -19,6 +19,7 @@ interface SeenRequest {
   method: string;
   path: string;
   headers: IncomingHttpHeaders;
+  body: string;
 }
 
 let upstream: Server;
@@ -27,10 +28,19 @@ const seen: SeenRequest[] = [];
 
 function startUpstream(): Promise<void> {
   upstream = createServer((req, res) => {
-    seen.push({ method: req.method ?? "", path: req.url ?? "", headers: req.headers });
-    req.resume();
+    const entry: SeenRequest = { method: req.method ?? "", path: req.url ?? "", headers: req.headers, body: "" };
+    seen.push(entry);
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      entry.body += chunk;
+    });
     req.on("end", () => {
       const path = (req.url ?? "").split("?")[0];
+      if (path === "/v1/forced") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, usage: { credits: 1 } }));
+        return;
+      }
       if (path === "/v1/search") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ results: ["a", "b"], usage: { credits: 4 } }));
@@ -95,7 +105,9 @@ test.describe("Relays relay and pricing", () => {
           { method: "GET", path: "/v1/status" },
           { method: "POST", path: "/v1/stream", stream: true },
           { method: "POST", path: "/v1/disabled", enabled: false },
+          { method: "POST", path: "/v1/forced", body_overrides: { "options.depth": "advanced" } },
         ],
+        body_overrides: { include_usage: true },
       },
     });
     expect(created.status(), await created.text()).toBe(201);
@@ -254,5 +266,33 @@ test.describe("Relays relay and pricing", () => {
     await expect(page.getByText(name).first()).toBeVisible();
     // The cost column renders the shared cost cell: a dollar sign and the value without trailing zeros.
     await expect(page.getByText(`$${parseFloat((FEE + 4 * RATE).toFixed(6))}`).first()).toBeVisible();
+  });
+  test("forces the relay's and the route's body fields into the upstream body, whatever the caller sent", async ({ request }) => {
+    seen.length = 0;
+    const res = await request.post(`/relay/${name}/v1/forced`, {
+      headers: { "x-bf-vk": grantedKey, "Content-Type": "application/json" },
+      data: { query: "bifrost", include_usage: false, options: { depth: "basic", max_results: 2 } },
+    });
+    expect(res.status(), await res.text()).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(seen[0].body)).toEqual({ query: "bifrost", include_usage: true, options: { depth: "advanced", max_results: 2 } });
+
+    // An empty body becomes a JSON object carrying only the forced fields.
+    seen.length = 0;
+    const empty = await request.post(`/relay/${name}/v1/forced`, { headers: { "x-bf-vk": grantedKey } });
+    expect(empty.status(), await empty.text()).toBe(200);
+    expect(JSON.parse(seen[0].body)).toEqual({ include_usage: true, options: { depth: "advanced" } });
+    expect(seen[0].headers["content-type"]).toContain("application/json");
+  });
+
+  test("refuses a body that names a forced field twice, without calling the upstream", async ({ request }) => {
+    seen.length = 0;
+    const res = await request.post(`/relay/${name}/v1/forced`, {
+      headers: { "x-bf-vk": grantedKey, "Content-Type": "application/json" },
+      data: '{"query":"bifrost","include_usage":false,"include_usage":false}',
+    });
+    expect(res.status(), await res.text()).toBe(400);
+    expect(await res.text()).toContain("more than once");
+    expect(seen).toHaveLength(0);
   });
 });
