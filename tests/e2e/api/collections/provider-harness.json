@@ -276739,6 +276739,10 @@
               {
                 "key": "x-bf-send-back-raw-request",
                 "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
               }
             ],
             "body": {
@@ -276796,6 +276800,10 @@
               {
                 "key": "x-bf-send-back-raw-request",
                 "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
               }
             ],
             "body": {
@@ -276858,6 +276866,10 @@
               {
                 "key": "x-bf-send-back-raw-request",
                 "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
               }
             ],
             "body": {

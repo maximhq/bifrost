@@ -750,7 +750,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
 			message.Status != nil &&
 			(*message.Status == "in_progress" || *message.Status == "searching" ||
-				*message.Status == "completed" || *message.Status == "failed"):
+				*message.Status == "completed" || *message.Status == "failed" ||
+				*message.Status == "incomplete"):
 			// status is required on a web_search_call input item. Strict Responses backends
 			// (the Codex backend) reject a replayed search without it: "Missing required
 			// parameter: input[N].status". Only a value this item accepts is kept.

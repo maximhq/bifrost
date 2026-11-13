@@ -4130,8 +4130,13 @@ func TestToOpenAIResponsesRequest_KeepsWebSearchCallStatus(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
+			name:       "incomplete search",
+			item:       `{"type":"web_search_call","status":"incomplete","action":{"type":"search","query":"example.com"}}`,
+			wantStatus: "incomplete",
+		},
+		{
 			name: "status that web_search_call does not accept is stripped",
-			item: `{"type":"web_search_call","status":"incomplete","action":{"type":"search","query":"example.com"}}`,
+			item: `{"type":"web_search_call","status":"queued","action":{"type":"search","query":"example.com"}}`,
 		},
 	}
 
