@@ -404,6 +404,8 @@ type BifrostHTTPServer struct {
 	endpointSweeperCancel  context.CancelFunc
 	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
+	// shutdownHooks run first in the shutdown drain, while the client and the stores are open.
+	shutdownHooks []func()
 }
 
 var logger schemas.Logger
@@ -4382,6 +4384,45 @@ func (s *BifrostHTTPServer) CloseAgentGateway() {
 	})
 }
 
+// AddShutdownHook registers work that must finish while the bifrost client, the evals runner and
+// the stores are still open, such as background jobs that call the client or write to a store. Hooks
+// run first in the shutdown drain, in the order they were added. Call it before Start.
+func (s *BifrostHTTPServer) AddShutdownHook(hook func()) {
+	s.shutdownHooks = append(s.shutdownHooks, hook)
+}
+
+// drainClientUsers stops everything that still calls the bifrost client or writes to a store, so the
+// shutdown drain can close the client and the stores after it returns.
+func (s *BifrostHTTPServer) drainClientUsers() {
+	// Registered hooks first: their background work may still use the evals runner and trace
+	// ingest, which stop below, and the client and the stores, which close after this returns.
+	for _, hook := range s.shutdownHooks {
+		hook()
+	}
+	// Warp next. Its indexer workers call s.Client.EmbeddingRequest (and its
+	// chat turns s.Client.ResponsesRequest), and
+	// LogIndexer.Close waits for them - so shutting the client down first
+	// cancelled its context underneath work that was still being waited on,
+	// and pending indexing failed during an orderly shutdown.
+	if s.WarpHandler != nil {
+		logger.Info("shutting down warp...")
+		s.WarpHandler.Shutdown()
+		logger.Info("warp shutdown completed")
+	}
+	// Evals next, for the same reason as Warp: its jobs call the client.
+	logger.Info("shutting down evals...")
+	s.shutdownEvals()
+	logger.Info("closing agent gateway...")
+	s.CloseAgentGateway()
+	if s.traceGRPCServer != nil {
+		s.traceGRPCServer.Stop()
+	}
+	if s.TraceIngest != nil {
+		// Queued trace batches are written before the stores close.
+		s.TraceIngest.Close()
+	}
+}
+
 // Start starts the HTTP server at the specified host and port
 // Also watches signals and errors
 func (s *BifrostHTTPServer) Start() error {
@@ -4445,28 +4486,7 @@ func (s *BifrostHTTPServer) Start() error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
-			// chat turns s.Client.ResponsesRequest), and
-			// LogIndexer.Close waits for them - so shutting the client down first
-			// cancelled its context underneath work that was still being waited on,
-			// and pending indexing failed during an orderly shutdown.
-			if s.WarpHandler != nil {
-				logger.Info("shutting down warp...")
-				s.WarpHandler.Shutdown()
-				logger.Info("warp shutdown completed")
-			}
-			// Evals next, for the same reason as Warp: its jobs call the client.
-			logger.Info("shutting down evals...")
-			s.shutdownEvals()
-			logger.Info("closing agent gateway...")
-			s.CloseAgentGateway()
-			if s.traceGRPCServer != nil {
-				s.traceGRPCServer.Stop()
-			}
-			if s.TraceIngest != nil {
-				// Queued trace batches are written before the stores close.
-				s.TraceIngest.Close()
-			}
+			s.drainClientUsers()
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
