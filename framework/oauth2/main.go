@@ -353,7 +353,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	if templateConfig == nil {
 		return schemas.ErrOAuth2ConfigNotFound
 	}
-	ctx = withRequirePublicTarget(ctx, p.requirePublicTargetFor(ctx, token.MCPClientID, templateConfig))
+	ctx = withMCPClient(ctx, p.clientForOAuth(ctx, token.MCPClientID, templateConfig))
 
 	// Call OAuth provider's token endpoint with refresh_token
 	newTokenResponse, err := p.exchangeRefreshToken(
@@ -684,7 +684,7 @@ func (p *OAuth2Provider) RemovePendingMCPClient(oauthConfigID string) error {
 // Supports OAuth discovery and PKCE
 func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.OAuth2Config) (*schemas.OAuth2FlowInitiation, error) {
 	// No MCP client row exists yet, so the caller states the policy.
-	ctx = withRequirePublicTarget(ctx, config.RequirePublicTarget)
+	ctx = withMCPClient(ctx, &schemas.MCPClientConfig{RequirePublicTarget: config.RequirePublicTarget, TLSConfig: config.TLSConfig})
 
 	// Generate state token for CSRF protection
 	state, err := generateSecureRandomString(32)
@@ -972,7 +972,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	if redirectURI == "" {
 		redirectURI = oauthConfig.RedirectURI
 	}
-	ctx = withRequirePublicTarget(ctx, p.requirePublicTargetFor(ctx, flow.MCPClientID, oauthConfig))
+	ctx = withMCPClient(ctx, p.clientForOAuth(ctx, flow.MCPClientID, oauthConfig))
 
 	// Log token exchange attempt for debugging
 	logger.Debug("Attempting token exchange",
@@ -1420,38 +1420,36 @@ func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Dura
 	}
 }
 
-// requirePublicTargetFor resolves the destination policy for an OAuth request
-// made on behalf of an MCP client: that client's RequirePublicTarget, found by
-// mcpClientID, else by the oauth config it links to, else from the pending
-// client a UI-created config carries until its first authorization completes.
-// Anything unresolvable is public-only.
-func (p *OAuth2Provider) requirePublicTargetFor(ctx context.Context, mcpClientID string, oauthConfig *tables.TableOauthConfig) bool {
+// clientForOAuth resolves the current MCP transport settings for initial callbacks,
+// reauthorization and token refresh. A client not yet saved is recovered from
+// the pending flow; an unresolvable client retains the public-only default.
+func (p *OAuth2Provider) clientForOAuth(ctx context.Context, mcpClientID string, oauthConfig *tables.TableOauthConfig) *schemas.MCPClientConfig {
 	if mcpClientID != "" {
 		client, err := p.configStore.GetMCPClientConfigByID(ctx, mcpClientID)
 		if client != nil && err == nil {
-			return client.RequirePublicTarget
+			return client
 		}
 		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			return true
+			return nil
 		}
 	}
 	if oauthConfig == nil {
-		return true
+		return nil
 	}
 	client, err := p.configStore.GetMCPClientByOauthConfigID(ctx, oauthConfig.ID)
 	if client != nil && err == nil {
-		return client.RequirePublicTarget
+		return &schemas.MCPClientConfig{RequirePublicTarget: client.RequirePublicTarget, TLSConfig: client.TLSConfig}
 	}
 	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		return true
+		return nil
 	}
 	if oauthConfig.MCPClientConfigJSON != nil && *oauthConfig.MCPClientConfigJSON != "" {
 		var pending schemas.MCPClientConfig
 		if err := json.Unmarshal([]byte(*oauthConfig.MCPClientConfigJSON), &pending); err == nil {
-			return pending.RequirePublicTarget
+			return &pending
 		}
 	}
-	return true
+	return nil
 }
 
 // tokenRequestOption adjusts a token endpoint request before it is sent.
@@ -1839,7 +1837,7 @@ func (p *OAuth2Provider) ReregisterDynamicClient(ctx context.Context, oauthConfi
 		redirectURI = templateConfig.RedirectURI
 	}
 
-	ctx = withRequirePublicTarget(ctx, p.requirePublicTargetFor(ctx, "", templateConfig))
+	ctx = withMCPClient(ctx, p.clientForOAuth(ctx, "", templateConfig))
 	clientID, clientSecret, err := registerDynamicClient(ctx, registrationURL, redirectURI, scopes)
 	if err != nil {
 		return "", "", false, fmt.Errorf("dynamic client registration failed: %w", err)
@@ -1918,7 +1916,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	if redirectURI == "" {
 		redirectURI = templateConfig.RedirectURI
 	}
-	ctx = withRequirePublicTarget(ctx, p.requirePublicTargetFor(ctx, session.MCPClientID, templateConfig))
+	ctx = withMCPClient(ctx, p.clientForOAuth(ctx, session.MCPClientID, templateConfig))
 	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
 		ctx,
 		templateConfig.TokenURL,

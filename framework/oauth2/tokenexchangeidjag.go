@@ -235,7 +235,7 @@ func (p *OAuth2Provider) idjagSubject(ctx context.Context, userID string) (*sche
 // SSO subject and both legs run. The subject used is returned, nil when the
 // grant was reused, so the admin path can retain its refresh token.
 func (p *OAuth2Provider) exchangeIDJAG(ctx context.Context, config *schemas.MCPClientConfig, key idjagGrantKey, subjectFn func() (*schemas.IDJAGSubjectToken, error)) (*schemas.OAuth2TokenExchangeResponse, *schemas.IDJAGSubjectToken, error) {
-	ctx = withRequirePublicTarget(ctx, config.RequirePublicTarget)
+	ctx = withMCPClient(ctx, config)
 	// Resolved before any grant is requested, so an unusable upstream does not
 	// spend one of the identity provider's limited ID-JAGs. Cached per client.
 	if _, err := p.resourceTokenEndpoint(ctx, config); err != nil {

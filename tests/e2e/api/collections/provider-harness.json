@@ -321229,6 +321229,269 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. MCP OAuth custom CA discovery and callback (#9749)",
+      "description": "No provider calls. Start `go run tests/e2e/api/runners/mcpoauthtlsfixture.go` (HTTPS 8821, control HTTP 8820; override the flags and mcpOAuthTLSFixtureControl). The fixture generates its key and certificate only in memory. The profile must allowlist 127.0.0.1 for MCP OAuth. Run PROVIDER=mcp FEATURE=\"mcp oauth custom CA\" INCLUDE_PREVIEW=1. These rows are preview-only because the fixture is started explicitly. Without a CA, discovery fails closed. With the fixture CA, shared and per-user OAuth discover and dynamically register, then exchange the callback code over HTTPS. Before #9749 the positive create requests return 400 because OAuth ignores the client's TLS settings. Pending test configurations are left for the existing abandoned-flow cleanup; no MCP client is activated. Stored-client refresh, per-user completion, trust isolation, destination restrictions and pool eviction have Go regression coverage.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-400] POST /api/mcp/client oauth requires custom CA - mcp oauth custom CA #9749",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var CONTROL = pm.variables.get('mcpOAuthTLSFixtureControl') || 'http://127.0.0.1:8820';",
+                  "pm.sendRequest(CONTROL + '/__info', function (err, res) {",
+                  "  pm.test('TLS fixture is running', function () { pm.expect(err, 'start mcpoauthtlsfixture.go').to.equal(null); pm.expect(res.code).to.eql(200); });",
+                  "  var fixture = res.json();",
+                  "  pm.variables.set('mcpOAuthTLSOrigin', fixture.origin);",
+                  "  pm.variables.set('mcpOAuthTLSCA', JSON.stringify(fixture.ca_cert_pem));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth bootstrap status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness_tls_oauth_{{$randomUUID}}\",\"connection_type\":\"http\",\"connection_string\":\"{{mcpOAuthTLSOrigin}}/mcp\",\"auth_type\":\"oauth\",\"oauth_config\":{}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] POST /api/mcp/client oauth uses custom CA - mcp oauth custom CA #9749",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var CONTROL = pm.variables.get('mcpOAuthTLSFixtureControl') || 'http://127.0.0.1:8820';",
+                  "pm.sendRequest(CONTROL + '/__info', function (err, res) {",
+                  "  pm.test('TLS fixture is running', function () { pm.expect(err, 'start mcpoauthtlsfixture.go').to.equal(null); pm.expect(res.code).to.eql(200); });",
+                  "  var fixture = res.json();",
+                  "  pm.variables.set('mcpOAuthTLSOrigin', fixture.origin);",
+                  "  pm.variables.set('mcpOAuthTLSCA', JSON.stringify(fixture.ca_cert_pem));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth bootstrap status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('discovery and registration succeeded', function () { pm.expect(body.status, pm.response.text()).to.eql('pending_oauth'); pm.expect(body.authorize_url).to.include(pm.variables.get('mcpOAuthTLSOrigin') + '/authorize?'); });",
+                  "var state = /[?&]state=([^&]+)/.exec(body.authorize_url || '');",
+                  "pm.test('callback state exists', function () { pm.expect(state).to.not.equal(null); });",
+                  "pm.collectionVariables.set('mcpOAuthTLSState', decodeURIComponent(state[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness_tls_oauth_{{$randomUUID}}\",\"connection_type\":\"http\",\"connection_string\":\"{{mcpOAuthTLSOrigin}}/mcp\",\"auth_type\":\"oauth\",\"oauth_config\":{},\"tls_config\":{\"ca_cert_pem\":{{mcpOAuthTLSCA}}}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] oauth callback trusts pending MCP CA - mcp oauth custom CA #9749",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth callback completed over HTTPS', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(302);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.include('status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/callback?code=tls-fixture-code&state={{mcpOAuthTLSState}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "callback"
+              ],
+              "query": [
+                {
+                  "key": "code",
+                  "value": "tls-fixture-code"
+                },
+                {
+                  "key": "state",
+                  "value": "{{mcpOAuthTLSState}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] POST /api/mcp/client per_user_oauth uses custom CA - mcp oauth custom CA #9749",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var CONTROL = pm.variables.get('mcpOAuthTLSFixtureControl') || 'http://127.0.0.1:8820';",
+                  "pm.sendRequest(CONTROL + '/__info', function (err, res) {",
+                  "  pm.test('TLS fixture is running', function () { pm.expect(err, 'start mcpoauthtlsfixture.go').to.equal(null); pm.expect(res.code).to.eql(200); });",
+                  "  var fixture = res.json();",
+                  "  pm.variables.set('mcpOAuthTLSOrigin', fixture.origin);",
+                  "  pm.variables.set('mcpOAuthTLSCA', JSON.stringify(fixture.ca_cert_pem));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth bootstrap status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('discovery and registration succeeded', function () { pm.expect(body.status, pm.response.text()).to.eql('pending_oauth'); pm.expect(body.authorize_url).to.include(pm.variables.get('mcpOAuthTLSOrigin') + '/authorize?'); });",
+                  "var state = /[?&]state=([^&]+)/.exec(body.authorize_url || '');",
+                  "pm.test('callback state exists', function () { pm.expect(state).to.not.equal(null); });",
+                  "pm.collectionVariables.set('mcpOAuthTLSState', decodeURIComponent(state[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness_tls_per_user_oauth_{{$randomUUID}}\",\"connection_type\":\"http\",\"connection_string\":\"{{mcpOAuthTLSOrigin}}/mcp\",\"auth_type\":\"per_user_oauth\",\"oauth_config\":{},\"tls_config\":{\"ca_cert_pem\":{{mcpOAuthTLSCA}}}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] per_user_oauth callback trusts pending MCP CA - mcp oauth custom CA #9749",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OAuth callback completed over HTTPS', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(302);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.include('status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/oauth/callback?code=tls-fixture-code&state={{mcpOAuthTLSState}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "oauth",
+                "callback"
+              ],
+              "query": [
+                {
+                  "key": "code",
+                  "value": "tls-fixture-code"
+                },
+                {
+                  "key": "state",
+                  "value": "{{mcpOAuthTLSState}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -135,6 +136,39 @@ func TestRefresh_ProviderRejectionShapes(t *testing.T) {
 				assert.NotErrorIs(t, err, schemas.ErrOAuth2TokenExpired, "a non-permanent failure must not ask for re-auth")
 				assert.Equal(t, "active", row.Status)
 			}
+		})
+	}
+}
+
+// The transport must recover the MCP client's TLS settings after the initial
+// flow, including the pending-client representation used before it is saved.
+func TestRefresh_UsesMCPClientTLSConfig(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"refreshed-test-token","token_type":"bearer","expires_in":3600}`))
+	}))
+	defer server.Close()
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+	for _, source := range []string{"saved client", "pending client"} {
+		t.Run(source, func(t *testing.T) {
+			store, configID := newAccessTokenTestStore(server.URL + "/token")
+			client := &schemas.MCPClientConfig{
+				ID: "tls-client", OauthConfigID: &configID,
+				TLSConfig: &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar(ca)},
+			}
+			if source == "saved client" {
+				store.mcpClients = map[string]*schemas.MCPClientConfig{configID: client}
+			} else {
+				pending, err := json.Marshal(client)
+				require.NoError(t, err)
+				store.oauthConfigs[configID].MCPClientConfigJSON = schemas.Ptr(string(pending))
+			}
+			seedAccessToken(store, configID, "shared", "tls-token", "expired-test-token", "test-refresh", schemas.Ptr(time.Now().Add(-time.Minute)))
+			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider.retryBaseDelay = 0
+			token, err := provider.GetAccessToken(context.Background(), configID)
+			require.NoError(t, err)
+			assert.Equal(t, "refreshed-test-token", token)
 		})
 	}
 }

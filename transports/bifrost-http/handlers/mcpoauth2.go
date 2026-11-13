@@ -439,9 +439,10 @@ type OAuthInitiationRequest struct {
 	ServerURL       string             `json:"server_url"` // For OAuth discovery
 	Resource        string             `json:"resource"`   // OAuth resource indicator (RFC 8707)
 
-	RequirePublicTarget       bool   `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
-	ClientMetadataURL         string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
-	UseClientMetadataDocument bool   `json:"-"` // From the request's oauth_config: register with that document
+	TLSConfig                 *schemas.MCPTLSConfig `json:"-"` // Server-set from the MCP client
+	RequirePublicTarget       bool                  `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL         string                `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
+	UseClientMetadataDocument bool                  `json:"-"` // From the request's oauth_config: register with that document
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -463,6 +464,7 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		ServerURL:       req.ServerURL,
 		Resource:        req.Resource,
 
+		TLSConfig:                 req.TLSConfig,
 		RequirePublicTarget:       req.RequirePublicTarget,
 		ClientMetadataURL:         req.ClientMetadataURL,
 		UseClientMetadataDocument: req.UseClientMetadataDocument,
