@@ -806,11 +806,40 @@ func TestPrepareDecisionRequestMultipart(t *testing.T) {
 	require.NoError(t, err, "a file part takes precedence over data")
 
 	for name, ctx := range map[string]*fasthttp.RequestCtx{
-		"needs a multipart request":            jsonDecisionCtx(named),
-		"which the request does not carry":     decisionMultipart(t, named, "other", "x"),
-		"is not named by any input_image part": decisionMultipart(t, request(`{"type":"input_image","id":"r-a","data":"QUJD"}`), "photo", "x"),
-		"both name part":                       decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo"},{"type":"input_image","id":"r-b","name":"photo"}`), "photo", "x"),
-		`requires a "request" part`:            decisionMultipartWithoutRequest(t),
+		"needs a multipart request":                          jsonDecisionCtx(named),
+		"which the request does not carry":                   decisionMultipart(t, named, "other", "x"),
+		"is not named by any input_image or input_file part": decisionMultipart(t, request(`{"type":"input_image","id":"r-a","data":"QUJD"}`), "photo", "x"),
+		"both name part":                                     decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo"},{"type":"input_image","id":"r-b","name":"photo"}`), "photo", "x"),
+		`requires a "request" part`:                          decisionMultipartWithoutRequest(t),
+	} {
+		_, _, err := prepareDecisionRequest(ctx, nil)
+		assert.ErrorContains(t, err, name)
+	}
+}
+
+// TestPrepareDecisionRequestMultipartFile pins an input_file sent as a multipart
+// file part: it takes the raw bytes of the file part its name points at, as an
+// image sent by reference does, so a large video never travels as base64. A name
+// in a JSON request, a name with no file part, and a name next to data or a url,
+// which would send the bytes two ways, are each a 400.
+func TestPrepareDecisionRequestMultipartFile(t *testing.T) {
+	request := func(part string) string {
+		return `{"model":"gemini/gemini-decision-1","input":[{"role":"user","content":[{"type":"input_text","text":"Unboxing clip."},` + part + `]}],"questions":[{"type":"predicate","name":"q","instructions":"Is the box damaged?"}]}`
+	}
+	named := request(`{"type":"input_file","name":"clip","mime_type":"video/mp4"}`)
+
+	req, _, err := prepareDecisionRequest(decisionMultipart(t, named, "clip", "MP4-BYTES"), nil)
+	require.NoError(t, err)
+	file := req.Input.Messages[0].Content.Parts[1]
+	assert.Equal(t, "MP4-BYTES", string(file.Data.File))
+	assert.Equal(t, "video/mp4", *file.MimeType)
+	assert.NoError(t, file.ValidateFile())
+	assert.Equal(t, schemas.Gemini, req.Provider)
+
+	for name, ctx := range map[string]*fasthttp.RequestCtx{
+		"needs a multipart request":        jsonDecisionCtx(named),
+		"which the request does not carry": decisionMultipart(t, named, "other", "x"),
+		"send its bytes one way":           decisionMultipart(t, request(`{"type":"input_file","name":"clip","url":"https://example.com/a.mp4","mime_type":"video/mp4"}`), "clip", "x"),
 	} {
 		_, _, err := prepareDecisionRequest(ctx, nil)
 		assert.ErrorContains(t, err, name)

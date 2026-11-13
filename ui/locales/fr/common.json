@@ -77,7 +77,8 @@
 		"modelLimits": "limites de modèle",
 		"agent": "agent",
 		"relay": "relais",
-		"relays": "relais"
+		"relays": "relais",
+		"modelRouters": "routeurs"
 	},
 	"aboutField": "À propos de {{field}}",
 	"thisField": "ce champ",
@@ -121,7 +122,8 @@
 		"searching": "Recherche…",
 		"loadingMore": "Chargement…",
 		"useModel": "Utiliser <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqué(s)"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqué(s)",
+		"templateUnknownGroup": "Fait référence au groupe de capture {{group}}, que le motif ne définit pas"
 	},
 	"providerSelect": {
 		"select": "Sélectionner un fournisseur",
@@ -581,7 +583,8 @@
 		"baseUrlIsRequiredForThisProvider": "L’URL de base est obligatoire pour ce fournisseur",
 		"baseUrlMustStartWithHttpOrHttps": "L’URL de base doit commencer par http:// ou https://",
 		"atLeastOneApiKeyIsRequired": "Au moins une clé API est obligatoire",
-		"apiKeyValueCannotBeEmpty": "La valeur de la clé API ne peut pas être vide"
+		"apiKeyValueCannotBeEmpty": "La valeur de la clé API ne peut pas être vide",
+		"deploymentPatternInvalid": "Un motif de déploiement est invalide ou son ID de modèle utilise un groupe de capture que le motif ne définit pas"
 	},
 	"permissionDenied": {
 		"create": "Vous n’avez pas la permission de créer {{entity}}.",

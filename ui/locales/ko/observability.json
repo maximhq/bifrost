@@ -70,7 +70,8 @@
 			"decision": "결정 모델",
 			"llm": "LLM",
 			"skipped": "건너뜀"
-		}
+		},
+		"modelRouter": "라우터"
 	},
 	"dashboard": {
 		"tabs": {
@@ -1228,7 +1229,10 @@
 		"exactRoundTripID": "정확한 라운드 트립 ID",
 		"nothingRecorded": "이 기간에는 기록된 내용이 없습니다.",
 		"topics": "주제",
-		"searchTopics": "주제 검색"
+		"searchTopics": "주제 검색",
+		"modelRouters": "라우터",
+		"searchModelRouters": "라우터 검색",
+		"loadFailed": "이 목록을 불러오지 못했어요."
 	},
 	"requestTypes": {
 		"chat_completion": "채팅",
@@ -1627,6 +1631,70 @@
 				"publicAgentCardFetched": "공개 에이전트 카드 조회됨",
 				"extendedAgentCardFetched": "확장 에이전트 카드 조회됨"
 			}
+		},
+		"trace": {
+			"title": "에이전트 트레이스",
+			"loading": "트레이스 불러오는 중…",
+			"partial": "일부 연결된 로그를 불러오지 못해 이 트레이스가 불완전할 수 있습니다.",
+			"timeline": "타임라인",
+			"findSpan": "스팬 찾기",
+			"treeLabel": "트레이스 스팬",
+			"noMatches": "일치하는 스팬이 없습니다.",
+			"artifacts": "아티팩트",
+			"latency": "지연 시간",
+			"tokens": "토큰",
+			"cost": "비용",
+			"agents": "에이전트",
+			"llmCalls": "LLM 호출",
+			"mcpCalls": "MCP 호출",
+			"errors": "오류",
+			"tokensShort": "{{value}} 토큰",
+			"errorsShort": "오류 {{value}}개",
+			"followUps": "후속 호출 +{{value}}개",
+			"producedBy": "{{agent}}에서 생성",
+			"artifactKind": {
+				"data": "데이터",
+				"text": "텍스트"
+			},
+			"expand": "{{name}} 펼치기",
+			"collapse": "{{name}} 접기",
+			"openInLLMLogs": "LLM 로그에서 열기",
+			"openInMCPLogs": "MCP 로그에서 열기",
+			"a2a": "A2A",
+			"error": "오류",
+			"scopeTrace": "트레이스",
+			"scopeSession": "세션",
+			"sessionName": "세션 {{value}}",
+			"turn": "턴 {{value}}",
+			"turnCount": "턴 {{value}}",
+			"turns": "턴",
+			"sessionId": "세션",
+			"taskId": "작업",
+			"copyLink": "링크 복사",
+			"linkCopied": "링크를 복사했습니다",
+			"guardrails": "가드레일",
+			"guard": {
+				"guardrail": "가드레일",
+				"rule": "규칙",
+				"provider": "공급자",
+				"phase": "단계",
+				"outcome": "결과",
+				"reason": "사유",
+				"judgeModel": "판정 모델",
+				"assessments": "평가"
+			},
+			"turnsLoaded": "{{total}}개 턴 중 {{loaded}}개 로드됨",
+			"loadMoreTurns": "턴 더 불러오기",
+			"userMessage": "사용자",
+			"viewSpans": "스팬 보기",
+			"noReply": "기록된 응답이 없습니다.",
+			"spansTab": "스팬",
+			"threadTab": "스레드",
+			"llmShort": "LLM {{value}}",
+			"mcpShort": "MCP {{value}}",
+			"guardShort": "가드레일 {{value}}",
+			"agentSpan": "에이전트 스팬",
+			"conversationEnd": "끝"
 		},
 		"logSheet": {
 			"localOperationNote": "이 작업은 업스트림 요청 없이 Bifrost에서 처리돼요. 아래 프로토콜 페이로드는 직렬화된 데이터이며 전송 캡처가 아니에요.",

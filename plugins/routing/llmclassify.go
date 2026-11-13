@@ -65,12 +65,14 @@ func (p *RoutingPlugin) SetChatRequestExecutor(executor ChatRequestExecutor) {
 		if p.llmClassifier != nil {
 			p.llmClassifier.SetChatFunc(nil)
 		}
+		p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(nil) })
 		return
 	}
 	p.chatRequestExecutor.Store(&executor)
 	if p.llmClassifier != nil {
 		p.llmClassifier.SetChatFunc(p.classifyComplexityTextViaLLM)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.llm.SetChatFunc(p.classifyComplexityTextViaLLM) })
 }
 
 // chatExecutor returns the currently wired executor, or nil.
@@ -275,8 +277,8 @@ func llmClassifierShouldRetryWithResponses(bifrostErr *schemas.BifrostError) boo
 // always after a semantic non-answer, never as the primary — and returns a
 // proposal without publishing context telemetry. The caller applies monotonic
 // session state before publishing the effective tier.
-func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
-	result, err := p.llmClassifier.Classify(ctx, input)
+func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput, rt *modelRouterRuntime) complexityProposal {
+	result, err := rt.llm.Classify(ctx, input)
 	if err == nil && result != nil {
 		// No score is published: a chat completion has no similarity, and a
 		// synthetic one would invite comparisons against thresholds tuned for
@@ -288,7 +290,7 @@ func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input
 			LogLevel:   schemas.LogLevelInfo,
 			LogMessage: fmt.Sprintf("LLM complexity: tier=%s", out.Tier),
 		}
-		if config := p.complexityConfig.Load(); config != nil && config.LLM != nil {
+		if config := rt.config.Load(); config != nil && config.LLM != nil {
 			proposal.Model = string(config.LLM.Provider) + "/" + config.LLM.Model
 			proposal.LogMessage += fmt.Sprintf(" model=%s", proposal.Model)
 		}
@@ -310,7 +312,7 @@ func (p *RoutingPlugin) classifyLLMComplexity(ctx *schemas.BifrostContext, input
 		// broken provider instead of raising llm.timeout.
 		unavailableLog = fmt.Sprintf(
 			"LLM complexity classification timed out after %s, so no complexity tier is published",
-			p.llmClassifier.Timeout(),
+			rt.llm.Timeout(),
 		)
 	case errors.Is(err, complexity.ErrLLMTierUnparseable):
 		// The model answered but named no tier: the classifier model or the

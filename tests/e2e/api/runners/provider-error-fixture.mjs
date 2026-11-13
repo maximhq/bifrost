@@ -153,6 +153,33 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
+	// Audio with no speech makes OpenAI answer a text, srt or vtt transcription with 200 and an empty or
+	// newline-only body. upstream-transcribe-empty answers "" and upstream-transcribe-newline answers "\n"; a
+	// JSON format gets the same empty body, which the gateway must still reject as there is nothing to decode.
+	if (req.method === "POST" && path === "/v1/audio/transcriptions") {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			const form = Buffer.concat(chunks).toString("latin1");
+			const field = (name) => {
+				const m = form.match(new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)\\r\\n`));
+				return m ? m[1] : "";
+			};
+			const model = field("model");
+			hits[model] = (hits[model] || 0) + 1;
+			if (req.headers.authorization !== "Bearer test-key") {
+				return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+			}
+			const transcripts = { "upstream-transcribe-empty": "", "upstream-transcribe-newline": "\n" };
+			if (!Object.hasOwn(transcripts, model)) {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			const plain = ["text", "srt", "vtt"].includes(field("response_format"));
+			res.writeHead(200, { "Content-Type": plain ? "text/plain; charset=utf-8" : "application/json" });
+			res.end(transcripts[model]);
+		});
+		return;
+	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}

@@ -273,6 +273,33 @@ func TestDatabricksOAuthConfig(t *testing.T) {
 		assert.NotNil(t, mint)
 	})
 
+	t.Run("configured scopes replace the default", func(t *testing.T) {
+		scopes := []string{"model-serving-inference", "ai-functions"}
+		cfg, ok := (&schemas.DatabricksKeyConfig{
+			ClientID:     schemas.NewSecretVar("sp"),
+			ClientSecret: schemas.NewSecretVar("s"),
+			Scopes:       scopes,
+		}).OAuthConfig("dbc-1.cloud.databricks.com")
+		require.True(t, ok)
+		assert.Equal(t, scopes, cfg.Scopes)
+	})
+
+	t.Run("keys that differ only in scopes never share a token", func(t *testing.T) {
+		base := schemas.DatabricksKeyConfig{ClientID: schemas.NewSecretVar("sp"), ClientSecret: schemas.NewSecretVar("s")}
+		scoped := base
+		scoped.Scopes = []string{"model-serving-inference"}
+		defaultCfg, _ := base.OAuthConfig("h")
+		scopedCfg, _ := scoped.OAuthConfig("h")
+		assert.NotEqual(t, oauthKeyCacheKey(&defaultCfg, "https://h/oidc/v1/token"), oauthKeyCacheKey(&scopedCfg, "https://h/oidc/v1/token"))
+	})
+
+	t.Run("scope validation", func(t *testing.T) {
+		assert.NoError(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving", "all-apis:read"}}).ValidateScopes())
+		assert.NoError(t, (*schemas.DatabricksKeyConfig)(nil).ValidateScopes())
+		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{""}}).ValidateScopes())
+		assert.Error(t, (&schemas.DatabricksKeyConfig{Scopes: []string{"model-serving ai-functions"}}).ValidateScopes())
+	})
+
 	t.Run("a missing half yields nothing", func(t *testing.T) {
 		var none *schemas.DatabricksKeyConfig
 		_, ok := none.OAuthConfig("h")

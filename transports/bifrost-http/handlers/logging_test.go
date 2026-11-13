@@ -139,9 +139,14 @@ func TestParseComplexityFilters(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
 		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		ctx.QueryArgs().Set("model_router_ids", "billing,support")
 		filters := &logstore.SearchFilters{}
 
 		parseComplexityFilters(ctx, filters)
+
+		if got, want := filters.ModelRouterIDs, []string{"billing", "support"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("model router ids = %#v, want %#v", got, want)
+		}
 
 		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("complexity tiers = %#v, want %#v", got, want)

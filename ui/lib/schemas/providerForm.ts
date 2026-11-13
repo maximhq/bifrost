@@ -10,6 +10,7 @@ import {
 	secretVarSchema,
 } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
+import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { z } from "zod";
 
 // Base schemas for reusable types
@@ -259,7 +260,11 @@ const KeySchema = z.object({
 	aliases: z
 		.record(z.string(), aliasConfigSchema)
 		.optional()
-		.refine((value) => !value || isValidAliases(value), msg("validation.deploymentsMustHaveAModelIdOnEveryRow")),
+		.refine((value) => !value || isValidAliases(value), msg("validation.deploymentsMustHaveAModelIdOnEveryRow"))
+		.refine(
+			(value) => !value || Object.entries(value).every(([name, cfg]) => !validatePatternAlias(name, cfg.model_id, cfg.model_name)),
+			msg("validation.deploymentPatternInvalid"),
+		),
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
