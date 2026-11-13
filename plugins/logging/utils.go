@@ -888,6 +888,8 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 					Type:           schemas.ChatContentBlockTypeImage,
 					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL, Detail: part.Detail},
 				})
+			case part.Type == schemas.DecisionInputPartTypeFile:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: decisionFileLog(part)})
 			default:
 				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
 			}
@@ -898,6 +900,18 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		})
 	}
 	return messages
+}
+
+// decisionFileLog logs an input_file part as a chat request's file is logged:
+// its bytes as base64 file data (a multipart part's bytes too, by its part name),
+// or its URL, with its media type, so the log view shows audio, video, and PDFs
+// the way it shows files sent to any other provider.
+func decisionFileLog(part schemas.DecisionInputPart) *schemas.ChatInputFile {
+	file := &schemas.ChatInputFile{FileURL: part.URL, Filename: part.Name, FileType: part.MimeType}
+	if part.Data.File != nil {
+		file.FileData = schemas.Ptr(base64.StdEncoding.EncodeToString(part.Data.File))
+	}
+	return file
 }
 
 // decisionToolItemLog logs a tool call as the assistant's message and a tool
