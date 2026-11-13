@@ -87,6 +87,9 @@ type Principal struct {
 	AllProjects bool
 }
 
+// Allows reports whether the principal may read and write the project.
+func (p *Principal) Allows(projectID string) bool { return p.allows(projectID) }
+
 func (p *Principal) allows(projectID string) bool {
 	if p.AllProjects {
 		return true
