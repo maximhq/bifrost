@@ -155,7 +155,7 @@ func TestPreA2AHook_PreAuthenticatedUserAccess(t *testing.T) {
 	ctx := a2aUserCtx()
 	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
 		grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"alpha"})),
-	}, nil, "", nil))
+	}, "", nil, "", nil))
 	requireA2AAllowed(t, p, ctx, operationReq("alpha"))
 }
 
@@ -193,7 +193,7 @@ func TestPreA2AHook_KnownUserWithoutCredentialIsGoverned(t *testing.T) {
 		ctx := a2aKnownUserCtx()
 		ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
 			grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"alpha"})),
-		}, nil, "", nil))
+		}, "", nil, "", nil))
 		requireA2AAllowed(t, p, ctx, operationReq("alpha"))
 	})
 	t.Run("allowed by default", func(t *testing.T) {
