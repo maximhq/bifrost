@@ -370,7 +370,7 @@
 		"maxDepthHelp": "Profondeur maximale pour l’exécution de l’agent MCP.",
 		"refreshIntervalHelp": "Fréquence de rafraîchissement des listes d’outils depuis les serveurs MCP. Définissez 0 pour utiliser la valeur par défaut de 10 minutes.",
 		"disableAutoToolInjectionHelp": "Lorsque cette option est activée, les outils MCP ne sont pas automatiquement inclus dans chaque requête. Les outils ne sont injectés que lorsqu’ils sont explicitement spécifiés via les en-têtes de requête (<code0>x-bf-mcp-include-tools</code0>) et doivent toujours être autorisés par la configuration MCP de la clé virtuelle.",
-		"tempTokenHelp": "Lorsque cette option est activée, les liens OAuth MCP par utilisateur peuvent inclure un jeton à durée limitée et à périmètre restreint, afin qu’une personne sans session active sur le tableau de bord Bifrost puisse terminer le flux. Laissez désactivé pour exiger l’authentification normale du tableau de bord.",
+		"tempTokenHelp": "Lorsque cette option est activée, les liens OAuth MCP par utilisateur et les liens de connexion Claude Code peuvent inclure un jeton à durée limitée et à périmètre restreint, afin qu’une personne sans session active sur le tableau de bord Bifrost puisse terminer le flux. Laissez désactivé pour exiger l’authentification normale du tableau de bord.",
 		"bindingHelp": "Comment les outils sont exposés dans le VFS : niveau serveur (tous les outils par serveur) ou niveau outil (outils individuels).",
 		"externalClientUrlHelp": "Remplacez l’URL de base publique de Bifrost lorsqu’il s’exécute derrière un reverse proxy. <b0>Laissez vide pour dériver l’URL</b0> de l’en-tête <code1>Host</code1> entrant. Utilisée comme <code2>redirect_uri</code2> que Bifrost enregistre auprès des fournisseurs OAuth en amont lorsqu’il agit comme client d’un serveur MCP (par ex. Notion ou Jira redirigent le navigateur vers <code3>&lt;URL&gt;/api/oauth/callback</code3> après connexion). Prend en charge la syntaxe de variable d’environnement (par ex.  <code4>env.BIFROST_EXTERNAL_URL</code4>). Derrière un préfixe d’URL (server.base_path), incluez le préfixe, par exemple https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Les fournisseurs OAuth en amont verrouillent le <code0>redirect_uri</code0> sur celui enregistré initialement, donc les clients MCP ayant déjà terminé OAuth échoueront avec <em1>« Invalid redirect URI »</em1>. Pour récupérer, effacez les identifiants client OAuth stockés pour les serveurs MCP concernés et ré-autorisez afin que Bifrost relance l’enregistrement dynamique de client avec la nouvelle URL.",
@@ -1677,6 +1677,8 @@
 		"urlTemplate": "<URL de l’émetteur>/gateway/<client>",
 		"accessTokenTtlLabel": "Durée de vie du jeton d’accès (minutes)",
 		"accessTokenTtlDescription": "Durée de validité du jeton d’accès de chaque connexion (10 par défaut, 1 minimum). Se déconnecter ou révoquer une connexion empêche son renouvellement, mais le jeton d’accès déjà émis reste valable jusqu’à son expiration. Pour couper l’accès immédiatement, désactivez la clé virtuelle ou l’utilisateur. Ce paramètre est partagé avec MCP OAuth.",
-		"accessTokenTtlInvalid": "La durée de vie du jeton d’accès doit être d’au moins 1 minute."
+		"accessTokenTtlInvalid": "La durée de vie du jeton d’accès doit être d’au moins 1 minute.",
+		"allowTempTokenLabel": "Autoriser les liens d’auth. avec jeton temporaire",
+		"allowTempTokenDescription": "Lorsque cette option est activée, les liens OAuth MCP par utilisateur et les liens de connexion Claude Code peuvent inclure un jeton à durée limitée et à périmètre restreint, afin qu’une personne sans session active sur le tableau de bord Bifrost puisse terminer le flux. Laissez désactivé pour exiger l’authentification normale du tableau de bord."
 	}
 }

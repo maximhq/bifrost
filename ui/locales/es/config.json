@@ -348,7 +348,7 @@
 		"toolTimeoutHelp": "Tiempo máximo en segundos para la ejecución de herramientas.",
 		"toolSyncInterval": "Intervalo sin herramientas (minutos)",
 		"disableAutoToolInjection": "Desactivar la inyección de herramientas automáticas",
-		"allowTempToken": "Permitir los enlaces de Auth Token Temp Token",
+		"allowTempToken": "Permitir enlaces de autenticación con token temporal",
 		"codeModeBinding": "Nivel de unión del modo de código",
 		"codeModeSettings": "Ajustes del modo de código",
 		"selectBindingLevel": "Seleccionar nivel de unión",
@@ -374,7 +374,7 @@
 		"maxDepthHelp": "Profundidad máxima para la ejecución del agente MCP.",
 		"refreshIntervalHelp": "Cuán a menudo para actualizar las listas de herramientas de los servidores MCP. Se establece a 0 para utilizar el predeterminado de 10 minutos.",
 		"disableAutoToolInjectionHelp": "Cuando está habilitado, las herramientas MCP no se incluyen automáticamente en cada solicitud. Las herramientas sólo se inyectan cuando se especifican explícitamente mediante encabezados de solicitud (<code0>x-bf-mcp-include-tools</code0>) y todavía deben ser permitidas por la configuración virtual clave MCP.",
-		"tempTokenHelp": "Cuando está habilitado, los enlaces de MCP OAuth por usuario pueden incluir un token de corta duración para que alguien sin una sesión activa de panel de Bifrost pueda completar el flujo. Mantenga la discapacidad para requerir la autenticación de panel de control normal.",
+		"tempTokenHelp": "Cuando está habilitado, los enlaces de MCP OAuth por usuario y los enlaces de inicio de sesión de Claude Code pueden incluir un token de corta duración y alcance limitado, para que alguien sin una sesión activa en el panel de Bifrost pueda completar el flujo. Manténgalo desactivado para exigir la autenticación normal del panel.",
 		"bindingHelp": "Cómo se exponen las herramientas en el VFS: nivel de servidor (todas las herramientas por servidor) o nivel de herramientas (herramientas individuales).",
 		"externalClientUrlHelp": "Superar la URL de base pública de Bifrost cuando se ejecuta detrás de un proxy inverso.<b0>Deja en blanco para derivar la URL</b0>del encabezado<code1>Host</code1>entrante. Utilizado como el<code2>redirect_uri</code2>Bifrost se registra con los proveedores OAuth de corriente superior cuando actúa como cliente a un servidor MCP (por ejemplo,. Noción o Jira redirigir el navegador a<code3><URL>/api/oauth/callback</code3>después de iniciar sesión). Admite sintaxis env var (por ejemplo.<code4>env.BIFROST_EXTERNAL_ URL</code4>). Detrás de un prefijo de URL (server.base_path), incluye el prefijo, por ejemplo https://host/bifrost.",
 		"externalClientUrlWarningHelp": "Los proveedores de OAuth de Upstream bloquean el<code0>redirect_uri</code0>a lo que se registró inicialmente, por lo que los clientes de MCP que ya han completado OAuth fallarán con<em1>\"Invalid redirect URI\"</em1>. Para recuperar, despejar las credenciales de clientes OAuth almacenadas para los servidores MCP afectados y volver a autorizar para que Bifrost vuelva a ejecutar Registro de cliente dinámico con la nueva URL.",
@@ -1653,6 +1653,8 @@
 		"urlTemplate": "<URL del emisor>/gateway/<cliente>",
 		"accessTokenTtlLabel": "Duración del token de acceso (minutos)",
 		"accessTokenTtlDescription": "Cuánto tiempo sigue siendo válido el token de acceso de cada inicio de sesión (predeterminado 10, mínimo 1). Cerrar sesión o revocar un inicio de sesión impide que se renueve, pero el token de acceso que ya tiene sigue funcionando hasta que caduca. Para cortar el acceso de inmediato, desactiva la clave virtual o el usuario. Esta opción se comparte con MCP OAuth.",
-		"accessTokenTtlInvalid": "La duración del token de acceso debe ser de al menos 1 minuto."
+		"accessTokenTtlInvalid": "La duración del token de acceso debe ser de al menos 1 minuto.",
+		"allowTempTokenLabel": "Permitir enlaces de autenticación con token temporal",
+		"allowTempTokenDescription": "Cuando está habilitado, los enlaces de MCP OAuth por usuario y los enlaces de inicio de sesión de Claude Code pueden incluir un token de corta duración y alcance limitado, para que alguien sin una sesión activa en el panel de Bifrost pueda completar el flujo. Manténgalo desactivado para exigir la autenticación normal del panel."
 	}
 }
