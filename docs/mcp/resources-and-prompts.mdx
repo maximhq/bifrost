@@ -34,6 +34,8 @@ Prompts and resources are for MCP clients. They are not offered to models in cha
 
 Reads go back to the server that listed the item, and arguments for prompts and templates can be auto-completed when the server supports it.
 
+The `ui://` resources of [MCP Apps](./apps) are the exception: on the shared `/mcp` endpoint and on Virtual MCPs they are kept apart per server (`ui://<server>/…`).
+
 If two servers list the same resource URI, only one of them serves it, and you cannot choose which. Keep URIs distinct across servers, or hide the duplicate with an [allow-list](#choosing-what-a-server-exposes).
 
 ---
