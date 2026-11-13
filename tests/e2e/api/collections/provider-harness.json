@@ -319298,6 +319298,87 @@
           ]
         }
       ]
+    },
+    {
+      "name": "343. OpenAI ChatGPT passthrough unlisted paths return 404 (chatgpt passthrough unlisted path)",
+      "description": "The /chatgpt_passthrough prefix forwards only GET /backend-api/codex/models and POST /backend-api/codex/responses. An unlisted GET under the prefix used to match no passthrough route and fall through to the dashboard catch-all, which answered 200 with the dashboard HTML shell; a Codex client attempting a WebSocket upgrade on the responses path saw 200 instead of an error. Each case sends a GET nothing is listed for and must get a 404 JSON error from the gateway. Nothing is forwarded upstream, so no ChatGPT token is needed. A plain (non-upgrade) GET on the responses path stays a 404 once WebSocket mode is served there.",
+      "item": [
+        {
+          "name": "343.1 OpenAI ChatGPT Codex passthrough plain GET on the responses path [EXPECT-404]",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text().slice(0, 2000);",
+                  "pm.test(\"an unlisted ChatGPT passthrough GET is refused by the gateway\", function () {",
+                  "  pm.expect(pm.response.code, body).to.equal(404);",
+                  "  pm.expect(body, body).to.include(\"no passthrough route matches the request path\");",
+                  "});",
+                  "pm.test(\"the dashboard shell is not served under the passthrough prefix\", function () {",
+                  "  pm.expect(String(pm.response.headers.get(\"Content-Type\")), body).to.include(\"application/json\");",
+                  "  pm.expect(body.toLowerCase(), body).to.not.include(\"<html\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "343.2 OpenAI ChatGPT Codex passthrough unlisted backend path [EXPECT-404]",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/conversations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "conversations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text().slice(0, 2000);",
+                  "pm.test(\"an unlisted ChatGPT passthrough GET is refused by the gateway\", function () {",
+                  "  pm.expect(pm.response.code, body).to.equal(404);",
+                  "  pm.expect(body, body).to.include(\"no passthrough route matches the request path\");",
+                  "});",
+                  "pm.test(\"the dashboard shell is not served under the passthrough prefix\", function () {",
+                  "  pm.expect(String(pm.response.headers.get(\"Content-Type\")), body).to.include(\"application/json\");",
+                  "  pm.expect(body.toLowerCase(), body).to.not.include(\"<html\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

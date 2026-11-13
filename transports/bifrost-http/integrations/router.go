@@ -733,6 +733,11 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			for _, allowed := range g.passthroughCfg.AllowedRoutes {
 				r.Handle(strings.ToUpper(allowed.Method), allowed.Path, catchAll)
 			}
+			// The dashboard owns GET /{filepath:*}, so an unlisted GET under the prefix needs a
+			// route of its own or it is answered with the dashboard shell and a 200.
+			for _, prefix := range g.passthroughCfg.StripPrefix {
+				r.GET(prefix+"/{path:*}", g.handlePassthroughNoRoute)
+			}
 		} else {
 			// Register for all methods that need forwarding
 			for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
@@ -3820,6 +3825,14 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	} else {
 		g.handlePassthroughNonStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
 	}
+}
+
+// handlePassthroughNoRoute answers a request under a restricted passthrough prefix that no
+// allowed route matches. Nothing is forwarded, so it runs outside the middleware chain.
+func (g *GenericRouter) handlePassthroughNoRoute(ctx *fasthttp.RequestCtx) {
+	g.sendError(ctx, nil, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
 }
 
 func (g *GenericRouter) handlePassthroughNonStream(
