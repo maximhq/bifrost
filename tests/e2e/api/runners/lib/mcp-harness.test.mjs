@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { A, AUTH, CHAOS, MCP_ACCEPT, PU_FLOWS, consentAs, flowStart, folder, identityCalls, mockPost, puConnect, request, rpc, vkCreate } from "./mcp-harness.mjs";
+import { A, AUTH, CHAOS, MCP_ACCEPT, PU_FLOWS, consentAs, flowStart, folder, identityCalls, mockPost, puConnect, request, rpc, schemasLack, vkCreate } from "./mcp-harness.mjs";
 
 test("request defaults to the base URL, the admin header and JSON bodies", () => {
   const item = request("T-01", "create a thing", "POST", "/api/things", { body: { a: 1 }, asserts: [A.status(200)] });
@@ -62,4 +62,30 @@ test("the upstream OAuth helpers address the mock's consent, Bifrost's per-user 
     "setup: complete the per-user OAuth client",
   ]);
   assert.equal(identityCalls("alice", 2).title, "calls_by_identity[alice] is 2");
+});
+
+// runAssertion runs an assertion's ES5 lines against a tools/list answer, with an expect that supports the
+// chains these lines use (property, an, not.property); a failed expectation throws.
+const runAssertion = (assertion, tools) => {
+  const expect = (value, msg) => {
+    const fail = (what) => { throw new Error(`${msg}: ${what}`); };
+    const has = (k) => value !== null && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, k);
+    return { to: {
+      have: { property: (k) => { if (!has(k)) fail(`missing ${k}`); } },
+      be: { an: (type) => { if (type !== "object" || value === null || typeof value !== "object" || Array.isArray(value)) fail(`not an ${type}`); } },
+      not: { have: { property: (k) => { if (has(k)) fail(`has ${k}`); } } },
+    } };
+  };
+  const pm = { expect, response: { json: () => ({ result: { tools } }) } };
+  new Function("pm", assertion.body.join("\n"))(pm);
+};
+
+test("schemasLack fails when a named tool or its schema is missing, not only when it takes the argument", () => {
+  const check = schemasLack(["chat", "responses"], ["stream", "stream_options"]);
+  const tool = (name, properties) => ({ name, inputSchema: { type: "object", properties } });
+  runAssertion(check, [tool("chat", { model: {} }), tool("responses", undefined)]);
+  assert.throws(() => runAssertion(check, [tool("chat", { model: {} })]), /responses.*missing responses/);
+  assert.throws(() => runAssertion(check, [tool("chat", { model: {} }), { name: "responses" }]), /responses inputSchema: not an object/);
+  assert.throws(() => runAssertion(check, [tool("chat", { stream: {} }), tool("responses", {})]), /chat: has stream/);
+  assert.throws(() => runAssertion(check, [tool("chat", {}), tool("responses", { stream_options: {} })]), /responses: has stream_options/);
 });
