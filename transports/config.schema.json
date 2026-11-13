@@ -2383,6 +2383,13 @@
         "$ref": "#/$defs/datasheet_override"
       }
     },
+    "model_routers": {
+      "type": "array",
+      "description": "Named model routers, each a complexity classifier with its own phrases and settings. They are separate from governance.complexity_analyzer_config, which routing rules read complexity_tier from. Unless config.json is the source of truth, dashboard edits to sections the file has not changed are kept.",
+      "items": {
+        "$ref": "#/$defs/model_router"
+      }
+    },
     "mcp": {
       "type": "object",
       "description": "Model Context Protocol configuration",
@@ -7059,6 +7066,191 @@
         }
       },
       "required": [
+        "keywords"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "session": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            },
+            "required": [
+              "session"
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "semantic"
+            ]
+          }
+        },
+        {
+          "description": "Selecting the llm fallback without configuring the classifier it names loads a semantic classifier whose non-answers have nothing to fall back to; the loader rejects it for the same reason.",
+          "if": {
+            "required": [
+              "semantic"
+            ],
+            "properties": {
+              "semantic": {
+                "required": [
+                  "fallback"
+                ],
+                "properties": {
+                  "fallback": {
+                    "const": "llm"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
+        },
+        {
+          "description": "Enabled suggestions capture the semantic classifier's vectors and cluster in its embedding space, so they need it as the primary classifier; the loader rejects them otherwise.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "semantic"
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Enabled suggestions need a model: their own provider and model (set together), or else the llm block's.",
+          "if": {
+            "properties": {
+              "suggestions": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "not": {
+                  "required": [
+                    "provider",
+                    "model"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "suggestions"
+            ]
+          },
+          "then": {
+            "required": [
+              "llm"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "model_router": {
+      "type": "object",
+      "description": "One model router: an id, a name and a description beside the same settings as complexity_analyzer_config.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "description": "Stable router id."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S",
+          "description": "Display name, unique across routers. Must contain a non-whitespace character."
+        },
+        "description": {
+          "type": "string",
+          "description": "What the router is for."
+        },
+        "tier_boundaries": {
+          "$ref": "#/$defs/complexity_tier_boundaries"
+        },
+        "keywords": {
+          "$ref": "#/$defs/complexity_analyzer_keywords"
+        },
+        "classifier": {
+          "type": "string",
+          "enum": [
+            "semantic",
+            "decision"
+          ],
+          "default": "semantic",
+          "description": "Primary complexity classifier. Defaults to semantic."
+        },
+        "semantic": {
+          "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "decision": {
+          "$ref": "#/$defs/complexity_decision_config"
+        },
+        "llm": {
+          "$ref": "#/$defs/complexity_llm_config"
+        },
+        "session": {
+          "$ref": "#/$defs/complexity_session_config"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/complexity_suggestions_config"
+        }
+      },
+      "required": [
+        "id",
+        "name",
         "keywords"
       ],
       "allOf": [
