@@ -15,8 +15,8 @@ import (
 // region and API path (e.g. "responses"). Only the frontier families reach this surface, and
 // they all live under "openai/v1"; gpt-oss carries a bare id and so routes to mantle instead.
 // Unlike the Converse paths the model is not part of the URL — it rides in the body.
-func runtimeOpenAIURL(endpoints *schemas.BedrockEndpoints, region, path string) string {
-	return fmt.Sprintf("https://%s/openai/v1/%s", resolveBedrockHost(endpoints, bedrockServiceRuntime, region), path)
+func (provider *BedrockProvider) runtimeOpenAIURL(endpoints *schemas.BedrockEndpoints, region, path string) string {
+	return fmt.Sprintf("https://%s/openai/v1/%s", provider.serviceHost(endpoints, bedrockServiceRuntime, region), path)
 }
 
 // Guardrail headers for the OpenAI-compatible surfaces. Converse takes the same intent
@@ -82,7 +82,7 @@ func (provider *BedrockProvider) runtimeResponses(
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
+	url := provider.runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	extraHeaders := provider.networkConfig.ExtraHeaders
 	if request.Params != nil {
@@ -126,7 +126,7 @@ func (provider *BedrockProvider) runtimeResponsesStream(
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
+	url := provider.runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	extraHeaders := provider.networkConfig.ExtraHeaders
 	if request.Params != nil {
@@ -165,7 +165,7 @@ func (provider *BedrockProvider) runtimeChatCompletions(
 	request *schemas.BifrostChatRequest,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+	url := provider.runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	extraHeaders := provider.networkConfig.ExtraHeaders
 	if request.Params != nil {
@@ -206,7 +206,7 @@ func (provider *BedrockProvider) runtimeChatCompletionsStream(
 	request *schemas.BifrostChatRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+	url := provider.runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	extraHeaders := provider.networkConfig.ExtraHeaders
 	if request.Params != nil {

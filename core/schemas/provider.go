@@ -62,7 +62,8 @@ const (
 //   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
-	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
+	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama).
+	// Bedrock uses only its host, as the bedrock-runtime host for all inference.
 	BaseURL                        string               `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
 	ExtraHeaders                   map[string]SecretVar `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional; values support env.* and vault.* references)
 	DefaultRequestTimeoutInSeconds int                  `json:"default_request_timeout_in_seconds"`       // Default timeout for requests

@@ -8004,7 +8004,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
+          "description": "Base URL for the provider (optional, required for Ollama). For Bedrock, only the host is used: it replaces the bedrock-runtime host for all inference, a key's bedrock_key_config.endpoints.runtime still wins over it, and the other Bedrock services keep their per-key endpoints or public hosts. Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
