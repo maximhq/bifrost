@@ -202006,7 +202006,74 @@
                 "exec": [
                   "// #10026: the alias's wire model is an opaque application inference profile ARN; only its model_name says Claude.",
                   "// The prompt cache gate judged the ARN and injected nothing. It must judge the canonical model, and the wire model must stay the ARN.",
-                  "pm.test('the chat request is served', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+                  "pm.test('the chat request is served with an assistant reply', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); var j = pm.response.json(); pm.expect(j.choices, pm.response.text().slice(0, 400)).to.be.an('array').that.is.not.empty; pm.expect(j.choices[0].message.role).to.equal('assistant'); pm.expect(j.choices[0].message.content).to.equal('OK'); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+                  "  pm.test('exactly one Converse request reached bedrock-runtime', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+                  "  pm.test('the wire model is the profile ARN, not the alias or model_name', function () { pm.expect(call.port).to.equal(8798); pm.expect(decodeURIComponent(call.path)).to.equal('/model/arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01/converse'); });",
+                  "  var body = {};",
+                  "  try { body = JSON.parse(call.body || '{}'); } catch (e) { body = {}; }",
+                  "  var wire = JSON.stringify(body);",
+                  "  pm.test('auto_inject put a cachePoint on the Converse body', function () { pm.expect(wire, wire.slice(0, 800)).to.include('\"cachePoint\"'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.15 bedrock alias to an application inference profile ARN gets the prompt cache marker from auto_inject on the Responses API (bedrock alias prompt cache)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/claude-app-profile\",\n  \"max_output_tokens\": 16,\n  \"instructions\": \"You are a terse assistant. This system prompt is the stable prefix an agent loop replays every turn.\",\n  \"input\": \"Reply OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #10026: the alias's wire model is an opaque application inference profile ARN; only its model_name says Claude.",
+                  "// Same as 162.14 on /v1/responses: the prompt cache gate judged the ARN and injected nothing. It must judge the canonical model, and the wire model must stay the ARN.",
+                  "pm.test('the responses request is served with an assistant reply', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); var j = pm.response.json(); pm.expect(j.output, pm.response.text().slice(0, 400)).to.be.an('array').that.is.not.empty; var msg = j.output.filter(function (o) { return o.type === 'message'; })[0] || {}; pm.expect(msg.role, pm.response.text().slice(0, 400)).to.equal('assistant'); pm.expect((msg.content || []).map(function (c) { return c.text; }).join('')).to.equal('OK'); });",
                   "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
                   "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
                   "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
