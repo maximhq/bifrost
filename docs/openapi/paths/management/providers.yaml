@@ -533,6 +533,69 @@ provider-key-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+provider-decisions-probe:
+  post:
+    operationId: probeProviderDecision
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Probe a decision route
+    description: |
+      Sends one fixed predicate question with a short text input to exactly this provider
+      and model on the decisions endpoint, so a decision route can be checked before it is
+      relied on. The request carries no fallbacks and skips the plugin pipeline: routing
+      rules, governance, caching, and logging do not apply, so the result reflects this
+      route alone. Each probe is a real, billed request.
+
+      A probe that reached the provider returns `200` whether or not the route works:
+      `ok` reports the outcome, and on failure `error` carries the provider's status code,
+      error type, code, and message, with the provider's key values and any URL
+      credentials removed. The request is rejected with `400` before anything is sent when
+      `model` is missing, the model is not served on the provider's decisions endpoint
+      (the same rule `GET /api/models?decisions=true` applies), or `key_id` is not one of
+      the provider's keys, and with `404` when the provider is not configured.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/DecisionProbeRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The probe was sent; `ok` reports whether the route answered
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/DecisionProbeResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 keys:
   get:
     operationId: listKeys

@@ -43735,6 +43735,159 @@
         }
       }
     },
+    "/api/providers/{provider}/decisions/probe": {
+      "post": {
+        "operationId": "probeProviderDecision",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Probe a decision route",
+        "description": "Sends one fixed predicate question with a short text input to exactly this provider\nand model on the decisions endpoint, so a decision route can be checked before it is\nrelied on. The request carries no fallbacks and skips the plugin pipeline: routing\nrules, governance, caching, and logging do not apply, so the result reflects this\nroute alone. Each probe is a real, billed request.\n\nA probe that reached the provider returns `200` whether or not the route works:\n`ok` reports the outcome, and on failure `error` carries the provider's status code,\nerror type, code, and message, with the provider's key values and any URL\ncredentials removed. The request is rejected with `400` before anything is sent when\n`model` is missing, the model is not served on the provider's decisions endpoint\n(the same rule `GET /api/models?decisions=true` applies), or `key_id` is not one of\nthe provider's keys, and with `404` when the provider is not configured.\n",
+        "tags": [
+          "Providers"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "description": "Provider name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request for probing one decision route",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model to probe, without the provider prefix (the provider is the path parameter)",
+                    "example": "gpt-6-luna"
+                  },
+                  "key_id": {
+                    "type": "string",
+                    "description": "Probe through this provider key instead of the load-balanced key pool"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The probe was sent; `ok` reports whether the route answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Outcome of a decision route probe",
+                  "required": [
+                    "ok",
+                    "provider",
+                    "model",
+                    "latency_ms"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "description": "Whether the route returned an answer"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "description": "Provider that answered, or that was attempted when the probe failed"
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model that answered as the provider reported it, or the model attempted when the probe failed"
+                    },
+                    "latency_ms": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Wall-clock time of the probe in milliseconds"
+                    },
+                    "usage": {
+                      "$ref": "#/components/schemas/BifrostLLMUsage"
+                    },
+                    "error": {
+                      "type": "object",
+                      "description": "Why a probe failed, with the provider's key values and URL credentials removed",
+                      "required": [
+                        "status_code",
+                        "message"
+                      ],
+                      "properties": {
+                        "status_code": {
+                          "type": "integer",
+                          "description": "HTTP status the request failed with"
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "Error type reported by the provider or Bifrost"
+                        },
+                        "code": {
+                          "type": "string",
+                          "description": "Error code reported by the provider or Bifrost"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/keys": {
       "get": {
         "operationId": "listKeys",

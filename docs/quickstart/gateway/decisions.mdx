@@ -282,6 +282,44 @@ Add `fallbacks` to try other models in order when one fails, including when it r
 }
 ```
 
+To keep the model choice and its fallbacks on the server instead of in every client, send a logical name such as `judge` and let a routing rule map it to a decision model. See [Logical Alias for Decision Models](/providers/routing-rules#use-case-7-logical-alias-for-decision-models).
+
+## Testing a Route
+
+Before relying on a decision route, probe it. `POST /api/providers/{provider}/decisions/probe` sends one fixed predicate question with a short text input to exactly that provider and model, with no fallbacks:
+
+```bash
+curl --location 'http://localhost:8080/api/providers/openai/decisions/probe' \
+--header 'Content-Type: application/json' \
+--data '{ "model": "gpt-6-luna" }'
+```
+
+```json
+{
+  "ok": true,
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "latency_ms": 412,
+  "usage": { "prompt_tokens": 61, "completion_tokens": 1, "total_tokens": 62 }
+}
+```
+
+`provider` and `model` name what answered, as the provider reported it. Add `"key_id"` to probe through one provider key instead of the load-balanced pool.
+
+A probe that reached the provider returns `200` either way. When the route fails, `ok` is `false` and `error` carries the provider's `status_code`, `type`, `code`, and `message`, with the provider's key values and any credentials in URLs removed:
+
+```json
+{
+  "ok": false,
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "latency_ms": 158,
+  "error": { "status_code": 401, "type": "invalid_request_error", "code": "invalid_api_key", "message": "Incorrect API key provided: [redacted]." }
+}
+```
+
+The probe is rejected with `400` before anything is sent when the model is not served on the provider's decisions endpoint (the models `GET /api/models?decisions=true` lists), and with `404` when the provider is not configured. It bypasses routing rules, governance, caching, and logging, so it tests the route itself, and each probe is a real, billed request.
+
 ## Validation
 
 Bifrost rejects these with a `400` before calling any provider:

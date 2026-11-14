@@ -643,6 +643,28 @@ Route based on region headers:
 }
 ```
 
+### Use Case 7: Logical Alias for Decision Models
+
+Give decision clients one stable name, such as `judge`, and choose the decision model and its fallbacks on the server. Clients send `"model": "judge"` to `/v1/decisions`; the rule rewrites it to the target and installs the fallbacks in order:
+
+```json
+{
+  "name": "Judge Alias",
+  "cel_expression": "request_type == \"decisions\" && model == \"judge\"",
+  "targets": [
+    { "provider": "openai", "model": "gpt-6-luna", "weight": 1 }
+  ],
+  "fallbacks": ["cloudflare/clef-flash", "azure/Microsoft-Decision-1"],
+  "scope": "global",
+  "priority": 0
+}
+```
+
+- `request_type == "decisions"` keeps the alias to decision requests, so a chat request for `judge` is not rewritten.
+- To give one virtual key its own judge, create the same rule with `"scope": "virtual_key"` and `"scope_id"` set to the virtual key's ID. Virtual key rules are evaluated before global ones, so that key gets its own target while every other caller keeps the global rule.
+- Give every target and fallback as `provider/model`. A bare model ID that no rule rewrites is resolved by the model catalog, which picks a provider that lists the model, not necessarily one that serves it on a decisions endpoint.
+- Check each target and fallback with [`POST /api/providers/{provider}/decisions/probe`](/quickstart/gateway/decisions#testing-a-route) before pointing clients at the alias.
+
 ---
 
 ## Rule Chaining

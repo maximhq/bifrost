@@ -1,5 +1,6 @@
 - fix: gemini - decisions reject an empty input, a non-image data URL in `input_image`, and an image, file or audio part given as a single instruction object before calling Gemini, and read a part's `detail` case-insensitively (thanks [@Xytronix](https://github.com/Xytronix)!)
 - feat: Kimchi provider for chat, Responses and embeddings
+- feat: core - `BifrostContextKeyDisableRetries` makes every provider attempt of a request a single upstream call, with no retries, key rotation, or encrypted-reasoning retry; Bifrost sets it for decision route probes (thanks [@Xytronix](https://github.com/Xytronix)!)
 - fix: elevenlabs - speech with_timestamps returns character times in seconds instead of null. Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`) (thanks [@abmorrill4](https://github.com/abmorrill4)!)
 - feat: sarvam - move chat and model listing to Token Factory v2 and add Sarvam Prism decisions; `sarvam-30b` is no longer served, use `sarvam-105b` [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)
 - fix: Bedrock invoke keeps tool_reference blocks inside a client tool_result (#8976) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
