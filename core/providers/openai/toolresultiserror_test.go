@@ -55,6 +55,39 @@ func TestToolResultIsErrorStrippedFromOpenAIWire(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_CustomProviderCanKeepStructuredToolOutputMedia(t *testing.T) {
+	data := schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("my_custom_provider"),
+		Model:    "vision-model",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeImage,
+				ImageURLStruct: &schemas.ChatInputImage{URL: *data},
+			}}},
+		}},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySupportsStructuredToolOutputs, true)
+	converted := ToOpenAIChatRequest(ctx, request)
+	if converted.Messages[0].Content == nil || len(converted.Messages[0].Content.ContentBlocks) != 1 {
+		t.Fatalf("structured tool output media should stay as a content block: %#v", converted.Messages[0].Content)
+	}
+	if converted.Messages[0].Content.ContentBlocks[0].Type != schemas.ChatContentBlockTypeImage {
+		t.Fatalf("expected image block to survive, got %q", converted.Messages[0].Content.ContentBlocks[0].Type)
+	}
+
+	wire, err := schemas.MarshalSorted(converted)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if !strings.Contains(string(wire), `"image_url"`) || !strings.Contains(string(wire), *data) {
+		t.Fatalf("serialized request must preserve the tool-result image block, got: %s", wire)
+	}
+}
+
 // TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip walks a
 // tool_result flagged is_error through the whole /anthropic/v1/messages ->
 // /v1/responses path. The Anthropic converter carries the flag as

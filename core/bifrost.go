@@ -8280,6 +8280,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		} else {
 			req.Context.ClearValue(schemas.BifrostContextKeyWaitForUsage)
 		}
+		if config.CustomProviderConfig != nil && config.CustomProviderConfig.SupportsStructuredToolOutputs {
+			req.Context.SetValue(schemas.BifrostContextKeySupportsStructuredToolOutputs, true)
+		} else {
+			req.Context.ClearValue(schemas.BifrostContextKeySupportsStructuredToolOutputs)
+		}
 
 		bifrost.endCoreSpan(workerSetupSpan)
 
