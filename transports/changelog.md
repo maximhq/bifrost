@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **xAI Speech and Transcription** - `/v1/audio/speech` and `/v1/audio/transcriptions` work on `xai/<model>` (Grok TTS via `/v1/tts`, Grok STT via `/v1/stt`); streaming variants remain unsupported
 
 ## 🐞 Fixed
 

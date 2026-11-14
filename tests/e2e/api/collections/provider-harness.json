@@ -328232,6 +328232,264 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. xAI speech through /v1/tts and transcription through /v1/stt (xai audio) (PR #10018)",
+      "description": "xAI serves text to speech on POST /v1/tts (JSON body with text, language, voice_id and output_format.codec; raw audio back, no model field) and speech to text on POST /v1/stt (OpenAI-shaped multipart with the file field last; JSON back with text, language, duration and words named text). Before this change both operations returned UnsupportedOperationError for xai. The speech cases assert MP3 bytes on the native and OpenAI drop-in routes; the transcription cases send tests/e2e/api/fixtures/sample.mp3 (\"Hello, this is a sample test.\") and assert the transcript and duration usage in seconds. /v1/stt answers JSON only, so response_format text, srt and vtt are refused with a 400 before the request leaves the gateway: the shared OpenAI transcription handler would otherwise copy the JSON body verbatim into the transcript. Streaming speech and transcription stay unsupported (xAI offers them over WebSocket only).",
+      "item": [
+        {
+          "name": "349.1 xai/grok-tts native /v1/audio/speech returns mp3 audio from /v1/tts (xai audio) - #10018",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native: 200 with mp3 audio bytes', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-tts\",\n  \"input\": \"Hello from xAI through Bifrost.\",\n  \"voice\": \"eve\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.2 xai/grok-tts OpenAI drop-in /openai/v1/audio/speech returns mp3 audio from /v1/tts (xai audio) - #10018",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in: 200 with mp3 audio bytes', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-tts\",\n  \"input\": \"Hello from xAI through Bifrost.\",\n  \"voice\": \"eve\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.3 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions returns the transcript with duration usage (xai audio) - #10018",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('native: 200 with the transcript', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  // sample.mp3 says \"Hello, this is a sample test.\"",
+                  "  pm.expect(j.text, 'transcript missing: ' + body.slice(0, 500)).to.match(/sample test/i);",
+                  "  pm.expect(j.usage, 'usage missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(j.usage.type, 'usage type: ' + body.slice(0, 500)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'usage seconds: ' + body.slice(0, 500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-transcribe-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "349.4 xai/grok-voice-transcribe-2.0 OpenAI drop-in /openai/v1/audio/transcriptions returns the transcript (xai audio) - #10018",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai drop-in: 200 with the transcript', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 500)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  // sample.mp3 says \"Hello, this is a sample test.\"",
+                  "  pm.expect(j.text, 'transcript missing: ' + body.slice(0, 500)).to.match(/sample test/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-transcribe-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 349.5 xai/grok-voice-transcribe-2.0 native /v1/audio/transcriptions response_format text is refused before reaching xAI (xai audio) - #10018",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('text format: 400 naming the format, not the raw JSON as a transcript', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + body.slice(0, 500)).to.equal(400);",
+                  "  pm.expect(body, 'error should name the refused format').to.include('response_format text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-transcribe-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

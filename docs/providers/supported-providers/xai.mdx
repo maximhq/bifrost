@@ -25,13 +25,13 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
+| Speech (TTS) | ✅ | ❌ | `/v1/tts` |
+| Transcriptions (STT) | ✅ | ❌ | `/v1/stt` |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream xAI API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Files, and Batch are not supported by the upstream xAI API, and streaming speech and transcription are not implemented. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration
@@ -219,13 +219,40 @@ Request and response format is identical to [OpenAI Context Compaction](/provide
 
 ---
 
+# 7. Speech (TTS)
+
+`/v1/audio/speech` requests go to xAI's `POST /v1/tts`, which returns raw audio bytes.
+
+| Bifrost parameter | xAI field | Notes |
+|-------------------|-----------|-------|
+| `input` | `text` | |
+| `voice` | `voice_id` | Defaults to `eve` |
+| `language_code` | `language` | Defaults to `auto` |
+| `response_format` | `output_format.codec` | `mp3` (xAI default), `wav`, `pcm`, `opus`, `mulaw`, `alaw` |
+| `speed` | `speed` | 0.7–1.5 |
+| `extra_params.sample_rate` | `output_format.sample_rate` | |
+
+xAI's TTS endpoint takes no model field, so `model` only routes the request.
+
+Speech requests staged for large-payload passthrough are refused with a 400, because the staged OpenAI-shaped body cannot be converted to the `/v1/tts` schema in flight. Large-payload transcriptions are forwarded as staged, and xAI only reads the form fields that come before `file`.
+
+---
+
+# 8. Transcription (STT)
+
+`/v1/audio/transcriptions` requests go to xAI's `POST /v1/stt` as multipart form data, with the `file` field last because xAI ignores fields sent after it. The response's `text`, `language` and `duration` are returned as-is. xAI names each word `text`, which is mapped to Bifrost's `word`. Usage is reported as `duration` seconds.
+
+xAI answers with its own JSON only, so `response_format` `text`, `srt`, `vtt` and `diarized_json` are refused with a 400 before the request is sent. Leave `response_format` unset or use `json`.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
 |---------|--------|
 | Embedding | Not offered by xAI API |
-| Speech/TTS | Not offered by xAI API |
-| Transcription/STT | Not offered by xAI API |
+| Speech/TTS streaming | Not implemented (xAI offers a WebSocket TTS API) |
+| Transcription/STT streaming | Not implemented (xAI offers a WebSocket STT API) |
 | Batch Operations | Not offered by xAI API |
 | File Management | Not offered by xAI API |
 

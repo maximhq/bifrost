@@ -3234,6 +3234,7 @@ func HandleOpenAITranscriptionRequest(
 		// Unmarshal the upstream response body to preserve transcription text and fields
 		if len(lpResult.ResponseBody) > 0 {
 			response := &schemas.BifrostTranscriptionResponse{}
+			var rawResponse interface{}
 			if request.Params != nil && schemas.IsDiarizedTranscriptionFormat(request.Params.ResponseFormat) {
 				var diarized openAIDiarizedTranscriptionResponse
 				if err := sonic.Unmarshal(lpResult.ResponseBody, &diarized); err != nil {
@@ -3244,10 +3245,17 @@ func HandleOpenAITranscriptionRequest(
 				response.Text = diarized.Text
 				response.DiarizedSegments = diarized.Segments
 				response.Usage = diarized.Usage
+			} else if customResponseHandler != nil {
+				// Providers with their own response shape (xAI names each word "text"
+				// and reports usage as duration) decode it the same way as the normal path.
+				var bifrostErr *schemas.BifrostError
+				if _, rawResponse, bifrostErr = customResponseHandler(lpResult.ResponseBody, response, nil, false, sendBackRawResponse); bifrostErr != nil {
+					return nil, bifrostErr
+				}
 			} else if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
-			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency, RawResponse: rawResponse}
 			return response, nil
 		}
 		return &schemas.BifrostTranscriptionResponse{
