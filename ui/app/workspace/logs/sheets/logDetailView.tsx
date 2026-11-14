@@ -2866,7 +2866,7 @@ export function LogDetailView({
 							<SpeechView
 								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
 								speechOutput={log.speech_output}
-								isStreaming={log.stream}
+								isStreaming={log.stream && log.status === "processing"}
 							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (

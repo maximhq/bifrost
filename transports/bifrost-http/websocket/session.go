@@ -357,7 +357,13 @@ func (s *Session) AddRealtimeInput(summary, raw string) {
 // RecordRealtimeInput stores or updates a finalized user turn event keyed by item ID.
 // Completion events must use UpdateRealtimeTurnInput so they cannot introduce an old item.
 func (s *Session) RecordRealtimeInput(itemID, summary, raw string) {
-	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: summary, Raw: raw}, true)
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: summary, Raw: raw}, true, false)
+}
+
+// RecordRealtimeEchoedInput stores a user item the provider announced. The announcement of text that a message
+// the client sent without an id is still waiting with answers that message, so it takes its place.
+func (s *Session) RecordRealtimeEchoedInput(itemID, summary, raw string) {
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: summary, Raw: raw}, true, true)
 }
 
 // AddRealtimeToolOutput stores a pending tool result for the next assistant turn.
@@ -377,17 +383,17 @@ func (s *Session) AddRealtimeToolOutput(summary, raw string) {
 // RecordRealtimeToolOutput stores or updates a finalized tool result keyed by item ID.
 // Provider echoes must use UpdateRealtimeTurnInput after the client introduces the result.
 func (s *Session) RecordRealtimeToolOutput(itemID, summary, raw string) {
-	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleTool), Summary: summary, Raw: raw}, true)
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleTool), Summary: summary, Raw: raw}, true, false)
 }
 
 // UpdateRealtimeTurnInput updates only an existing pending item under the consume lock.
 // It reports whether the item matched and whether the session has already closed.
 func (s *Session) UpdateRealtimeTurnInput(input RealtimeTurnInput) (updated, closed bool) {
-	return s.recordRealtimeTurnInput(input, false)
+	return s.recordRealtimeTurnInput(input, false, false)
 }
 
 // recordRealtimeTurnInput merges pending state without retaining completed-item history.
-func (s *Session) recordRealtimeTurnInput(input RealtimeTurnInput, allowNew bool) (updated, closed bool) {
+func (s *Session) recordRealtimeTurnInput(input RealtimeTurnInput, allowNew, claimsEcho bool) (updated, closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -414,6 +420,19 @@ func (s *Session) recordRealtimeTurnInput(input RealtimeTurnInput, allowNew bool
 			}
 			pending.TranscriptComplete = input.TranscriptComplete
 			return true, false
+		}
+		if summary := strings.TrimSpace(input.Summary); claimsEcho && summary != "" {
+			for idx := range s.realtimeTurnInputs {
+				pending := &s.realtimeTurnInputs[idx]
+				if pending.ItemID != "" || pending.Role != input.Role || strings.TrimSpace(pending.Summary) != summary {
+					continue
+				}
+				pending.ItemID = input.ItemID
+				if strings.TrimSpace(input.Raw) != "" {
+					pending.Raw = input.Raw
+				}
+				return true, false
+			}
 		}
 	}
 	if allowNew {

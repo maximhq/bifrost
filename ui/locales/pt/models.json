@@ -1919,7 +1919,7 @@
 			"descriptionLlmPrimary": "Um modelo de chat classifica cada novo pedido com o seu prompt, preenchendo o campo <code>complexity_tier</code> usado pelas regras de encaminhamento.",
 			"descriptionDecisionFallback": "Os pedidos que não correspondem com confiança a nenhuma frase recorrem ao modelo de decisão.",
 			"stepClassifierDesc": "Escolha como é atribuído um nível de complexidade a cada pedido. Mudar mais tarde mantém as definições do outro classificador, incluindo as suas frases de referência.",
-			"classifierSwitchHelp": "Se mudar mais tarde, as definições dos outros classificadores são mantidas, incluindo as suas frases de referência.",
+			"classifierSwitchHelp": "Cada classificador mantém as suas próprias definições, incluindo as suas frases de referência, por isso pode voltar a mudar sem perder nada.",
 			"stepSemanticDesc": "Cada pedido assume o nível da frase de referência mais próxima.",
 			"stepDecisionDesc": "Um modelo de decisão atribui um nível a cada novo pedido.",
 			"stepLlmDesc": "Um modelo de chat lê cada novo pedido com o seu prompt de classificação e responde com um nível.",
@@ -2148,6 +2148,7 @@
 				"estimateEmpty": "Ainda não foram capturados pedidos neste período.",
 				"estimateBackfill_one": "{{count}} solicitação anterior à ativação das sugestões é incorporada primeiro a partir do seu log.",
 				"estimateBackfill_other": "{{count}} solicitações anteriores à ativação das sugestões são incorporadas primeiro a partir dos seus logs.",
+				"estimateBackfillUnknown": "As solicitações anteriores, de antes de as sugestões serem ativadas, podem ser incorporadas primeiro a partir dos seus logs; não foi possível calcular quantas.",
 				"captureUnavailableEmbedded": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone. O armazenamento vetorial deste gateway é o Chromem, que guarda os vetores na memória de cada gateway, por isso não são capturados pedidos para sugestões.",
 				"captureUnavailableNone": "As sugestões precisam de um armazenamento vetorial partilhado como Weaviate, Qdrant, Redis ou Pinecone para guardar os pedidos capturados. Não está configurado nenhum, por isso não são capturados pedidos para sugestões.",
 				"runInBackground": "Corre em segundo plano no seu gateway, fora do caminho dos pedidos.",
@@ -2492,20 +2493,15 @@
 			"title": "Roteadores",
 			"pageDescription": "Classifique as solicitações por complexidade e envie cada nível para o seu próprio modelo.",
 			"newRouter": "Novo encaminhador",
-			"editDetails": "Editar detalhes",
 			"viewLogs": "Ver registos",
-			"editDetailsTitle": "Editar detalhes do encaminhador",
 			"actionsAria": "Ações para o encaminhador {{name}}",
-			"editDetailsDescription": "O nome e a descrição apresentados em todos os locais onde este encaminhador é listado.",
 			"namePlaceholder": "p. ex., Assistente de engenharia",
 			"descriptionLabel": "Descrição",
 			"descriptionPlaceholder": "Para que serve este encaminhador",
 			"createRouter": "Criar encaminhador",
 			"created": "Encaminhador criado",
-			"detailsSaved": "Detalhes do encaminhador guardados",
-			"detailsSaveFailed": "Não foi possível guardar os detalhes do encaminhador: {{error}}",
 			"columnName": "Nome",
-			"columnRequests": "Pedidos · 7 d",
+			"columnRequests": "Pedidos",
 			"columnActive": "Ativo",
 			"emptyTitle": "Ainda não há roteadores",
 			"emptyDescription": "Crie um roteador para classificar solicitações e enviar cada nível para o seu próprio modelo.",
@@ -2536,9 +2532,8 @@
 				"metrics": {
 					"requests": "Solicitações",
 					"cost": "Custo",
-					"window": "últimos 7 dias",
 					"tierCount": "{{tier}} {{requests}}",
-					"costTrend": "<change>{{change}}</change> em relação aos 7 dias anteriores",
+					"costTrend": "<change>{{change}}</change> em relação ao período anterior",
 					"noComparison": "Ainda não há com o que comparar",
 					"none": "Ainda não há solicitações"
 				},
@@ -2556,8 +2551,8 @@
 					"tiers": "Níveis",
 					"sessionOn": "Encaminhamento por sessão ativado",
 					"sessionOff": "Encaminhamento por sessão desativado",
-					"modelsSet_one": "{{count}} de 3 definido",
-					"modelsSet_other": "{{count}} de 3 definidos",
+					"modelsSet_one": "{{count}} modelo · {{tiers}} de 3 níveis",
+					"modelsSet_other": "{{count}} modelos · {{tiers}} de 3 níveis",
 					"pickModels": "Escolha um modelo para cada nível",
 					"priority": "Prioridade {{priority}}",
 					"everyRequest": "Todas as solicitações",
@@ -2565,13 +2560,14 @@
 				},
 				"status": {
 					"offTitle": "Este roteador está desativado",
-					"offDetail": "Ative-o na lista de roteadores.",
+					"offDetail": "Ative-o para que comece a aceitar as solicitações que correspondem ao seu roteamento.",
 					"onTitle": "Este roteador está ativado",
 					"noTrafficTitle": "Nenhum tráfego roteado para cá",
-					"noTrafficDetail": "Nenhuma solicitação correspondeu ao roteamento deste roteador nos últimos 7 dias.",
+					"noTrafficDetail": "Nenhuma solicitação correspondeu ao roteamento deste roteador neste período.",
 					"servingTitle": "Assumindo solicitações",
 					"servingDetail": "As solicitações que correspondem ao seu roteamento são classificadas e enviadas ao modelo do seu nível.",
-					"viewRequests": "Ver solicitações"
+					"viewRequests": "Ver solicitações",
+					"turnOn": "Ativar"
 				}
 			},
 			"models": {
@@ -2584,17 +2580,31 @@
 				"weightPositive": "Cada peso tem de ser maior que 0.",
 				"weightsMustSum": "Os pesos deste nível têm de somar 1 (atualmente {{total}})."
 			},
+			"sheet": {
+				"title": "Editar roteador",
+				"description": "O nome e a descrição, se está ativado e quais solicitações ele aceita.",
+				"enabledLabel": "Ativar o roteador",
+				"enabledHelp": "Enquanto estiver desativado, o roteador não aceita solicitações.",
+				"saved": "Roteador salvo",
+				"saveFailed": "Não foi possível salvar o roteador: {{error}}"
+			},
 			"routing": {
 				"description": "Escolha quais solicitações este roteador assume.",
-				"orderNote": "As regras de roteamento são executadas primeiro, então os roteadores veem cada solicitação como as regras a deixaram. O primeiro roteador correspondente a assume: escopo mais restrito primeiro, depois a prioridade mais baixa.",
-				"sheetTitle": "Editar roteamento",
+				"orderNote": "As regras de roteamento são executadas primeiro. Depois, o primeiro roteador que corresponder assume a solicitação como as regras a deixaram, incluindo qualquer modelo ou fornecedor que elas tenham alterado.",
+				"complexityRules": {
+					"title": "Regras de roteamento com nível de complexidade detectadas",
+					"bodySingle": "A regra de roteamento <rules/> usa <code>complexity_tier</code> e está ativada. O roteador de complexidade legado classifica as solicitações dela antes deste roteador, o que resulta em duas classificações para a mesma solicitação. Isso adiciona latência, por isso recomendamos mover essa regra para a configuração do roteador.",
+					"bodyMany": "As seguintes regras de roteamento usam <code>complexity_tier</code> e estão ativadas: <rules/>. O roteador de complexidade legado classifica as solicitações delas antes deste roteador, o que resulta em duas classificações para a mesma solicitação. Isso adiciona latência, por isso recomendamos mover essas regras para a configuração do roteador.",
+					"more_one": "mais {{count}}",
+					"more_other": "mais {{count}}",
+					"openRules": "Abrir regras de roteamento",
+					"readMore": "Ler mais"
+				},
 				"everyRequest": "Todas as solicitações do escopo",
 				"priorityHelp": "O valor mais baixo é testado primeiro dentro de um escopo. Os roteadores têm prioridades próprias, separadas das regras de roteamento.",
 				"priorityInvalid": "Insira um número inteiro de 0 a 1000.",
 				"conditionLabel": "Condição",
-				"conditionHelp": "Deixe vazio para assumir todas as solicitações do escopo. Compare o campo de modelo para que os apps peçam este roteador pelo nome. O nível não pode ser usado aqui: o roteador o decide depois de assumir a solicitação.",
-				"saved": "Roteamento salvo",
-				"saveFailed": "Falha ao salvar o roteamento: {{error}}"
+				"conditionHelp": "Deixe vazio para assumir todas as solicitações do escopo. Compare o campo de modelo para que os apps peçam este roteador pelo nome. O nível não pode ser usado aqui: o roteador o decide depois de assumir a solicitação."
 			}
 		}
 	},

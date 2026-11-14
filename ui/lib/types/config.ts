@@ -976,6 +976,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_client_metadata_url?: SecretVar;
 	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
 	a2a_store_raw_request_response?: boolean;
