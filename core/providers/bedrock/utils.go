@@ -1344,8 +1344,6 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 	return &reqCopy, body, nil
 }
 
-// applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request.
-// The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
 // applyAnthropicTopK sends a Claude caller's top_k through additionalModelRequestFields, the
 // only place Converse takes it (the invoke route does the same). Models that reject top_k
 // (adaptive-only thinking) get none, matching the Anthropic provider. Runs before
@@ -1361,6 +1359,8 @@ func applyAnthropicTopK(ctx *schemas.BifrostContext, model string, caps schemas.
 	bedrockReq.AdditionalModelRequestFields.Set("top_k", *topK)
 }
 
+// applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request.
+// The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
 func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) error {
 	if guardrailConfig, exists := extraParams["guardrailConfig"]; exists {
 		if gc, ok := guardrailConfig.(map[string]interface{}); ok {
@@ -1947,12 +1947,10 @@ func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.Ca
 	return cc
 }
 
-// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
-// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+// withoutTopLevelCacheControl returns a copy of extraParams without "cache_control". The map belongs
+// to the Bifrost request, which fallbacks reuse, so the converters delete the keys they consume
+// (stop, top_k, guardrailConfig, ...) from the copy only.
 func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams["cache_control"]; !ok {
-		return extraParams
-	}
 	out := maps.Clone(extraParams)
 	delete(out, "cache_control")
 	return out

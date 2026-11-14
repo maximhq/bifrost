@@ -131,3 +131,40 @@ func TestChatTopKReachesConverse(t *testing.T) {
 		requireNoTopK(t, req)
 	})
 }
+
+// A fallback converts the same Bifrost request again, so the converters must not delete the keys
+// they consume from the caller's ExtraParams: the second conversion would lose top_k.
+func TestTopKConversionLeavesCallerExtraParams(t *testing.T) {
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, topKClaudeModel)
+
+	t.Run("responses", func(t *testing.T) {
+		extra := map[string]interface{}{"top_k": 41, "stop": []string{"END"}}
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    topKClaudeModel,
+			Params:   &schemas.ResponsesParameters{ExtraParams: extra},
+		}
+		for i := 0; i < 2; i++ {
+			converseReq, err := ToBedrockResponsesRequest(&schemas.BifrostContext{}, bifrostReq)
+			require.NoError(t, err)
+			requireTopK(t, converseReq, 41)
+			require.Contains(t, extra, "top_k", "conversion %d deleted top_k from the caller's map", i+1)
+			require.Contains(t, extra, "stop", "conversion %d deleted stop from the caller's map", i+1)
+		}
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		extra := map[string]interface{}{"top_k": 41, "stop": []string{"END"}}
+		bifrostReq := &schemas.BifrostChatRequest{
+			Model:  topKClaudeModel,
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}
+		for i := 0; i < 2; i++ {
+			req := &BedrockConverseRequest{}
+			require.NoError(t, convertChatParameters(nil, bifrostReq, req, caps))
+			requireTopK(t, req, 41)
+			require.Contains(t, extra, "top_k", "conversion %d deleted top_k from the caller's map", i+1)
+			require.Contains(t, extra, "stop", "conversion %d deleted stop from the caller's map", i+1)
+		}
+	})
+}
