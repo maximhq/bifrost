@@ -284,6 +284,16 @@ export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<OllamaKeyConfig>;
 
+// RapidMLXKeyConfig matching Go's schemas.RapidMLXKeyConfig
+export interface RapidMLXKeyConfig {
+	url: SecretVar;
+}
+
+// Default RapidMLXKeyConfig
+export const DefaultRapidMLXKeyConfig: RapidMLXKeyConfig = {
+	url: { value: "", ref: "" },
+} as const satisfies Required<RapidMLXKeyConfig>;
+
 // SGLKeyConfig matching Go's schemas.SGLKeyConfig
 export interface SGLKeyConfig {
 	url: SecretVar;
@@ -458,6 +468,7 @@ export interface ModelProviderKey {
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
+	rapidmlx_key_config?: RapidMLXKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	cloudflare_key_config?: CloudflareKeyConfig;

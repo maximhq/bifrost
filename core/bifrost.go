@@ -49,6 +49,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/rapidmlx"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
@@ -5267,6 +5268,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return mistral.NewMistralProvider(config, bifrost.logger), nil
 	case schemas.Ollama:
 		return ollama.NewOllamaProvider(config, bifrost.logger)
+	case schemas.RapidMLX:
+		return rapidmlx.NewRapidMLXProvider(config, bifrost.logger)
 	case schemas.Groq:
 		return groq.NewGroqProvider(config, bifrost.logger)
 	case schemas.OpencodeGo:

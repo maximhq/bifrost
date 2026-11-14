@@ -5973,3 +5973,16 @@ func TestMigrationAddModelRoutersTable(t *testing.T) {
 	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
 	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
 }
+
+func TestMigrationAddRapidMLXKeyConfigColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.Exec("CREATE TABLE config_keys (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_keys (id) VALUES ('existing')").Error)
+	require.NoError(t, migrationAddRapidMLXKeyConfigColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "rapidmlx_url"))
+	require.NoError(t, migrationAddRapidMLXKeyConfigColumn(ctx, db, testMigrationLogger))
+	var count int64
+	require.NoError(t, db.Table("config_keys").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}

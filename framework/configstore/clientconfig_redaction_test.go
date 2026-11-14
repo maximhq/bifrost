@@ -490,6 +490,7 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 			OllamaKeyConfig: &schemas.OllamaKeyConfig{
 				URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
 			},
+			RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")},
 			SGLKeyConfig: &schemas.SGLKeyConfig{
 				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
 			},
@@ -510,6 +511,8 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 	assert.Equal(t, "us-west-2", key.SageMakerKeyConfig.Region.GetValue())
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://localhost:8000/v1", key.RapidMLXKeyConfig.URL.GetValue())
+	assert.NotSame(t, config.Keys[0].RapidMLXKeyConfig, key.RapidMLXKeyConfig)
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
 	assert.Equal(t, "0123456789abcdef0123456789abcdef", key.CloudflareKeyConfig.AccountID.GetValue())
 

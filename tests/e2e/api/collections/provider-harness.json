@@ -323479,6 +323479,166 @@
           }
         }
       ]
+    },
+    {
+      "name": "350. Rapid-MLX local provider (rapidmlx local provider)",
+      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required.",
+      "item": [
+        {
+          "name": "Rapid-MLX rapidmlx chat/completions unary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX returns generated output', function () { var body = pm.response.json(); pm.expect(body.choices[0].message.content).to.be.a('string').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rapid-MLX rapidmlx chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () { var text = pm.response.text(); pm.expect(text).to.include('[DONE]'); pm.expect(text).to.match(/\\\"content\\\"\\s*:\\s*\\\"[^\\\"]+/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rapid-MLX rapidmlx responses unary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX returns generated output', function () { var body = pm.response.json(); pm.expect(body.output).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Rapid-MLX rapidmlx responses streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () { var text = pm.response.text(); pm.expect(text).to.include('response.completed'); pm.expect(text).to.match(/\\\"delta\\\"\\s*:\\s*\\\"[^\\\"]+/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

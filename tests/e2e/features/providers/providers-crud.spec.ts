@@ -1214,6 +1214,25 @@ test.describe("Providers", () => {
       await expect(providersPage.customProviderSheet).toBeVisible();
     });
   });
+
+  test("should configure a keyless Rapid-MLX server", async ({ providersPage }) => {
+    if (!(await providersPage.providerExists("rapidmlx"))) {
+      await providersPage.addKnownProviderFromDropdown("rapidmlx");
+      createdProviders.push("rapidmlx");
+    }
+    await providersPage.selectProvider("rapidmlx");
+    await providersPage.addKeyBtn.click();
+    const url = providersPage.page.getByTestId("key-input-rapidmlx-url");
+    await expect(url).toBeVisible();
+    await expect(url).toHaveAttribute("placeholder", "http://localhost:8000/v1");
+    const name = `rapidmlx-local-${Date.now()}`;
+    await providersPage.page.getByLabel("Name", { exact: true }).fill(name);
+    await url.fill("http://localhost:8000/v1");
+    createdKeys.push({ provider: "rapidmlx", keyName: name });
+    await providersPage.keySaveBtn.click();
+    await expect(providersPage.keyForm).not.toBeVisible();
+    expect(await providersPage.keyExists(name)).toBeTruthy();
+  });
 });
 
 test.describe("Provider specific configuration", () => {

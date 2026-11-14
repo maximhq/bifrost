@@ -1,3 +1,4 @@
+[feat]: add Rapid-MLX key configuration and URL validation
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
