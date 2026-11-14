@@ -388,6 +388,17 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 	}
 }
 
+// speechSessionObject is the object of a speech session's row, which an HTTP speech stream's is not.
+const speechSessionObject = "speech.session"
+
+// applySpeechSessionInput records the text a speech session spoke as the row's input.
+func applySpeechSessionInput(entry *logstore.Log, result *schemas.BifrostResponse, contentLoggingEnabled bool) {
+	if !contentLoggingEnabled || result == nil || result.SpeechStreamResponse == nil || result.SpeechStreamResponse.SessionInput == "" {
+		return
+	}
+	entry.SpeechInputParsed = &schemas.SpeechInput{Input: result.SpeechStreamResponse.SessionInput}
+}
+
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -459,7 +470,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
 		}
 		// Speech output
-		if streamResponse.Data.AudioOutput != nil {
+		if streamResponse.Data.AudioOutput != nil && len(streamResponse.Data.AudioOutput.Audio) > 0 {
 			entry.SpeechOutputParsed = streamResponse.Data.AudioOutput
 		}
 		// Image generation output

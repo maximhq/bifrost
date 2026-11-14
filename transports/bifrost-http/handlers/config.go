@@ -41,6 +41,7 @@ var securityHeaders = []string{
 	"transfer-encoding",
 	"x-api-key",
 	"x-goog-api-key",
+	"xi-api-key",
 	"x-bf-api-key",
 	"x-bf-vk",
 }

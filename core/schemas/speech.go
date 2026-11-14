@@ -143,10 +143,11 @@ const (
 )
 
 type BifrostSpeechStreamResponse struct {
-	Type        SpeechStreamResponseType   `json:"type"`
-	Audio       []byte                     `json:"audio"`
-	Usage       *SpeechUsage               `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Type         SpeechStreamResponseType   `json:"type"`
+	Audio        []byte                     `json:"audio"`
+	Usage        *SpeechUsage               `json:"usage"`
+	SessionInput string                     `json:"-"` // the text a speech session spoke, known only at its end, which the log keeps as its input
+	ExtraFields  BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {

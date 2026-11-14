@@ -1,0 +1,87 @@
+{
+  "$schema": "../../../transports/config.schema.json",
+  "setup_token": "bifrost-realtime-setup-token",
+  "providers": {
+    "elevenlabs": {
+      "keys": [
+        {
+          "name": "fake-elevenlabs",
+          "value": "fake-elevenlabs-api-key",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9421",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "soniox": {
+      "keys": [
+        {
+          "name": "fake-soniox",
+          "value": "fake-soniox-api-key",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9421",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "fake-gemini",
+          "value": "fake-gemini-api-key",
+          "weight": 1,
+          "models": [
+            "gemini-3.8-live",
+            "gemini-3.1-flash-live-preview",
+            "gemini-fake-unknown"
+          ]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9421",
+        "default_request_timeout_in_seconds": 60
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/realtime/fake/data/realtime-fake-config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/realtime/fake/data/realtime-fake-logs.db"
+    },
+    "writer": {
+      "max_batch_size": 100,
+      "batch_interval": "200ms",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 4
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 100,
+    "allowed_origins": [
+      "*"
+    ],
+    "enable_logging": true,
+    "enforce_auth_on_inference": true,
+    "max_request_body_size_mb": 10
+  }
+}
