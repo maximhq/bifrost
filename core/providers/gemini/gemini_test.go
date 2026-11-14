@@ -5445,7 +5445,9 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		GroundingChunks: []*gemini.GroundingChunk{
 			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
 			{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
-			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{}}, // empty URI/DocumentName — skipped
+			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "gs://rag-bucket/euro.pdf", Title: "RAG Doc"}},
+			{RetrievedContext: &gemini.GroundingChunkRetrievedContext{DocumentName: "projects/p/locations/global/collections/default_collection/dataStores/ds/branches/0/documents/d1", Title: "Vertex Search Doc"}},
 		},
 		GroundingSupports: []*gemini.GroundingSupport{
 			{
@@ -5454,7 +5456,7 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 			},
 			{
 				Segment:               &gemini.Segment{StartIndex: 35, EndIndex: 80, Text: "beating England 2-1 in the final"},
-				GroundingChunkIndices: []int32{0, 1, 2, 99}, // 2 has no Web, 99 out of range
+				GroundingChunkIndices: []int32{0, 1, 2, 3, 4, 99}, // 2 is empty, 99 out of range
 			},
 			{
 				GroundingChunkIndices: []int32{1}, // no segment — skipped
@@ -5485,7 +5487,7 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		require.NotNil(t, message.ChatAssistantMessage)
 
 		annotations := message.ChatAssistantMessage.Annotations
-		require.Len(t, annotations, 3, "one annotation per valid (support, chunk) pair")
+		require.Len(t, annotations, 5, "one annotation per valid (support, chunk) pair")
 		for _, annotation := range annotations {
 			assert.Equal(t, "url_citation", annotation.Type)
 		}
@@ -5496,11 +5498,15 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		assert.Equal(t, "https://example.com/spain", *annotations[0].URLCitation.URL)
 		require.NotNil(t, annotations[0].URLCitation.Text)
 		assert.Equal(t, "Spain won Euro 2024", *annotations[0].URLCitation.Text)
-		// Second support fans out to both web chunks
+		// Second support fans out to web and retrievedContext chunks
 		assert.Equal(t, 35, annotations[1].URLCitation.StartIndex)
 		assert.Equal(t, "https://example.com/spain", *annotations[1].URLCitation.URL)
 		assert.Equal(t, "https://example.com/final", *annotations[2].URLCitation.URL)
 		assert.Equal(t, "wikipedia.org", annotations[2].URLCitation.Title)
+		assert.Equal(t, "gs://rag-bucket/euro.pdf", *annotations[3].URLCitation.URL)
+		assert.Equal(t, "RAG Doc", annotations[3].URLCitation.Title)
+		assert.Equal(t, "projects/p/locations/global/collections/default_collection/dataStores/ds/branches/0/documents/d1", *annotations[4].URLCitation.URL)
+		assert.Equal(t, "Vertex Search Doc", annotations[4].URLCitation.Title)
 	})
 
 	t.Run("stream emits annotations on the finish-reason chunk", func(t *testing.T) {
@@ -5512,9 +5518,11 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 		bifrostResp := chunks[0]
 		require.Len(t, bifrostResp.Choices, 1)
 		delta := bifrostResp.Choices[0].ChatStreamResponseChoice.Delta
-		require.Len(t, delta.Annotations, 3)
+		require.Len(t, delta.Annotations, 5)
 		assert.Equal(t, "url_citation", delta.Annotations[0].Type)
 		assert.Equal(t, "https://example.com/spain", *delta.Annotations[0].URLCitation.URL)
+		assert.Equal(t, "gs://rag-bucket/euro.pdf", *delta.Annotations[3].URLCitation.URL)
+		assert.Equal(t, "projects/p/locations/global/collections/default_collection/dataStores/ds/branches/0/documents/d1", *delta.Annotations[4].URLCitation.URL)
 	})
 
 	t.Run("stream ignores grounding before the finish chunk", func(t *testing.T) {
@@ -5872,7 +5880,7 @@ func TestGroundingMultiSourceCitationsResponses(t *testing.T) {
 				GroundingChunks: []*gemini.GroundingChunk{
 					{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
 					{Web: &gemini.GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
-					{RetrievedContext: &gemini.GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+					{RetrievedContext: &gemini.GroundingChunkRetrievedContext{}}, // empty URI/DocumentName — skipped
 					{Web: &gemini.GroundingChunkWeb{URI: ""}},                                        // empty URI — skipped
 				},
 				GroundingSupports: []*gemini.GroundingSupport{

@@ -938,6 +938,19 @@ type VertexRAGStore struct {
 	VectorDistanceThreshold *float64 `json:"vectorDistanceThreshold,omitempty"`
 }
 
+// FileSearch is a tool to retrieve knowledge from Semantic Retrieval corpora (File Search stores).
+type FileSearch struct {
+	// Optional. The names of the file_search_stores to retrieve from.
+	// Example: `fileSearchStores/my-file-search-store-123`
+	FileSearchStoreNames []string `json:"fileSearchStoreNames,omitempty"`
+	// Optional. The number of semantic retrieval chunks to retrieve.
+	TopK *int32 `json:"topK,omitempty"`
+	// Optional. Metadata filter to apply to the semantic retrieval documents and chunks.
+	MetadataFilter string `json:"metadataFilter,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
+}
+
 // Retrieval defines a retrieval tool that model can call to access external knowledge.
 type Retrieval struct {
 	// Optional. Deprecated. This option is no longer supported.
@@ -953,7 +966,7 @@ type Retrieval struct {
 	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
-// nativeToolJSON copies the bytes a Gemini-native tool (retrieval, googleSearchRetrieval,
+// nativeToolJSON copies the bytes a Gemini-native tool (retrieval, fileSearch, googleSearchRetrieval,
 // enterpriseWebSearch, googleMaps, urlContext, computerUse) arrived with. These tools have no
 // neutral Bifrost form and are forwarded to Google as-is, so their MarshalJSON emits these
 // bytes verbatim: a sub-field the typed struct does not model (a newer Google option, or an
@@ -968,6 +981,42 @@ func nativeToolJSON(data []byte) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), data...)
+}
+
+// UnmarshalJSON decodes FileSearch and retains the raw JSON payload.
+func (f *FileSearch) UnmarshalJSON(data []byte) error {
+	type alias FileSearch
+	aux := &struct {
+		*alias
+		FileSearchStoreNamesSnake []string `json:"file_search_store_names,omitempty"`
+		TopKSnake                 *int32   `json:"top_k,omitempty"`
+		MetadataFilterSnake       string   `json:"metadata_filter,omitempty"`
+	}{
+		alias: (*alias)(f),
+	}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if f.FileSearchStoreNames == nil && aux.FileSearchStoreNamesSnake != nil {
+		f.FileSearchStoreNames = aux.FileSearchStoreNamesSnake
+	}
+	if f.TopK == nil && aux.TopKSnake != nil {
+		f.TopK = aux.TopKSnake
+	}
+	if f.MetadataFilter == "" && aux.MetadataFilterSnake != "" {
+		f.MetadataFilter = aux.MetadataFilterSnake
+	}
+	f.raw = nativeToolJSON(data)
+	return nil
+}
+
+// MarshalJSON encodes FileSearch, returning the raw ingress payload when present.
+func (f FileSearch) MarshalJSON() ([]byte, error) {
+	if len(f.raw) > 0 {
+		return f.raw, nil
+	}
+	type alias FileSearch
+	return providerUtils.MarshalSorted(alias(f))
 }
 
 func (r *Retrieval) UnmarshalJSON(data []byte) error {
@@ -1084,6 +1133,8 @@ type Tool struct {
 	// tool(s) to get external knowledge to answer the prompt. Retrieval results are presented
 	// to the model for generation.
 	Retrieval *Retrieval `json:"retrieval,omitempty"`
+	// Optional. FileSearch tool type. Tool to retrieve knowledge from Semantic Retrieval corpora.
+	FileSearch *FileSearch `json:"fileSearch,omitempty"`
 	// Optional. Google Search tool type. Specialized retrieval tool
 	// that is powered by Google Search.
 	GoogleSearch *GoogleSearch `json:"googleSearch,omitempty"`
@@ -1113,6 +1164,7 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 		*Alias
 		// snake_case alternatives for the most commonly used fields
 		FunctionDeclarationsSnake  []*FunctionDeclaration `json:"function_declarations,omitempty"`
+		FileSearchSnake            *FileSearch            `json:"file_search,omitempty"`
 		GoogleSearchSnake          *GoogleSearch          `json:"google_search,omitempty"`
 		GoogleSearchRetrievalSnake *GoogleSearchRetrieval `json:"google_search_retrieval,omitempty"`
 		EnterpriseWebSearchSnake   *EnterpriseWebSearch   `json:"enterprise_web_search,omitempty"`
@@ -1131,6 +1183,9 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	// Use snake_case if camelCase wasn't provided
 	if t.FunctionDeclarations == nil && aux.FunctionDeclarationsSnake != nil {
 		t.FunctionDeclarations = aux.FunctionDeclarationsSnake
+	}
+	if t.FileSearch == nil && aux.FileSearchSnake != nil {
+		t.FileSearch = aux.FileSearchSnake
 	}
 	if t.GoogleSearch == nil && aux.GoogleSearchSnake != nil {
 		t.GoogleSearch = aux.GoogleSearchSnake

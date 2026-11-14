@@ -161,7 +161,7 @@ func multiSourceGroundedStreamChunks() []*GenerateContentResponse {
 					GroundingChunks: []*GroundingChunk{
 						{Web: &GroundingChunkWeb{URI: "https://example.com/spain", Title: "uefa.com"}},
 						{Web: &GroundingChunkWeb{URI: "https://example.com/final", Title: "wikipedia.org"}},
-						{RetrievedContext: &GroundingChunkRetrievedContext{URI: "ctx://ignored"}}, // no Web — skipped
+						{RetrievedContext: &GroundingChunkRetrievedContext{}}, // empty URI/DocumentName — skipped
 						{Web: &GroundingChunkWeb{URI: ""}},                                        // empty URI — skipped
 					},
 					GroundingSupports: []*GroundingSupport{{

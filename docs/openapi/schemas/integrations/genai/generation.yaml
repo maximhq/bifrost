@@ -450,6 +450,8 @@ GeminiTool:
       $ref: '#/GeminiGoogleSearchRetrieval'
     retrieval:
       $ref: '#/GeminiRetrieval'
+    fileSearch:
+      $ref: '#/GeminiFileSearch'
     codeExecution:
       type: object
       description: Enables code execution by the model
@@ -686,6 +688,31 @@ GeminiComputerUse:
       type: string
       enum: [ENVIRONMENT_UNSPECIFIED, ENVIRONMENT_BROWSER]
       description: The environment being operated
+
+GeminiFileSearch:
+  type: object
+  properties:
+    fileSearchStoreNames:
+      type: array
+      minItems: 1
+      items:
+        type: string
+      description: File search store resource names to retrieve from (e.g. fileSearchStores/my-store-123)
+    file_search_store_names:
+      type: array
+      minItems: 1
+      items:
+        type: string
+      description: Snake-case alias for fileSearchStoreNames
+    topK:
+      type: integer
+      description: The number of semantic retrieval chunks to retrieve
+    metadataFilter:
+      type: string
+      description: Metadata filter to apply over the semantic retrieval documents and chunks
+  anyOf:
+    - required: [fileSearchStoreNames]
+    - required: [file_search_store_names]
 
 GeminiFunctionDeclaration:
   type: object
