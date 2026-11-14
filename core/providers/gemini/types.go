@@ -3831,15 +3831,18 @@ type GeminiLiveVoiceActivity struct {
 
 // GeminiLiveUsageMetadata reports token usage. It arrives only on the frame that ends a turn, and
 // the prompt count is the whole context re-sent for that generation, not a delta. The response
-// count excludes thinking tokens.
+// count excludes thinking tokens. The Gemini API names the response fields response*, and Vertex AI
+// names the same fields candidates*.
 type GeminiLiveUsageMetadata struct {
 	PromptTokenCount        int                   `json:"promptTokenCount,omitempty"`
 	ResponseTokenCount      int                   `json:"responseTokenCount,omitempty"`
+	CandidatesTokenCount    int                   `json:"candidatesTokenCount,omitempty"`
 	ThoughtsTokenCount      int                   `json:"thoughtsTokenCount,omitempty"`
 	CachedContentTokenCount int                   `json:"cachedContentTokenCount,omitempty"`
 	TotalTokenCount         int                   `json:"totalTokenCount,omitempty"`
 	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
+	CandidatesTokensDetails []*ModalityTokenCount `json:"candidatesTokensDetails,omitempty"`
 }
 
 // =============================================================================

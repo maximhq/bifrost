@@ -1062,6 +1062,22 @@ func TestConvertToBifrostContext_VirtualKeyFromAzureSpeechHeader(t *testing.T) {
 	}
 }
 
+// ElevenLabs clients send their key as xi-api-key, so a virtual key there is captured, and a real
+// ElevenLabs key is not mistaken for one.
+func TestConvertToBifrostContext_VirtualKeyFromXiAPIKeyHeader(t *testing.T) {
+	for value, want := range map[string]interface{}{"sk-bf-elevenlabs-vk": "sk-bf-elevenlabs-vk", "real-elevenlabs-key": nil} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("xi-api-key", value)
+
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey)
+		cancel()
+		if got != want {
+			t.Errorf("xi-api-key %q: virtual key = %#v, want %#v", value, got, want)
+		}
+	}
+}
+
 // BenchmarkConvertToBifrostContextVirtualKeyHeader measures the header walk on a request that names
 // its virtual key in x-bf-vk, the common case the Ocp-Apim-Subscription-Key branch must not slow down.
 func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {

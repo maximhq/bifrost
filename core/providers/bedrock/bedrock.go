@@ -1369,7 +1369,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
-			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
+			choice := bifrostResponse.Choices[0]
+			hasToolCalls := choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ChatAssistantMessage.ToolCalls) > 0
+			if !hasToolCalls && *choice.FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
 				bifrostResponse.Choices[0].FinishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 			}
 		}
@@ -1605,7 +1608,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse bool
 		var structuredOutputBuilder strings.Builder
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
@@ -1766,7 +1769,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					// Override finish reason for structured output
 					// When structured output is used, tool_use stop reason should appear as "stop" to the client
-					if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+					if structuredOutputToolName != "" && !sawCallerToolUse && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 						finishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 					}
 				}
@@ -1781,6 +1784,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 							isAccumulatingStructuredOutput = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
+						sawCallerToolUse = true
 					}
 
 					// Check for tool use delta event
@@ -2230,6 +2236,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							streamState.UsedStructuredOutputTool = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
 					}
 
 					// Check for tool use delta event
@@ -4599,7 +4607,7 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input)
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input) || inputHasToolChanges(request.Input)
 }
 
 func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
@@ -4635,6 +4643,29 @@ func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
 		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
 		for j := range blocks {
 			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputHasToolChanges reports tool_addition / tool_removal blocks (system or developer
+// messages) or a compaction item's tool_changes, which Converse has no block for.
+func inputHasToolChanges(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		if input[i].Content == nil || len(input[i].Content.ContentBlocks) == 0 {
+			continue
+		}
+		blocks := input[i].Content.ContentBlocks
+		if cmp := blocks[0].ResponsesOutputMessageContentCompaction; cmp != nil && len(cmp.ToolChanges) > 0 {
+			return true
+		}
+		if role := input[i].Role; role == nil || (*role != schemas.ResponsesInputMessageRoleSystem && *role != schemas.ResponsesInputMessageRoleDeveloper) {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition || blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
 				return true
 			}
 		}

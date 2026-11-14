@@ -64,6 +64,9 @@ func (p *RoutingPlugin) planBackfill(ctx context.Context, router suggestionRoute
 	if rate <= 0 {
 		rate = configstore.DefaultComplexitySuggestionsSampleRate
 	}
+	// Read through the whole walk, vectors and all: a filtered read stops at
+	// a result ceiling on Weaviate (it fails) and Redis (it ends early), and
+	// a captured request read as missing is embedded again.
 	captured := map[string]struct{}{}
 	if err := space.EachCaptured(ctx, from, to, func(page []complexity.CapturedRequest) error {
 		for _, r := range page {
@@ -149,8 +152,11 @@ func (h *newestLogs) newestFirst() []logstore.ComplexityRouterLog {
 // backfillWindow fills the window from the router's logs and reports how many
 // requests it wrote: up to the backfill's limit, the newest first, passing
 // over logs whose text cannot be read. One backfill of a router runs at a
-// time, so a run and an impact replay, or two replays, never embed the same
-// requests twice: the second plans once the first has written. Each request
+// time on this node, so a run and an impact replay, or two replays, here
+// never embed the same requests twice: the second plans once the first has
+// written. Two nodes can backfill the same router at once and embed the same
+// missing requests; point IDs keep that to one vector each, and the extra
+// embedding cost is bounded by the backfill's limit. Each request
 // is held in the router's capture from before its text is read until it is
 // written, so a log deleted in the meantime leaves no vector.
 func (p *RoutingPlugin) backfillWindow(ctx context.Context, router suggestionRouter, space *complexity.SuggestionSpace, deps *complexitySuggestionDeps, from, to time.Time) (int, error) {

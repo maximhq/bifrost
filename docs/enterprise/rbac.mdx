@@ -83,6 +83,7 @@ Bifrost protects access to the following resources:
 | **MCPLogs** | MCP tool execution logs |
 | **Relays** | [Relay](/relays/overview) configuration: endpoints, routes and pricing |
 | **RelayLogs** | [Relay Logs](/relays/overview#see-every-call): View reads relay calls, Delete removes them. Scoped by data access control independently of Logs |
+| **Routers** | Routers: their classifiers, the model each tier gets, the requests they take, and phrase suggestions. **View** reads them and tests or prices suggested phrases; **Create** adds a router, resets one, retries its warmup, and classifies statements (a call to the router's model); **Update** edits a router, adds phrases, and starts or cancels suggestion runs; **Delete** removes one. Separate from **Governance**, which keeps the Complexity Router, and from **RoutingRules** |
 | **AdaptiveRouter** | Adaptive routing: **View** reads the dashboard, incidents and settings; **Update** changes the settings and releases [held keys](/enterprise/adaptive-routing/how-it-works#releasing-held-keys) |
 | **Warp** | Warp configuration and log index backfills. View reads the configuration; Update saves it, including which models Warp offers, and runs backfills |
 | **WarpSession** | Warp sessions: chat and conversation history (View), and deleting your own conversations (Delete). The chat panel also reads the Warp configuration, so chat users need Warp View too. Chat users can switch between the models a Warp Update holder has exposed, and cannot add to them |

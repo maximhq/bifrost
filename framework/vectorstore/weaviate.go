@@ -489,17 +489,38 @@ func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries
 
 	where := buildWeaviateFilter(queries)
 
-	res, err := s.client.Batch().ObjectsBatchDeleter().
-		WithClassName(className).
-		WithWhere(where).
-		Do(ctx)
-	if err != nil {
-		return nil, err
+	// One batch delete removes at most QUERY_MAXIMUM_RESULTS objects (10,000
+	// by default), so it is repeated while a batch fills that limit and still
+	// deletes something. The counts decide it: Weaviate returns an empty
+	// Results.Objects even on successful deletes.
+	var results []DeleteResult
+	for {
+		res, err := s.client.Batch().ObjectsBatchDeleter().
+			WithClassName(className).
+			WithWhere(where).
+			Do(ctx)
+		if err != nil {
+			return results, err
+		}
+		results = appendWeaviateDeleteResults(results, res)
+		if res.Results == nil || res.Results.Successful == 0 || res.Results.Matches < res.Results.Limit {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
 	}
+	if results == nil {
+		results = []DeleteResult{}
+	}
+	return results, nil
+}
 
-	// NOTE: Weaviate is returning an empty array for Results.Objects, even on successful deletes.
-	results := make([]DeleteResult, 0, len(res.Results.Objects))
-
+// appendWeaviateDeleteResults appends one batch delete's per-object results.
+func appendWeaviateDeleteResults(results []DeleteResult, res *models.BatchDeleteResponse) []DeleteResult {
+	if res == nil || res.Results == nil {
+		return results
+	}
 	for _, obj := range res.Results.Objects {
 		result := DeleteResult{
 			ID: obj.ID.String(),
@@ -525,8 +546,7 @@ func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries
 
 		results = append(results, result)
 	}
-
-	return results, nil
+	return results
 }
 
 func (s *WeaviateStore) Close(ctx context.Context, className string) error {
