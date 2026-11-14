@@ -295,19 +295,27 @@ func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text
 	progress.emittedBytes += len(text)
 }
 
-// recordEmittedTextEvents tracks only text deltas that survived protocol
-// validation and will reach the normalized client. Raw passthrough frames remain
-// authoritative, so the converter must neither track nor later supplement them.
+// recordEmittedTextEvents tracks only text and tool-argument deltas that survived
+// protocol validation and will reach the normalized client. Raw passthrough frames
+// remain authoritative, so the converter must neither track nor later supplement them.
 func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
 	if s.passthrough {
 		return
 	}
 	for _, event := range events {
-		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil ||
-			event.Delta == nil || event.Delta.Type != AnthropicStreamDeltaTypeText || event.Delta.Text == nil {
+		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil || event.Delta == nil {
 			continue
 		}
-		s.recordEmittedText(*event.Index, *event.Delta.Text)
+		switch event.Delta.Type {
+		case AnthropicStreamDeltaTypeText:
+			if event.Delta.Text != nil {
+				s.recordEmittedText(*event.Index, *event.Delta.Text)
+			}
+		case AnthropicStreamDeltaTypeInputJSON:
+			if event.Delta.PartialJSON != nil {
+				s.recordEmittedText(*event.Index, *event.Delta.PartialJSON)
+			}
+		}
 	}
 }
 
@@ -592,10 +600,10 @@ func blockAcceptsDeltaType(blockType AnthropicContentBlockType, deltaType Anthro
 // reverseStreamItemKey derives a stable per-item key for content-block index
 // allocation, consistent across output_item.added / delta / output_item.done.
 func reverseStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) string {
-	if resp.Item != nil && resp.Item.ID != nil {
+	if resp.Item != nil && resp.Item.ID != nil && *resp.Item.ID != "" {
 		return *resp.Item.ID
 	}
-	if resp.ItemID != nil {
+	if resp.ItemID != nil && *resp.ItemID != "" {
 		return *resp.ItemID
 	}
 	if resp.OutputIndex != nil {
@@ -3871,6 +3879,39 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone:
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		arguments := bifrostResp.Arguments
+		if arguments == nil {
+			arguments = bifrostResp.Delta
+		}
+		key := reverseStreamItemKey(bifrostResp)
+		if state.passthrough || arguments == nil || *arguments == "" || state.webSearchItemIDs[key] {
+			return nil
+		}
+		blockIndex, ok := state.blockIndexByItem[key]
+		if !ok {
+			return nil
+		}
+		expectedBlockType := AnthropicContentBlockTypeToolUse
+		if bifrostResp.Type == schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone {
+			expectedBlockType = AnthropicContentBlockTypeMCPToolUse
+		}
+		if state.blockType(blockIndex) != expectedBlockType {
+			return nil
+		}
+		missing, ok := state.missingTerminalText(blockIndex, *arguments)
+		if !ok {
+			return nil
+		}
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		streamResp.Index = schemas.Ptr(blockIndex)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: schemas.Ptr(missing),
+		}
+
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, schemas.ResponsesStreamResponseTypeReasoningTextDelta:
 		state := getOrCreateAnthropicToResponsesStreamState(ctx)
 		key := reverseStreamItemKey(bifrostResp)
@@ -4423,11 +4464,15 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	case schemas.ResponsesStreamResponseTypeMCPCallCompleted:
 		// MCP call completed - emit content_block_stop
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		key := reverseStreamItemKey(bifrostResp)
+		state.clearEmittedTextProgress(key)
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
-		streamResp.Index = getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexFor(reverseStreamItemKey(bifrostResp))
+		streamResp.Index = state.blockIndexFor(key)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallFailed:
 		// MCP call failed - emit error event
+		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
 		streamResp.Type = AnthropicStreamEventTypeError
 		errorMsg := "MCP call failed"
 		if bifrostResp.Message != nil {
