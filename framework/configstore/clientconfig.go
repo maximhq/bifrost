@@ -138,6 +138,7 @@ type ClientConfig struct {
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPClientMetadataURL                    *schemas.SecretVar                    `json:"mcp_client_metadata_url,omitempty"`             // Full URL where Bifrost's Client ID Metadata Document is hosted; empty serves it under mcp_external_client_url
 	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse              bool                                  `json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                    *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
@@ -555,6 +556,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
+	if c.MCPClientMetadataURL.IsSet() {
+		if c.MCPClientMetadataURL.IsFromSecret() {
+			hash.Write([]byte("clientMetadataURL:ref:" + c.MCPClientMetadataURL.GetRawRef()))
+		} else {
+			hash.Write([]byte("clientMetadataURL:val:" + c.MCPClientMetadataURL.GetValue()))
+		}
+	}
 	if c.SkillsExternalClientURL != nil {
 		if c.SkillsExternalClientURL.IsFromSecret() {
 			hash.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
@@ -663,6 +671,9 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	}
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
+	}
+	if c.MCPClientMetadataURL != nil && c.MCPClientMetadataURL.IsFromSecret() {
+		out.MCPClientMetadataURL = c.MCPClientMetadataURL.Redacted()
 	}
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()

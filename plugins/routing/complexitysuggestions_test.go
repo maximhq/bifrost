@@ -1057,6 +1057,34 @@ func TestComplexitySuggestionsCancelWaitIsBoundedWhenReadsStall(t *testing.T) {
 	}
 }
 
+// An inline run started before the job runner was wired (a scheduled run due
+// at start-up, say) is still stopped by a cancel once the runner is there:
+// the cancel reaches the inline run, not a job that does not exist.
+func TestComplexitySuggestionsCancelStopsAnInlineRunOnceJobsAreWired(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	ctx := context.Background()
+	defaultWait := suggestionCancelSettleWait
+	suggestionCancelSettleWait = 50 * time.Millisecond
+	t.Cleanup(func() { suggestionCancelSettleWait = defaultWait })
+	run := logstore.ComplexitySuggestionRun{ID: uuid.NewString(), RouterID: captureRouterID, Status: logstore.ComplexitySuggestionRunRunning,
+		Stage: logstore.ComplexitySuggestionRunStageSuggesting, StartedAt: time.Now()}
+	require.NoError(t, store.UpsertComplexitySuggestionRun(ctx, &run))
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	p.suggestions.inlineMu.Lock()
+	p.suggestions.inline[captureRouterID] = true
+	p.suggestions.inlineCancels[run.ID] = stop
+	p.suggestions.inlineMu.Unlock()
+	queue := &recordingQueue{}
+	p.SetComplexitySuggestionJobs(queue, &inFlightJobs{})
+
+	_, err := p.CancelComplexitySuggestionRun(ctx, captureRouterID, run.ID)
+	require.NoError(t, err)
+	require.ErrorIs(t, runCtx.Err(), context.Canceled, "the inline run is told to stop")
+	assert.True(t, p.suggestionRunCancelled(ctx, run.ID), "and records itself as cancelled when it does")
+	assert.Empty(t, queue.cancelled, "there is no job to cancel")
+}
+
 // A run that stopped early reads as cancelled only when a user cancelled it:
 // its job row says so on any node, or this node cancelled its inline run.
 func TestComplexitySuggestionRunCancelled(t *testing.T) {

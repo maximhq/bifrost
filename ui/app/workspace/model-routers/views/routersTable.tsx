@@ -23,7 +23,8 @@ import { DeleteConfirmDialog, RowActionsMenu } from "./formParts";
 import { classifierSummary } from "./overviewTab";
 import { RouterSheet } from "./routerSheet";
 import { matchesRouterSearch } from "./routersTable.utils";
-import { routerRequests, type RouterTrafficRead } from "./useRouterTraffic";
+import { TrafficPeriodPicker } from "./trafficPeriodPicker";
+import { routerRequests, type RouterTrafficRead, type TrafficFilter } from "./useRouterTraffic";
 
 // RouterEnabledSwitch turns a router on or off, as a routing rule's switch
 // does. It sends only `enabled`, so a scope, condition or priority changed
@@ -49,24 +50,26 @@ export function RouterEnabledSwitch({ router, disabled }: { router: ModelRouter;
 }
 
 interface RoutersTableProps {
-	// Each router's last seven days, read once by the page, with the state of that read.
+	// What each router took over the chosen period, read once by the page, with the state of that read.
 	traffic: RouterTrafficRead;
+	// That period, and what the picker needs to change it.
+	trafficFilter: TrafficFilter;
 	onOpenRouter: (id: string) => void;
 	onCreate: () => void;
 }
 
 // RoutersTable is the Routers section's list: each router with what it
 // classifies with, where it takes requests (scope and priority), how many it
-// took over the last week, and whether it is on, with the same row actions as
+// took over the chosen period, and whether it is on, with the same row actions as
 // routing rules.
-export function RoutersTable({ traffic, onOpenRouter, onCreate }: RoutersTableProps) {
+export function RoutersTable({ traffic, trafficFilter, onOpenRouter, onCreate }: RoutersTableProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: trouting } = useTranslation("models", { keyPrefix: "routing" });
 	const { t: tc } = useTranslation("common");
-	const canCreate = useRbac(RbacResource.Governance, RbacOperation.Create);
-	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const canCreate = useRbac(RbacResource.Routers, RbacOperation.Create);
+	const canUpdate = useRbac(RbacResource.Routers, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.Routers, RbacOperation.Delete);
 	const { data, isLoading, error, refetch } = useGetModelRoutersQuery();
 	const [deleteRouter, { isLoading: isDeleting }] = useDeleteModelRouterMutation();
 	// Held by id, so the sheet always compares against the router as last read.
@@ -113,14 +116,15 @@ export function RoutersTable({ traffic, onOpenRouter, onCreate }: RoutersTablePr
 						data-testid="model-routers-search-input"
 					/>
 				</div>
-				{canCreate && (
-					<div className="flex items-center gap-2 sm:ml-auto">
+				<div className="flex items-center gap-2 sm:ml-auto">
+					<TrafficPeriodPicker filter={trafficFilter} testId="model-routers-filter-daterange" />
+					{canCreate && (
 						<Button type="button" className="h-9" onClick={onCreate} data-testid="model-router-create-button">
 							<Plus className="size-4" />
 							{t("newRouter")}
 						</Button>
-					</div>
-				)}
+					)}
+				</div>
 			</div>
 
 			<div className="overflow-hidden rounded-sm border">

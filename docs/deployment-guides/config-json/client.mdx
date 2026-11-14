@@ -68,6 +68,7 @@ When Bifrost acts as an OAuth client to upstream MCP servers, the `redirect_uri`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mcp_external_client_url` | string or EnvVar | - | Public base URL Bifrost uses as the `redirect_uri` against upstream MCP servers |
+| `mcp_client_metadata_url` | string or EnvVar | - | Full HTTPS URL where you host Bifrost's client metadata document, when upstream MCP servers cannot reach Bifrost. See [hosting the document yourself](/mcp/auth/oauth#hosting-the-document-yourself) |
 
 This field supports env var syntax (`"env.MY_VAR"`). When unset, it falls back to the incoming `Host` header.
 

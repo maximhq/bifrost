@@ -1554,6 +1554,50 @@ func TestUpdateConfig_SkillsExternalClientURLPresence(t *testing.T) {
 	assert.Empty(t, persisted.SkillsExternalClientURL.GetValue())
 }
 
+// TestUpdateConfig_MCPClientMetadataURL pins persistence, partial-update semantics, and validation of the
+// hosted Client ID Metadata Document URL.
+func TestUpdateConfig_MCPClientMetadataURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const hosted = "https://public.example.com/bifrost/client.json"
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	set := putConfigCtx(fmt.Sprintf(`{"client_config":{"log_retention_days":8,"mcp_client_metadata_url":%q}}`, hosted))
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	assert.Equal(t, hosted, cfg.GetMCPClientMetadataURL())
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.MCPClientMetadataURL)
+	assert.Equal(t, hosted, persisted.MCPClientMetadataURL.GetValue())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, hosted, cfg.GetMCPClientMetadataURL(), "an omitted field keeps the stored URL")
+
+	// The accepted shapes are tabled in lib's TestMCPClientMetadataURLPolicy; here, a refusal is a 400 that
+	// names the setting, does not echo the value, and leaves the stored URL.
+	rejected := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_client_metadata_url":"https://public.example.com/client.json?v=1"}}`)
+	h.updateConfig(rejected)
+	require.Equal(t, fasthttp.StatusBadRequest, rejected.Response.StatusCode())
+	require.Contains(t, string(rejected.Response.Body()), "mcp_client_metadata_url")
+	require.NotContains(t, string(rejected.Response.Body()), "client.json?v=1")
+	assert.Equal(t, hosted, cfg.GetMCPClientMetadataURL(), "a rejected value leaves the stored URL")
+
+	// Checked before the skills URL, which the provider harness relies on to stay red without writing.
+	both := putConfigCtx(`{"client_config":{"mcp_client_metadata_url":"https://public.example.invalid/client.json?v=1","skills_external_client_url":"https://skills.example.invalid?token=refused"}}`)
+	h.updateConfig(both)
+	require.Equal(t, fasthttp.StatusBadRequest, both.Response.StatusCode())
+	require.Contains(t, string(both.Response.Body()), "mcp_client_metadata_url")
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_client_metadata_url":null}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Empty(t, cfg.GetMCPClientMetadataURL())
+}
+
 // TestUpdateConfigRejectsPrivateSkillsURLComponents prevents public catalogs from exposing URL credentials.
 func TestUpdateConfigRejectsPrivateSkillsURLComponents(t *testing.T) {
 	SetLogger(&mockLogger{})
