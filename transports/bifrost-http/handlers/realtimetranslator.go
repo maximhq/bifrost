@@ -35,23 +35,28 @@ func realtimeClientProtocol(provider schemas.RealtimeProvider, model, intent str
 }
 
 // newRealtimeTranslator builds the connection's translator, or returns nil when the provider's frames are
-// relayed as they are.
-func newRealtimeTranslator(provider schemas.RealtimeProvider, key schemas.Key, model, intent string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
+// relayed as they are. The provider is given the connection's context, which carries what the model alias
+// resolved to, such as its project and region.
+func newRealtimeTranslator(ctx *schemas.BifrostContext, provider schemas.RealtimeProvider, key schemas.Key, model, intent string) (schemas.RealtimeTranslator, *schemas.BifrostError) {
 	if !translatesRealtime(provider, model, intent) {
 		return nil, nil
 	}
-	translating := provider.(schemas.RealtimeTranslatorProvider)
-	translator, bifrostErr := translating.NewRealtimeTranslator(key, model)
+	translator, bifrostErr := provider.(schemas.RealtimeTranslatorProvider).NewRealtimeTranslator(ctx, key, model)
 	if bifrostErr == nil && translator == nil {
 		return nil, newRealtimeWireBifrostError(500, "server_error", "provider returned no realtime translator")
 	}
 	return translator, bifrostErr
 }
 
-// writeRealtimeProviderFrames sends a translation's provider frames, in order.
-func writeRealtimeProviderFrames(upstream schemas.RealtimeUpstream, frames []json.RawMessage) error {
-	for _, frame := range frames {
-		if err := upstream.WriteMessage(ws.TextMessage, frame); err != nil {
+// writeRealtimeProviderFrames sends a translation's provider frames, in order, as text unless the
+// translation marks one as binary.
+func writeRealtimeProviderFrames(upstream schemas.RealtimeUpstream, translation schemas.RealtimeTranslation) error {
+	for i, frame := range translation.Provider {
+		messageType := ws.TextMessage
+		if translation.IsProviderBinary(i) {
+			messageType = ws.BinaryMessage
+		}
+		if err := upstream.WriteMessage(messageType, frame); err != nil {
 			return err
 		}
 	}
@@ -103,7 +108,7 @@ func (h *WSRealtimeHandler) relayTranslatedProviderFrame(
 		session.LockRealtimeTranslator()
 		defer session.UnlockRealtimeTranslator()
 		if translation, translateErr = translator.ToClient(message); translateErr == nil {
-			writeErr = writeRealtimeProviderFrames(upstream, translation.Provider)
+			writeErr = writeRealtimeProviderFrames(upstream, translation)
 		}
 	}()
 	if translateErr != nil {
@@ -178,7 +183,7 @@ func (h *WSRealtimeHandler) openRealtimeTranslator(
 	transcriptionSession bool,
 ) error {
 	opening := translator.Open()
-	if err := writeRealtimeProviderFrames(upstream, opening.Provider); err != nil {
+	if err := writeRealtimeProviderFrames(upstream, opening); err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "failed to write realtime event upstream"))
 		return err
 	}

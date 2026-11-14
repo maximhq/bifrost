@@ -786,6 +786,74 @@ func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_MantleStripsSamplingParamsByEffort pins that Bedrock Mantle
+// applies OpenAI's effort-dependent sampling rules to OpenAI's own models, and leaves
+// gpt-oss alone.
+func TestToOpenAIChatRequest_MantleStripsSamplingParamsByEffort(t *testing.T) {
+	installCapabilityRecord(t, "openai.gpt-6-luna", &schemas.ModelCapabilities{
+		DefaultReasoningEffort:   schemas.Ptr(schemas.ReasoningEffortMedium),
+		SupportsReasoningDisable: new(true),
+		ConditionallyUnsupportedFields: map[string]string{
+			schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+			schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+			schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+		},
+	})
+
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		stripped bool
+	}{
+		{name: "gpt-6-luna strips at low", model: "openai.gpt-6-luna", effort: "low", stripped: true},
+		{name: "gpt-6-luna strips when effort omitted", model: "openai.gpt-6-luna", stripped: true},
+		{name: "gpt-6-luna keeps at none", model: "openai.gpt-6-luna", effort: "none", stripped: false},
+		{name: "gpt-oss keeps at low", model: "openai.gpt-oss-120b", effort: "low", stripped: false},
+		{name: "non-openai qwen keeps at low", model: "qwen.qwen3-32b", effort: "low", stripped: false},
+		{name: "non-openai gemma keeps when effort omitted", model: "google.gemma-4-31b", stripped: false},
+	}
+	// The Bedrock provider serves the same models from Mantle without renaming the provider.
+	for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+		for _, tt := range tests {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				params := &schemas.ChatParameters{
+					Temperature: schemas.Ptr(0.5),
+					TopP:        schemas.Ptr(0.9),
+					LogProbs:    new(true),
+					TopLogProbs: schemas.Ptr(2),
+				}
+				if tt.effort != "" {
+					params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)}
+				}
+				out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    tt.model,
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+					Params: params,
+				})
+				require.NotNil(t, out)
+				if tt.stripped {
+					require.Nil(t, out.Temperature)
+					require.Nil(t, out.TopP)
+					require.Nil(t, out.LogProbs)
+					require.Nil(t, out.TopLogProbs)
+				} else {
+					require.NotNil(t, out.Temperature)
+					require.NotNil(t, out.TopP)
+					require.NotNil(t, out.LogProbs)
+					require.NotNil(t, out.TopLogProbs)
+				}
+				require.NotNil(t, params.Temperature, "caller's params must not be mutated")
+			})
+		}
+	}
+}
+
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))

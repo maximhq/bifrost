@@ -5,14 +5,16 @@ import { useState } from "react";
 import RouterDetailView from "./views/routerDetailView";
 import { RoutersTable } from "./views/routersTable";
 import RouterWizard from "./views/routerWizard";
-import { useRouterTraffic, useTrafficWindow } from "./views/useRouterTraffic";
+import { useRouterTraffic, useTrafficFilter } from "./views/useRouterTraffic";
 
 // ModelRoutersPage is the Routers section: the list of model routers, a
 // router's own page when the URL names one, and the full-page wizard that
-// creates one. It reads the routers' traffic once and hands it to the list and
-// to a router's page, so moving between them does not read the logs again.
+// creates one. It holds the period the traffic figures cover and reads the
+// routers' traffic once, handing both to the list and to a router's page, so
+// they show the same period and moving between them does not read the logs
+// again.
 export default function ModelRoutersPage() {
-	const canCreate = useRbac(RbacResource.Governance, RbacOperation.Create);
+	const canCreate = useRbac(RbacResource.Routers, RbacOperation.Create);
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			router: parseAsString,
@@ -22,8 +24,8 @@ export default function ModelRoutersPage() {
 		{ history: "push" },
 	);
 	const [creating, setCreating] = useState(false);
-	const trafficWindow = useTrafficWindow();
-	const traffic = useRouterTraffic(trafficWindow);
+	const trafficFilter = useTrafficFilter();
+	const traffic = useRouterTraffic(trafficFilter.window);
 	useActionParam("create", () => setCreating(true), { isOpen: creating, enabled: canCreate });
 
 	if (creating) {
@@ -48,11 +50,16 @@ export default function ModelRoutersPage() {
 					key={urlState.router}
 					routerId={urlState.router}
 					traffic={traffic}
-					trafficWindow={trafficWindow}
+					trafficFilter={trafficFilter}
 					onBack={() => void setUrlState({ router: null, tab: null })}
 				/>
 			) : (
-				<RoutersTable traffic={traffic} onOpenRouter={(id) => void setUrlState({ router: id })} onCreate={() => setCreating(true)} />
+				<RoutersTable
+					traffic={traffic}
+					trafficFilter={trafficFilter}
+					onOpenRouter={(id) => void setUrlState({ router: id })}
+					onCreate={() => setCreating(true)}
+				/>
 			)}
 		</div>
 	);
