@@ -150,6 +150,7 @@ func TestEmbeddingRejectsInvalidRequestsBeforeSending(t *testing.T) {
 		{"unknown voyage model", embeddingRequest("voyage-9-ultra", textInput("a"), nil), "not a Voyage model"},
 		{"reranker as embedding model", embeddingRequest("rerank-3", textInput("a"), nil), "not an embedding model"},
 		{"dimension outside the matryoshka set", embeddingRequest("voyage-4", textInput("a"), &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(768)}), "does not support dimensions=768"},
+		{"dimension on the fixed-size multimodal model", embeddingRequest("voyage-multimodal-3", []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("a banana")}}}}, &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(512)}), "does not support dimensions=512"},
 		{"dimension on a fixed-size model", embeddingRequest("voyage-law-2", textInput("a"), &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(512)}), "does not support dimensions=512"},
 		{"quantized output on a model without it", embeddingRequest("voyage-finance-2", textInput("a"), &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr("int8")}), "float vectors only"},
 		{"input_type other than query/document", embeddingRequest("voyage-4", textInput("a"), extra("input_type", "search_document")), "input_type must be"},

@@ -153,7 +153,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
   }'
 ```
 
-Only float vectors are returned, and `truncation` is not a parameter of this endpoint.
+Only float vectors are returned, and `truncation` is not a parameter of this endpoint. Voyage caps a request at 120,000 tokens in total when it chunks documents itself (a larger batch fails with a 400 naming the limit), and chunks hold up to 32,000 tokens: a 68,000-token document comes back as three chunks.
 
 ---
 
@@ -179,7 +179,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - Audio, file and token parts are rejected, and so is `video_config`.
 - `encoding_format: "base64"` maps to `output_encoding`. Quantized dtypes are not available.
 
-Usage: `prompt_tokens` is Voyage's `text_tokens`, `prompt_tokens_details.image_tokens` is the token equivalent of image and video pixels (560 image pixels or 1,120 video pixels per token), and `total_tokens` is Voyage's total. Voyage prices media per pixel, while Bifrost's embedding cost covers `prompt_tokens` only. The text part of a multimodal request is costed; the media part is not, so a request with only images or video is logged without a cost. Per-pixel costing is not implemented.
+Usage: `prompt_tokens` is Voyage's `text_tokens`, `prompt_tokens_details.image_tokens` is the token equivalent of image and video pixels (560 image pixels or 1,120 video pixels per token), and `total_tokens` is Voyage's total. Voyage prices media per pixel, while Bifrost's embedding cost covers `prompt_tokens` only, so the text part of a multimodal request is costed and the media part is not.
 
 ---
 
