@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1962,6 +1963,54 @@ func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
 			}
 			if hits.Load() == 0 {
 				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// erroringTokenSource is a token source whose every Token call fails with err.
+type erroringTokenSource struct{ err error }
+
+func (s erroringTokenSource) Token() (*oauth2.Token, error) { return nil, s.err }
+
+// A token failure on list models reports the underlying cause in the message (the only field the
+// list-models warning and the UI tooltip show). Only an API-key-only key, which reaches the token
+// path on an unfiltered listing, says "not supported": ListAllModels treats that as expected, while
+// a WIF or service-account failure must surface as a real error.
+func TestVertexListModelsTokenErrorSurfacesCause(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		apiKeyOnly    bool
+		wantSupported bool
+	}{
+		{name: "oauth key", apiKeyOnly: false, wantSupported: true},
+		{name: "api key only key", apiKeyOnly: true, wantSupported: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, "gemini-2.5-flash"))
+			key.Models = schemas.WhiteList{"*"}
+			if tc.apiKeyOnly {
+				key.Value = *schemas.NewSecretVar("vertex-api-key")
+				key.VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar("")
+			}
+			cause := "vertex aws federation: aws region could not be determined"
+			provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), erroringTokenSource{err: errors.New(cause)})
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Vertex, Unfiltered: true})
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected a token error")
+			}
+			msg := bifrostErr.Error.Message
+			if !strings.Contains(msg, cause) {
+				t.Errorf("message %q does not carry the cause %q", msg, cause)
+			}
+			if got := !strings.Contains(msg, "not supported"); got != tc.wantSupported {
+				t.Errorf("message %q: classified supported = %v, want %v", msg, got, tc.wantSupported)
+			}
+			if n := hits.Load(); n != 0 {
+				t.Errorf("Model Garden called %d times without a token", n)
 			}
 		})
 	}
