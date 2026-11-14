@@ -122,12 +122,17 @@ func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled boo
 }
 
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
-func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
+// A PreRequestHook plugin that left the provider unset on purpose can explain why through
+// BifrostContextKeyProviderResolutionError; that reason replaces the generic auto-resolve message.
+func validateRequestAfterPreRequestHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
+		if reason, _ := ctx.Value(schemas.BifrostContextKeyProviderResolutionError).(string); reason != "" {
+			return newBifrostErrorFromMsg(reason)
+		}
 		return newBifrostErrorFromMsg(ProviderAutoResolveErrorMessage)
 	}
 	if isModelRequired(req.RequestType) && model == "" {

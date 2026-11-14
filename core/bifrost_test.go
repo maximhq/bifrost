@@ -3502,10 +3502,12 @@ func TestFilterKeysByID(t *testing.T) {
 
 // fakeRoutingPlugin is a minimal LLMPlugin whose PreRequestHook writes a routing key pin to the
 // non-reserved BifrostContextKeyRoutingPinnedAPIKeyID, mirroring what the governance routing
-// engine does. It exists to exercise the commit step in PluginPipeline.RunPreRequestHooks.
+// engine does, and optionally the reason it left the provider unset. It exists to exercise the
+// commit step in PluginPipeline.RunPreRequestHooks and the validation that follows it.
 type fakeRoutingPlugin struct {
-	name     string
-	pinKeyID string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+	name            string
+	pinKeyID        string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
+	resolutionError string // written to BifrostContextKeyProviderResolutionError when non-empty
 }
 
 func (f *fakeRoutingPlugin) GetName() string { return f.name }
@@ -3515,6 +3517,9 @@ func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sch
 		// A direct write to the reserved BifrostContextKeyAPIKeyID here would be dropped by the
 		// restricted-write block; routing must use the non-reserved key.
 		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
+	}
+	if f.resolutionError != "" {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResolutionError, f.resolutionError)
 	}
 	return nil
 }
@@ -3664,6 +3669,50 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 			t.Fatalf("APIKeyID = %q, want %q (no routing pin must not clobber caller pin)", got, "caller-pin")
 		}
 	})
+}
+
+// TestProviderResolutionErrorReplacesAutoResolveMessage pins the error a request gets when no
+// PreRequestHook set a provider: the generic auto-resolve message, unless a plugin wrote why it
+// left the provider unset, in which case the caller gets that reason. Both are 400s.
+func TestProviderResolutionErrorReplacesAutoResolveMessage(t *testing.T) {
+	const reason = "model shared-model is served by more than one provider (azure, openai)"
+	for _, tc := range []struct {
+		name   string
+		plugin *fakeRoutingPlugin
+		want   string
+	}{
+		{"no reason keeps the generic message", &fakeRoutingPlugin{name: "noop"}, ProviderAutoResolveErrorMessage},
+		{"a plugin's reason is returned", &fakeRoutingPlugin{name: "resolver", resolutionError: reason}, reason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{tc.plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+				Model: "shared-model",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			})
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatalf("got %v, want an error", bifrostErr)
+			}
+			if bifrostErr.Error.Message != tc.want {
+				t.Fatalf("message %q, want %q", bifrostErr.Error.Message, tc.want)
+			}
+			if status := bifrostErr.EffectiveHTTPStatus(); status != 400 {
+				t.Fatalf("status %d, want 400", status)
+			}
+		})
+	}
 }
 
 // modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and

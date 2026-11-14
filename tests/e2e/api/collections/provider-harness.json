@@ -328232,6 +328232,60 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Ambiguous bare decision model is refused (decisions-ambiguous-bare-model) (PR #10009)",
+      "description": "A /v1/decisions model sent without a provider prefix is resolved from the model catalog. When more than one configured provider serves the id, the resolver used to pick the alphabetically first one and make the others inferred fallbacks, so the caller got whichever provider sorted first. Decisions now refuse that with a 400 naming the candidates. The profile serves jev-1.13.0 from typesafe and from the custom provider typesafe_custom (both list every model through the same key), so a bare jev-1.13.0 has at least two candidates. Bare ids on /typesafe/v1/systemone keep going to typesafe (folder 121).",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/decisions - bare model served by several providers is refused naming them - typesafe jev-1.13.0 - #10009",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a bare model with several candidate providers is refused with 400', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the candidates and how to pick one', function () {",
+                  "    var body = pm.response.json();",
+                  "    var message = body && body.error && body.error.message;",
+                  "    pm.expect(message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "    pm.expect(message).to.include('decision model jev-1.13.0 is served by more than one provider');",
+                  "    pm.expect(message).to.include('typesafe, typesafe_custom');",
+                  "    pm.expect(message).to.include('provider/model');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and want a refund.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
