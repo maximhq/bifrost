@@ -329468,6 +329468,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.collectionVariables.set('codeModeMediaClient', 'harness_codemode_media_' + pm.variables.replaceIn('{{$guid}}').replace(/-/g, ''));",
+                  "// The id is chosen here and sent with the create, so cleanup knows it as soon as creation succeeds.",
+                  "pm.collectionVariables.set('codeModeMediaClientNewId', pm.variables.replaceIn('{{$guid}}'));",
                   "pm.collectionVariables.unset('codeModeMediaClientId');"
                 ]
               }
@@ -329477,6 +329479,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Stored before any assertion, so cleanup deletes the client even when a later readiness check fails.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('codeModeMediaClientId', pm.collectionVariables.get('codeModeMediaClientNewId')); }",
+                  "pm.collectionVariables.unset('codeModeMediaClientNewId');",
                   "pm.test('the code-mode SSE client is created', function () {",
                   "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.equal(200);",
                   "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
@@ -329495,20 +329500,20 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"{{codeModeMediaClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\"capture_media\"],\n  \"tools_to_auto_execute\": [\"capture_media\"]\n}"
+              "raw": "{\n  \"client_id\": \"{{codeModeMediaClientNewId}}\",\n  \"name\": \"{{codeModeMediaClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\"capture_media\"],\n  \"tools_to_auto_execute\": [\"capture_media\"]\n}"
             },
             "url": "{{baseUrl}}/api/mcp/client"
           }
         },
         {
-          "name": "[EXPECT-200] mcp code-mode-media capture the returned client id and fixture readiness - #8909",
+          "name": "[EXPECT-200] mcp code-mode-media confirm the client id and fixture readiness - #8909",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the run-scoped client exposes capture_media and its returned id', function () {",
+                  "pm.test('the run-scoped client exposes capture_media and the id it was created with', function () {",
                   "  pm.expect(pm.response.code, 'listing failed: ' + pm.response.text()).to.equal(200);",
                   "  var clients = pm.response.json().clients;",
                   "  pm.expect(clients, pm.response.text()).to.be.an('array');",
@@ -329516,7 +329521,7 @@
                   "  pm.expect(matches, 'the run-scoped client is not uniquely listed: ' + pm.response.text()).to.have.lengthOf(1);",
                   "  var mine = matches[0];",
                   "  pm.expect(mine.config.client_id, pm.response.text()).to.be.a('string').and.not.empty;",
-                  "  pm.collectionVariables.set('codeModeMediaClientId', mine.config.client_id);",
+                  "  pm.expect(mine.config.client_id, 'the listed client id differs from the one it was created with').to.equal(pm.collectionVariables.get('codeModeMediaClientId'));",
                   "  pm.expect(mine.config.is_code_mode_client, pm.response.text()).to.equal(true);",
                   "  pm.expect(mine.config.tools_to_execute, pm.response.text()).to.eql(['capture_media']);",
                   "  pm.expect(mine.config.tools_to_auto_execute, pm.response.text()).to.eql(['capture_media']);",
@@ -329793,14 +329798,35 @@
           }
         },
         {
-          "name": "[EXPECT-200] mcp code-mode-media delete the run-scoped client by its returned id - #8909",
+          "name": "[EXPECT-200] mcp code-mode-media delete the run-scoped client by its id - #8909",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.expect(pm.collectionVariables.get('codeModeMediaClientId'), 'the fixture readiness request did not capture the client id').to.be.a('string').and.not.empty;"
+                  "// The id is stored once creation succeeds. Without it (creation never answered 200), find the client by its",
+                  "// run-scoped name so a registered client is still deleted rather than leaked.",
+                  "if (!pm.collectionVariables.get('codeModeMediaClientId')) {",
+                  "  var name = pm.collectionVariables.get('codeModeMediaClient');",
+                  "  if (!name) { pm.execution.skipRequest(); return; }",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/mcp/clients?search=' + encodeURIComponent(name), method: 'GET', header: headers }, function (err, res) {",
+                  "    var clients = null;",
+                  "    if (!err && res && res.code === 200) { try { clients = res.json().clients; } catch (e) { clients = null; } }",
+                  "    pm.test('code-mode-media cleanup can list clients to find the run-scoped one', function () {",
+                  "      pm.expect(err, 'client lookup errored: ' + err).to.equal(null);",
+                  "      pm.expect(clients, 'client lookup failed: ' + (res ? res.text() : 'no response')).to.be.an('array');",
+                  "    });",
+                  "    var mine = (clients || []).filter(function (c) { return c && c.config && c.config.name === name && c.config.client_id; });",
+                  "    if (mine.length === 1) { pm.collectionVariables.set('codeModeMediaClientId', mine[0].config.client_id); return; }",
+                  "    // Nothing registered under the run-scoped name, so there is nothing to delete.",
+                  "    pm.collectionVariables.unset('codeModeMediaClient');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
                 ]
               }
             },
