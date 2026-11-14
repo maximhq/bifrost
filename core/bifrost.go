@@ -795,7 +795,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 					break
 				}
 
-				if response == nil || len(response.Data) == 0 {
+				// An empty page does not end the listing: plugins (e.g. governance)
+				// filter each page after the provider paginates, so a page whose
+				// models were all filtered out can still carry a NextPageToken.
+				if response == nil {
 					break
 				}
 

@@ -19,6 +19,8 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -567,4 +569,54 @@ func TestModelRetrieveTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Provider pagination runs before governance filters each page, so a page can come back empty
+// while more pages remain. Listing must keep following NextPageToken past such pages.
+func TestListAllModels_ContinuesAfterAuthorizationFilteredEmptyPages(t *testing.T) {
+	// Pages 1, 2 and 4 hold only denied models; the two permitted models land on pages 3 and 5.
+	models := make([]openai.OpenAIModel, 4*schemas.DefaultPageSize+1)
+	for i := range models {
+		models[i] = openai.OpenAIModel{ID: fmt.Sprintf("model-%04d", i), Object: "model", OwnedBy: "test"}
+	}
+	allowedModels := schemas.WhiteList{
+		models[2*schemas.DefaultPageSize].ID,
+		models[4*schemas.DefaultPageSize].ID,
+	}
+	body, err := providerUtils.MarshalSorted(openai.OpenAIListModelsResponse{Object: "list", Data: models})
+	require.NoError(t, err)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	plugin, err := governance.Init(t.Context(), &governance.Config{IsVkMandatory: new(true)}, logger, nil,
+		&configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{{
+			ID: "pagination-vk", Name: "pagination-vk", Value: *schemas.NewSecretVar("sk-bf-pagination"), IsActive: new(true),
+			ProviderConfigs: []configtables.TableVirtualKeyProviderConfig{{
+				Provider: "openai", AllowedModels: allowedModels, AllowAllKeys: true,
+			}},
+		}}}, nil, nil, nil)
+	require.NoError(t, err)
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+		Account: inferenceSetupAccount{url: upstream.URL}, Logger: logger, LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-pagination")
+	lib.SettleIdentity(ctx)
+	response, bifrostErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	require.Nil(t, bifrostErr, "%+v", bifrostErr)
+	require.NotNil(t, response)
+
+	ids := make([]string, 0, len(response.Data))
+	for _, model := range response.Data {
+		ids = append(ids, model.ID)
+	}
+	require.Equal(t, []string{"openai/" + allowedModels[0], "openai/" + allowedModels[1]}, ids,
+		"every permitted model must survive pagination without leaking denied models")
 }
