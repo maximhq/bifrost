@@ -194,7 +194,7 @@ Bifrost publishes a client metadata document describing itself: its name, the re
 When **Client ID** is left blank, Bifrost uses its document automatically when all of these hold, and falls back to [Dynamic Client Registration](#dynamic-client-registration-rfc-7591) otherwise:
 
 - the authorization server advertises support for client metadata documents;
-- Bifrost is reachable over public HTTPS (a local or plain-HTTP address cannot be fetched by the authorization server);
+- Bifrost is reachable over public HTTPS (a local or plain-HTTP address cannot be fetched by the authorization server), or you [host the document yourself](#hosting-the-document-yourself);
 - a token URL you entered by hand belongs to that same authorization server. Bifrost does not check a hand-entered authorization URL, so make sure it belongs to the same server too.
 
 Turn on **Use Bifrost's client metadata document** (`"use_client_metadata_document": true` in `oauth_config`) to use the document even when the authorization server does not advertise support, for example when its endpoints cannot be discovered and you enter them by hand:
@@ -209,11 +209,42 @@ Turn on **Use Bifrost's client metadata document** (`"use_client_metadata_docume
 }
 ```
 
-- The authorization server has to fetch the document from Bifrost, so Bifrost must be reachable over public HTTPS. Set [`mcp_external_client_url`](#public-url-configuration) if Bifrost sits behind a proxy; on a local or plain-HTTP address the setting is refused when you save the client.
+- The authorization server has to fetch the document, so Bifrost must be reachable over public HTTPS, or you [host the document yourself](#hosting-the-document-yourself). Set [`mcp_external_client_url`](#public-url-configuration) if Bifrost sits behind a proxy. When Bifrost is on a local or plain-HTTP address and no hosted copy is set, the setting is refused when you save the client.
 - It replaces the client ID and secret, so it cannot be combined with a **Client ID**.
 - The authorization server must actually accept client metadata documents. If it does not, sign-in fails on its page; enter a client ID registered with that authorization server instead. Turning the setting off is not enough when the server advertises support, since Bifrost then still uses the document automatically.
 
-If Bifrost's public address changes later, the client ID moves to the document at the new address on the next sign-in, and existing sessions have to sign in again.
+If Bifrost's public address changes later, the client ID moves to the document at the new address on the next sign-in, and existing sessions have to sign in again. If you [host the document yourself](#hosting-the-document-yourself), the client ID stays the same, but you have to publish the document again with the new callback.
+
+### Hosting the document yourself
+
+The authorization server fetches Bifrost's document during sign-in. If Bifrost runs on a private network that the authorization server cannot reach, publish a copy of the document on a public host and tell Bifrost where it is. Only the document has to be public: after sign-in, the authorization server sends the user's browser back to Bifrost's callback, so Bifrost itself can stay private.
+
+1. Set [`mcp_external_client_url`](#public-url-configuration) to the address your users' browsers reach Bifrost on, including the `server.base_path` prefix if Bifrost is served under one (for example `https://bifrost.example.com/bifrost`). Bifrost does not add the prefix itself.
+2. Set the URL the copy will be published at, under **MCP Settings** > **Advanced Settings** > **Client Metadata Document URL**, or `mcp_client_metadata_url` in `config.json`:
+
+   ```json
+   {
+     "client": {
+       "mcp_external_client_url": "https://bifrost.internal.example.com",
+       "mcp_client_metadata_url": "https://public.example.com/bifrost/client.json"
+     }
+   }
+   ```
+
+   It must be an HTTPS URL with a path and no query or fragment, and supports env var syntax (`"env.MY_VAR"`).
+3. Save, then open **Bifrost's document** from the link under the setting. It now names your URL as its `client_id`.
+4. Publish that document unchanged at your URL. The host must answer with the document directly, without redirects, and resolve to a public address.
+
+Bifrost then signs in with your URL as its client ID, and moves existing servers that use its document to the new URL on their next sign-in. Their sessions have to sign in again.
+
+Keep the published copy in step with Bifrost:
+
+- Its `client_id` must match the URL Bifrost presents: the one you set, with the scheme and host in lowercase and no `:443` port. Publishing the document unchanged gets this right.
+- Its `redirect_uris` lists Bifrost's callback under `mcp_external_client_url`. If you change that URL, publish the document again, or sign-in fails with a redirect URI mismatch.
+- Authorization servers may cache the document, so a republished copy can take a while to be picked up.
+- Some authorization servers require the callback to be on the same host as the document. Such a server refuses the copy; enter a client ID registered with it instead.
+
+Leave the setting empty to have Bifrost serve the document itself again.
 
 ---
 
@@ -534,12 +565,12 @@ This deletes the stored token from Bifrost and marks the OAuth configuration `re
 
 The `redirect_uri` Bifrost registers and the consent URLs it builds are derived from the request `Host` header by default. Behind a reverse proxy, override them with:
 
-- `mcp_external_client_url` — public base URL Bifrost uses both for the consent pages it surfaces and as the `redirect_uri` registered with upstream providers
+- `mcp_external_client_url` — public base URL Bifrost uses both for the consent pages it surfaces and as the `redirect_uri` registered with upstream providers. Include the `server.base_path` prefix if Bifrost is served under one; it is used as given.
 
 See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
 
 <Warning>
-**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients registered through DCR or by hand.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover a DCR client, use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost registers again with the new URL (plain reauthorization reuses the registered client and cannot fix the mismatch). For manually registered credentials, add the new redirect URI at the provider's dashboard, then [reauthorize](#reauthorization). Clients using Bifrost's [client metadata document](#client-id-metadata-documents) need no action: their client ID follows the new address at the next sign-in, and existing sessions sign in again.
+**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients registered through DCR or by hand.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover a DCR client, use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost registers again with the new URL (plain reauthorization reuses the registered client and cannot fix the mismatch). For manually registered credentials, add the new redirect URI at the provider's dashboard, then [reauthorize](#reauthorization). Clients using the [client metadata document](#client-id-metadata-documents) Bifrost serves need no action: their client ID follows the new address at the next sign-in, and existing sessions sign in again. If you [host the document yourself](#hosting-the-document-yourself), publish it again with the new callback, or sign-in fails with a redirect URI mismatch.
 </Warning>
 
 ---

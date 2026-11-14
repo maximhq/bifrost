@@ -110,8 +110,10 @@ func recordRealtimeProviderInput(config *lib.Config, session *bfws.Session, even
 		} else if schemas.IsRealtimeUserInputEvent(event) {
 			if event.Type == schemas.RTEventConversationItemDone {
 				session.UpdateRealtimeTurnInput(input)
-			} else {
+			} else if input.Summary == realtimeMissingTranscriptText {
 				session.RecordRealtimeInput(itemID, input.Summary, raw)
+			} else {
+				session.RecordRealtimeEchoedInput(itemID, input.Summary, raw)
 			}
 		}
 		return

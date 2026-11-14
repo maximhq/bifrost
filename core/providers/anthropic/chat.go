@@ -905,6 +905,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
 	// same way. The <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := true
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	i := 0
 	for i < len(messages) {
@@ -979,6 +980,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					inlined = inlineMidConversationSystem(&newContent)
 				}
 				if inlined != nil {
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					anthropicMessages = append(anthropicMessages, *inlined)
 					i++
 					continue

@@ -517,7 +517,7 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 		allClientNames = append(allClientNames, clientName)
 
 		// Only include code mode clients
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 

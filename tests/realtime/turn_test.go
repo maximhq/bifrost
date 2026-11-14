@@ -38,6 +38,24 @@ func TestTurn_TextReplyIsRelayedAndLogged(t *testing.T) {
 	assert.Positive(t, row.Cost, "the turn is priced from the model catalog")
 }
 
+// A client that waits for the provider to announce its message before it asks for a response gets the message
+// into the turn's input once, however the announcement races the request.
+func TestTurn_UserMessageIsLoggedOnceWhenTheClientWaitsForItsAnnouncement(t *testing.T) {
+	requireGateway(t)
+	t.Parallel()
+	s := openSession(t)
+	s.configure(textSession())
+
+	s.client.send(userMessage("What is the capital of France?"))
+	s.client.until("conversation.item.done")
+	s.client.send(responseCreate())
+	s.responseDone()
+
+	row := s.turnRow()
+	assert.Len(t, row.raw.Get("input_history").Array(), 1, "input_history: %s", row.raw.Get("input_history").Raw)
+	assert.Equal(t, "What is the capital of France?", row.inputText())
+}
+
 // With server VAD the provider decides when the user has finished speaking: the turn starts from
 // the upstream side, and the transcript of what was said is the turn's input.
 func TestTurn_ServerVADTurnStartsUpstream(t *testing.T) {

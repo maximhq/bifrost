@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1679,6 +1680,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
 	}
+	if err := ValidateClientMetadataURL(client.MCPClientMetadataURL.GetValue()); err != nil {
+		logger.Warn("mcp_client_metadata_url %v; Bifrost's Client ID Metadata Document will be served under mcp_external_client_url", err)
+		client.MCPClientMetadataURL = nil
+	}
 	if err := configstore.ValidatePublicBaseURL(client.SkillsExternalClientURL.GetValue()); err != nil {
 		logger.Warn("skills_external_client_url %v; marketplace serving will be disabled", err)
 		client.SkillsExternalClientURL = nil
@@ -3009,6 +3014,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
 	clientConfigsToUpdate := make([]configstoreTables.TableMCPClient, 0)
 	perUserDiscoveryChanged := make(map[string]*schemas.MCPClientConfig)
+	clientHashUpgrades := make(map[string][2]string) // client ID -> stored pre-code-mode hash and its current form
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
 		if newClientConfig == nil {
 			continue
@@ -3037,6 +3043,14 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			if newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name {
 				found = true
 				if existingClientConfig.ConfigHash != fileHash {
+					if legacy, err := configstore.MCPClientHashMatchesLegacyCodeMode(fileClientRow, existingClientConfig.ConfigHash, existingClientConfig.IsCodeModeClient); err == nil && legacy {
+						// Same file client, hashed before is_code_mode_client was: keep the stored edits and move the
+						// stored hash to the current form so this runs once.
+						logger.Debug("MCP client %q carries a pre-code-mode hash, keeping DB config", newClientConfig.Name)
+						clientHashUpgrades[existingClientConfig.ID] = [2]string{existingClientConfig.ConfigHash, fileHash}
+						existingClientConfig.ConfigHash = fileHash
+						break
+					}
 					if err := pinnedPerUserDiscoveryError(newClientConfig, existingClientConfig); err != nil {
 						logger.Error("skipping MCP client config %q from config file: %v; keeping the stored configuration", newClientConfig.Name, err)
 						break
@@ -3086,6 +3100,9 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 	// Add new client configs to existing ones.
 	config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
+	if config.ConfigStore != nil {
+		upgradeMCPClientConfigHashes(ctx, config.ConfigStore, clientHashUpgrades)
+	}
 	// Persist additions and config-driven updates.
 	if config.ConfigStore != nil && (len(clientConfigsToAdd) > 0 || len(clientConfigsToUpdate) > 0) {
 		logger.Debug("updating MCP config in store with %d new clients and %d updated clients", len(clientConfigsToAdd), len(clientConfigsToUpdate))
@@ -3101,6 +3118,16 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			} else if client := perUserDiscoveryChanged[update.ClientID]; client != nil {
 				readBackPerUserDiscoveryChange(ctx, config.ConfigStore, client)
 			}
+		}
+	}
+}
+
+// upgradeMCPClientConfigHashes moves each stored client's config_hash from its old form to the current one,
+// writing nothing else. A hash another node has already moved is left alone.
+func upgradeMCPClientConfigHashes(ctx context.Context, store configstore.ConfigStore, hashes map[string][2]string) {
+	for id, hash := range hashes {
+		if _, err := store.UpdateMCPClientConfigHash(ctx, id, hash[0], hash[1]); err != nil {
+			logger.Warn("failed to upgrade config hash of MCP client %s: %v", id, err)
 		}
 	}
 }
@@ -3343,6 +3370,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Name:                   clientConfig.Name,
 		EndpointSlug:           clientConfig.EndpointSlug,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -8466,6 +8494,62 @@ func (c *Config) GetMCPExternalClientURL() string {
 	return value
 }
 
+// GetMCPClientMetadataURL returns where the admin hosts Bifrost's Client ID Metadata Document, or empty
+// string when it is served under the MCP external client URL. Resolves env var references automatically.
+func (c *Config) GetMCPClientMetadataURL() string {
+	if c == nil {
+		return ""
+	}
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.MCPClientMetadataURL.GetValue()
+	if ValidateClientMetadataURL(value) != nil {
+		return ""
+	}
+	return normalizeClientMetadataURL(value)
+}
+
+// ValidateClientMetadataURL checks a hosted Client ID Metadata Document URL: https, a path other than "/",
+// no userinfo, query, fragment, or dot segments, and a host authorization servers may fetch (not loopback
+// or a private or special-use IP). "" is valid and means none is hosted.
+func ValidateClientMetadataURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	if !oauth2.IsClientMetadataURL(value) || strings.Contains(value, "?") {
+		return fmt.Errorf("must be an HTTPS URL with a path, and no userinfo, query, fragment, or dot segments")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("must be an HTTPS URL with a path, and no userinfo, query, fragment, or dot segments")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if network.IsLocalhost(host) || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("must be on a host authorization servers can reach, not a loopback address")
+	}
+	if ip := net.ParseIP(host); ip != nil && !network.IsPublicIP(ip) {
+		return fmt.Errorf("must be on a host authorization servers can reach, not a private or special-use address")
+	}
+	return nil
+}
+
+// normalizeClientMetadataURL lowercases the scheme and host and drops the default port (CIMD §3), so the
+// client_id Bifrost presents and serves is the form authorization servers compare against.
+func normalizeClientMetadataURL(value string) string {
+	scheme, rest, ok := strings.Cut(value, "://")
+	if !ok {
+		return value
+	}
+	authority, path := rest, ""
+	if i := strings.Index(rest, "/"); i >= 0 {
+		authority, path = rest[:i], rest[i:]
+	}
+	return strings.ToLower(scheme) + "://" + strings.TrimSuffix(strings.ToLower(authority), ":443") + path
+}
+
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway
 // push-notification callback URLs and served agent card URLs, or empty string if not
 // configured. Resolves env var references automatically.
@@ -8566,7 +8650,7 @@ func (c *Config) GetMCPClientNames() map[string]string {
 // registers it.
 type MCPPerUserDiscoveryClient struct {
 	Name     string
-	CodeMode bool // reached through the code-mode tools rather than its own
+	CodeMode bool // reached through the code-mode tools on /mcp or its own /mcp/<slug>
 }
 
 // GetMCPPerUserDiscoveryClients returns every enabled MCP client with
@@ -8586,7 +8670,39 @@ func (c *Config) GetMCPPerUserDiscoveryClients() map[string]MCPPerUserDiscoveryC
 		if result == nil {
 			result = make(map[string]MCPPerUserDiscoveryClient)
 		}
-		result[client.ID] = MCPPerUserDiscoveryClient{Name: client.Name, CodeMode: client.IsCodeModeClient}
+		result[client.ID] = MCPPerUserDiscoveryClient{Name: client.Name, CodeMode: client.UsesCodeModeGlobalOrSlug()}
+	}
+	return result
+}
+
+// MCPClientCodeModes is the code mode of an MCP client whose server_type_on_slug overrides is_code_mode_client.
+type MCPClientCodeModes struct {
+	Global bool // on /mcp, Virtual MCPs and LLM requests
+	OnSlug bool // on its own /mcp/<slug>
+}
+
+// GetMCPServerTypesOnSlug returns every enabled MCP client with a server_type_on_slug override, keyed by
+// client name; nil when none has one. Read-only snapshot.
+func (c *Config) GetMCPServerTypesOnSlug() map[string]MCPClientCodeModes {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	var result map[string]MCPClientCodeModes
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client == nil || client.Disabled {
+			continue
+		}
+		onSlug, overrides := client.ServerTypeOnSlug.CodeModeOverride()
+		if !overrides {
+			continue
+		}
+		if result == nil {
+			result = make(map[string]MCPClientCodeModes)
+		}
+		result[client.Name] = MCPClientCodeModes{Global: client.IsCodeModeClient, OnSlug: onSlug}
 	}
 	return result
 }
@@ -10076,6 +10192,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	// as these are read-only and not sent in the update request
 	c.MCPConfig.ClientConfigs[configIndex].Name = updatedConfig.Name
 	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = updatedConfig.IsCodeModeClient
+	c.MCPConfig.ClientConfigs[configIndex].ServerTypeOnSlug = updatedConfig.ServerTypeOnSlug
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = updatedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
