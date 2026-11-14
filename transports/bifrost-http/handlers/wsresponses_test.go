@@ -165,6 +165,20 @@ func TestCreateBifrostContextFromHeaders_SettlesIdentity(t *testing.T) {
 	}
 }
 
+// An ElevenLabs client sends its key as xi-api-key: a virtual key there is the connection's identity, and a
+// provider key is not.
+func TestCreateBifrostContextFromHeaders_XiAPIKey(t *testing.T) {
+	for value, wantKind := range map[string]string{"sk-bf-elevenlabs": string(grant.CredentialVirtualKey), "elevenlabs-key": ""} {
+		ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{xiAPIKey: value})
+
+		got := ctx.Grant().Identity().Credential()
+		cancel()
+		if got.Kind != wantKind {
+			t.Errorf("xi-api-key %q: credential kind = %q, want %q", value, got.Kind, wantKind)
+		}
+	}
+}
+
 // A caller's own provider key is honoured at upgrade under the same gate as on HTTP: the server
 // setting and the per-request header, with a virtual key never mistaken for one.
 func TestCreateBifrostContextFromHeaders_DirectKey(t *testing.T) {

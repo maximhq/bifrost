@@ -49,3 +49,21 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 
 	return bifrostResponse
 }
+
+// ToElevenlabsListModelsResponse is the Bifrost model list in ElevenLabs' schema, each model under the id a client
+// sends, with the name Bifrost has of it.
+func ToElevenlabsListModelsResponse(resp *schemas.BifrostListModelsResponse) ElevenlabsListModelsResponse {
+	if resp == nil {
+		return nil
+	}
+	list := make(ElevenlabsListModelsResponse, 0, len(resp.Data))
+	for _, model := range resp.Data {
+		_, modelID := schemas.ParseModelString(model.ID, schemas.Elevenlabs)
+		entry := ElevenlabsModel{ModelID: modelID}
+		if model.Name != nil {
+			entry.Name = *model.Name
+		}
+		list = append(list, entry)
+	}
+	return list
+}

@@ -522,38 +522,56 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 	})
 	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
 	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+	const hostedURL = "https://public.example.com/bifrost/client.json"
 
+	const toggle = `,"oauth_config":{"use_client_metadata_document":true}`
 	for _, tc := range []struct {
 		authType   string
 		extra      string // extra request fields
+		hosted     string // mcp_client_metadata_url
+		local      bool   // Bifrost on http://localhost:8080 with no external URL, whose own document cannot be fetched
 		wantStatus int    // header types stop at the stub manager's connect
 		wantCIMD   bool
 	}{
 		{authType: "oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "oauth", extra: `,"oauth_config":{}`, hosted: hostedURL, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		// A hosted copy is what lets a local Bifrost use the toggle at all.
+		{authType: "oauth", extra: toggle, local: true, wantStatus: fasthttp.StatusBadRequest},
+		{authType: "oauth", extra: toggle, hosted: hostedURL, local: true, wantStatus: fasthttp.StatusOK, wantCIMD: true},
 		{authType: "per_user_oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
 		{authType: "headers", extra: `,"headers":{"Authorization":"Bearer shared"}`, wantStatus: fasthttp.StatusInternalServerError},
 		{authType: "per_user_headers", extra: `,"per_user_header_keys":["Authorization"],"user_headers":{"Authorization":"Bearer sample"}`, wantStatus: fasthttp.StatusUnprocessableEntity},
 	} {
-		t.Run(tc.authType, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/hosted=%s/local=%v", tc.authType, tc.hosted, tc.local), func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			server, oauthRequests := newLoopbackOAuthMCPServerWithCIMD(t, true)
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
-				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
-			}}
+			base, host := "https://bifrost.example.com", "bifrost.example.com"
+			if tc.local {
+				base, host = "http://localhost:8080", "localhost:8080"
+			}
+			clientConfig := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar(tc.hosted)}
+			if !tc.local {
+				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(base)
+			}
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: clientConfig}
 			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
-			req.Header.SetHost("bifrost.example.com")
+			req.Header.SetHost(host)
 			req.SetBodyString(`{"name":"cimd_` + tc.authType + `","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `"` + tc.extra + `}`)
 			ctx := initCtx(&req)
 			h.addMCPClient(ctx)
 
 			body := string(ctx.Response.Body())
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			if tc.local && !tc.wantCIMD {
+				assert.Contains(t, body, "public HTTPS address", "the toggle is refused without a fetchable document")
+				return
+			}
 			if !tc.wantCIMD {
 				assert.Contains(t, body, "manager must not be reached", "reaches the connection step")
 				assert.NotContains(t, body, "authorize_url")
@@ -566,7 +584,12 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 			authorize, err := url.Parse(resp.AuthorizeURL)
 			require.NoError(t, err)
-			assert.Equal(t, documentURL, authorize.Query().Get("client_id"))
+			wantClientID := documentURL
+			if tc.hosted != "" {
+				wantClientID = tc.hosted
+			}
+			assert.Equal(t, wantClientID, authorize.Query().Get("client_id"))
+			assert.Equal(t, base+"/api/oauth/callback", authorize.Query().Get("redirect_uri"), "the callback stays on Bifrost's base")
 			assert.Equal(t, int32(1), oauthRequests.Load(), "metadata fetched once, no dynamic registration")
 		})
 	}

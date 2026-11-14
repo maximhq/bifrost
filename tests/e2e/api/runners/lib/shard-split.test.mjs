@@ -776,5 +776,57 @@ test("Baseten partition excludes Hugging Face rows and the anthropic partition e
   assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat", "list-models"]);
 });
 
+// Soniox's OpenAI drop-in rows travel /openai/v1/audio/..., so the openai keywords claim them even
+// though the upstream call goes to Soniox. An openai-only sweep would then call Soniox without its
+// key, and a sweep with the key would run those rows (and bill them) twice.
+test("Soniox rows run only in the soniox partition", () => {
+  const speech = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, input: "hello", voice: "Maya" }) } },
+  });
+  const source = join(WORK, "source-soniox.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "Soniox provider folder",
+          item: [
+            speech("soniox-speech-native", "http://localhost:8080/v1/audio/speech", "soniox/tts-rt-v2"),
+            speech("soniox-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "soniox/tts-rt-v2"),
+            {
+              name: "soniox-transcription-openai-route",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/transcriptions",
+                body: { mode: "formdata", formdata: [{ key: "model", value: "soniox/stt-async-v6", type: "text" }] },
+              },
+            },
+            { name: "soniox-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=soniox" } },
+          ],
+        },
+        {
+          name: "OpenAI folder",
+          item: [
+            speech("openai-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "tts-1"),
+            // Prose in a prompt is not the row's identity: this row calls OpenAI.
+            {
+              name: "openai-speech-prompt-names-another-vendor",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/speech",
+                body: { mode: "raw", raw: JSON.stringify({ model: "tts-1", input: "Say soniox", voice: "alloy" }) },
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-speech-openai-route", "openai-speech-prompt-names-another-vendor"]);
+  assert.deepEqual(runFilter(["--provider", "soniox"], { source }), ["soniox-speech-native", "soniox-speech-openai-route", "soniox-transcription-openai-route", "soniox-models"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

@@ -301,7 +301,7 @@ func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *t
 	require.NotNil(t, set)
 
 	chat := applyInjectedToolsChat(&schemas.BifrostChatRequest{Params: &schemas.ChatParameters{
-		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Name: "apply_patch", Custom: &schemas.ChatToolCustom{}}},
+		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Custom: &schemas.ChatToolCustom{Name: "apply_patch"}}},
 		ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 			Type: schemas.ChatToolChoiceTypeCustom, Custom: &schemas.ChatToolChoiceCustom{Name: "apply_patch"},
 		}},
@@ -627,10 +627,14 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	set := testInjectedSet(t)
 	var sent []*schemas.BifrostResponsesRequest
 	scripted := []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}},
-		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22}},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22},
+		},
 	}
 	dispatch := func(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		sent = append(sent, req)
@@ -664,10 +668,14 @@ func TestRunInjectedResponsesLoop_KeepsAdvisorIterations(t *testing.T) {
 		return []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
 	}
 	scripted := []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)}},
-		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)}},
+		{
+			Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)},
+		},
 	}
 	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		resp := scripted[0]
