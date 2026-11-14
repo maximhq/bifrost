@@ -124,7 +124,7 @@ func (provider *BedrockProvider) ConnectRealtime(ctx *schemas.BifrostContext, ke
 	if _, credErr := credentials(); credErr != nil {
 		return nil, credErr
 	}
-	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	host := provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
 	return newBedrockRealtimeConn(ctx, provider, fmt.Sprintf("https://%s/model/%s", host, path), region, credentials, model), nil
 }
 

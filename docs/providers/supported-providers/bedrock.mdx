@@ -466,6 +466,45 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `aliases`                         | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+)                                                          |
 | `aliases.*.inference_profile_arn` | No       | Per-deployment ARN prefix; overrides `bedrock_key_config.arn` (see [Inference Profiles](#inference-profiles--arn-configuration))              |
 | `models`                          | Yes      | Models this key can serve; use `["*"]` to allow all                                                                                          |
+| `bedrock_key_config.endpoints`    | No       | Per-service hosts to dial instead of the public regional endpoints (see [Private and Custom Endpoints](#private-and-custom-endpoints))       |
+
+### Private and Custom Endpoints
+
+By default Bifrost dials the public regional hosts (`bedrock-runtime.<region>.amazonaws.com` and so on). For AWS PrivateLink, air-gapped networks, or an internal proxy, point Bifrost at your own hosts in either of two ways:
+
+- **`network_config.base_url`** on the Bedrock provider sets the **bedrock-runtime** host for every key. All inference (Converse, InvokeModel, the OpenAI-compatible runtime surface, Nova Sonic realtime, and ApplyGuardrail passthrough) goes there.
+- **`bedrock_key_config.endpoints`** on a key sets hosts per service: `runtime`, `control_plane` (model listing, batch jobs), `mantle`, `agent_runtime` (rerank, InvokeAgent, Retrieve), and `s3` (batch files). Values accept the `env.` prefix.
+
+For bedrock-runtime, a key's `endpoints.runtime` wins over `network_config.base_url`, which wins over the public host. Other services never use `base_url`, because a single URL cannot serve them all. Configure those through `endpoints` if they must stay private too.
+
+Only the host (and port) of either value is used. Bifrost always connects over HTTPS and builds the path itself, so a scheme or path in the value is ignored. `region` is still required: it sets the SigV4 credential scope.
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "network_config": {
+        "base_url": "https://bedrock-runtime.internal.example.com"
+      },
+      "keys": [
+        {
+          "name": "bedrock-private",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1",
+            "endpoints": {
+              "control_plane": "env.AWS_ENDPOINT_URL_BEDROCK"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Bifrost does not read the AWS SDK's `AWS_ENDPOINT_URL*` environment variables. Reference them explicitly with the `env.` prefix as above.
 
 ---
 

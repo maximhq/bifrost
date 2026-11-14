@@ -147,7 +147,7 @@ func (provider *BedrockProvider) buildPassthroughRequest(ctx *schemas.BifrostCon
 
 	config := key.BedrockKeyConfig
 	region := resolveBedrockRegion(ctx, key, "")
-	requestURL := fmt.Sprintf("https://%s%s", resolveBedrockHost(bedrockEndpoints(config), route.service, region), req.Path)
+	requestURL := fmt.Sprintf("https://%s%s", provider.serviceHost(bedrockEndpoints(config), route.service, region), req.Path)
 	if req.RawQuery != "" {
 		requestURL += "?" + req.RawQuery
 	}
