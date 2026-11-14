@@ -194057,6 +194057,124 @@
               }
             }
           ]
+        },
+        {
+          "name": "146.11 bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions top_k reaches Converse additionalModelRequestFields (sampling top_k)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"top_k\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __b = {};",
+                  "try { __b = pm.response.json() || {}; } catch (e) { __b = {}; }",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+                  "var rr = (__b.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "if (rr) {",
+                  "  // Converse has no typed top_k slot: it must ride additionalModelRequestFields, as on the invoke route (#9930).",
+                  "  pm.test('top_k reaches Converse as additionalModelRequestFields.top_k', function () {",
+                  "    var amrf = rr.additionalModelRequestFields || {};",
+                  "    pm.expect(amrf.top_k, JSON.stringify(rr).slice(0, 600)).to.equal(1);",
+                  "  });",
+                  "  pm.test('top_k is not left at the Converse top level', function () {",
+                  "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('top_k');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "146.12 bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages top_k reaches Converse additionalModelRequestFields (sampling top_k)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"top_k\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __b = {};",
+                  "try { __b = pm.response.json() || {}; } catch (e) { __b = {}; }",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+                  "var rr = (__b.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "if (rr) {",
+                  "  // Converse has no typed top_k slot: it must ride additionalModelRequestFields, as on the invoke route (#9930).",
+                  "  pm.test('top_k reaches Converse as additionalModelRequestFields.top_k', function () {",
+                  "    var amrf = rr.additionalModelRequestFields || {};",
+                  "    pm.expect(amrf.top_k, JSON.stringify(rr).slice(0, 600)).to.equal(1);",
+                  "  });",
+                  "  pm.test('top_k is not left at the Converse top level', function () {",
+                  "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('top_k');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

@@ -913,15 +913,28 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
+	// TopK — prefer the promoted neutral field; fall back to ExtraParams.
+	topK := bifrostReq.Params.TopK
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
+		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+			if extraTopK, ok := schemas.SafeExtractIntPointer(bedrockReq.ExtraParams["top_k"]); ok {
+				delete(bedrockReq.ExtraParams, "top_k")
+				if topK == nil {
+					topK = extraTopK
+				}
+			}
+		}
+	}
+	applyAnthropicTopK(ctx, bifrostReq.Model, caps, topK, bedrockReq)
+	if len(bedrockReq.ExtraParams) > 0 {
 		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
 			return err
 		}
-		if len(bedrockReq.ExtraParams) == 0 {
-			bedrockReq.ExtraParams = nil
-		}
+	}
+	if len(bedrockReq.ExtraParams) == 0 {
+		bedrockReq.ExtraParams = nil
 	}
 	if bedrockReq.OutputConfig != nil {
 		setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
@@ -1329,6 +1342,21 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 	reqCopy := *request
 	reqCopy.Input = input
 	return &reqCopy, body, nil
+}
+
+// applyAnthropicTopK sends a Claude caller's top_k through additionalModelRequestFields, the
+// only place Converse takes it (the invoke route does the same). Models that reject top_k
+// (adaptive-only thinking) get none, matching the Anthropic provider. Runs before
+// applyBedrockExtraParams so an explicit additionalModelRequestFieldPaths entry still wins.
+func applyAnthropicTopK(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, topK *int, bedrockReq *BedrockConverseRequest) {
+	if topK == nil || !schemas.IsAnthropicModelFamily(ctx, model) ||
+		caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
+		return
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	bedrockReq.AdditionalModelRequestFields.Set("top_k", *topK)
 }
 
 // applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request.
@@ -1923,12 +1951,10 @@ func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.Ca
 	return cc
 }
 
-// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
-// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+// withoutTopLevelCacheControl returns a copy of extraParams without "cache_control". The map belongs
+// to the Bifrost request, which fallbacks reuse, so the converters delete the keys they consume
+// (stop, top_k, guardrailConfig, ...) from the copy only.
 func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams["cache_control"]; !ok {
-		return extraParams
-	}
 	out := maps.Clone(extraParams)
 	delete(out, "cache_control")
 	return out

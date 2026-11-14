@@ -2864,6 +2864,13 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					inferenceConfig.StopSequences = stop
 				}
 			}
+			// The Anthropic Messages ingress carries top_k here; Converse has no typed slot for it.
+			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				if topK, ok := schemas.SafeExtractIntPointer(bedrockReq.ExtraParams["top_k"]); ok {
+					delete(bedrockReq.ExtraParams, "top_k")
+					applyAnthropicTopK(ctx, bifrostReq.Model, caps, topK, bedrockReq)
+				}
+			}
 			if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
 				return nil, err
 			}
