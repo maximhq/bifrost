@@ -1197,10 +1197,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.TopLogProbs = nil
 			}
 			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
-				slices.Contains(req.ResponsesParameters.Include, "message.output_text.logprobs") {
+				slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
 				// Clone: Include shares its backing array with bifrostReq.Params.
 				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
-					return s == "message.output_text.logprobs"
+					return s == schemas.ResponsesIncludeOutputTextLogProbs
 				})
 			}
 			// Codex asks for encrypted reasoning on every request; models that do not

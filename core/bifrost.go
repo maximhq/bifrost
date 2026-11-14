@@ -9034,9 +9034,6 @@ func chatParamsWithoutResponsesEquivalent(p *schemas.ChatParameters) []string {
 	if p.FrequencyPenalty != nil {
 		out = append(out, "frequency_penalty")
 	}
-	if p.LogProbs != nil && *p.LogProbs {
-		out = append(out, "logprobs")
-	}
 	if p.Audio != nil || slices.Contains(p.Modalities, "audio") {
 		out = append(out, "audio")
 	}
