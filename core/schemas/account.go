@@ -152,6 +152,7 @@ type Key struct {
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
+	RapidMLXKeyConfig      *RapidMLXKeyConfig      `json:"rapidmlx_key_config,omitempty"`       // Rapid-MLX-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
@@ -1288,6 +1289,13 @@ type ReplicateKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple Ollama instances.
 type OllamaKeyConfig struct {
 	URL SecretVar `json:"url"` // Ollama server base URL (required, supports env. prefix)
+}
+
+// RapidMLXKeyConfig represents the Rapid-MLX-specific key configuration.
+// It allows each key to target a different Rapid-MLX server URL,
+// enabling per-key routing and round-robin load balancing across multiple Rapid-MLX instances.
+type RapidMLXKeyConfig struct {
+	URL SecretVar `json:"url"` // Rapid-MLX server base URL (required, supports env. prefix)
 }
 
 // SGLKeyConfig represents the SGLang-specific key configuration.

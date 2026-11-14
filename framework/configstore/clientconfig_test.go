@@ -199,3 +199,13 @@ func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
 	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
 	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
 }
+
+func TestRapidMLXKeyHashIncludesURL(t *testing.T) {
+	key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")}}
+	first, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	key.RapidMLXKeyConfig.URL = *schemas.NewSecretVar("http://localhost:8001/v1")
+	second, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	require.NotEqual(t, first, second)
+}

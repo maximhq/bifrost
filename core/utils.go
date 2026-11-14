@@ -81,7 +81,7 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.RapidMLX || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -178,6 +178,13 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 		if key.OllamaKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("ollama_key_config.url is required")
+		}
+	case schemas.RapidMLX:
+		if key.RapidMLXKeyConfig == nil {
+			return fmt.Errorf("rapidmlx_key_config is required")
+		}
+		if key.RapidMLXKeyConfig.URL.GetValue() == "" {
+			return fmt.Errorf("rapidmlx_key_config.url is required")
 		}
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil {
