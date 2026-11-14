@@ -318,6 +318,18 @@ var streamPromptUsageCases = []streamPromptUsageCase{
 		prompt:     20010, cachedRead: 20000, completion: 300,
 	},
 	{
+		name:       "delta carries only output_tokens and advisor iterations",
+		startUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":0,"output_tokens":1}`,
+		deltaUsage: `{"output_tokens":300,"iterations":[{"type":"message","input_tokens":10,"output_tokens":120},{"type":"advisor_message","model":"claude-opus-4-6","input_tokens":900,"output_tokens":80}]}`,
+		prompt:     20010, cachedRead: 20000, completion: 300,
+	},
+	{
+		name:       "delta reports the full split plus a compaction pass",
+		startUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":0,"output_tokens":1}`,
+		deltaUsage: `{"input_tokens":10,"cache_read_input_tokens":20000,"cache_creation_input_tokens":0,"output_tokens":300,"iterations":[{"type":"compaction","input_tokens":500,"cache_read_input_tokens":100,"output_tokens":50},{"type":"message","input_tokens":10,"cache_read_input_tokens":20000,"output_tokens":250}]}`,
+		prompt:     20610, cachedRead: 20100, completion: 350,
+	},
+	{
 		name:       "no prompt caching",
 		startUsage: `{"input_tokens":20458,"output_tokens":1}`,
 		deltaUsage: `{"input_tokens":20458,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":200}`,

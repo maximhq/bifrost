@@ -808,14 +808,41 @@ const anthropicPromptCountersAll = anthropicPromptCounterInputTokens |
 // Both reduce to "overwrite what the frame reports", but an omitted key and a
 // reported zero decode to the same int, so presence is read from the raw event.
 // Nested message.usage (message_start) is the stream's first snapshot, so every
-// counter counts as reported there. A usage object carrying iterations is
-// treated as a full report too, because billableAnthropicUsage folds the
-// compaction passes into the top-level counters.
+// counter counts as reported there. On a frame carrying iterations, a counter
+// also counts as reported when a compaction pass contributes to it, because
+// billableAnthropicUsage folds those passes into the top-level counters; other
+// iterations (advisor, server-side fallback) add nothing, so presence alone
+// decides.
 func reportedAnthropicStreamPromptCounters(topLevel bool, usage *AnthropicUsage, event []byte) anthropicPromptCounterBit {
-	if !topLevel || usage == nil || len(usage.Iterations) > 0 {
+	if !topLevel || usage == nil {
 		return anthropicPromptCountersAll
 	}
-	return anthropicPromptCountersAll &^ absentAnthropicPromptCounters(event)
+	return anthropicPromptCountersAll&^absentAnthropicPromptCounters(event) | compactionAnthropicPromptCounters(usage)
+}
+
+// compactionAnthropicPromptCounters returns the prompt-side counters that the
+// usage's compaction iterations contribute a non-zero count to.
+func compactionAnthropicPromptCounters(usage *AnthropicUsage) anthropicPromptCounterBit {
+	var bits anthropicPromptCounterBit
+	for i := range usage.Iterations {
+		it := &usage.Iterations[i]
+		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction {
+			continue
+		}
+		if it.InputTokens != 0 {
+			bits |= anthropicPromptCounterInputTokens
+		}
+		if it.CacheReadInputTokens != 0 {
+			bits |= anthropicPromptCounterCacheReadInputTokens
+		}
+		if it.CacheCreationInputTokens != 0 {
+			bits |= anthropicPromptCounterCacheCreationInputTokens
+		}
+		if it.CacheCreation.Ephemeral5mInputTokens != 0 || it.CacheCreation.Ephemeral1hInputTokens != 0 {
+			bits |= anthropicPromptCounterCacheCreation
+		}
+	}
+	return bits
 }
 
 // anthropicReportsCacheTokens reports whether any cache counter the event
