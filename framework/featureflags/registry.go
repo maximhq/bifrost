@@ -18,16 +18,31 @@ import (
 //     text; can be changed without breaking call sites.
 //   - Description is the paragraph-level detail shown under the row.
 //   - Default is the value used when no override (file or DB) is present.
+//   - EnterpriseDefault, when set, replaces Default in the enterprise build
+//     only. Nil means the two builds share Default. This is how a feature
+//     ships on for OSS and off for enterprise (or the reverse) without a
+//     second registration or a build-time switch at every call site.
 //   - EnterpriseOnly marks flags that gate enterprise-only features: in
 //     OSS mode such flags are inert (IsEnabled always returns false),
 //     reject Set(), and surface in the UI with the toggle disabled and
 //     an "Enterprise" badge so operators can see the feature exists.
 type FlagDef struct {
-	ID             string
-	DisplayName    string
-	Description    string
-	Default        bool
-	EnterpriseOnly bool
+	ID                string
+	DisplayName       string
+	Description       string
+	Default           bool
+	EnterpriseDefault *bool
+	EnterpriseOnly    bool
+}
+
+// DefaultFor is the code default for one build: EnterpriseDefault in the
+// enterprise build when it is set, Default otherwise. Every read of a flag's
+// default goes through here so the two builds cannot drift apart.
+func (d FlagDef) DefaultFor(isEnterprise bool) bool {
+	if isEnterprise && d.EnterpriseDefault != nil {
+		return *d.EnterpriseDefault
+	}
+	return d.Default
 }
 
 var (

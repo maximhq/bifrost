@@ -3,7 +3,7 @@ pkgs.mkShellNoCC {
   name = "bifrost-nix-dev-shell";
 
   packages = with pkgs; [
-    go_1_26
+    go_1_27
     gopls
     gofumpt
     air

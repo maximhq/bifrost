@@ -164,9 +164,23 @@ func (provider *ParasailProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 	)
 }
 
-// Embedding is not supported by the Parasail provider.
+// Embedding performs an embedding request to the Parasail API.
+// Uses Parasail's OpenAI-compatible embeddings endpoint.
 func (provider *ParasailProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
+	return openai.HandleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
 // Speech is not supported by the Parasail provider.
@@ -192,6 +206,11 @@ func (provider *ParasailProvider) TranscriptionStream(ctx *schemas.BifrostContex
 // Rerank is not supported by the Parasail provider.
 func (provider *ParasailProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Parasail provider.
+func (provider *ParasailProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Parasail provider.
@@ -317,6 +336,11 @@ func (provider *ParasailProvider) BatchResults(_ *schemas.BifrostContext, _ []sc
 // CountTokens is not supported by the Parasail provider.
 func (provider *ParasailProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Parasail provider.
+func (provider *ParasailProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Parasail provider.

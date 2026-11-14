@@ -1,6 +1,9 @@
 package network
 
-import "net"
+import (
+	"net"
+	"net/netip"
+)
 
 // IsLocalhost reports whether hostname is localhost or a loopback literal.
 func IsLocalhost(hostname string) bool {
@@ -32,11 +35,32 @@ func init() {
 // These are always blocked regardless of AllowPrivateNetwork — they include
 // cloud instance metadata endpoints (169.254.169.254, fe80::) that must
 // never be reachable even in private-network deployments.
+//
+// IPv6 forms that embed an IPv4 address (IPv4-mapped, 6to4, NAT64) are judged
+// by the embedded IPv4 as well, as IsPublicIP does, so 169.254.169.254 is
+// still link-local when written as 2002:a9fe:a9fe:: or 64:ff9b::a9fe:a9fe.
+// The Teredo prefix is reported as link-local outright: its embedded IPv4 is
+// obfuscated and it has no legitimate server-to-server use (see the teredo
+// var in ssrf.go), so every gate built on this predicate refuses it.
 func IsLinkLocal(ip net.IP) bool {
 	if ip.To4() != nil {
 		return linkLocalSubnet.Contains(ip)
 	}
-	return ip.IsLinkLocalUnicast()
+	if ip.IsLinkLocalUnicast() {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	if teredo.Contains(addr) {
+		return true
+	}
+	if embedded, ok := embeddedIPv4(addr); ok {
+		return embedded.IsLinkLocalUnicast()
+	}
+	return false
 }
 
 // IsPrivateIP reports whether ip falls in a private, loopback, or link-local range.

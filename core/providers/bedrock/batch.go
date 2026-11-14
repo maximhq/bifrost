@@ -89,9 +89,9 @@ type BedrockBatchJobSummary struct {
 
 // BedrockBatchResultRecord represents a single result record in Bedrock batch output JSONL.
 type BedrockBatchResultRecord struct {
-	RecordID    string                 `json:"recordId"`
-	ModelOutput json.RawMessage        `json:"modelOutput,omitempty"`
-	Error       *BedrockBatchError     `json:"error,omitempty"`
+	RecordID    string             `json:"recordId"`
+	ModelOutput json.RawMessage    `json:"modelOutput,omitempty"`
+	Error       *BedrockBatchError `json:"error,omitempty"`
 }
 
 // BedrockBatchError represents an error in batch processing.

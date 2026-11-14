@@ -1,11 +1,14 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"unsafe"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // AnthropicRequestBuildConfig holds the dynamic, per-call inputs to
@@ -35,6 +38,12 @@ type AnthropicRequestBuildConfig struct {
 	// strip max_tokens and temperature after typed conversion.
 	ExcludeFields []string
 
+	// IncludeFields maps JSON top-level keys to values set on the final body in
+	// both raw and typed paths, after ExcludeFields. Used by the Bedrock
+	// InvokeModel egress for amazon-bedrock-guardrailConfig, which has no
+	// slot in the Anthropic Messages schema.
+	IncludeFields map[string]any
+
 	// ValidateTools runs ValidateToolsForProvider before typed conversion,
 	// returning an error for any tool unsupported by the provider. Set true
 	// on Responses-API paths (the chat API doesn't carry ResponsesTool types).
@@ -45,7 +54,7 @@ type AnthropicRequestBuildConfig struct {
 	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
 	// caller's NetworkConfig at request time.
 	BetaHeaderOverrides  map[string]bool
-	ProviderExtraHeaders map[string]string
+	ProviderExtraHeaders map[string]schemas.SecretVar
 
 	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
 	// request/response bytes are attached to BifrostError.ExtraFields via
@@ -96,6 +105,11 @@ type AnthropicProviderRequestDefaults struct {
 	// for this model". Native Anthropic accepts URLs and fetches them itself, so
 	// it leaves this off and avoids a redundant download.
 	InlineURLSources bool
+
+	// KeepUnsignedThinking replays thinking blocks with an empty signature (self-hosted servers never sign).
+	KeepUnsignedThinking bool
+
+	CachePrefixKeysLast bool // emit tools, system, messages as the last body keys (Vertex prompt cache, see moveCachePrefixKeysLast)
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -104,19 +118,30 @@ type AnthropicProviderRequestDefaults struct {
 var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicProviderRequestDefaults{
 	schemas.Anthropic: {},
 	schemas.Azure:     {},
-	// Bedrock Mantle native-Anthropic endpoint (/anthropic/v1/messages): the
-	// request is the native Anthropic Messages body, so model stays in the body
-	// (set to the bare Bedrock model id), the version is sent as an
-	// "anthropic-version" HTTP header rather than a body field, and stream is a
-	// body field. Tool type versions are still remapped to the canonical pair
-	// the hosted Claude generation expects.
+	// Classic Bedrock InvokeModel / InvokeModelWithResponseStream, used by the
+	// Bedrock provider for Claude requests that need a feature Converse cannot
+	// deliver (today: compaction, see the InvokeModel section of bedrock/bedrock.go and #6825).
+	// Per the AWS Messages API reference
+	// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html):
+	// the model is in the URL (no body field), streaming is selected by the URL
+	// (no stream field), anthropic_version must be "bedrock-2023-05-31", and beta
+	// features are opted into through the anthropic_beta body array. Tool type
+	// versions are remapped to the pair the hosted Claude generation expects, and
+	// URL image/document sources are inlined because AWS-hosted Claude has no URL
+	// fetcher (the Converse path already does the same).
 	schemas.Bedrock: {
-		RemapToolVersions: true,
+		DeleteModelField:          true,
+		DeleteStreamField:         true,
+		AddAnthropicVersion:       true,
+		AnthropicVersion:          "bedrock-2023-05-31",
+		RemapToolVersions:         true,
+		InjectBetaHeadersIntoBody: true,
+		InlineURLSources:          true,
 	},
-	// Bedrock Mantle shares the Bedrock native-Anthropic request shape (model in
-	// body, anthropic-version HTTP header, tool versions remapped). It has its own
-	// entry so its feature surface in ProviderFeatures can diverge from Bedrock's
-	// Converse path without coupling the two.
+	// Bedrock Mantle native-Anthropic endpoint (/anthropic/v1/messages): the
+	// request is the plain Anthropic Messages body (model in body, version as the
+	// anthropic-version HTTP header, stream as a body field), unlike classic
+	// Bedrock's InvokeModel shape above. Tool type versions are remapped.
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
 		// AWS-hosted Claude has no URL fetcher: a {"type":"url"} image or document
@@ -137,8 +162,12 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		StripCacheControlScope:    true,
 		RemapToolVersions:         true,
 		InjectBetaHeadersIntoBody: true,
+		CachePrefixKeysLast:       true,
 	},
-	schemas.SGL: {},
+	// vLLM and SGLang serve /v1/messages without signing their thinking; the model
+	// needs its own unsigned reasoning back on the next turn.
+	schemas.SGL:  {KeepUnsignedThinking: true},
+	schemas.VLLM: {KeepUnsignedThinking: true},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -158,9 +187,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -173,6 +206,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
+
+		// Server-side thread state is bound to the account that created it, and
+		// Bifrost's per-request key selection, retries, and fallbacks cannot keep
+		// a continuation on that account, so the field never goes upstream. The
+		// integration refuses thread continuations outright; a create request
+		// carries the full conversation and serves fine without the field.
+		if providerUtils.JSONFieldExists(jsonBody, "thread") {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thread")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 
 		if cfg.IsCountTokens {
 			// Token-counting mode: strip max_tokens / temperature and set model.
@@ -225,6 +270,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
 			}
+			if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+				if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+					jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
+				}
+			}
 
 		}
 
@@ -264,6 +321,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -276,11 +338,19 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// manually.
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+			// Cloud bodies may no longer contain model; capability checks still need it.
+			probe.Model = capModel
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -301,8 +371,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
+		ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, convErr.Error())
+			}
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
 					ctx,
@@ -316,7 +390,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, "request body is not provided")
+			}
 			return nil, newErr("request body is not provided", nil, jsonBody)
+		}
+		if ct != nil {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
 		}
 
 		if cfg.Model != "" {
@@ -340,10 +420,37 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// so a Bifrost alias would otherwise match none of them and skip every
 		// model-level strip. The raw path above already uses capModel.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
+
+		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
+		// adaptive-only family one pass AFTER the conversion, so a
+		// converter-only restore of a caller's own thinking mode would be
+		// silently undone here. Re-assert it -- scoped exactly as the converter
+		// scopes it, to a recorded native Anthropic Messages ingress plus the
+		// model -- and leave that shared strip itself untouched, so every other
+		// caller of it keeps its existing behaviour, including the
+		// OpenAI-shaped chat path that promotes thinking out of ExtraParams.
+		//
+		// This runs BEFORE AddMissingBetaHeadersToContext, which DERIVES beta
+		// headers by reading this very body: deriving them first would describe
+		// a body that is about to be replaced, and would disagree with the raw
+		// path, whose derivation already reads a body the raw-body strip
+		// exemption left alone. Restoring first is what keeps one request's
+		// body and the headers describing it decided from the same bytes on
+		// both paths.
+		restoreNativeAnthropicRequestSurface(ctx, reqBody, request.Params, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
+		if mt != nil {
+			if err != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+			} else {
+				mt.EndSpan(mh, schemas.SpanStatusOk, "")
+			}
+		}
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -395,9 +502,15 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -424,6 +537,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
 	if defaults.InlineURLSources {
 		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
@@ -438,6 +556,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+	}
+
+	// Last, so no later edit appends a key after messages.
+	if defaults.CachePrefixKeysLast {
+		jsonBody = moveCachePrefixKeysLast(jsonBody)
 	}
 
 	return jsonBody, nil
@@ -462,9 +585,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -509,6 +636,18 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
+			if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+				jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
+				if err != nil {
+					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+			}
+		}
 
 		if cfg.IsStreaming {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
@@ -543,6 +682,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
+		jsonBody, err = ApplyDefaultEagerInputStreamingToRawBody(jsonBody, cfg.Provider, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+
 		if defaults.AddAnthropicVersion && !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", defaults.AnthropicVersion)
 			if err != nil {
@@ -552,7 +696,9 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		var probe AnthropicMessageRequest
 		if unmarshalErr := schemas.Unmarshal(jsonBody, &probe); unmarshalErr == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
+			probe.Model = capModel
+
+			_ = AddMissingBetaHeadersToContext(ctx, &probe, cfg.Provider)
 		}
 
 		for _, field := range cfg.ExcludeFields {
@@ -561,9 +707,19 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	} else {
+		ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
 		if convErr != nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, convErr.Error())
+			}
 			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
 				return nil, providerUtils.EnrichError(
 					ctx,
@@ -577,7 +733,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
+			if ct != nil {
+				ct.EndSpan(ch, schemas.SpanStatusError, "request body is not provided")
+			}
 			return nil, newErr("request body is not provided", nil, jsonBody)
+		}
+		if ct != nil {
+			ct.EndSpan(ch, schemas.SpanStatusOk, "")
 		}
 
 		if cfg.Model != "" {
@@ -600,10 +762,19 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// as the responses builder: the model predicates match canonical
 		// Anthropic model names, not Bifrost aliases.
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
+		if mt != nil {
+			if err != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+			} else {
+				mt.EndSpan(mh, schemas.SpanStatusOk, "")
+			}
+		}
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -645,9 +816,15 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+		for field, value := range cfg.IncludeFields {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, field, value)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -666,6 +843,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
 	if defaults.InlineURLSources {
 		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
@@ -682,5 +864,134 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
+	// Last, so no later edit appends a key after messages.
+	if defaults.CachePrefixKeysLast {
+		jsonBody = moveCachePrefixKeysLast(jsonBody)
+	}
+
 	return jsonBody, nil
+}
+
+// ProviderExtraFields keys under which a Bedrock native InvokeModel response keeps the
+// amazon-bedrock-guardrailAction / amazon-bedrock-trace fields AnthropicMessageResponse drops.
+const (
+	BedrockInvokeGuardrailActionKey = "invoke_guardrail_action"
+	BedrockInvokeGuardrailTraceKey  = "invoke_guardrail_trace"
+)
+
+// bedrockInvokeGuardrailOutcome reads the amazon-bedrock-guardrailAction and amazon-bedrock-trace
+// top-level fields of a native InvokeModel body or stream event. The trace is returned verbatim:
+// it has AWS's own shape, which the Converse-typed trace cannot represent.
+func bedrockInvokeGuardrailOutcome(body []byte) (action string, trace json.RawMessage) {
+	if a := providerUtils.GetJSONField(body, "amazon-bedrock-guardrailAction"); a.Exists() {
+		action = a.String()
+	}
+	if t := providerUtils.GetJSONField(body, "amazon-bedrock-trace"); t.Exists() {
+		trace = json.RawMessage(t.Raw)
+	}
+	return action, trace
+}
+
+// setBedrockInvokeGuardrailOutcome records a native InvokeModel guardrail outcome on the response.
+func setBedrockInvokeGuardrailOutcome(resp *schemas.BifrostResponsesResponse, action string, trace json.RawMessage) {
+	if action == "" && len(trace) == 0 {
+		return
+	}
+	if resp.ProviderExtraFields == nil {
+		resp.ProviderExtraFields = make(map[string]interface{}, 2)
+	}
+	if action != "" {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey] = action
+	}
+	if len(trace) > 0 {
+		resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey] = trace
+	}
+}
+
+// cachePrefixKeys is the order Anthropic reads the prompt-cache prefix in.
+var cachePrefixKeys = [...]string{"tools", "system", "messages"}
+
+// cachePrefixKeySpan is the [start, end) byte range of one top-level member.
+type cachePrefixKeySpan struct{ start, end int }
+
+// moveCachePrefixKeysLast re-emits the top-level tools, system and messages
+// members as the last keys of body, in that order, leaving every other member
+// where it was. Member bytes are copied verbatim, so values are not re-encoded.
+//
+// Vertex's Anthropic prompt cache is sensitive to raw key order: when the growing
+// messages array precedes the stable tools/system prefix, turn-to-turn cache reads
+// miss on a per-request coin flip (#6406). Neither path controls that order on its
+// own: AnthropicMessageRequest declares Messages before System and Tools, and
+// clients such as Claude Code emit messages first in raw bodies.
+//
+// The body is returned unchanged when it is not an object, carries a duplicate
+// cache-prefix key, or is already ordered. Otherwise the cost is one parse of the
+// top level and one allocation no larger than body.
+func moveCachePrefixKeysLast(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
+	if !root.IsObject() {
+		return body
+	}
+
+	var prefix [len(cachePrefixKeys)]cachePrefixKeySpan
+	var othersBuf [16]cachePrefixKeySpan
+	others := othersBuf[:0]
+	ordered, seenPrefix, duplicate := true, false, false
+	lastRank := -1
+
+	root.ForEach(func(key, value gjson.Result) bool {
+		span := cachePrefixKeySpan{start: key.Index, end: value.Index + len(value.Raw)}
+		rank := -1
+		switch key.String() {
+		case "tools":
+			rank = 0
+		case "system":
+			rank = 1
+		case "messages":
+			rank = 2
+		}
+		if rank < 0 {
+			if seenPrefix {
+				ordered = false
+			}
+			others = append(others, span)
+			return true
+		}
+		if prefix[rank].end != 0 {
+			duplicate = true
+			return false
+		}
+		if rank <= lastRank {
+			ordered = false
+		}
+		seenPrefix, lastRank = true, rank
+		prefix[rank] = span
+		return true
+	})
+	if duplicate || ordered {
+		return body
+	}
+
+	out := make([]byte, 0, len(body))
+	out = append(out, '{')
+	first := true
+	appendMember := func(s cachePrefixKeySpan) {
+		if !first {
+			out = append(out, ',')
+		}
+		first = false
+		out = append(out, body[s.start:s.end]...)
+	}
+	for _, s := range others {
+		appendMember(s)
+	}
+	for _, s := range prefix {
+		if s.end != 0 {
+			appendMember(s)
+		}
+	}
+	return append(out, '}')
 }

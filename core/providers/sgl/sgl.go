@@ -410,6 +410,7 @@ func (provider *SGLProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -583,6 +584,11 @@ func (provider *SGLProvider) CountTokens(ctx *schemas.BifrostContext, key schema
 		nil,
 		provider.logger,
 	)
+}
+
+// ModelRetrieve is not supported by the SGL provider.
+func (provider *SGLProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the SGL provider.

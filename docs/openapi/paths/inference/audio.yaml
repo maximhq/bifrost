@@ -33,7 +33,6 @@ speech:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 transcriptions:
@@ -66,6 +65,5 @@ transcriptions:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

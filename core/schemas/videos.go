@@ -130,11 +130,12 @@ type BifrostVideoGenerationResponse struct {
 }
 
 // VideoUsage carries provider-reported usage for a video (or other async media) generation job.
-// Currently only the provider-computed cost is modeled; providers that report an exact price
-// (e.g. Runware's per-task cost) populate Cost so pricing uses it verbatim instead of a datasheet
-// estimate.
+// Providers that report an exact price (e.g. Runware's per-task cost) populate Cost so pricing uses
+// it verbatim instead of a datasheet estimate. Providers that meter video in tokens (BytePlus
+// Seedance's completion_tokens) populate OutputTokens, priced at the row's per-video-token rate.
 type VideoUsage struct {
-	Cost *BifrostCost `json:"cost,omitempty"`
+	Cost         *BifrostCost `json:"cost,omitempty"`
+	OutputTokens int          `json:"output_tokens,omitempty"`
 }
 
 // getSecondsFromVideoRequest extracts Seconds from video-related requests.
@@ -274,6 +275,7 @@ type BifrostVideoListResponse struct {
 	FirstID     *string                    `json:"first_id,omitempty"`
 	HasMore     *bool                      `json:"has_more,omitempty"`
 	LastID      *string                    `json:"last_id,omitempty"`
+	After       *string                    `json:"after,omitempty"` // Cursor for the next page; spans every key
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -321,4 +323,61 @@ type BifrostVideoDownloadResponse struct {
 
 type VideoLogParams struct {
 	VideoID string `json:"video_id"`
+}
+
+// BifrostVideoDebug is the video-kind detail carried on a log row. It mirrors
+// BifrostBatchDebug: video generation is billed at settlement, minutes after the
+// job was submitted, so the cost lands on its own aggregate row rather than on the
+// submission. Without this the aggregate row is indistinguishable from the
+// submission it settles — same object, same model, differing only by a cost.
+//
+// The row's Object stays the real request type (video_generation / video_remix /
+// video_edit) rather than a synthetic one, so a later repricing pass still finds
+// the right rates. Accounting being non-nil is what marks the aggregate row.
+type BifrostVideoDebug struct {
+	VideoID string `json:"video_id,omitempty"`
+	// Status is the provider's video lifecycle status as last known when this row
+	// was written. On the aggregate cost row it is the status settlement observed,
+	// which is always terminal.
+	Status VideoStatus `json:"status,omitempty"`
+	// Accounting is set only on the aggregate cost row, and is what distinguishes
+	// it from the submission row it settles.
+	Accounting *VideoAccountingDebug `json:"accounting,omitempty"`
+	// SettledByRequestID is the request that triggered settlement — a client poll, or
+	// empty when the sweeper got there first. The row's parent points at the request
+	// that CREATED the job so the cost rolls up onto it, so this is where "which call
+	// actually settled this" survives, for debugging a double-settle or a stuck job.
+	SettledByRequestID string `json:"settled_by_request_id,omitempty"`
+}
+
+func (d *BifrostVideoDebug) IsZero() bool {
+	if d == nil {
+		return true
+	}
+	return d.VideoID == "" && d.Status == "" && d.Accounting == nil
+}
+
+// VideoAccountingDebug records how a settled video was priced, so an operator can
+// see why a row cost what it did without re-deriving it from the provider.
+type VideoAccountingDebug struct {
+	// Seconds and Size are the dimensions the price was actually computed from,
+	// after merging the terminal response over the request captured at submission.
+	Seconds *int   `json:"seconds,omitempty"`
+	Size    string `json:"size,omitempty"`
+	// OutputCount is how many clips the job returned; the per-second rate is
+	// multiplied by it.
+	OutputCount int `json:"output_count,omitempty"`
+	// OutputTokens is the provider-metered output the per-video-token rate applied to.
+	OutputTokens int `json:"output_tokens,omitempty"`
+	// Incomplete marks a row whose cost is known to be short — priced with no rate,
+	// or from dimensions the provider never confirmed.
+	Incomplete bool `json:"incomplete,omitempty"`
+	// RequestType is the request that created the job. The aggregate row's Object is
+	// "video_retrieve" so it reads as the settlement it is, which means Object can no
+	// longer name the rates this was priced at — a repricing pass reads it from here.
+	RequestType RequestType `json:"request_type,omitempty"`
+	// ProviderCost is the figure the provider reported for the job, when it reported
+	// one. A provider is always right about its own bill, so repricing must return
+	// this verbatim rather than substituting a catalog estimate.
+	ProviderCost *float64 `json:"provider_cost,omitempty"`
 }

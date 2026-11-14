@@ -1,28 +1,31 @@
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
+import i18n from "@/lib/i18n";
+import type { ParseKeys } from "i18next";
+
+const RESET_UNIT_KEYS: Record<string, ParseKeys<"common">> = {
+	s: "duration.second",
+	m: "duration.minute",
+	h: "duration.hour",
+	d: "duration.day",
+	w: "duration.week",
+	M: "duration.month",
+	Q: "duration.quarter",
+	y: "duration.year",
+};
+
 /**
  * Parses a duration string (e.g., "1m", "5m", "1h", "1d", "1w", "1M") into human readable format
  */
 export function parseResetPeriod(duration: string): string {
-	if (!duration) return "Unknown";
+	if (!duration) return i18n.t("duration.unknown");
 
 	const timeValue = parseInt(duration.slice(0, -1));
 	const timeUnit = duration.slice(-1);
 
-	const unitMap: Record<string, { singular: string; plural: string }> = {
-		s: { singular: "second", plural: "seconds" },
-		m: { singular: "minute", plural: "minutes" },
-		h: { singular: "hour", plural: "hours" },
-		d: { singular: "day", plural: "days" },
-		w: { singular: "week", plural: "weeks" },
-		M: { singular: "month", plural: "months" },
-		Q: { singular: "quarter", plural: "quarters" },
-		y: { singular: "year", plural: "years" },
-	};
+	const unitKey = RESET_UNIT_KEYS[timeUnit];
+	if (!unitKey) return duration;
 
-	const unit = unitMap[timeUnit];
-	if (!unit) return duration;
-
-	const unitName = timeValue === 1 ? unit.singular : unit.plural;
-	return `${timeValue} ${unitName}`;
+	return i18n.t(unitKey, { count: timeValue });
 }
 
 import { budgetOverrideFormSchema } from "@/lib/types/schemas";
@@ -54,7 +57,7 @@ export function getEffectiveBudgetLimit(budget: BudgetOverrideFields): number {
 /** Validates the operator-entered override fields before sending them to the API. Delegates to budgetOverrideFormSchema. */
 export function validateBudgetOverride(amount: number, mode: "cycles" | "forever", cycles: number): string | null {
 	const result = budgetOverrideFormSchema.safeParse({ amount, mode, ...(mode === "cycles" ? { cycles } : {}) });
-	return result.success ? null : (result.error.issues[0]?.message ?? "Invalid input");
+	return result.success ? null : (result.error.issues[0]?.message ?? i18n.t("validation.invalidInput"));
 }
 
 /**
@@ -105,6 +108,7 @@ export function getBudgetOverrideValidUntil(
 	if (!match || Number.isNaN(validUntil.getTime())) return null;
 
 	const unit = match[2];
+	calendarAligned = calendarAligned && supportsCalendarAlignment(budget.reset_duration);
 	if (calendarAligned) snapToCalendarPeriodStart(validUntil, unit);
 	const durationValue = Number(match[1]) * cycles;
 	switch (unit) {
@@ -238,3 +242,30 @@ export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
 		})
 		.sort()
 		.join("|");
+
+// Callers name the entity in English; the sentence shows its localized noun when one is known.
+const GOVERNANCE_ENTITY_KEYS: Record<string, ParseKeys<"common">> = {
+	"virtual keys": "entities.virtualKeys",
+	teams: "entities.teams",
+	customers: "entities.customers",
+	"model limits": "entities.modelLimits",
+};
+
+export type GovernanceAction = "create" | "edit" | "delete" | "rotate";
+
+/**
+ * Why a governance action is disabled, or undefined when it is allowed. A reason
+ * that is not about permissions (e.g. the entity is managed elsewhere) wins, since
+ * granting the permission would not unblock the action.
+ */
+export function actionDisabledReason(
+	allowed: boolean,
+	action: GovernanceAction,
+	entityPlural: string,
+	blockedReason?: string,
+): string | undefined {
+	if (blockedReason) return blockedReason;
+	if (allowed) return undefined;
+	const entityKey = GOVERNANCE_ENTITY_KEYS[entityPlural];
+	return i18n.t(`permissionDenied.${action}`, { entity: entityKey ? i18n.t(entityKey) : entityPlural });
+}

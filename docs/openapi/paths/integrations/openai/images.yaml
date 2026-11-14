@@ -37,7 +37,6 @@ image-generation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 azure-image-generation:
@@ -83,6 +82,5 @@ azure-image-generation:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

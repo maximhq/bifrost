@@ -1,10 +1,15 @@
+import { useTranslation } from "react-i18next";
 import type { MCPHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface MCPVolumeChartProps {
 	data: MCPHistogramResponse | null;
@@ -14,6 +19,7 @@ interface MCPVolumeChartProps {
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -25,21 +31,21 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-emerald-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="bg-chart-success h-2 w-2 rounded-full" />
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
-					<span className="font-medium text-emerald-600 dark:text-emerald-400">{data.success.toLocaleString()}</span>
+					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-red-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
+						<span className="bg-chart-error h-2 w-2 rounded-full" />
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
-					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
+					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
-					<span className="font-medium">{data.count.toLocaleString()}</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
+					<span className="font-medium">{data.count.toLocaleString(getLocale())}</span>
 				</div>
 			</div>
 		</div>
@@ -47,6 +53,7 @@ function CustomTooltip({ active, payload }: any) {
 }
 
 function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -60,7 +67,7 @@ function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeCh
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
@@ -70,7 +77,7 @@ function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeCh
 
 	return (
 		<ChartErrorBoundary resetKey={`${chartType}-${startTime}-${endTime}-${chartData.length}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -94,24 +101,10 @@ function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeCh
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="success"
-							stackId="requests"
-							fill={CHART_COLORS.success}
-							fillOpacity={0.9}
-							radius={[0, 0, 0, 0]}
-							barSize={30}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="error"
-							stackId="requests"
-							fill={CHART_COLORS.error}
-							fillOpacity={0.9}
-							radius={[2, 2, 0, 0]}
-							barSize={30}
-						/>
+						<CappedBarStack buckets={chartData.length}>
+							<Bar isAnimationActive={false} dataKey="success" fill={CHART_COLORS.success} fillOpacity={0.9} barSize={30} />
+							<Bar isAnimationActive={false} dataKey="error" fill={CHART_COLORS.error} fillOpacity={0.9} barSize={30} />
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

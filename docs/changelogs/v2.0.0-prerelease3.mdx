@@ -20,48 +20,48 @@ description: "v2.0.0-prerelease3 changelog - 2026-08-13"
 ## ✨ Features
 
 - **MCP Per-User OAuth** - MCP clients can hold per-user OAuth credentials and per-user headers, configurable from `config.json` as well as the UI, with a documented shared vs per-identity token lookup contract and VK/Users filters on the OAuth Grants and MCP Auth Sessions sidebars
-- **Token Exchange IDP Credentials** - New `use_idp_credentials` on `token_exchange` reuses SSO login app credentials for providers that require it, such as Microsoft Entra ID; `client_id` becomes optional when it is set (#6068, #6069)
-- **Bedrock VPC Endpoints** - AWS Bedrock keys can target VPC endpoints (#6064)
-- **Per-Request Flat-Fee Pricing** - New `cost_per_request` field flows through datasheet sync, the cost engine, custom overrides and the UI override form (#6079)
-- **Pricing Overrides in the Model Catalog** - `/api/models/details` exposes resolved pricing overrides, and catalog rows resolve overrides server-side (#6055, #6056)
+- **Token Exchange IDP Credentials** - New `use_idp_credentials` on `token_exchange` reuses SSO login app credentials for providers that require it, such as Microsoft Entra ID; `client_id` becomes optional when it is set
+- **Bedrock VPC Endpoints** - AWS Bedrock keys can target VPC endpoints
+- **Per-Request Flat-Fee Pricing** - New `cost_per_request` field flows through datasheet sync, the cost engine, custom overrides and the UI override form
+- **Pricing Overrides in the Model Catalog** - `/api/models/details` exposes resolved pricing overrides, and catalog rows resolve overrides server-side
 - **MCP Tool Discovery Persistence** - Discovered MCP tools persist and resync uniformly across all client types through a hash-gated core callback, surviving restarts and propagating across a cluster
-- **W3C Trace ID Propagation** - Requests carry a W3C trace ID on the context (#5945)
-- **Cancellable Log Cost Recalculation** - Log cost recalculation tasks can be cancelled from the backend (#5801)
-- **Separate OTEL Metrics Pipeline** - The OTEL collector supports a metrics tab independent of traces, plus separate headers for traces and metrics (#5939, #5940)
-- **Roots-Only Log Filter** - New `roots_only` filter collapses fallback chains into their root entry with child aggregates (#5737)
-- **MCP Log Redaction and Plugin Logs** - MCP tool logs carry redaction mappings and plugin logs (#5744, #5746)
+- **W3C Trace ID Propagation** - Requests carry a W3C trace ID on the context
+- **Cancellable Log Cost Recalculation** - Log cost recalculation tasks can be cancelled from the backend
+- **Separate OTEL Metrics Pipeline** - The OTEL collector supports a metrics tab independent of traces, plus separate headers for traces and metrics
+- **Roots-Only Log Filter** - New `roots_only` filter collapses fallback chains into their root entry with child aggregates
+- **MCP Log Redaction and Plugin Logs** - MCP tool logs carry redaction mappings and plugin logs
 - **User Agent and App Attribution in Logs** - Logs and MCP tool logs record user agent, app, source, decision, app key and device ID
-- **S3 Log Export Metadata** - Additional metadata is written alongside S3 log exports (#6070)
-- **Matview Maintenance Off Switch** - `matview_refresh_interval` accepts `"off"` to disable logstore matview maintenance entirely (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!) (#5693)
-- **Video Request Info in Logs UI** - Video requests surface their details in the logs UI (#5946)
-- **Shell Rewriter Hook** - The UI handler exposes a `ShellRewriter` hook for pre-hydration HTML rewriting (#5807)
+- **S3 Log Export Metadata** - Additional metadata is written alongside S3 log exports
+- **Matview Maintenance Off Switch** - `matview_refresh_interval` accepts `"off"` to disable logstore matview maintenance entirely (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+- **Video Request Info in Logs UI** - Video requests surface their details in the logs UI
+- **Shell Rewriter Hook** - The UI handler exposes a `ShellRewriter` hook for pre-hydration HTML rewriting
 - **Auth Skip Path** - Adds a context path letting trusted internal callers bypass auth resolution
 - - **Runware passthrough** - Adds `runware_passthrough` path for handling passthrough mode for Runware provider
 
 ## 🐞 Fixed
 
-- **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed (#5763)
-- **Minimal Reasoning Effort on GPT-5 Models** - `reasoning_effort: "minimal"` is preserved for GPT-5-family OpenAI models instead of being downgraded to `low` (thanks [@jitokim](https://github.com/jitokim)!) (#6046)
-- **Gemini Truncated Response Finish Reason** - Truncated Gemini responses report `MAX_TOKENS` instead of `OTHER` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5979)
-- **Null Tool-Call Function Name on Streaming** - Streaming continuation deltas no longer materialize an absent tool-call function name as `null` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5966)
-- **Bedrock Document Uploads** - Fixed Bedrock file handling in inference so office and PDF documents sent as OpenAI `type: "file"` are accepted (#5947)
-- **xAI Usage Cost** - Fixed USD cost ticks for xAI usage (#5950)
+- **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed
+- **Minimal Reasoning Effort on GPT-5 Models** - `reasoning_effort: "minimal"` is preserved for GPT-5-family OpenAI models instead of being downgraded to `low` (thanks [@jitokim](https://github.com/jitokim)!)
+- **Gemini Truncated Response Finish Reason** - Truncated Gemini responses report `MAX_TOKENS` instead of `OTHER` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **Null Tool-Call Function Name on Streaming** - Streaming continuation deltas no longer materialize an absent tool-call function name as `null` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **Bedrock Document Uploads** - Fixed Bedrock file handling in inference so office and PDF documents sent as OpenAI `type: "file"` are accepted
+- **xAI Usage Cost** - Fixed USD cost ticks for xAI usage
 - **Anthropic Encrypted Reasoning** - Added an Anthropic error branch when stripping encrypted reasoning content
 - **MCP Reconnect and Lock Ordering** - Broke a lock-order inversion in `ConnectionCheckerManager`, rebuilt ephemeral clients across the whole connect+init retry, preserved last-known tool maps across close-first reconnects, bound connect attempts to entry identity, deduped background reconnects and gated SSE `OnConnectionLost` on connection identity
 - **MCP OAuth Session Correctness** - Restricted `Reauthorize` to shared OAuth clients, rejected inactive tokens in `ValidateToken`, made the OAuth flow claim atomic against concurrent reauth, stopped dropping stored scopes on decode failure, and closed a verify-headers double-submit race that also dropped TLS, timeout and per-user-header fields
 - **Session Stickiness Reconciliation** - `needs_session_stickiness` is pinned across `config.json` reconciliation, so an unrelated file edit can no longer silently revert a client to per-call
 - **Credential Cache Cancellation** - `headerCredentialCache.Fill` and `userTokenCache.Fill` propagate context so a cancelled request unblocks instead of waiting on an unrelated leader; LRU entries carry a version so a rejected stale `Get` cannot evict a concurrently-updated value
-- **Governance List-Models Call** - Budgets and rate limits no longer trigger a list-models call (#6051)
-- **Realtime Response Create Input** - Guarded `response.create` input (#6050)
+- **Governance List-Models Call** - Budgets and rate limits no longer trigger a list-models call
+- **Realtime Response Create Input** - Guarded `response.create` input
 - **HTTP Server Timeouts** - Configured bounded `http.Server` timeouts and a request-body limit
 - **MCP Client State Badges** - State badges render with spaces instead of underscores, and the state filter bucket was renamed from `disconnected` to `unstable`
-- **Entra OBO Scope** - `offline_access` is combined with `<audience>/.default` for Entra OBO instead of replacing it (#6078)
+- **Entra OBO Scope** - `offline_access` is combined with `<audience>/.default` for Entra OBO instead of replacing it
 
 ## 🔧 Maintenance
 
-- **Governance Route Families** - Editions can override governance route families (#5839)
-- **Dependency Upgrades** - Dependabot updates across all modules, plus module path fixes (#6040, #5864)
-- **Documentation** - config.schema.json doc fixes and Datadog env var reference fixes in the helm chart docs (#5938, #6019)
+- **Governance Route Families** - Editions can override governance route families
+- **Dependency Upgrades** - Dependabot updates across all modules, plus module path fixes
+- **Documentation** - config.schema.json doc fixes and Datadog env var reference fixes in the helm chart docs
 
 ## 🗄️ Database Migrations
 
@@ -115,19 +115,19 @@ Every logstore migration above alters `logs` or `mcp_tool_logs`, the two highest
 - fix: keep `reasoning_effort: "xhigh"` for `grok-4.6` and `grok-4.20-multi-agent` - the shared OpenAI-dialect normalizer downgraded it to "high" before the xAI compat pass ran, so the value was lost even with the deny-list corrected. `grok-4.5` still downgrades on purpose, matching xAI's documented upstream coercion
 - fix: emit `content_part.added`, `output_text.delta`, `output_text.done` and `content_part.done` when a tool-based structured-output call is reassembled into a message on the Responses streaming path - only `output_item.added`/`done` were emitted, so every consumer reading incremental events rather than the item snapshot saw a stream with no text at all. A schema-constrained `streamGenerateContent` to Bedrock Mantle returned `{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}]}` with tokens billed. Affects Vertex, Bedrock Mantle and Azure Claude, the three providers that emulate structured output with a forced tool call
 - feat: inline URL-sourced images and documents for AWS-hosted Claude on the native-Anthropic path - Bedrock Mantle rejects `{"source":{"type":"url"}}` with "URL content sources are not yet supported for this model". Fetches go through the SSRF-safe dialer with a size cap, and a failed fetch aborts the request rather than silently dropping an attachment. Brings the native-Anthropic surface to parity with Bedrock's Converse path
-- feat: bedrock vpc endpoints support (#6064)
-- feat: add `use_idp_credentials` to token-exchange config so SSO login app credentials can be reused for providers like Microsoft Entra ID (#6068)
-- feat: add w3c trace id to context (#5945)
+- feat: bedrock vpc endpoints support
+- feat: add `use_idp_credentials` to token-exchange config so SSO login app credentials can be reused for providers like Microsoft Entra ID
+- feat: add w3c trace id to context
 - feat: persist and resync MCP tool discoveries uniformly across all client types via a hash-gated core callback
 - feat: add per user oauth mcp support for config.json
 - feat: add a context path for skipping auth resolution on trusted internal callers
-- feat: cost accounting for prompt guardrails (#4931)
-- fix: path normalization auth bypass (#5763)
-- fix: preserve minimal reasoning effort for GPT-5-family OpenAI models (thanks [@jitokim](https://github.com/jitokim)!) (#6046)
-- fix: map truncated Gemini responses to the MAX_TOKENS finish reason (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5979)
-- fix: omit absent tool-call function name on streaming deltas instead of emitting null (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5966)
-- fix: bedrock files handling in inference (#5947)
-- fix: cost in usd ticks for xai usage (#5950)
+- feat: cost accounting for prompt guardrails
+- fix: path normalization auth bypass
+- fix: preserve minimal reasoning effort for GPT-5-family OpenAI models (thanks [@jitokim](https://github.com/jitokim)!)
+- fix: map truncated Gemini responses to the MAX_TOKENS finish reason (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- fix: omit absent tool-call function name on streaming deltas instead of emitting null (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- fix: bedrock files handling in inference
+- fix: cost in usd ticks for xai usage
 - fix: add anthropic error branch when stripping encrypted reasoning content
 - fix: discover tools synchronously for per-call MCP clients, fix shared-OAuth reconnect and verify errors
 - fix: break lock-order inversion in ConnectionCheckerManager, close a data race in the performCheck test
@@ -143,30 +143,30 @@ Every logstore migration above alters `logs` or `mcp_tool_logs`, the two highest
 - fix: repair shared connections regardless of destructive hint, fail closed on missing tool annotations, dedupe background reconnect
 - fix: configure bounded http.Server timeouts and a request-body limit
 - fix: guard nil ConfigStore, propagate resource, surface pending-bootstrap cleanup failure
-- chore: dependabot dependency updates (#6040)
+- chore: dependabot dependency updates
 
 </Update>
 <Update label="Framework" description="1.5.9">
-- feat: add `cost_per_request` flat-fee pricing field across DB, cost engine, overrides and docs (#6079)
-- feat(modelcatalog): resolve pricing overrides for catalog rows (#6055)
-- feat: add `use_idp_credentials` to token-exchange config (#6068)
-- feat: bedrock vpc endpoints support (#6064)
-- feat: add additional metadata in S3 log export (#6070)
-- feat: make log recalculation task cancellable backend (#5801)
-- feat: add `roots_only` filter to collapse fallback chains with child aggregates (#5737)
-- feat: support matview_refresh_interval "off" to disable logstore matview maintenance (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!) (#5693)
+- feat: add `cost_per_request` flat-fee pricing field across DB, cost engine, overrides and docs
+- feat(modelcatalog): resolve pricing overrides for catalog rows
+- feat: add `use_idp_credentials` to token-exchange config
+- feat: bedrock vpc endpoints support
+- feat: add additional metadata in S3 log export
+- feat: make log recalculation task cancellable backend
+- feat: add `roots_only` filter to collapse fallback chains with child aggregates
+- feat: support matview_refresh_interval "off" to disable logstore matview maintenance (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
 - feat: persist and resync MCP tool discoveries uniformly across all client types via a hash-gated core callback
 - feat: add VK and Users filters to the OAuth Grants and MCP Auth Sessions sidebars
 - feat: generalize TokenRefreshWorker's auth-mode scope and allow gating OAuthTokenRefreshWorker sweeps
-- feat(mcp-guardrails): add MCP log redaction changes (#5744)
-- feat: add plugin logs to mcp logs (#5746)
-- fix: combine `offline_access` with `<audience>/.default` for Entra OBO instead of replacing it (#6078)
+- feat(mcp-guardrails): add MCP log redaction changes
+- feat: add plugin logs to mcp logs
+- fix: combine `offline_access` with `<audience>/.default` for Entra OBO instead of replacing it
 - fix: don't treat a CAS loss to a still-active concurrent refresh as a dead credential
 - fix: propagate ctx through headerCredentialCache.Fill and userTokenCache.Fill so a canceled request unblocks instead of waiting on an unrelated leader
 - fix: add per-entry version to the LRU cache so a rejected stale Get cannot evict a concurrently-updated value
 - fix: make the OAuth flow claim atomic against concurrent reauth, close a leaked sqlDB in flows-table perf setup
 - fix: route pending token_exchange clients through the verify-exchange confirm dialog
-- chore: dependabot dependency updates (#6040)
+- chore: dependabot dependency updates
 
 <Warning>
 This release adds 18 database migrations. `merge_oauth_token_tables`, `drop_oauth_config_pkce_columns`, `drop_oauth_config_token_id_column` and `mcp_tool_logs_add_redaction_mapping_column` are non-reversible. Back up your database before upgrading.
@@ -184,7 +184,7 @@ All eight logstore migrations in this release alter `logs` or `mcp_tool_logs`, t
 
 </Update>
 <Update label="governance" description="1.6.13">
-- fix: skip list models call for budgets and rate-limits (#6051)
+- fix: skip list models call for budgets and rate-limits
 - feat: honor the auth-skip context path in the governance resolver
 - chore: upgraded core to v1.7.11 and framework to v1.5.9
 
@@ -194,12 +194,12 @@ All eight logstore migrations in this release alter `logs` or `mcp_tool_logs`, t
 
 </Update>
 <Update label="logging" description="1.6.9">
-- feat: make log recalculation task cancellable backend (#5801)
-- feat: add `roots_only` filter to collapse fallback chains with child aggregates (#5737)
-- feat: add plugin logs in mcp logs (#5746)
-- feat(mcp-guardrails): add MCP log redaction changes (#5744)
-- feat: video requests info in logs ui (#5946)
-- feat: cost for prompt guardrails (#4931)
+- feat: make log recalculation task cancellable backend
+- feat: add `roots_only` filter to collapse fallback chains with child aggregates
+- feat: add plugin logs in mcp logs
+- feat(mcp-guardrails): add MCP log redaction changes
+- feat: video requests info in logs ui
+- feat: cost for prompt guardrails
 - chore: upgraded core to v1.7.11 and framework to v1.5.9
 
 </Update>
@@ -216,8 +216,8 @@ All eight logstore migrations in this release alter `logs` or `mcp_tool_logs`, t
 
 </Update>
 <Update label="otel" description="1.4.8">
-- feat: add separate headers support for traces and metrics in OTEL collector (#5940)
-- feat: add support for a separate metrics tab independent of traces for OTEL (#5939)
+- feat: add separate headers support for traces and metrics in OTEL collector
+- feat: add support for a separate metrics tab independent of traces for OTEL
 - chore: upgraded core to v1.7.11 and framework to v1.5.9
 
 </Update>
@@ -226,7 +226,7 @@ All eight logstore migrations in this release alter `logs` or `mcp_tool_logs`, t
 
 </Update>
 <Update label="semanticcache" description="1.5.36">
-- feat: account for prompt guardrail cost in cache search (#4931)
+- feat: account for prompt guardrail cost in cache search
 - chore: upgraded core to v1.7.11 and framework to v1.5.9
 
 </Update>

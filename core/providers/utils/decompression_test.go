@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -513,4 +514,119 @@ func TestSafeReset(t *testing.T) {
 			t.Fatal("expected false for error panic")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Memory-bound tests — a frame header alone must not be able to make the
+// decoder allocate its declared window or content size.
+// ---------------------------------------------------------------------------
+
+// zstdFrameWithWindow is a complete zstd frame (magic, frame header with a
+// Window_Descriptor only, one empty raw last block) declaring a 512 MiB
+// window: Window_Descriptor 0x98 = exponent 19, mantissa 0.
+var zstdFrameWithWindow512MiB = []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x98, 0x01, 0x00, 0x00}
+
+// zstdFrameWithContentSize2GiB declares, via Single_Segment_Flag plus an 8-byte
+// Frame_Content_Size, a 2 GiB decoded size (and therefore a 2 GiB window) while
+// carrying one empty raw last block.
+var zstdFrameWithContentSize2GiB = []byte{
+	0x28, 0xb5, 0x2f, 0xfd, // magic
+	0xe0,                                           // FHD: FCS field 8 bytes, single segment
+	0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, // FCS = 2 GiB little-endian
+	0x01, 0x00, 0x00, // empty raw last block
+}
+
+func totalAllocDelta(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func readZstdFrame(frame []byte) error {
+	dec, err := AcquireZstdDecoder(bytes.NewReader(frame))
+	if err != nil {
+		return err
+	}
+	defer ReleaseZstdDecoder(dec)
+	_, err = io.ReadAll(dec)
+	return err
+}
+
+func TestAcquireZstdDecoder_RejectsOversizedWindow(t *testing.T) {
+	drainPool(&zstdDecoderPool)
+	// Twice: the first acquisition builds a fresh decoder, the second resets a
+	// pooled one. Both paths must refuse the frame before allocating its window.
+	for i := 0; i < 2; i++ {
+		var err error
+		delta := totalAllocDelta(func() { err = readZstdFrame(zstdFrameWithWindow512MiB) })
+		if err == nil {
+			t.Fatalf("iteration %d: expected a window-size error, got nil", i)
+		}
+		if !IsDecompressionSizeLimitError(err) {
+			t.Fatalf("iteration %d: expected a size-limit error, got %v", i, err)
+		}
+		if delta > 32<<20 {
+			t.Fatalf("iteration %d: decoder allocated %d bytes for a 9-byte frame declaring a 512 MiB window", i, delta)
+		}
+	}
+}
+
+func TestAcquireZstdDecoder_RejectsOversizedFrameContentSize(t *testing.T) {
+	var err error
+	delta := totalAllocDelta(func() { err = readZstdFrame(zstdFrameWithContentSize2GiB) })
+	if err == nil {
+		t.Fatal("expected a size-limit error for a 2 GiB declared frame, got nil")
+	}
+	if !IsDecompressionSizeLimitError(err) {
+		t.Fatalf("expected a size-limit error, got %v", err)
+	}
+	if delta > 32<<20 {
+		t.Fatalf("decoder allocated %d bytes for a frame declaring 2 GiB of content", delta)
+	}
+}
+
+func TestAcquireZstdDecoder_AcceptsHighCompressionWindow(t *testing.T) {
+	// zstd level 19 emits an 8 MiB window: the largest a stock encoder uses
+	// without --long/--ultra, and the ceiling ZstdDecoderMaxWindow must admit.
+	payload := bytes.Repeat([]byte("bifrost request body "), 1<<16)
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedBestCompression), zstd.WithWindowSize(int(ZstdDecoderMaxWindow)))
+	if err != nil {
+		t.Fatalf("zstd new writer: %v", err)
+	}
+	if _, err := enc.Write(payload); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	dec, err := AcquireZstdDecoder(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("AcquireZstdDecoder: %v", err)
+	}
+	defer ReleaseZstdDecoder(dec)
+	got, err := io.ReadAll(dec)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("round-trip mismatch: got %d bytes, want %d", len(got), len(payload))
+	}
+}
+
+func TestIsDecompressionSizeLimitError(t *testing.T) {
+	if !IsDecompressionSizeLimitError(zstd.ErrWindowSizeExceeded) {
+		t.Error("ErrWindowSizeExceeded should be a size-limit error")
+	}
+	if !IsDecompressionSizeLimitError(fmt.Errorf("wrapped: %w", zstd.ErrDecoderSizeExceeded)) {
+		t.Error("wrapped ErrDecoderSizeExceeded should be a size-limit error")
+	}
+	if IsDecompressionSizeLimitError(zstd.ErrMagicMismatch) {
+		t.Error("ErrMagicMismatch is a malformed-body error, not a size limit")
+	}
+	if IsDecompressionSizeLimitError(nil) {
+		t.Error("nil is not an error")
+	}
 }

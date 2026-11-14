@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import { COMPACT_NUMBER_FORMAT, formatCompactNumber as formatNumber } from "@/lib/utils/numbers";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 
@@ -10,9 +11,22 @@ export function formatCost(value: number): string {
 	return "$0.00";
 }
 
-export function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
-	if (isNew) {
-		return <span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">new</span>;
+export function TrendBadge({
+	value,
+	positiveIsGood = true,
+	isNew = false,
+}: {
+	value: number | null;
+	positiveIsGood?: boolean;
+	isNew?: boolean;
+}) {
+	// null: the previous period had none of this metric, so there is no percentage.
+	if (isNew || value === null) {
+		return (
+			<span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
+				{i18n.t("dashboard.rankings.newBadge", { ns: "observability" })}
+			</span>
+		);
 	}
 
 	if (value === 0) {
@@ -26,9 +40,7 @@ export function TrendBadge({ value, positiveIsGood = true, isNew = false }: { va
 	const isPositive = value > 0;
 	const isGood = positiveIsGood ? isPositive : !isPositive;
 	return (
-		<span
-			className={`inline-flex items-center gap-0.5 text-xs font-medium ${isGood ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-		>
+		<span className={`inline-flex items-center gap-0.5 text-xs font-medium ${isGood ? "text-chart-success-ink" : "text-chart-error-ink"}`}>
 			{isPositive ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
 			{Math.abs(value).toFixed(1)}%
 		</span>

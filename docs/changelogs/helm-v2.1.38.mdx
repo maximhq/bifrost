@@ -1,0 +1,12 @@
+---
+title: "v2.1.38"
+description: "Helm v2.1.38 changelog - 2026-09-04"
+---
+
+<Update label="Bifrost Helm" description="v2.1.38">
+
+## Changelog
+
+- Fixed `postgresql.external.passwordCommand` being unusable: the values schema excluded `password` / `existingSecret` by key *presence*, and `values.yaml` ships both with empty-string defaults, so any chart that set `passwordCommand` failed schema validation. The exclusion is now value-based — `password` and `existingSecret` must be empty (or omitted) when `passwordCommand` is set.
+
+</Update>

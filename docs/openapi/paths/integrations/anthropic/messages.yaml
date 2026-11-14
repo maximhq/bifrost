@@ -66,7 +66,6 @@ messages:
 # Wildcard path for extended messages endpoints (e.g., /v1/messages/batches)
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 messages-wildcard:
@@ -114,6 +113,5 @@ messages-wildcard:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

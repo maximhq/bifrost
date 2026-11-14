@@ -4,16 +4,26 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
@@ -158,6 +168,9 @@ func TestBedrock(t *testing.T) {
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
 	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
 	rerankModelARN := strings.TrimSpace(os.Getenv("AWS_BEDROCK_RERANK_MODEL_ARN"))
+	// Live Nova Sonic speech session (e.g. amazon.nova-2-sonic-v1:0); skipped unless set, since
+	// the model is only enabled in some regions and accounts.
+	novaSonicModel := strings.TrimSpace(os.Getenv("AWS_BEDROCK_NOVA_SONIC_MODEL"))
 
 	// Build extra params for batch and file operations
 	var batchExtraParams map[string]interface{}
@@ -185,11 +198,14 @@ func TestBedrock(t *testing.T) {
 		},
 		EmbeddingModel:           "cohere.embed-v4:0",
 		RerankModel:              rerankModelARN,
+		RealtimeModel:            novaSonicModel,
 		ReasoningModel:           "claude-4.5-sonnet",
 		PromptCachingModel:       "claude-4.5-sonnet",
-		ImageEditModel:           "amazon.nova-canvas-v1:0",
-		ImageVariationModel:      "amazon.nova-canvas-v1:0",
+		ImageEditModel:           "us.stability.stable-image-inpaint-v1:0", // nova-canvas reached end of life
+		ImageVariationModel:      "",                                       // nova-canvas reached end of life and no other Bedrock model supports image variations
 		InterleavedThinkingModel: "claude-opus-4-5",
+		CompactionModel:          "claude-4.6-sonnet", // compact_20260112 routes to InvokeModel (#6825); Sonnet 4.6 is on the AWS compaction model list
+		ToolSearchModel:          "claude-4.6-sonnet", // tool_search routes to InvokeModel (#6825)
 		BatchExtraParams:         batchExtraParams,
 		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
@@ -227,10 +243,13 @@ func TestBedrock(t *testing.T) {
 			FileBatchInput:             true,
 			CountTokens:                true,
 			ImageEdit:                  true,
-			ImageVariation:             true,
+			ImageVariation:             false, // no Bedrock model supports image variations since nova-canvas EOL
 			StructuredOutputs:          true,
 			InterleavedThinking:        true,
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
+			Compaction:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			ToolSearch:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			Realtime:                   novaSonicModel != "",
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
@@ -357,6 +376,14 @@ func TestBedrock(t *testing.T) {
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request
 func TestBifrostToBedrockRequestConversion(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "claude-3-sonnet" {
+			return &schemas.ModelCapabilities{ServiceTiers: []string{"priority"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
 	maxTokens := testMaxTokens
 	temp := testTemp
 	topP := testTopP
@@ -1000,6 +1027,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
+				if tt.expected.InferenceConfig == nil {
+					tt.expected.InferenceConfig = &bedrock.BedrockInferenceConfig{}
+				}
+				if tt.expected.InferenceConfig.MaxTokens == nil {
+					tt.expected.InferenceConfig.MaxTokens = schemas.Ptr(4096)
+				}
 				assertBedrockRequestEqual(t, tt.expected, actual)
 			}
 		})
@@ -2379,6 +2412,52 @@ func TestToBedrockResponsesRequest_GuardrailConfig(t *testing.T) {
 	assert.Nil(t, bedrockReq.ExtraParams)
 }
 
+// TestToBedrockResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach system, instructions first (OpenAI places instructions
+// ahead of input). Previously instructions were dropped whenever the input carried system content.
+func TestToBedrockResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         []string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, []string{"BASE_MUST_SURVIVE", "DEVELOPER_MUST_SURVIVE"}},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, []string{"BASE_MUST_SURVIVE"}},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Model:  "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+				Input:  tc.input,
+				Params: &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			require.NoError(t, err)
+
+			var got []string
+			for _, sys := range bedrockReq.System {
+				require.NotNil(t, sys.Text, "unexpected non-text system block: %+v", sys)
+				got = append(got, *sys.Text)
+			}
+			assert.Equal(t, tc.want, got)
+			require.Len(t, bedrockReq.Messages, 1)
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, bedrockReq.Messages[0].Role)
+		})
+	}
+}
+
 // TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields verifies that
 // ToBifrostResponsesResponse carries guardrail trace in ProviderExtraFields.
 func TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields(t *testing.T) {
@@ -2673,6 +2752,115 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 		require.NotNil(t, result.Trace.Guardrail.Action)
 		assert.Equal(t, "INTERVENED", *result.Trace.Guardrail.Action)
 	})
+}
+
+// converseStopSequenceResponse is the Converse body Bedrock returns when Claude stops on a
+// caller stop sequence and the request asked for additionalModelResponseFieldPaths ["/stop_sequence"].
+func converseStopSequenceResponse(stopReason string, fields json.RawMessage) *bedrock.BedrockConverseResponse {
+	return &bedrock.BedrockConverseResponse{
+		StopReason: stopReason,
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role:    bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("one, two, ")}},
+			},
+		},
+		Usage:                         &bedrock.BedrockTokenUsage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26},
+		Metrics:                       &bedrock.BedrockConverseMetrics{LatencyMs: 100},
+		AdditionalModelResponseFields: fields,
+	}
+}
+
+// TestConverseResponseStopSequenceRoundTrip pins that the /bedrock/model/{model}/converse
+// egress returns the native stopReason and additionalModelResponseFields Bedrock sent:
+// stop_sequence folds into Bifrost's "stop", which maps back to end_turn unless the native
+// reason is kept, and additionalModelResponseFields had no slot in the Bifrost response.
+func TestConverseResponseStopSequenceRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("BedrockUpstream_StopSequenceAndFields", func(t *testing.T) {
+		fields := json.RawMessage(`{"stop_sequence":"three"}`)
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", fields).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostResp.StopReason)
+		assert.Equal(t, "stop", *bifrostResp.StopReason)
+		require.NotNil(t, bifrostResp.StopSequence, "the matched sequence reported in additionalModelResponseFields must reach StopSequence")
+		assert.Equal(t, "three", *bifrostResp.StopSequence)
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.JSONEq(t, `{"stop_sequence":"three"}`, string(result.AdditionalModelResponseFields))
+	})
+
+	t.Run("BedrockUpstream_StopSequenceWithoutFields", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", nil).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, bifrostResp.StopSequence, "no matched sequence is invented when Bedrock did not report one")
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.Empty(t, result.AdditionalModelResponseFields)
+	})
+
+	t.Run("BedrockUpstream_JSONDecodedProviderExtraFields", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", json.RawMessage(`{"stop_sequence":"three"}`)).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		raw, err := json.Marshal(bifrostResp)
+		require.NoError(t, err)
+		var decoded schemas.BifrostResponsesResponse
+		require.NoError(t, json.Unmarshal(raw, &decoded))
+
+		result, err := bedrock.ToBedrockConverseResponse(&decoded)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.JSONEq(t, `{"stop_sequence":"three"}`, string(result.AdditionalModelResponseFields))
+	})
+
+	t.Run("BedrockUpstream_EndTurnKeepsProviderExtraFieldsNil", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("end_turn", nil).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, bifrostResp.ProviderExtraFields, "a round-trippable stop reason adds nothing to the response")
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "end_turn", result.StopReason)
+	})
+
+	t.Run("AnthropicUpstream_StopSequence", func(t *testing.T) {
+		// The Anthropic converter reports a stop-sequence finish as StopReason "stop" plus StopSequence.
+		result, err := bedrock.ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+			StopReason:   schemas.Ptr("stop"),
+			StopSequence: schemas.Ptr("three"),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+	})
+
+	t.Run("OpenAIStyleStop_StaysEndTurn", func(t *testing.T) {
+		result, err := bedrock.ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{StopReason: schemas.Ptr("stop")})
+		require.NoError(t, err)
+		assert.Equal(t, "end_turn", result.StopReason)
+	})
+}
+
+// BenchmarkConverseResponseRoundTripEndTurn measures the common Converse round trip
+// (upstream body -> Bifrost -> /bedrock converse egress) with a plain end_turn finish.
+func BenchmarkConverseResponseRoundTripEndTurn(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	upstream := converseStopSequenceResponse("end_turn", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bifrostResp, err := upstream.ToBifrostResponsesResponse(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := bedrock.ToBedrockConverseResponse(bifrostResp); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
@@ -2977,6 +3165,46 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			expectedContentType: "json",
 			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
+		// Converse rejects a json document containing an empty-string object key with
+		// "The format of the value at ...toolResult.content.N.json is invalid" (verified
+		// live against us.anthropic.claude-haiku-4-5). Cursor's list_directory results
+		// carry such keys for extensionless files, so these payloads must fall back to a
+		// text block holding the original JSON string.
+		{
+			name:                "EmptyKeyObjectFallsBackToText",
+			toolResultContent:   `{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"success":{"fullSubtreeExtensionCounts":{"":2,".md":1},"numFiles":3}}`),
+		},
+		{
+			name:                "EmptyKeyInsideArrayFallsBackToText",
+			toolResultContent:   `[{"path":"/repo","counts":{"":1}}]`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`[{"path":"/repo","counts":{"":1}}]`),
+		},
+		{
+			// An empty string as a VALUE is fine; only empty keys are rejected.
+			name:                "EmptyStringValueStaysJSON",
+			toolResultContent:   `{"a":""}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"a": ""}),
+		},
+		{
+			// Empty string value followed by an empty key: the detector must not
+			// confuse a value in key position with a key.
+			name:                "EmptyValueThenEmptyKeyFallsBackToText",
+			toolResultContent:   `{"a":"","":1}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":"","":1}`),
+		},
+		{
+			// Empty key appearing after a nested container in the same object: the
+			// detector must keep checking sibling keys after descending.
+			name:                "EmptyKeyAfterNestedContainerFallsBackToText",
+			toolResultContent:   `{"a":{"b":[1,2]},"":2}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":{"b":[1,2]},"":2}`),
+		},
 	}
 
 	for _, tt := range tests {
@@ -2994,7 +3222,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -3029,6 +3257,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 		name           string
 		input          *schemas.BifrostResponsesResponse
 		expectedBlocks int // Expected number of ContentBlocks in the output
+		expectError    bool
 		description    string
 	}{
 		{
@@ -3100,7 +3329,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Reasoning block with nil Text should not create an empty ContentBlock",
 		},
 		{
-			name: "FileBlockWithNilFileData_ShouldNotCreateEmptyBlock",
+			name: "FileBlockWithNilFileData_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3122,8 +3351,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 0,
-			description:    "File block with nil FileData should not create an empty ContentBlock",
+			expectError: true,
+			description: "File block with neither FileData nor FileURL should return an error instead of silently dropping the document",
 		},
 		{
 			name: "FileBlockWithNilFileBlock_ShouldNotCreateEmptyBlock",
@@ -3224,7 +3453,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
-			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
+			name: "MixedValidAndSourceLessFileBlocks_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3256,8 +3485,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 2, // Only valid text and reasoning blocks
-			description:    "Mixed valid and invalid blocks should only create valid ContentBlocks",
+			expectError: true,
+			description: "A source-less document should fail the message conversion instead of being removed from otherwise valid content",
 		},
 		{
 			name: "CacheControlBlock_ShouldCreateCachePointBlock",
@@ -3289,6 +3518,10 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actual, err := bedrock.ToBedrockConverseResponse(tt.input)
+			if tt.expectError {
+				require.Error(t, err, tt.description)
+				return
+			}
 			require.NoError(t, err, "Conversion should not error")
 			require.NotNil(t, actual, "Response should not be nil")
 			require.NotNil(t, actual.Output, "Output should not be nil")
@@ -3818,26 +4051,10 @@ func betaListContains(t *testing.T, fields *schemas.OrderedMap, header string) b
 	return false
 }
 
-// hasAnthropicBetaField reports whether the OrderedMap carries an anthropic_beta
-// entry at all, whatever its contents. It lets the negative cases assert the
-// field stays off the wire, which betaListContains alone cannot show.
-func hasAnthropicBetaField(fields *schemas.OrderedMap) bool {
-	if fields == nil {
-		return false
-	}
-	_, ok := fields.Get("anthropic_beta")
-	return ok
-}
-
-// TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool locks in Route A:
-// Bedrock + Anthropic + json_schema response_format routes through the
-// synthetic `bf_so_*` tool path (same as non-Anthropic Bedrock providers),
-// not Bedrock's native `output_config.format`. Bedrock Converse's support for
-// `output_config.format` is inconsistent across Claude variants (Opus 4.7
-// rejects with "output_config.format: Extra inputs are not permitted"); the
-// synthetic-tool path is a regular Converse tool call that all variants
-// accept reliably.
-func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
+// TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig: Opus 4.7, which once rejected
+// additionalModelRequestFields.output_config.format, takes the schema natively through
+// Converse outputConfig.textFormat (verified live), with no bf_so_* tool and no beta.
+func TestBedrockAnthropicChatStructuredOutputUsesNativeOutputConfig(t *testing.T) {
 	responseFormat := any(map[string]any{
 		"type": "json_schema",
 		"json_schema": map[string]any{
@@ -3873,302 +4090,29 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	assertNativeOutputConfigOnly(t, ctx, result, "classification")
+}
 
-	// Negative: no `output_config` and no structured-outputs beta tunnel
-	// in additionalModelRequestFields. PR #3053 added both; Route A removes them.
+// assertNativeOutputConfigOnly checks a Claude request carries the schema only in typed
+// outputConfig: no output_config tunnel, no structured-outputs beta, no synthetic tool.
+func assertNativeOutputConfigOnly(t *testing.T, ctx *schemas.BifrostContext, result *bedrock.BedrockConverseRequest, name string) {
+	t.Helper()
 	if result.AdditionalModelRequestFields != nil {
 		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
-		assert.False(
-			t,
-			betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
-			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
-		)
+		assert.False(t, hasOutputConfig, "the schema travels in typed outputConfig, not additionalModelRequestFields")
+		assert.False(t, betaListContains(t, result.AdditionalModelRequestFields, "structured-outputs-2025-11-13"))
 	}
-
-	// Positive: synthetic bf_so_* tool present and forced via tool_choice —
-	// this is the contract that replaces output_config.format on Bedrock.
-	require.NotNil(t, result.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
-	require.NotEmpty(t, result.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
-	require.NotNil(t, result.ToolConfig.ToolChoice, "expected forced tool_choice")
-	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
-	assert.Contains(t, result.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
-	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+	assert.Nil(t, result.ToolConfig, "no synthetic bf_so_* tool")
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName))
+	assert.Equal(t, name, gjson.GetBytes(result.OutputConfig, "textFormat.structure.jsonSchema.name").String())
+	schema := gjson.GetBytes(result.OutputConfig, "textFormat.structure.jsonSchema.schema").String()
+	assert.Equal(t, gjson.False, gjson.Get(schema, "additionalProperties").Type, "Claude requires the object closed")
+	assert.True(t, gjson.Get(schema, "properties.isNewTopic").Exists())
 }
 
-// eagerInputStreamingBeta is the wire value of Anthropic's
-// fine-grained-tool-streaming beta (anthropic.AnthropicEagerInputStreamingBetaHeader).
-// Kept as a literal here to pin the exact string that reaches Bedrock, matching
-// the style of the structured-outputs beta assertions above.
-const eagerInputStreamingBeta = "fine-grained-tool-streaming-2025-05-14"
-
-func eagerStreamingChatRequest(model string, eager *bool) *schemas.BifrostChatRequest {
-	return &schemas.BifrostChatRequest{
-		Model: model,
-		Input: []schemas.ChatMessage{
-			{
-				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
-			},
-		},
-		Params: &schemas.ChatParameters{
-			Tools: []schemas.ChatTool{
-				{
-					Type: schemas.ChatToolTypeFunction,
-					Function: &schemas.ChatToolFunction{
-						Name:        "get_weather",
-						Description: schemas.Ptr("Get weather information"),
-						Parameters: &schemas.ToolFunctionParameters{
-							Type: "object",
-							Properties: schemas.NewOrderedMapFromPairs(
-								schemas.KV("location", map[string]interface{}{"type": "string"}),
-							),
-							Required: []string{"location"},
-						},
-					},
-					EagerInputStreaming: eager,
-				},
-			},
-		},
-	}
-}
-
-// TestBedrockConverseEagerInputStreaming locks in the fix for
-// https://github.com/maximhq/bifrost/issues/4965. eager_input_streaming
-// (Anthropic's fine-grained-tool-streaming-2025-05-14 beta) has no slot in the
-// typed Converse toolSpec shape, and Bedrock's edge strips the outer
-// anthropic-beta HTTP header, so the only channel that activates the beta is the
-// body field additionalModelRequestFields.anthropic_beta. Before the fix the flag
-// was read nowhere on the Converse path, so it was a silent no-op.
-//
-// Converse also serves non-Anthropic families (Nova, Llama, ...). Tool filtering
-// keeps custom tools and their flag verbatim regardless of family, so the flag
-// survives on those models too; the injection must therefore be gated on the
-// Anthropic model family so a Nova request never receives an anthropic_beta field.
-func TestBedrockConverseEagerInputStreaming(t *testing.T) {
-	tests := []struct {
-		name     string
-		model    string
-		eager    *bool
-		wantBeta bool
-	}{
-		{
-			name:     "anthropic model, eager_input_streaming true activates the beta",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    schemas.Ptr(true),
-			wantBeta: true,
-		},
-		{
-			name:     "anthropic model, eager_input_streaming false leaves it off",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    schemas.Ptr(false),
-			wantBeta: false,
-		},
-		{
-			name:     "anthropic model, flag absent leaves it off",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    nil,
-			wantBeta: false,
-		},
-		{
-			name:     "non-anthropic (nova) model never gets the anthropic beta",
-			model:    "amazon.nova-lite-v1:0",
-			eager:    schemas.Ptr(true),
-			wantBeta: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, eagerStreamingChatRequest(tt.model, tt.eager))
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			got := betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta)
-			assert.Equal(t, tt.wantBeta, got,
-				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
-				eagerInputStreamingBeta, got, tt.wantBeta)
-			if !tt.wantBeta {
-				// These requests carry no server tool and nothing else that derives
-				// a beta, so the field itself must stay off the wire. On a Nova
-				// request an anthropic_beta of any value is meaningless.
-				assert.False(t, hasAnthropicBetaField(result.AdditionalModelRequestFields),
-					"additionalModelRequestFields should carry no anthropic_beta field at all")
-			}
-		})
-	}
-}
-
-// TestBedrockConverseEagerInputStreamingCoexistsWithServerTools proves the eager
-// beta append does not clobber (and is not clobbered by) the existing server-tool
-// tunnel, which writes its own tools + anthropic_beta into
-// additionalModelRequestFields. A request carrying both a computer_* server tool
-// (derives computer-use-2025-11-24) and a custom tool with eager_input_streaming
-// must end up with both betas and the tunneled tools.
-func TestBedrockConverseEagerInputStreamingCoexistsWithServerTools(t *testing.T) {
-	req := &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-opus-4-7-v1:0",
-		Input: []schemas.ChatMessage{
-			{
-				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
-			},
-		},
-		Params: &schemas.ChatParameters{
-			Tools: []schemas.ChatTool{
-				{
-					Type:            schemas.ChatToolType("computer_20251124"),
-					Name:            "computer",
-					DisplayWidthPx:  schemas.Ptr(1280),
-					DisplayHeightPx: schemas.Ptr(800),
-				},
-				{
-					Type: schemas.ChatToolTypeFunction,
-					Function: &schemas.ChatToolFunction{
-						Name:        "get_weather",
-						Description: schemas.Ptr("Get weather information"),
-						Parameters: &schemas.ToolFunctionParameters{
-							Type: "object",
-							Properties: schemas.NewOrderedMapFromPairs(
-								schemas.KV("location", map[string]interface{}{"type": "string"}),
-							),
-							Required: []string{"location"},
-						},
-					},
-					EagerInputStreaming: schemas.Ptr(true),
-				},
-			},
-		},
-	}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.AdditionalModelRequestFields)
-
-	_, hasTools := result.AdditionalModelRequestFields.Get("tools")
-	assert.True(t, hasTools, "expected the server-tool tunnel to still set tools")
-	assert.True(t,
-		betaListContains(t, result.AdditionalModelRequestFields, "computer-use-2025-11-24"),
-		"server-tool beta computer-use-2025-11-24 should survive the eager append")
-	assert.True(t,
-		betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta),
-		"eager beta %q should be appended alongside the server-tool beta", eagerInputStreamingBeta)
-}
-
-func eagerStreamingResponsesRequest(model string, eager *bool) *schemas.BifrostResponsesRequest {
-	toolParams := schemas.ToolFunctionParameters{
-		Type: "object",
-		Properties: schemas.NewOrderedMapFromPairs(
-			schemas.KV("location", map[string]interface{}{"type": "string"}),
-		),
-		Required: []string{"location"},
-	}
-
-	return &schemas.BifrostResponsesRequest{
-		Model: model,
-		Params: &schemas.ResponsesParameters{
-			Tools: []schemas.ResponsesTool{
-				{
-					Type:        schemas.ResponsesToolTypeFunction,
-					Name:        schemas.Ptr("get_weather"),
-					Description: schemas.Ptr("Get weather information"),
-					ResponsesToolFunction: &schemas.ResponsesToolFunction{
-						Parameters: &toolParams,
-					},
-					EagerInputStreaming: eager,
-				},
-			},
-		},
-	}
-}
-
-// TestToBedrockResponsesRequest_EagerInputStreaming is the Responses-path
-// counterpart of TestBedrockConverseEagerInputStreaming. The neutral
-// ResponsesTool keeps eager_input_streaming, but before this fix the Bedrock
-// converter never read it, so the beta remained a silent no-op on /v1/responses.
-func TestToBedrockResponsesRequest_EagerInputStreaming(t *testing.T) {
-	tests := []struct {
-		name     string
-		model    string
-		eager    *bool
-		wantBeta bool
-	}{
-		{
-			name:     "anthropic model, eager_input_streaming true activates the beta",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    schemas.Ptr(true),
-			wantBeta: true,
-		},
-		{
-			name:     "anthropic model, eager_input_streaming false leaves it off",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    schemas.Ptr(false),
-			wantBeta: false,
-		},
-		{
-			name:     "anthropic model, flag absent leaves it off",
-			model:    "anthropic.claude-opus-4-7-v1:0",
-			eager:    nil,
-			wantBeta: false,
-		},
-		{
-			name:     "non-anthropic (nova) model never gets the anthropic beta",
-			model:    "amazon.nova-lite-v1:0",
-			eager:    schemas.Ptr(true),
-			wantBeta: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			result, err := bedrock.ToBedrockResponsesRequest(ctx, eagerStreamingResponsesRequest(tt.model, tt.eager))
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			got := betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta)
-			assert.Equal(t, tt.wantBeta, got,
-				"additionalModelRequestFields.anthropic_beta contains %q = %v, want %v",
-				eagerInputStreamingBeta, got, tt.wantBeta)
-			if !tt.wantBeta {
-				assert.False(t, hasAnthropicBetaField(result.AdditionalModelRequestFields),
-					"additionalModelRequestFields should carry no anthropic_beta field at all")
-			}
-		})
-	}
-}
-
-// TestToBedrockResponsesRequest_EagerInputStreamingPreservesExistingBetas
-// verifies that the Responses-path injection appends to, rather than replaces,
-// caller-provided additionalModelRequestFields.anthropic_beta values.
-func TestToBedrockResponsesRequest_EagerInputStreamingPreservesExistingBetas(t *testing.T) {
-	req := eagerStreamingResponsesRequest("anthropic.claude-opus-4-7-v1:0", schemas.Ptr(true))
-	req.Params.ExtraParams = map[string]interface{}{
-		"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(
-			schemas.KV("anthropic_beta", []string{"existing-beta"}),
-		),
-	}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.AdditionalModelRequestFields)
-	assert.True(t,
-		betaListContains(t, result.AdditionalModelRequestFields, "existing-beta"),
-		"caller-provided beta should survive the eager append")
-	assert.True(t,
-		betaListContains(t, result.AdditionalModelRequestFields, eagerInputStreamingBeta),
-		"eager beta %q should be appended to the caller-provided beta", eagerInputStreamingBeta)
-}
-
-// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool
-// is the responses-path twin of TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool.
-// The user's failing request comes through the Anthropic Messages SDK
-// (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
-// -> ToBedrockResponsesRequest with Params.Text.Format set.
-func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
+// TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesNativeOutputConfig is the Responses
+// twin, the path /anthropic/v1/messages output_config.format arrives on.
+func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesNativeOutputConfig(t *testing.T) {
 	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
@@ -4198,25 +4142,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
-
-	// Negative: no output_config, no structured-outputs beta tunnel.
-	if bedrockReq.AdditionalModelRequestFields != nil {
-		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-		assert.False(t, hasOutputConfig, "expected NO output_config for Anthropic on Bedrock under Route A")
-		assert.False(
-			t,
-			betaListContains(t, bedrockReq.AdditionalModelRequestFields, "structured-outputs-2025-11-13"),
-			"additionalModelRequestFields.anthropic_beta should NOT contain structured-outputs-2025-11-13",
-		)
-	}
-
-	// Positive: synthetic bf_so_* tool injected and forced.
-	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig with synthetic bf_so_* tool")
-	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected at least one tool (the synthetic bf_so_*)")
-	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected forced tool_choice")
-	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected tool_choice to target a specific tool")
-	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool_choice to target bf_so_*")
-	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	assertNativeOutputConfigOnly(t, ctx, bedrockReq, "classification")
 }
 
 // TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models
@@ -4437,7 +4363,8 @@ func TestNovaReasoningEffortClamped(t *testing.T) {
 
 // TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
 // signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
-// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+// signature is preserved. Runs on a Nova id: on Claude an unsigned block is not
+// sent at all (#6624), which TestUnsignedReasoningReplay_Chat pins.
 func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	cases := map[string]struct {
 		in   *string
@@ -4450,7 +4377,7 @@ func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			bifrostReq := &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5",
+				Model: "amazon.nova-pro-v1:0",
 				Input: []schemas.ChatMessage{
 					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
 					{
@@ -4897,6 +4824,67 @@ func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.B
 	return result.Messages[0].Content[1].Document
 }
 
+// A file content block carrying cache_control must be followed by a standalone
+// cachePoint block, exactly as text and image blocks already are (#7613). Without it
+// the document is billed as fresh input on every request and the client's cache
+// breakpoint is silently lost on the wire.
+func TestDocumentBlockCacheControlEmitsCachePoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         *string
+		expectedTTL *string
+	}{
+		{"DefaultTTL", nil, nil},
+		{"OneHourTTL", schemas.Ptr("1h"), schemas.Ptr("1h")},
+		{"UnsupportedTTLDropsToDefault", schemas.Ptr("1m"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarise the attached document.")},
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr("a.pdf"),
+										FileData: schemas.Ptr("data:application/pdf;base64,JVBERi0xLjQK"),
+									},
+									CacheControl: &schemas.CacheControl{
+										Type: schemas.CacheControlTypeEphemeral,
+										TTL:  tt.ttl,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			content := result.Messages[0].Content
+			require.Len(t, content, 3, "expected text, document, cachePoint; got %+v", content)
+			require.NotNil(t, content[0].Text)
+			require.NotNil(t, content[1].Document)
+			require.NotNil(t, content[2].CachePoint, "cache_control on a file block must emit a trailing cachePoint block")
+			assert.Equal(t, bedrock.BedrockCachePointTypeDefault, content[2].CachePoint.Type)
+			assert.Equal(t, tt.expectedTTL, content[2].CachePoint.TTL)
+		})
+	}
+}
+
 // The standard OpenAI chat `type:"file"` part carries the document's MIME type only
 // inside the file_data data URL - file_type is a Bifrost extension normal clients
 // don't send. Without reading it, every non-PDF document was labeled format "pdf"
@@ -4934,6 +4922,7 @@ func TestDocumentFormatFromDataURL(t *testing.T) {
 				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
 			require.NotNil(t, doc.Source.Bytes)
 			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+			assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
 		})
 	}
 }
@@ -4980,10 +4969,9 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	})
 
 	assert.Equal(t, "txt", doc.Format)
-	require.NotNil(t, doc.Source.Text)
-	assert.Equal(t, "Hello World", *doc.Source.Text)
 	require.NotNil(t, doc.Source.Bytes)
 	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+	assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
 
 	// A binary format never gets source.text, matching the raw file_data path.
 	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
@@ -4995,6 +4983,37 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	assert.Nil(t, doc.Source.Text, "binary documents must not carry source.text")
 	require.NotNil(t, doc.Source.Bytes)
 	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")), *doc.Source.Bytes)
+}
+
+// Converse rejects a text-only document source, so text formats ship as base64 bytes.
+func TestTextDocumentUsesBytesSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		fileType       string
+		expectedFormat string
+	}{
+		{"PlainText", "text/plain", "txt"},
+		{"Markdown", "text/markdown", "md"},
+		{"CSV", "text/csv", "csv"},
+		{"HTML", "text/html", "html"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+				Filename: schemas.Ptr("notes." + tt.expectedFormat),
+				FileType: schemas.Ptr(tt.fileType),
+				FileData: schemas.Ptr("hello world"),
+			})
+
+			assert.Equal(t, tt.expectedFormat, doc.Format)
+			require.NotNil(t, doc.Source.Bytes)
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("hello world")), *doc.Source.Bytes)
+			assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
+		})
+	}
 }
 
 // A non-base64 data URL payload is percent-encoded by definition, so a malformed
@@ -5295,6 +5314,37 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 	require.NotNil(t, terminal.Response.Status)
 	assert.Equal(t, "completed", *terminal.Response.Status)
 	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// An empty Converse turn (messageStart then messageStop, no content, which Claude
+// returns after a tool result) must stream output: [] on every lifecycle event. A null
+// output on response.completed crashes clients that iterate it (pydantic-ai: TypeError).
+func TestFinalizeBedrockStream_EmptyTurnSendsEmptyOutputArray(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	events, bifrostErr, _ := (&bedrock.BedrockStreamEvent{Role: new("assistant")}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+	state.StopReason = new("stop")
+	events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{InputTokens: 12, TotalTokens: 12}, nil)...)
+
+	var lifecycle []schemas.ResponsesStreamResponseType
+	for _, event := range events {
+		if event.Response == nil {
+			continue
+		}
+		lifecycle = append(lifecycle, event.Type)
+		data, err := schemas.Marshal(event)
+		require.NoError(t, err)
+		var wire struct {
+			Response map[string]json.RawMessage `json:"response"`
+		}
+		require.NoError(t, json.Unmarshal(data, &wire))
+		assert.Equal(t, "[]", string(wire.Response["output"]), "%s must carry output: [] — %s", event.Type, data)
+	}
+	assert.Equal(t, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}, lifecycle)
 }
 
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
@@ -5673,7 +5723,7 @@ func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
 			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
 
 			// Outbound: Bifrost responses messages -> Bedrock
-			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, anthropicModel, bifrostMessages, false)
 			require.NoError(t, err)
 			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
 
@@ -5871,7 +5921,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5915,7 +5965,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5948,7 +5998,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -6297,7 +6347,7 @@ func TestToBedrockChatCompletionRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_list_network_requests")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6341,7 +6391,7 @@ func TestToBedrockChatCompletionRequest_AliasesToolNamesWithInvalidChars(t *test
 	alias := result.ToolConfig.Tools[0].ToolSpec.Name
 	assert.NotEqual(t, toolName, alias, "name with disallowed chars must be aliased")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -6436,7 +6486,7 @@ func TestToBedrockResponsesRequest_AliasesLongMCPToolNames(t *testing.T) {
 	assert.NotEqual(t, toolName, alias)
 	assert.Contains(t, alias, "_notion-notion-search")
 	assert.Regexp(t, `^[A-Za-z0-9_-]{1,64}$`, alias)
-	assert.Regexp(t, `^[0-9a-f]{8}_`, alias)
+	assert.Regexp(t, `^t[0-9a-f]{8}_`, alias)
 	require.NotNil(t, result.ToolConfig.ToolChoice)
 	require.NotNil(t, result.ToolConfig.ToolChoice.Tool)
 	assert.Equal(t, alias, result.ToolConfig.ToolChoice.Tool.Name)
@@ -7002,7 +7052,7 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt should be hoisted into the system block.
@@ -7026,12 +7076,12 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 	assert.Equal(t, "second user turn", *messages[0].Content[2].Text)
 }
 
-// TestMidConversationSystemReminderHoistedForNonAnthropic verifies the Anthropic-only gating:
-// for a non-Anthropic Bedrock model (e.g. Nova), the historical behavior is preserved — every
-// role=system message, including mid-conversation ones, is hoisted into the top-level system
-// block and nothing is inlined as a <system-reminder>. The inlining is a prompt-cache workaround
-// specific to Anthropic-on-Bedrock and must not change the wire shape for other models.
-func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
+// TestHoistEverythingModeStillHoistsAllSystemMessages pins the inlineSystemReminders=false mode.
+// No request path uses it any more (ToBedrockResponsesRequest inlines mid-conversation reminders
+// for every model family, because Bedrock's prompt cache is prefix-based for every model that
+// has one); it survives only for rendering a stored response back into a Converse shape, and
+// that caller must keep getting the hoist-everything wire shape.
+func TestHoistEverythingModeStillHoistsAllSystemMessages(t *testing.T) {
 	input := []schemas.ResponsesMessage{
 		systemReminderTextMsg("You are a helpful assistant."), // leading system prompt
 		userReminderTextMsg("first user turn"),
@@ -7039,11 +7089,11 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
-	require.Len(t, systemMessages, 2, "non-Anthropic models hoist every system message")
+	require.Len(t, systemMessages, 2, "hoist-everything mode hoists every system message")
 	assert.Equal(t, "You are a helpful assistant.", *systemMessages[0].Text)
 	assert.Equal(t, "Mid-conversation reminder.", *systemMessages[1].Text)
 
@@ -7051,7 +7101,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 	for _, m := range messages {
 		for _, b := range m.Content {
 			if b.Text != nil {
-				assert.NotContains(t, *b.Text, "<system-reminder>", "non-Anthropic path must not wrap reminders")
+				assert.NotContains(t, *b.Text, "<system-reminder>", "hoist-everything mode must not wrap reminders")
 			}
 		}
 	}
@@ -7067,7 +7117,7 @@ func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
 		systemReminderTextMsg("Injected reminder."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	require.Len(t, systemMessages, 2, "both leading system messages belong in the system block")
@@ -7103,7 +7153,7 @@ func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
 		systemReminderTextMsg("The task tools haven't been used recently."), // reminder right after tool result
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -7171,7 +7221,7 @@ func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt is hoisted; the developer reminder is NOT.
@@ -7209,7 +7259,7 @@ func TestMidConversationReminderContentStrInlined(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1, "only the leading prompt is hoisted")
 
@@ -7238,7 +7288,7 @@ func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -7276,7 +7326,7 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Locate the assistant message carrying the tool_use.
@@ -7332,7 +7382,7 @@ func TestSystemReminderCarriesCachePoint(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// The marker must follow the wrapped reminder text: per Converse semantics a cachePoint
@@ -7363,7 +7413,7 @@ func TestSystemReminderWithoutCacheControlAddsNoCachePoint(t *testing.T) {
 		systemReminderTextMsg("Reminder with no breakpoint."),
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	for _, m := range messages {
@@ -7404,7 +7454,7 @@ func TestToolCacheControlBecomesCachePointWithTTL(t *testing.T) {
 	}
 
 	assertTTLPreserved := func(t *testing.T, input []schemas.ResponsesMessage) {
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 		require.NoError(t, err)
 
 		var afterToolUse, afterToolResult bool
@@ -7455,7 +7505,7 @@ func TestLoneSystemMessageReturnsUserMessage(t *testing.T) {
 	for role, msg := range roles {
 		for _, inline := range []bool{true, false} {
 			input := []schemas.ResponsesMessage{msg}
-			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, inline)
+			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, inline)
 			require.NoError(t, err)
 			assert.Empty(t, systemMessages, "lone %s message must not populate the system block (inline=%v)", role, inline)
 			require.Len(t, messages, 1, "lone %s message must yield exactly one message (inline=%v)", role, inline)
@@ -7474,7 +7524,7 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		userReminderTextMsg("continue"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	assert.Empty(t, systemMessages, "no leading system block means nothing should be hoisted")
@@ -7603,11 +7653,174 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 	}
 }
 
+// TestConverseAdditionalModelRequestFieldsStoreReachesParams pins that a boolean
+// store in additionalModelRequestFields - the only place the AWS SDK's ConverseInput
+// can carry it - lands on Params.Store, so an OpenAI/Azure Responses target sends the
+// caller's store:false instead of silently applying its store:true default (#7720).
+func TestConverseAdditionalModelRequestFieldsStoreReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name      string
+		storeJSON string // raw JSON for the store key; empty omits it
+		want      *bool
+	}{
+		{"store_false", `false`, schemas.Ptr(false)},
+		{"store_true", `true`, schemas.Ptr(true)},
+		{"store_absent", ``, nil},
+		{"store_non_boolean_ignored", `"false"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storeField := ""
+			if tc.storeJSON != "" {
+				storeField = `, "store": ` + tc.storeJSON
+			}
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {
+					"reasoning_config": {"type": "enabled"},
+					"output_config": {"effort": "medium"}` + storeField + `
+				}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.Store, "Params.Store")
+
+			// Every Responses-path host of OpenAI models (openai, azure, bedrock_mantle, the
+			// Bedrock OpenAI surface, openrouter, databricks) builds its body with this converter.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wire, &fields))
+			got, present := fields["store"]
+			if tc.want == nil {
+				assert.False(t, present, "outbound body must not invent store: %s", wire)
+			} else if assert.True(t, present, "outbound body dropped store: %s", wire) {
+				assert.JSONEq(t, tc.storeJSON, string(got), "outbound store: %s", wire)
+			}
+
+			// Models without a Responses endpoint (and chat-only hosts such as groq, cerebras,
+			// parasail) take the Chat fallback; the datasheet then decides whether store is sent.
+			chatReq := mid.ToChatRequest()
+			require.NotNil(t, chatReq.Params, "chat fallback Params is nil")
+			assert.Equal(t, tc.want, chatReq.Params.Store, "chat fallback Params.Store")
+
+			// Bedrock Converse ignores Params.Store; store keeps riding in
+			// additionalModelRequestFields exactly as it did before the fix.
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			var forwarded interface{}
+			forwardedOK := false
+			if converse.AdditionalModelRequestFields != nil {
+				forwarded, forwardedOK = converse.AdditionalModelRequestFields.Get("store")
+			}
+			if tc.storeJSON == "" {
+				assert.False(t, forwardedOK, "Converse egress must not invent store")
+			} else if assert.True(t, forwardedOK, "Converse egress dropped store from additionalModelRequestFields") {
+				forwardedJSON, err := json.Marshal(forwarded)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.storeJSON, string(forwardedJSON), "Converse additionalModelRequestFields.store")
+			}
+		})
+	}
+}
+
+// TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams pins that a
+// prompt_cache_options object in additionalModelRequestFields - the only place the AWS
+// SDK's ConverseInput can carry it - lands on Params.PromptCacheOptions, so a gpt-5.6
+// Responses target (OpenAI, Azure, Bedrock Mantle) runs in the mode the caller chose.
+// Since #8334 Bifrost leaves gpt-5.6 in implicit mode, so this key is the only way a
+// /bedrock caller can limit caching to its own cachePoint, or turn caching off (#8554).
+func TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		optionsJSON string // raw JSON for the prompt_cache_options key; empty omits it
+		want        *schemas.PromptCacheOptions
+	}{
+		{"explicit", `{"mode": "explicit"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}},
+		{"implicit_with_ttl", `{"mode": "implicit", "ttl": "30m"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("30m")}},
+		{"absent", ``, nil},
+		{"non_object_ignored", `"explicit"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			optionsField := ""
+			if tc.optionsJSON != "" {
+				optionsField = `, "prompt_cache_options": ` + tc.optionsJSON
+			}
+			body := []byte(`{
+				"system": [{"text": "You are a terse assistant."}, {"cachePoint": {"type": "default"}}],
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {"store": false` + optionsField + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5.6-luna"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.PromptCacheOptions, "Params.PromptCacheOptions")
+
+			// The Responses body every gpt-5.6 host builds: the caller's mode is on the wire
+			// next to the breakpoint translated from the system cachePoint.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			got := gjson.GetBytes(wire, "prompt_cache_options")
+			if tc.want == nil {
+				assert.False(t, got.Exists(), "outbound body must not invent prompt_cache_options: %s", wire)
+			} else if assert.True(t, got.Exists(), "outbound body dropped prompt_cache_options: %s", wire) {
+				assert.JSONEq(t, tc.optionsJSON, got.Raw, "outbound prompt_cache_options: %s", wire)
+			}
+			assert.Equal(t, 1, strings.Count(string(wire), `"prompt_cache_breakpoint"`),
+				"the system cachePoint must still become exactly one breakpoint: %s", wire)
+
+			// Models without a Responses endpoint take the Chat fallback.
+			chatReq := mid.ToChatRequest()
+			require.NotNil(t, chatReq.Params, "chat fallback Params is nil")
+			assert.Equal(t, tc.want, chatReq.Params.PromptCacheOptions, "chat fallback Params.PromptCacheOptions")
+
+			// Bedrock Converse has no typed slot for it; the key keeps riding in
+			// additionalModelRequestFields exactly as it did before the fix.
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			var forwarded interface{}
+			forwardedOK := false
+			if converse.AdditionalModelRequestFields != nil {
+				forwarded, forwardedOK = converse.AdditionalModelRequestFields.Get("prompt_cache_options")
+			}
+			if tc.optionsJSON == "" {
+				assert.False(t, forwardedOK, "Converse egress must not invent prompt_cache_options")
+			} else if assert.True(t, forwardedOK, "Converse egress dropped prompt_cache_options from additionalModelRequestFields") {
+				forwardedJSON, err := json.Marshal(forwarded)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.optionsJSON, string(forwardedJSON), "Converse additionalModelRequestFields.prompt_cache_options")
+			}
+		})
+	}
+}
+
 // TestBedrockDocumentS3URIUsesS3Location pins that an s3:// document reference travels
 // to Converse as the s3Location union member rather than being downloaded by Bifrost.
 // DocumentSource is documented as bytes | content | s3Location | text, so the object
 // reference is a first-class source - inlining it would burn a round trip and put the
 // payload under the 25 MiB inline cap for nothing.
+//
+// Nova, because forwarding the reference is only correct for a model whose Converse
+// backend resolves it: see schemas.BedrockModelSupportsS3Location, and
+// TestS3LocationRefusedForModelsThatCannotReadIt for the other side of that gate.
 func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7617,7 +7830,7 @@ func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	fileType := "application/pdf"
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7683,7 +7896,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 			fileURL := tc.uri
 
 			got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5-v1:0",
+				Model: novaModel,
 				Input: []schemas.ChatMessage{
 					{
 						Role: schemas.ChatMessageRoleUser,
@@ -7727,7 +7940,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4.pdf"
 
 		got, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ResponsesMessage{
 				{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -7769,7 +7982,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4"
 
 		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ChatMessage{
 				{
 					Role: schemas.ChatMessageRoleUser,
@@ -7791,7 +8004,8 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 
 // TestBedrockImageS3URIUsesS3Location is the ImageSource twin. Note the format has to be
 // derived from the object's extension: nothing is fetched, so there is no Content-Type,
-// and Converse requires a format on every image block.
+// and Converse requires a format on every image block. Nova for the same reason as its
+// document twin above.
 func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7799,7 +8013,7 @@ func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7836,7 +8050,7 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7853,4 +8067,1422 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine image format")
+}
+
+// TestDefaultOutputTokens verifies omitted limits use model capacity without replacing explicit limits.
+func TestDefaultOutputTokens(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, test := range []struct {
+		name  string
+		model string
+		limit *int
+		want  int
+	}{
+		{name: "known", model: "us.anthropic.claude-sonnet-5", want: 128000},
+		{name: "explicit", model: "us.anthropic.claude-sonnet-5", limit: schemas.Ptr(512), want: 512},
+		{name: "unknown", model: "unknown-model"},
+	} {
+		for _, emptyParams := range []bool{false, true} {
+			t.Run(test.name+"/"+map[bool]string{false: "nil", true: "params"}[emptyParams], func(t *testing.T) {
+				chat := &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    test.model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				}
+				responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: test.model}
+				if emptyParams || test.limit != nil {
+					chat.Params = &schemas.ChatParameters{MaxCompletionTokens: test.limit}
+					responses.Params = &schemas.ResponsesParameters{MaxOutputTokens: test.limit}
+				}
+				convertedChat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chat)
+				require.NoError(t, err)
+				convertedResponses, err := bedrock.ToBedrockResponsesRequest(ctx, responses)
+				require.NoError(t, err)
+				for name, converted := range map[string]*bedrock.BedrockConverseRequest{"chat": convertedChat, "responses": convertedResponses} {
+					got := 0
+					if converted.InferenceConfig != nil && converted.InferenceConfig.MaxTokens != nil {
+						got = *converted.InferenceConfig.MaxTokens
+					}
+					assert.Equalf(t, test.want, got, "%s max tokens", name)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaultOutputTokensCapabilities verifies catalog limits override static defaults and Nova exclusions survive.
+func TestDefaultOutputTokensCapabilities(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Bedrock {
+			return &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(32000)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, model := range []string{"us.anthropic.claude-sonnet-5", "custom-model", "us.amazon.nova-pro-v1:0"} {
+		t.Run(model, func(t *testing.T) {
+			chat := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}},
+			}
+			responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: model, Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}}}
+			convertedChat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chat)
+			require.NoError(t, err)
+			convertedResponses, err := bedrock.ToBedrockResponsesRequest(ctx, responses)
+			require.NoError(t, err)
+			for name, converted := range map[string]*bedrock.BedrockConverseRequest{"chat": convertedChat, "responses": convertedResponses} {
+				if model == "us.amazon.nova-pro-v1:0" {
+					if converted.InferenceConfig != nil && converted.InferenceConfig.MaxTokens != nil {
+						t.Errorf("%s high Nova reasoning must omit max tokens", name)
+					}
+				} else if converted.InferenceConfig == nil || converted.InferenceConfig.MaxTokens == nil || *converted.InferenceConfig.MaxTokens != 32000 {
+					t.Errorf("%s did not use catalog max tokens", name)
+				}
+			}
+			require.Nil(t, chat.Params.MaxCompletionTokens, "conversion mutated chat token limit")
+			require.Nil(t, responses.Params.MaxOutputTokens, "conversion mutated responses token limit")
+		})
+	}
+}
+
+// Wire-level reproduction of issue #7074.
+//
+// Claude Code talks to Bifrost on the Anthropic-native ingress (`POST /anthropic/v1/messages`)
+// with a `bedrock/openai.gpt-oss-120b` model. The request is converted Anthropic -> Bifrost
+// Responses and, because gpt-oss is a Mantle-only model, forwarded as-is to the Bedrock Mantle
+// OpenAI-compatible `/v1/responses` endpoint.
+//
+// On the second turn the client replays the prior assistant message. The Bedrock-only "grouped"
+// ingress converter (ConvertAnthropicMessagesToBifrostMessages with keepToolsGrouped=true) used
+// to emit two shapes that are not valid Responses input items under the official OpenAI types
+// (openai-python `ResponseInputParam`), which strict Mantle validators enforce:
+//
+//   - user / system text parts were tagged `output_text`; an input message may only carry
+//     `input_text` / `input_image` / `input_file` parts
+//     (https://developers.openai.com/api/reference/resources/responses/methods/create)
+//   - the replayed assistant message had an `id` but no `status`; `ResponseOutputMessageParam`
+//     requires `id`, `role`, `status`, `type` and `content`
+//     (https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_output_message_param.py)
+//
+// The upstream validator rejected the whole request:
+//
+//	655 validation errors for ResponsesRequest ...
+//	input.list[...].6.EasyInputMessageParam.content.list[...].0.ResponseInputTextParam.type
+//	  Input should be 'input_text' [type=literal_error, input_value='output_text', input_type=str]
+//
+// The same conversation converted through the non-grouped converter (every other provider,
+// including bedrock_mantle) already produced the valid shapes, so this test pins the Bedrock
+// path to the same contract.
+func TestAnthropicIngressMantleReplayUsesResponsesInputShapes(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		captured []byte
+	)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		mu.Lock()
+		captured = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed",` +
+			`"model":"openai.gpt-oss-120b","output":[{"type":"message","id":"msg_1","status":"completed",` +
+			`"role":"assistant","content":[{"type":"output_text","text":"4","annotations":[]}]}],` +
+			`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer ts.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 5,
+			InsecureSkipVerify:             true,
+			AllowPrivateNetwork:            true,
+		},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := bedrock.NewBedrockProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+
+	// Bearer value: no SigV4 signer. The Mantle host override points at the local server.
+	key := schemas.Key{
+		Value: *schemas.NewSecretVar("test-bearer"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("eu-west-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(ts.URL, "https://"))},
+		},
+	}
+
+	// The reporter's scenario: Claude Code's second message in a session. The first turn's
+	// assistant reply is replayed as history.
+	ingressBody := `{
+		"model": "bedrock/openai.gpt-oss-120b",
+		"max_tokens": 1024,
+		"system": [{"type": "text", "text": "You are Claude Code."}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "hello"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "Hello! How can I help you today?"}]},
+			{"role": "user", "content": [{"type": "text", "text": "what is 2+2"}]}
+		]
+	}`
+	var ingressReq anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal([]byte(ingressBody), &ingressReq))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+
+	_, bifrostErr := provider.Responses(ctx, key, bifrostReq)
+	require.Nil(t, bifrostErr, "request must reach the Mantle endpoint: %+v", bifrostErr)
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	require.NotEmpty(t, body, "the provider must have sent a body to the Mantle endpoint")
+
+	var wire struct {
+		Input []struct {
+			Type    *string         `json:"type"`
+			Role    *string         `json:"role"`
+			Status  *string         `json:"status"`
+			Content json.RawMessage `json:"content"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(body, &wire))
+	require.Len(t, wire.Input, 4, "system + user + assistant + user, got: %s", body)
+
+	sawAssistant := false
+	for i, item := range wire.Input {
+		if len(item.Content) == 0 || item.Content[0] != '[' {
+			continue // string content is valid for any role
+		}
+		var parts []struct {
+			Type string `json:"type"`
+		}
+		require.NoErrorf(t, json.Unmarshal(item.Content, &parts), "input[%d].content", i)
+		require.NotNilf(t, item.Role, "input[%d] message item must carry a role", i)
+
+		if *item.Role != "assistant" {
+			for j, part := range parts {
+				assert.Equalf(t, "input_text", part.Type,
+					"input[%d].content[%d]: a %s message is a Responses input message and may only carry input_* parts (got %q)",
+					i, j, *item.Role, part.Type)
+			}
+			continue
+		}
+
+		sawAssistant = true
+		for j, part := range parts {
+			// Mantle /v1 strips status/annotations from assistant items, so only input_text validates for gpt-oss.
+			assert.Equalf(t, "input_text", part.Type, "input[%d].content[%d]: replayed gpt-oss assistant text must be input_text on Mantle", i, j)
+		}
+		if assert.NotNilf(t, item.Status,
+			"input[%d]: an assistant output message item requires `status` (ResponseOutputMessageParam), got item: %s", i, mustItem(body, i)) {
+			assert.Equalf(t, "completed", *item.Status, "input[%d].status", i)
+		}
+	}
+	require.True(t, sawAssistant, "fixture must include a replayed assistant message")
+}
+
+// mustItem returns the raw JSON of input[i] for failure messages.
+func mustItem(body []byte, i int) string {
+	var wire struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil || i >= len(wire.Input) {
+		return "<unavailable>"
+	}
+	return string(wire.Input[i])
+}
+
+// The deprecated in-provider Mantle routing under the "bedrock" key hits the same
+// bedrock-mantle host as the bedrock_mantle provider, so it sees the same wire order:
+// finish_reason with usage null, then a `choices: []` usage-only chunk, then
+// `data: [DONE]`. Bedrock's Converse streaming never goes through the OpenAI-compatible
+// loop, so listing schemas.Bedrock as "does not send [DONE]" only ever affects this
+// route, where it drops the trailing usage exactly as in issue #7065.
+func TestBedrockLegacyMantleSendsDoneMarker(t *testing.T) {
+	require.True(t, providerUtils.ProviderSendsDoneMarker(nil, schemas.Bedrock),
+		"the bedrock key's Mantle route sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
+}
+
+func legacyMantleChatStreamServer(t *testing.T) (*httptest.Server, func() []byte) {
+	t.Helper()
+	var (
+		mu       sync.Mutex
+		captured []byte
+	)
+	const body = `data: {"choices":[{"delta":{"content":"Semantic search matches meaning.","role":"assistant"},"finish_reason":null,"index":0}],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":null}` + "\n\n" +
+		`data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":null}` + "\n\n" +
+		`data: {"choices":[],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":{"completion_tokens":29,"prompt_tokens":13,"total_tokens":42}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		mu.Lock()
+		captured = reqBody
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server ResponseWriter is not an http.Flusher")
+			return
+		}
+		for _, event := range strings.SplitAfter(body, "\n\n") {
+			if event == "" {
+				continue
+			}
+			if _, err := w.Write([]byte(event)); err != nil {
+				t.Errorf("writing SSE event: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	return ts, func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return captured
+	}
+}
+
+func TestBedrockLegacyMantleChatStreamKeepsTrailingUsage(t *testing.T) {
+	ts, requestBody := legacyMantleChatStreamServer(t)
+	defer ts.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 5,
+			StreamIdleTimeoutInSeconds:     2,
+			InsecureSkipVerify:             true,
+			AllowPrivateNetwork:            true,
+		},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := bedrock.NewBedrockProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+
+	// Bearer value: no SigV4 signer. The Mantle host override points at the local server.
+	key := schemas.Key{
+		Value: *schemas.NewSecretVar("test-bearer"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(ts.URL, "https://"))},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	passthrough := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, bifrostErr
+	}
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthrough, nil, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Explain semantic search in one sentence.")},
+		}},
+	})
+	require.Nil(t, bifrostErr, "stream setup failed: %+v", bifrostErr)
+
+	var chunks []*schemas.BifrostStreamChunk
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+collect:
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				break collect
+			}
+			if chunk != nil {
+				chunks = append(chunks, chunk)
+			}
+		case <-timeout.C:
+			t.Fatal("timed out waiting for the provider stream to close")
+		}
+	}
+
+	require.Contains(t, string(requestBody()), `"stream_options":{"include_usage":true}`,
+		"Bifrost must ask Mantle for the trailing usage chunk")
+
+	require.NotEmpty(t, chunks, "expected chunks from a well-formed stream")
+	for i, chunk := range chunks {
+		require.Nil(t, chunk.BifrostError, "chunk %d unexpectedly carried an error", i)
+	}
+	final := chunks[len(chunks)-1].BifrostChatResponse
+	require.NotNil(t, final, "expected a synthesized final chat chunk")
+	require.Len(t, final.Choices, 1)
+	require.NotNil(t, final.Choices[0].FinishReason)
+	require.Equal(t, "stop", *final.Choices[0].FinishReason)
+
+	require.NotNil(t, final.Usage, "final chunk must carry the usage Mantle sent after finish_reason")
+	require.Equal(t, 13, final.Usage.PromptTokens, "prompt_tokens")
+	require.Equal(t, 29, final.Usage.CompletionTokens, "completion_tokens")
+	require.Equal(t, 42, final.Usage.TotalTokens, "total_tokens")
+}
+
+// guardTag returns the InvokeModel input-tagging pair for suffix, as AWS documents it.
+func guardTag(suffix string) (string, string) {
+	return "<amazon-bedrock-guardrails-guardContent_" + suffix + ">", "</amazon-bedrock-guardrails-guardContent_" + suffix + ">"
+}
+
+// allConverseContent flattens every message's content blocks in order, so the assertions do
+// not depend on whether consecutive same-role turns were merged.
+func allConverseContent(req *bedrock.BedrockConverseRequest) []bedrock.BedrockContentBlock {
+	var blocks []bedrock.BedrockContentBlock
+	for _, msg := range req.Messages {
+		blocks = append(blocks, msg.Content...)
+	}
+	return blocks
+}
+
+// TestGuardContentRoundTrip pins #7696: guardContent entries in messages and system survive
+// Bedrock -> Bifrost -> Bedrock with their qualifiers, and untagged text is kept beside them.
+// Before the fix both were silently dropped (system=0, message=0).
+func TestGuardContentRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("You are a helpful assistant.")},
+			{GuardContent: &bedrock.BedrockGuardContent{Text: &bedrock.BedrockGuardContentText{
+				Text: "trusted grounding text", Qualifiers: []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}}}},
+		},
+		Messages: []bedrock.BedrockMessage{{
+			Role: bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{
+				{Text: schemas.Ptr("untagged text")},
+				{GuardContent: &bedrock.BedrockGuardContent{Text: &bedrock.BedrockGuardContentText{
+					Text: "What is the capital of France?", Qualifiers: []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}}}},
+			},
+		}},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	marked := 0
+	for _, msg := range bifrostReq.Input {
+		require.NotNil(t, msg.Content)
+		for _, block := range msg.Content.ContentBlocks {
+			if block.GuardContent != nil {
+				marked++
+				require.NotNil(t, block.Text, "a guard marker rides on a text block")
+			}
+		}
+	}
+	assert.Equal(t, 2, marked, "one marked system block and one marked user block in canonical form")
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	assert.Equal(t, "You are a helpful assistant.", *result.System[0].Text)
+	require.NotNil(t, result.System[1].GuardContent, "system guardContent stripped in round-trip")
+	require.NotNil(t, result.System[1].GuardContent.Text)
+	assert.Equal(t, "trusted grounding text", result.System[1].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}, result.System[1].GuardContent.Text.Qualifiers)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].Text)
+	assert.Equal(t, "untagged text", *blocks[0].Text)
+	require.NotNil(t, blocks[1].GuardContent, "message guardContent stripped in round-trip")
+	require.NotNil(t, blocks[1].GuardContent.Text)
+	assert.Equal(t, "What is the capital of France?", blocks[1].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[1].GuardContent.Text.Qualifiers)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"guardContent":{"text":{"text":"What is the capital of France?","qualifiers":["query"]}}`)
+	assert.Contains(t, string(body), `"guardContent":{"text":{"text":"trusted grounding text","qualifiers":["grounding_source"]}}`)
+}
+
+// TestGuardContentMarkerRendersConverseBlocks covers the native Responses ingress: a
+// guard_content marker on a text block renders as a Converse guardContent entry in both
+// the system prompt and the message, while unmarked blocks stay text.
+func TestGuardContentMarkerRendersConverseBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	systemRole := schemas.ResponsesInputMessageRoleSystem
+	userRole := schemas.ResponsesInputMessageRoleUser
+	msgType := schemas.ResponsesMessageTypeMessage
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ResponsesMessage{
+			{Type: &msgType, Role: &systemRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Only answer with a list of songs.")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Only respond with Welsh heavy metal songs."), GuardContent: &schemas.GuardContent{}},
+			}}},
+			{Type: &msgType, Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("London is the capital of the UK."), GuardContent: &schemas.GuardContent{Qualifiers: []string{"grounding_source"}}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Some additional background information.")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("What is the capital of the UK?"), GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}}},
+			}}},
+		},
+		Params: &schemas.ResponsesParameters{},
+	}
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	assert.Nil(t, result.System[0].GuardContent)
+	require.NotNil(t, result.System[1].GuardContent)
+	assert.Nil(t, result.System[1].Text)
+	assert.Equal(t, "Only respond with Welsh heavy metal songs.", result.System[1].GuardContent.Text.Text)
+	assert.Empty(t, result.System[1].GuardContent.Text.Qualifiers)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 3)
+	require.NotNil(t, blocks[0].GuardContent)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierGrounding}, blocks[0].GuardContent.Text.Qualifiers)
+	require.NotNil(t, blocks[1].Text)
+	assert.Nil(t, blocks[1].GuardContent)
+	require.NotNil(t, blocks[2].GuardContent)
+	assert.Equal(t, "What is the capital of the UK?", blocks[2].GuardContent.Text.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[2].GuardContent.Text.Qualifiers)
+}
+
+// TestGuardrailConfigTagSuffixRoundTrip pins the second half of #7696: tagSuffix and
+// streamProcessingMode ride through the canonical extra param, the inline tags they scope
+// become guardContent entries on the Converse egress, and tagSuffix itself never reaches
+// the Converse body (its GuardrailConfiguration has no such field).
+func TestGuardrailConfigTagSuffixRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	open, closing := guardTag("xyz")
+	mode := "async"
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Messages: []bedrock.BedrockMessage{{
+			Role:    bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Here is context.\n" + open + "What is the capital of France?" + closing)}},
+		}},
+		GuardrailConfig: &bedrock.BedrockGuardrailConfig{
+			GuardrailIdentifier:  "test-guardrail-id",
+			GuardrailVersion:     "DRAFT",
+			StreamProcessingMode: &mode,
+			TagSuffix:            "xyz",
+		},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	config, ok := bifrostReq.Params.ExtraParams["guardrailConfig"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "xyz", config["tagSuffix"])
+	assert.Equal(t, "async", config["streamProcessingMode"])
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result.GuardrailConfig)
+	assert.Equal(t, "test-guardrail-id", result.GuardrailConfig.GuardrailIdentifier)
+	require.NotNil(t, result.GuardrailConfig.StreamProcessingMode)
+	assert.Equal(t, "async", *result.GuardrailConfig.StreamProcessingMode)
+	assert.Empty(t, result.GuardrailConfig.TagSuffix, "tagSuffix must be consumed before a Converse marshal")
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].Text)
+	assert.Equal(t, "Here is context.\n", *blocks[0].Text)
+	require.NotNil(t, blocks[1].GuardContent)
+	assert.Equal(t, "What is the capital of France?", blocks[1].GuardContent.Text.Text)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "tagSuffix")
+	assert.NotContains(t, string(body), "amazon-bedrock-guardrails-guardContent")
+	assert.Contains(t, string(body), `"streamProcessingMode":"async"`)
+}
+
+// TestInlineGuardTagsBecomeGuardContentOnConverse covers the tag-splitting rules of the
+// Converse egress bridge on both the Responses and Chat paths.
+func TestInlineGuardTagsBecomeGuardContentOnConverse(t *testing.T) {
+	open, closing := guardTag("xyz")
+	guardrail := func(suffix string) map[string]interface{} {
+		config := map[string]interface{}{"guardrailIdentifier": "test-guardrail-id", "guardrailVersion": "DRAFT"}
+		if suffix != "" {
+			config["tagSuffix"] = suffix
+		}
+		return config
+	}
+	type want struct {
+		text  string
+		guard bool
+	}
+	cases := []struct {
+		name   string
+		suffix string
+		text   string
+		want   []want
+	}{
+		{
+			name:   "single pair after context",
+			suffix: "xyz",
+			text:   "Only answer with a list of songs.\n" + open + "Create a playlist of heavy metal songs." + closing,
+			want:   []want{{"Only answer with a list of songs.\n", false}, {"Create a playlist of heavy metal songs.", true}},
+		},
+		{
+			name:   "multiple pairs with a tail",
+			suffix: "xyz",
+			text:   "Q1: " + open + "How many objects?" + closing + " Q2: " + open + "How do I download?" + closing + " Thanks.",
+			want:   []want{{"Q1: ", false}, {"How many objects?", true}, {" Q2: ", false}, {"How do I download?", true}, {" Thanks.", false}},
+		},
+		{
+			name:   "whitespace-only gaps are dropped",
+			suffix: "xyz",
+			text:   "\n" + open + "guarded" + closing + "\n   ",
+			want:   []want{{"guarded", true}},
+		},
+		{
+			name:   "unterminated tag stays literal",
+			suffix: "xyz",
+			text:   "prefix " + open + "never closed",
+			want:   []want{{"prefix " + open + "never closed", false}},
+		},
+		{
+			name:   "tags with a different suffix stay literal",
+			suffix: "abc",
+			text:   "prefix " + open + "other suffix" + closing,
+			want:   []want{{"prefix " + open + "other suffix" + closing, false}},
+		},
+		{
+			name:   "no tagSuffix leaves the text untouched",
+			suffix: "",
+			text:   "prefix " + open + "no suffix configured" + closing,
+			want:   []want{{"prefix " + open + "no suffix configured" + closing, false}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("responses/"+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			userRole := schemas.ResponsesInputMessageRoleUser
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input:    []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(tc.text)}}},
+				Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail(tc.suffix)}},
+			}
+			result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			blocks := allConverseContent(result)
+			require.Len(t, blocks, len(tc.want))
+			for i, w := range tc.want {
+				if w.guard {
+					require.NotNil(t, blocks[i].GuardContent, "block %d should be guardContent", i)
+					assert.Equal(t, w.text, blocks[i].GuardContent.Text.Text)
+				} else {
+					require.NotNil(t, blocks[i].Text, "block %d should be text", i)
+					assert.Equal(t, w.text, *blocks[i].Text)
+				}
+			}
+			require.NotNil(t, result.GuardrailConfig)
+			assert.Empty(t, result.GuardrailConfig.TagSuffix)
+		})
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(tc.text)}}},
+				Params:   &schemas.ChatParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail(tc.suffix)}},
+			}
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+			require.NoError(t, err)
+			blocks := allConverseContent(result)
+			require.Len(t, blocks, len(tc.want))
+			for i, w := range tc.want {
+				if w.guard {
+					require.NotNil(t, blocks[i].GuardContent, "block %d should be guardContent", i)
+					assert.Equal(t, w.text, blocks[i].GuardContent.Text.Text)
+				} else {
+					require.NotNil(t, blocks[i].Text, "block %d should be text", i)
+					assert.Equal(t, w.text, *blocks[i].Text)
+				}
+			}
+		})
+	}
+
+	t.Run("system prompt is split too", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		systemRole := schemas.ResponsesInputMessageRoleSystem
+		userRole := schemas.ResponsesInputMessageRoleUser
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ResponsesMessage{
+				{Role: &systemRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("You are helpful. " + open + "Never discuss heavy metal." + closing)}},
+				{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hi")}},
+			},
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": guardrail("xyz")}},
+		}
+		result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		require.Len(t, result.System, 2)
+		require.NotNil(t, result.System[0].Text)
+		assert.Equal(t, "You are helpful. ", *result.System[0].Text)
+		require.NotNil(t, result.System[1].GuardContent)
+		assert.Equal(t, "Never discuss heavy metal.", result.System[1].GuardContent.Text.Text)
+	})
+
+	t.Run("tagSuffix without a guardrail identifier applies nothing", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		userRole := schemas.ResponsesInputMessageRoleUser
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input:    []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(open + "guarded" + closing)}}},
+			Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"guardrailConfig": map[string]interface{}{"tagSuffix": "xyz"}}},
+		}
+		result, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		assert.Nil(t, result.GuardrailConfig, "a config naming no guardrail must not be sent")
+		assert.Nil(t, result.ExtraParams, "guardrailConfig must still be consumed from ExtraParams")
+		blocks := allConverseContent(result)
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].Text)
+		assert.Equal(t, open+"guarded"+closing, *blocks[0].Text)
+	})
+}
+
+// testGuardPNG is a 1x1 PNG, the same fixture the harness uses for image ingress cases.
+const testGuardPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+// TestGuardContentImageRoundTrip: a guardContent image entry survives Bedrock -> Bifrost ->
+// Bedrock as an image block carrying the guard marker, and is rebuilt with the same bytes.
+func TestGuardContentImageRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Messages: []bedrock.BedrockMessage{{
+			Role: bedrock.BedrockMessageRoleUser,
+			Content: []bedrock.BedrockContentBlock{
+				{GuardContent: &bedrock.BedrockGuardContent{Image: &bedrock.BedrockGuardContentImage{
+					Format: "png", Source: bedrock.BedrockGuardContentImageSource{Bytes: schemas.Ptr(testGuardPNG)}}}},
+				{Text: schemas.Ptr("What color is this image?")},
+			},
+		}},
+	}
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	var imageBlock *schemas.ResponsesMessageContentBlock
+	for i := range bifrostReq.Input {
+		for j := range bifrostReq.Input[i].Content.ContentBlocks {
+			if bifrostReq.Input[i].Content.ContentBlocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+				imageBlock = &bifrostReq.Input[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, imageBlock, "guarded image dropped on ingress")
+	require.NotNil(t, imageBlock.GuardContent, "guarded image lost its marker on ingress")
+	require.NotNil(t, imageBlock.ResponsesInputMessageContentBlockImage)
+	assert.Equal(t, "data:image/png;base64,"+testGuardPNG, *imageBlock.ResponsesInputMessageContentBlockImage.ImageURL)
+
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 2)
+	require.NotNil(t, blocks[0].GuardContent, "guarded image stripped on egress")
+	require.NotNil(t, blocks[0].GuardContent.Image)
+	assert.Nil(t, blocks[0].Image)
+	assert.Equal(t, "png", blocks[0].GuardContent.Image.Format)
+	require.NotNil(t, blocks[0].GuardContent.Image.Source.Bytes)
+	assert.Equal(t, testGuardPNG, *blocks[0].GuardContent.Image.Source.Bytes)
+	require.NotNil(t, blocks[1].Text)
+
+	body, err := providerUtils.MarshalSorted(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"guardContent":{"image":{"format":"png","source":{"bytes":"`+testGuardPNG+`"}}}`)
+}
+
+// TestGuardContentImageRejectsUnassessableFormats: AWS assesses only png/jpeg bytes, so a
+// marked gif is an explicit error rather than an image the guardrail silently skips.
+func TestGuardContentImageRejectsUnassessableFormats(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	userRole := schemas.ResponsesInputMessageRoleUser
+	gif := "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+			ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &gif},
+			GuardContent:                           &schemas.GuardContent{},
+		}}}}},
+		Params: &schemas.ResponsesParameters{},
+	}
+	_, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "guard_content image format")
+}
+
+// TestChatGuardMarkersRenderConverseBlocks: the Chat path honours guard_content on text and
+// image blocks in messages and on text blocks in the system prompt.
+func TestChatGuardMarkersRenderConverseBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	png := "data:image/png;base64," + testGuardPNG
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-3-5-sonnet-v2",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("You are helpful.")},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Only discuss geography."), GuardContent: &schemas.GuardContent{}},
+			}}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("What is the capital of France?"), GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}}},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: png}, GuardContent: &schemas.GuardContent{}},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Answer briefly.")},
+			}}},
+		},
+		Params: &schemas.ChatParameters{},
+	}
+
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+
+	require.Len(t, result.System, 2)
+	require.NotNil(t, result.System[0].Text)
+	require.NotNil(t, result.System[1].GuardContent)
+	assert.Equal(t, "Only discuss geography.", result.System[1].GuardContent.Text.Text)
+
+	blocks := allConverseContent(result)
+	require.Len(t, blocks, 3)
+	require.NotNil(t, blocks[0].GuardContent)
+	require.NotNil(t, blocks[0].GuardContent.Text)
+	assert.Equal(t, []bedrock.BedrockContentQualifier{bedrock.ContentQualifierQuery}, blocks[0].GuardContent.Text.Qualifiers)
+	require.NotNil(t, blocks[1].GuardContent)
+	require.NotNil(t, blocks[1].GuardContent.Image)
+	assert.Equal(t, "png", blocks[1].GuardContent.Image.Format)
+	assert.Equal(t, testGuardPNG, *blocks[1].GuardContent.Image.Source.Bytes)
+	assert.Nil(t, blocks[1].Image)
+	require.NotNil(t, blocks[2].Text)
+	assert.Nil(t, blocks[2].GuardContent)
+}
+
+// TestGuardTagSuffixValidation_ConversePath: the same tagSuffix constraint is enforced where
+// the Converse egress would otherwise split text on a malformed tag, on both converters.
+func TestGuardTagSuffixValidation_ConversePath(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	userRole := schemas.ResponsesInputMessageRoleUser
+	for _, bad := range []string{"xy>z", "with space", "toolongtoolongtoolong"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			extra := map[string]interface{}{"guardrailConfig": map[string]interface{}{"guardrailIdentifier": "gr", "guardrailVersion": "1", "tagSuffix": bad}}
+			_, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "anthropic.claude-3-5-sonnet-v2",
+				Input:  []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params: &schemas.ResponsesParameters{ExtraParams: extra}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "tagSuffix")
+			_, err = bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "anthropic.claude-3-5-sonnet-v2",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params: &schemas.ChatParameters{ExtraParams: extra}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "tagSuffix")
+		})
+	}
+}
+
+// TestBedrockConverseFineGrainedToolStreaming pins the Converse carrier for
+// fine-grained tool streaming. Converse has no slot for the per-tool
+// eager_input_streaming flag and Bedrock's edge consumes the outer
+// anthropic-beta header, so the only way the opt-in reaches Claude is
+// additionalModelRequestFields.anthropic_beta. Without it Claude emits a tool's
+// input one complete JSON value at a time: Claude Code saw a Write call's
+// file_path immediately, then minutes of silence, then the whole content in one
+// burst, and aborted on its idle watchdog. Claude Code sends no flag at all when
+// pointed at a gateway, so Bifrost must default it on for the models Claude Code
+// itself enables on Bedrock.
+func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
+	const beta = "fine-grained-tool-streaming-2025-05-14"
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+
+	cases := []struct {
+		name       string
+		model      string
+		eager      *bool
+		noTools    bool
+		clientBeta string
+		serverTool bool
+		wantBeta   bool
+	}{
+		{name: "opus 5 tool without flag gets the default", model: "global.anthropic.claude-opus-5", wantBeta: true},
+		{name: "sonnet 4.6 tool without flag gets the default", model: "us.anthropic.claude-sonnet-4-6", wantBeta: true},
+		{name: "explicit true on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", eager: schemas.Ptr(true), wantBeta: true},
+		{name: "client anthropic-beta header on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", clientBeta: beta + ",interleaved-thinking-2025-05-14", wantBeta: true},
+		{name: "older model without any opt-in", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", wantBeta: false},
+		{name: "explicit false is respected", model: "global.anthropic.claude-opus-5", eager: schemas.Ptr(false), wantBeta: false},
+		{name: "no custom tools", model: "global.anthropic.claude-opus-5", noTools: true, wantBeta: false},
+		{name: "non-Anthropic model", model: "amazon.nova-pro-v1:0", eager: schemas.Ptr(true), wantBeta: false},
+		{name: "dedupes against server-tool betas", model: "global.anthropic.claude-opus-5", serverTool: true, wantBeta: true},
+	}
+
+	for _, tc := range cases {
+		newCtx := func() *schemas.BifrostContext {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.clientBeta != "" {
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {tc.clientBeta}})
+			}
+			return ctx
+		}
+		assertBeta := func(t *testing.T, fields *schemas.OrderedMap) {
+			t.Helper()
+			got := fields != nil && betaListContains(t, fields, beta)
+			assert.Equal(t, tc.wantBeta, got, "additionalModelRequestFields.anthropic_beta contains %s", beta)
+			if fields == nil {
+				return
+			}
+			if raw, ok := fields.Get("anthropic_beta"); ok {
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.LessOrEqual(t, strings.Count(string(encoded), beta), 1, "beta duplicated: %s", encoded)
+			}
+		}
+
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  tc.model,
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   tc.eager,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+		})
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: tc.eager,
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+			if tc.serverTool {
+				raw, ok := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+				require.True(t, ok)
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.Greater(t, strings.Count(string(encoded), ","), 0, "server-tool beta was dropped: %s", encoded)
+			}
+		})
+	}
+}
+
+// nativeSOChatRequest builds a chat request carrying a json_schema response_format.
+func nativeSOChatRequest(model string, schema map[string]any, params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+	responseFormat := any(map[string]any{
+		"type":        "json_schema",
+		"json_schema": map[string]any{"name": "greeting", "description": "A greeting", "schema": schema},
+	})
+	if params == nil {
+		params = &schemas.ChatParameters{}
+	}
+	params.ResponseFormat = &responseFormat
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Say hello.")},
+		}},
+		Params: params,
+	}
+}
+
+// nativeSOResponsesRequest is the Responses twin of nativeSOChatRequest.
+func nativeSOResponsesRequest(model string, schema *schemas.OrderedMap) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Say hello.")},
+		}},
+		Params: &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+			Type:       "json_schema",
+			Name:       schemas.Ptr("greeting"),
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Schema: &schemas.JSONSchemaOrBool{SchemaMap: schema}},
+		}}},
+	}
+}
+
+var greetingSchema = map[string]any{
+	"type":       "object",
+	"properties": map[string]any{"greeting": map[string]any{"type": "string"}},
+	"required":   []any{"greeting"},
+}
+
+// assertNativeStructuredOutput checks the request carries the schema in outputConfig.textFormat
+// and nothing of the synthetic bf_so_* tool.
+func assertNativeStructuredOutput(t *testing.T, ctx *schemas.BifrostContext, req *bedrock.BedrockConverseRequest) gjson.Result {
+	t.Helper()
+	require.NotEmpty(t, req.OutputConfig, "expected native outputConfig")
+	format := gjson.GetBytes(req.OutputConfig, "textFormat")
+	assert.Equal(t, "json_schema", format.Get("type").String())
+	assert.Equal(t, "greeting", format.Get("structure.jsonSchema.name").String())
+	schema := format.Get("structure.jsonSchema.schema")
+	require.Equal(t, gjson.String, schema.Type, "Converse takes the schema as a JSON string")
+	require.True(t, gjson.Valid(schema.String()))
+	if req.ToolConfig != nil {
+		for _, tool := range req.ToolConfig.Tools {
+			require.False(t, tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_"), "synthetic tool must not be sent alongside native output")
+		}
+	}
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName), "the response side must not intercept a bf_so_* tool")
+	return gjson.Parse(schema.String())
+}
+
+// assertSyntheticStructuredOutput checks the request keeps the bf_so_* tool path.
+func assertSyntheticStructuredOutput(t *testing.T, req *bedrock.BedrockConverseRequest) {
+	t.Helper()
+	assert.Empty(t, req.OutputConfig, "expected no native outputConfig")
+	require.NotNil(t, req.ToolConfig)
+	require.NotEmpty(t, req.ToolConfig.Tools)
+	assert.True(t, strings.HasPrefix(req.ToolConfig.Tools[0].ToolSpec.Name, "bf_so_"))
+}
+
+// TestBedrockNativeStructuredOutput_GatedModels covers the models verified live to accept
+// outputConfig.textFormat on Converse, on both the chat and Responses converters.
+func TestBedrockNativeStructuredOutput_GatedModels(t *testing.T) {
+	for _, model := range []string{
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		"anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"us.anthropic.claude-opus-4-5-20251101-v1:0",
+		"us.anthropic.claude-opus-4-6-v1",
+		"us.anthropic.claude-opus-4-7",
+		"us.anthropic.claude-opus-4-8",
+		"us.anthropic.claude-sonnet-4-6",
+		"global.anthropic.claude-sonnet-5",
+		"us.anthropic.claude-opus-5-5",
+		"us.anthropic.claude-sonnet-5-5",
+		"us.anthropic.claude-haiku-5-5",
+		"us.openai.gpt-6-luna",
+		"global.openai.gpt-6.1-sol",
+		"us.openai.gpt-5.4",
+	} {
+		t.Run(model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			chatReq, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, nil))
+			require.NoError(t, err)
+			schema := assertNativeStructuredOutput(t, ctx, chatReq)
+			assert.Equal(t, "A greeting", gjson.GetBytes(chatReq.OutputConfig, "textFormat.structure.jsonSchema.description").String())
+			assert.True(t, schema.Get("properties.greeting").Exists())
+			assert.Nil(t, chatReq.ToolConfig, "no tools should be added")
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schemaMap := schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+				schemas.KV("required", []string{"greeting"}),
+			)
+			responsesReq, err := bedrock.ToBedrockResponsesRequest(ctx, nativeSOResponsesRequest(model, schemaMap))
+			require.NoError(t, err)
+			assertNativeStructuredOutput(t, ctx, responsesReq)
+			assert.Nil(t, responsesReq.ToolConfig)
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_UngatedModelsKeepSyntheticTool covers models that answer
+// outputConfig with a 400 ("This model doesn't support the outputConfig field") or are unverified.
+func TestBedrockNativeStructuredOutput_UngatedModelsKeepSyntheticTool(t *testing.T) {
+	for _, model := range []string{
+		"anthropic.claude-3-haiku-20240307-v1:0",
+		"anthropic.claude-sonnet-4-20250514-v1:0",
+		"us.anthropic.claude-opus-4-1-20250805-v1:0",
+		"us.anthropic.claude-fable-5-1",
+		"us.meta.llama4-maverick-17b-instruct-v1:0",
+		"us.amazon.nova-pro-v1:0",
+		"us.deepseek.r1-v1:0",
+		"us.mistral.pixtral-large-2502-v1:0",
+		"openai.gpt-oss-120b-1:0",
+	} {
+		t.Run(model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			chatReq, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, nil))
+			require.NoError(t, err)
+			assertSyntheticStructuredOutput(t, chatReq)
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_DatasheetDecides: a row's supports_native_structured_output
+// overrides the name-based default in both directions.
+func TestBedrockNativeStructuredOutput_DatasheetDecides(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		switch {
+		case strings.Contains(m, "qwen3"):
+			return &schemas.ModelCapabilities{SupportsNativeStructuredOutput: schemas.Ptr(true)}
+		case strings.Contains(m, "claude-opus-4-7"):
+			return &schemas.ModelCapabilities{SupportsNativeStructuredOutput: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	optIn, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("qwen.qwen3-32b-v1:0", greetingSchema, nil))
+	require.NoError(t, err)
+	assertNativeStructuredOutput(t, ctx, optIn)
+
+	optOut, err := bedrock.ToBedrockChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), nativeSOChatRequest("us.anthropic.claude-opus-4-7", greetingSchema, nil))
+	require.NoError(t, err)
+	assertSyntheticStructuredOutput(t, optOut)
+}
+
+// TestBedrockNativeStructuredOutput_ClaudeSchemaHandling: Claude needs every object closed and
+// rejects some keywords, while other families take the client's schema verbatim.
+func TestBedrockNativeStructuredOutput_ClaudeSchemaHandling(t *testing.T) {
+	nested := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"n":     map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}},
+			"count": map[string]any{"type": "integer", "minimum": 1},
+		},
+	}
+
+	t.Run("claude closes objects", func(t *testing.T) {
+		withoutMinimum := map[string]any{"type": "object", "properties": map[string]any{"n": nested["properties"].(map[string]any)["n"]}}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.anthropic.claude-opus-4-7", withoutMinimum, nil))
+		require.NoError(t, err)
+		schema := assertNativeStructuredOutput(t, ctx, req)
+		assert.Equal(t, gjson.False, schema.Get("additionalProperties").Type)
+		assert.Equal(t, gjson.False, schema.Get("properties.n.additionalProperties").Type)
+	})
+
+	t.Run("claude rejected keyword keeps the synthetic tool", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.anthropic.claude-opus-4-7", nested, nil))
+		require.NoError(t, err)
+		assertSyntheticStructuredOutput(t, req)
+		assert.Equal(t, "bf_so_greeting", ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName))
+	})
+
+	t.Run("gpt takes the schema verbatim", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.openai.gpt-6-luna", nested, nil))
+		require.NoError(t, err)
+		schema := assertNativeStructuredOutput(t, ctx, req)
+		assert.False(t, schema.Get("additionalProperties").Exists(), "no closing outside Claude")
+		assert.Equal(t, int64(1), schema.Get("properties.count.minimum").Int())
+	})
+
+	t.Run("gpt non-object schema keeps the synthetic tool", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.openai.gpt-6-luna", map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, nil))
+		require.NoError(t, err)
+		assert.Empty(t, req.OutputConfig)
+	})
+
+	t.Run("responses boolean true schema keeps the synthetic tool", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := nativeSOResponsesRequest("us.anthropic.claude-opus-4-7", nil)
+		req.Params.Text.Format.JSONSchema = &schemas.ResponsesTextConfigFormatJSONSchema{Schema: &schemas.JSONSchemaOrBool{SchemaBool: schemas.Ptr(true)}}
+		out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		assertSyntheticStructuredOutput(t, out)
+	})
+}
+
+// TestBedrockNativeStructuredOutput_ToolsAndThinking: native output leaves the caller's tools
+// and tool_choice alone and needs no unpinning under thinking.
+func TestBedrockNativeStructuredOutput_ToolsAndThinking(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:       "get_lang",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"}))},
+			},
+		}},
+		ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("auto")},
+		Reasoning:  &schemas.ChatReasoning{Effort: schemas.Ptr("low")},
+	}
+	req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.anthropic.claude-opus-4-7", greetingSchema, params))
+	require.NoError(t, err)
+	assertNativeStructuredOutput(t, ctx, req)
+	require.NotNil(t, req.ToolConfig)
+	require.Len(t, req.ToolConfig.Tools, 1)
+	assert.Equal(t, "get_lang", req.ToolConfig.Tools[0].ToolSpec.Name)
+	if req.ToolConfig.ToolChoice != nil {
+		assert.Nil(t, req.ToolConfig.ToolChoice.Tool, "the caller's auto choice must not be pinned")
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ResponsesNoToolInterception: the native reply is a plain text
+// block, so the response converter leaves a stop reason of end_turn alone.
+// TestBedrockNativeStructuredOutput_ClearsStaleSyntheticToolName pins the fallback case: an earlier
+// attempt on the same context took the bf_so_* path, and a native attempt must clear its tool
+// name or the response side drops the native text (empty stream) and rewrites tool_calls to stop.
+func TestBedrockNativeStructuredOutput_ClearsStaleSyntheticToolName(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	stale := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_greeting")
+		return ctx
+	}
+
+	ctx := stale()
+	chatReq, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, nil))
+	require.NoError(t, err)
+	assertNativeStructuredOutput(t, ctx, chatReq)
+
+	ctx = stale()
+	schemaMap := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+		schemas.KV("required", []string{"greeting"}),
+	)
+	responsesReq, err := bedrock.ToBedrockResponsesRequest(ctx, nativeSOResponsesRequest(model, schemaMap))
+	require.NoError(t, err)
+	assertNativeStructuredOutput(t, ctx, responsesReq)
+}
+
+// TestBedrockNativeStructuredOutput_SanitizesSchemaName pins the schema name sent natively: GPT on
+// Converse answers a name with spaces or dots (OpenAI allows only [A-Za-z0-9_-]) with 200 and no text.
+// TestBedrockNativeStructuredOutput_GPTStrict pins the serialized Converse request: GPT gets
+// additionalModelRequestFields.text.format.strict alongside outputConfig (without it GPT treats the
+// schema as a hint, verified live), and Claude, which 400s on the field, does not.
+func TestBedrockNativeStructuredOutput_GPTStrict(t *testing.T) {
+	schemaMap := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+		schemas.KV("required", []string{"greeting"}),
+	)
+	for model, wantStrict := range map[string]bool{"us.openai.gpt-6-luna": true, "us.anthropic.claude-sonnet-4-5-20250929-v1:0": false} {
+		requests := map[string]func(ctx *schemas.BifrostContext) (*bedrock.BedrockConverseRequest, error){
+			"chat": func(ctx *schemas.BifrostContext) (*bedrock.BedrockConverseRequest, error) {
+				verbosity := "low"
+				params := &schemas.ChatParameters{Verbosity: &verbosity}
+				return bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, params))
+			},
+			"responses": func(ctx *schemas.BifrostContext) (*bedrock.BedrockConverseRequest, error) {
+				return bedrock.ToBedrockResponsesRequest(ctx, nativeSOResponsesRequest(model, schemaMap))
+			},
+			// A caller's own text field arrives through additionalModelRequestFieldPaths after the
+			// native branch; the strict flag must survive the merge alongside it.
+			"chat with caller text.verbosity": func(ctx *schemas.BifrostContext) (*bedrock.BedrockConverseRequest, error) {
+				params := &schemas.ChatParameters{ExtraParams: map[string]interface{}{
+					"additionalModelRequestFieldPaths": map[string]interface{}{"text": map[string]interface{}{"verbosity": "low"}},
+				}}
+				return bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, params))
+			},
+			"responses with caller text.verbosity": func(ctx *schemas.BifrostContext) (*bedrock.BedrockConverseRequest, error) {
+				req := nativeSOResponsesRequest(model, schemaMap)
+				req.Params.ExtraParams = map[string]interface{}{
+					"additionalModelRequestFieldPaths": map[string]interface{}{"text": map[string]interface{}{"verbosity": "low"}},
+				}
+				return bedrock.ToBedrockResponsesRequest(ctx, req)
+			},
+		}
+		for route, build := range requests {
+			t.Run(model+"/"+route, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req, err := build(ctx)
+				require.NoError(t, err)
+				wire, err := providerUtils.MarshalSorted(req)
+				require.NoError(t, err)
+				assert.Equal(t, "json_schema", gjson.GetBytes(wire, "outputConfig.textFormat.type").String(), "outputConfig missing: %s", wire)
+				strict := gjson.GetBytes(wire, "additionalModelRequestFields.text.format.strict")
+				if strings.Contains(route, "verbosity") {
+					assert.Equal(t, "low", gjson.GetBytes(wire, "additionalModelRequestFields.text.verbosity").String(), "caller text field lost: %s", wire)
+				}
+				if wantStrict {
+					assert.Equal(t, gjson.True, strict.Type, "text.format.strict missing: %s", wire)
+				} else if !strings.Contains(route, "verbosity") {
+					assert.False(t, gjson.GetBytes(wire, "additionalModelRequestFields.text").Exists(), "Claude rejects the text field: %s", wire)
+				}
+			})
+		}
+	}
+}
+
+// TestBedrockNativeStructuredOutput_NonClaudeRefs pins $ref handling off Claude (verified live):
+// an external ref or one that resolves nowhere errors (400/500) or yields non-JSON, so it keeps the
+// synthetic tool; a local ref that resolves, recursive or not, stays native.
+func TestBedrockNativeStructuredOutput_NonClaudeRefs(t *testing.T) {
+	obj := func(props map[string]any, extra map[string]any) map[string]any {
+		s := map[string]any{"type": "object", "properties": props, "required": []string{"a"}, "additionalProperties": false}
+		for k, v := range extra {
+			s[k] = v
+		}
+		return s
+	}
+	node := map[string]any{"type": "object", "properties": map[string]any{"next": map[string]any{"anyOf": []any{map[string]any{"$ref": "#/properties/a"}, map[string]any{"type": "null"}}}}, "required": []string{"next"}, "additionalProperties": false}
+	cases := map[string]struct {
+		schema map[string]any
+		native bool
+	}{
+		"external ref":         {obj(map[string]any{"a": map[string]any{"$ref": "https://example.com/s.json"}}, nil), false},
+		"missing def":          {obj(map[string]any{"a": map[string]any{"$ref": "#/$defs/Missing"}}, nil), false},
+		"defined def":          {obj(map[string]any{"a": map[string]any{"$ref": "#/$defs/D"}}, map[string]any{"$defs": map[string]any{"D": map[string]any{"type": "string"}}}), true},
+		"escaped def name":     {obj(map[string]any{"a": map[string]any{"$ref": "#/$defs/A~1B"}}, map[string]any{"$defs": map[string]any{"A/B": map[string]any{"type": "string"}}}), true},
+		"recursive properties": {obj(map[string]any{"a": node}, nil), true},
+	}
+	for _, model := range []string{"us.openai.gpt-6-luna", "qwen.qwen3-next-80b-a3b"} {
+		for name, tc := range cases {
+			t.Run(model+"/"+name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				caps := true
+				req := nativeSOChatRequest(model, tc.schema, nil)
+				schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+					return &schemas.ModelCapabilities{SupportsNativeStructuredOutput: &caps}
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+				out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+				require.NoError(t, err)
+				if tc.native {
+					assertNativeStructuredOutput(t, ctx, out)
+				} else {
+					assertSyntheticStructuredOutput(t, out)
+				}
+			})
+		}
+	}
+}
+
+// TestBedrockNativeStructuredOutput_StrictToolsShareClaudeLimits pins Claude's schema limits as one
+// budget across the output schema and strict caller tools (verified live: 10+7 union properties
+// answers "too many parameters with union types (17)"); non-strict tools do not count.
+func TestBedrockNativeStructuredOutput_StrictToolsShareClaudeLimits(t *testing.T) {
+	props := func(unions, optional int) (map[string]any, []string) {
+		p, req := map[string]any{"name": map[string]any{"type": "string"}}, []string{"name"}
+		for i := 0; i < unions; i++ {
+			k := fmt.Sprintf("u%d", i)
+			p[k], req = map[string]any{"type": []any{"string", "null"}}, append(req, k)
+		}
+		for i := 0; i < optional; i++ {
+			p[fmt.Sprintf("o%d", i)] = map[string]any{"type": "string"}
+		}
+		return p, req
+	}
+	output := func(unions, optional int) map[string]any {
+		p, req := props(unions, optional)
+		return map[string]any{"type": "object", "properties": p, "required": req, "additionalProperties": false}
+	}
+	toolParams := func(unions, optional int) *schemas.ToolFunctionParameters {
+		p, req := props(unions, optional)
+		raw, err := json.Marshal(map[string]any{"type": "object", "properties": p, "required": req, "additionalProperties": false})
+		require.NoError(t, err)
+		var params schemas.ToolFunctionParameters
+		require.NoError(t, json.Unmarshal(raw, &params))
+		return &params
+	}
+	cases := map[string]struct {
+		outUnions, outOptional, toolUnions, toolOptional int
+		strict, native                                   bool
+	}{
+		"unions 10+6 strict":      {10, 0, 6, 0, true, true},
+		"unions 10+7 strict":      {10, 0, 7, 0, true, false},
+		"unions 10+7 not strict":  {10, 0, 7, 0, false, true},
+		"optional 6+4 strict":     {0, 6, 0, 4, true, true},
+		"optional 6+5 strict":     {0, 6, 0, 5, true, false},
+		"optional 6+5 not strict": {0, 6, 0, 5, false, true},
+	}
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	for name, tc := range cases {
+		t.Run(name+"/chat", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name: "lookup", Parameters: toolParams(tc.toolUnions, tc.toolOptional), Strict: schemas.Ptr(tc.strict),
+			}}}}
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, output(tc.outUnions, tc.outOptional), params))
+			require.NoError(t, err)
+			if tc.native {
+				require.NotEmpty(t, out.OutputConfig, "expected native outputConfig")
+			} else {
+				assert.Empty(t, out.OutputConfig, "expected the synthetic tool once the shared budget is exceeded")
+			}
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			raw, err := json.Marshal(output(tc.outUnions, tc.outOptional))
+			require.NoError(t, err)
+			var schemaMap schemas.OrderedMap
+			require.NoError(t, json.Unmarshal(raw, &schemaMap))
+			req := nativeSOResponsesRequest(model, &schemaMap)
+			req.Params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: toolParams(tc.toolUnions, tc.toolOptional), Strict: schemas.Ptr(tc.strict)}}}
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			if tc.native {
+				require.NotEmpty(t, out.OutputConfig, "expected native outputConfig")
+			} else {
+				assert.Empty(t, out.OutputConfig, "expected the synthetic tool once the shared budget is exceeded")
+			}
+		})
+	}
+}
+
+func TestBedrockNativeStructuredOutput_SanitizesSchemaName(t *testing.T) {
+	for name, want := range map[string]string{"my schema.v1": "my_schema_v1", "...": "json_response", "plain-name_1": "plain-name_1"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := nativeSOChatRequest("us.openai.gpt-6-luna", greetingSchema, nil)
+			responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": name, "schema": greetingSchema}})
+			req.Params.ResponseFormat = &responseFormat
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+			require.NoError(t, err)
+			require.NotEmpty(t, out.OutputConfig)
+			assert.Equal(t, want, gjson.GetBytes(out.OutputConfig, "textFormat.structure.jsonSchema.name").String())
+		})
+	}
+}
+
+func TestBedrockNativeStructuredOutput_ResponsesNoToolInterception(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.anthropic.claude-sonnet-4-5-20250929-v1:0", greetingSchema, nil))
+	require.NoError(t, err)
+
+	text := `{"greeting":"Hello"}`
+	resp := &bedrock.BedrockConverseResponse{
+		Output:     &bedrock.BedrockConverseOutput{Message: &bedrock.BedrockMessage{Role: bedrock.BedrockMessageRoleAssistant, Content: []bedrock.BedrockContentBlock{{Text: &text}}}},
+		StopReason: "end_turn",
+	}
+	chat, err := resp.ToBifrostChatResponse(ctx, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	require.NoError(t, err)
+	require.Len(t, chat.Choices, 1)
+	assert.Equal(t, text, *chat.Choices[0].Message.Content.ContentStr)
+	assert.Equal(t, "stop", *chat.Choices[0].FinishReason)
 }

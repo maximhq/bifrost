@@ -60,6 +60,5 @@ rank:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

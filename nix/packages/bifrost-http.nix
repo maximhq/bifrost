@@ -8,9 +8,9 @@
 let
   lib = pkgs.lib;
 
-  # Bifrost requires Go 1.26 (go.mod/go.work). Force Go 1.26 for buildGoModule.
+  # Bifrost requires Go 1.27 (go.mod/go.work). Force Go 1.27 for buildGoModule.
   buildGoModule = pkgs.callPackage "${inputs.nixpkgs}/pkgs/build-support/go/module.nix" {
-    go = pkgs.go_1_26 or pkgs.go;
+    go = pkgs.go_1_27 or pkgs.go;
   };
 
   transportsLocalReplaces = ''

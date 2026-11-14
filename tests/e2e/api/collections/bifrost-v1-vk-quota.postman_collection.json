@@ -1,0 +1,968 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Quota",
+    "description": "Wire-contract tests for the self-service quota endpoint GET /api/governance/virtual-keys/quota. The VK value in the header is the credential (no admin auth): x-bf-vk accepts any value, Authorization Bearer requires the sk-bf- prefix. Covers the response shape (budgets, rate_limit, provider_configs, model_configs), 401 on a missing header, 401 (not 404) on an unknown key, and usage visibility after an inference call. The quota endpoint reads the database, which trails the in-memory counters by up to the 10s dump ticker, so the usage check polls with a 30s ceiling. An expired key is rejected with 403 while an inactive one still reads its quota with is_active false. The rotation grace-window quota cases live in bifrost-v1-vk-rotation-cooldown (they need rotation state).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "q_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "q_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "q_vk_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "q_priming_ok",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "q_poll_retry",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "exp_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "exp_vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "exp_vk_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "exp_expiry_epoch",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup - Create VK with budget and rate limit",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var uniqueName = 'Quota Test VK ' + ts;",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "pm.collectionVariables.set('q_vk_name', uniqueName);",
+              "var body = {",
+              "  name: uniqueName,",
+              "  budgets: [{max_limit: 100, reset_duration: '1d'}],",
+              "  rate_limit: {request_max_limit: 100, request_reset_duration: '1h'},",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
+              "};",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create quota VK returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "var json = pm.response.json();",
+              "var vk = json.virtual_key || json;",
+              "// Fail here rather than storing empty credentials: every later item guards",
+              "// on these variables, so a create that returns 2xx without them would skip",
+              "// the whole suite and still report a green run.",
+              "pm.test('Created VK exposes usable credentials', function() {",
+              "  pm.expect(vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!vk.id || !vk.value) { return; }",
+              "pm.collectionVariables.set('q_vk_id', vk.id);",
+              "pm.collectionVariables.set('q_vk_value', vk.value);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Quota via x-bf-vk returns the full shape",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"q_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Quota returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var quota = pm.response.json();",
+              "pm.test('Identity fields match the VK', function() {",
+              "  pm.expect(quota.virtual_key_name).to.equal(pm.collectionVariables.get('q_vk_name'));",
+              "  pm.expect(quota.is_active).to.be.true;",
+              "});",
+              "pm.test('Budget carries limits and usage', function() {",
+              "  pm.expect(quota.budgets).to.be.an('array').with.length.of.at.least(1);",
+              "  pm.expect(quota.budgets[0].max_limit).to.equal(100);",
+              "  pm.expect(quota.budgets[0].reset_duration).to.equal('1d');",
+              "  pm.expect(Number(quota.budgets[0].current_usage) || 0).to.be.at.least(0);",
+              "});",
+              "pm.test('Rate limit carries the request window', function() {",
+              "  pm.expect(quota.rate_limit).to.be.an('object');",
+              "  pm.expect(quota.rate_limit.request_max_limit).to.equal(100);",
+              "  pm.expect(quota.rate_limit.request_reset_duration).to.equal('1h');",
+              "});",
+              "pm.test('Provider configs and model configs are present', function() {",
+              "  pm.expect(quota.provider_configs).to.be.an('array').with.length.of.at.least(1);",
+              "  pm.expect(Object.prototype.hasOwnProperty.call(quota, 'model_configs')).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{q_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Quota via Authorization Bearer",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"q_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "// Generated VK values carry the sk-bf- prefix, which the non-x-bf-vk",
+              "// headers require before they are treated as a virtual key.",
+              "pm.test('Quota via Bearer returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "pm.test('Bearer resolves the same VK', function() {",
+              "  pm.expect(pm.response.json().virtual_key_name).to.equal(pm.collectionVariables.get('q_vk_name'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{q_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Missing header returns 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Missing VK header returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+              "pm.test('Error explains the accepted headers', function() { pm.expect(pm.response.text()).to.include('Missing virtual key'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Unknown VK returns 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Unknown keys are 401 (unauthenticated), never 404 (which would allow",
+              "// probing which key values exist).",
+              "pm.test('Unknown VK returns 401', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(401); });",
+              "pm.test('Error names the missing key', function() { pm.expect(pm.response.text()).to.include('Virtual key not found'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "sk-bf-does-not-exist-e2e"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Prime usage with one inference",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"q_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code >= 200 && code < 300) {",
+              "  pm.collectionVariables.set('q_priming_ok', '1');",
+              "  pm.test('Priming request succeeded', function() { pm.expect(code).to.be.within(200, 299); });",
+              "} else {",
+              "  pm.collectionVariables.set('q_priming_ok', '');",
+              "  // Usage only accrues from usage-bearing responses; without a working",
+              "  // provider the visibility check is skipped, not failed.",
+              "  pm.test('Skipped: provider unavailable for priming (status ' + code + ')', function() {",
+              "    pm.expect(true).to.be.true;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{q_vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Usage becomes visible in quota",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('q_priming_ok');",
+              "if (!ok && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('q_poll_retry') || 0);",
+              "if (retry > 0) {",
+              "  // Quota reads the database, which the 10s dump ticker refreshes; poll",
+              "  // once a second up to 30s. Newman drains pending timers before sending.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ok = pm.collectionVariables.get('q_priming_ok');",
+              "if (!ok) { pm.test('Skipped: provider unavailable', function() { pm.expect(true).to.be.true; }); return; }",
+              "var code = pm.response.code;",
+              "pm.test('Quota returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "var quota = pm.response.json();",
+              "var budgets = quota.budgets || [];",
+              "var spent = 0;",
+              "for (var i = 0; i < budgets.length; i++) { spent = Math.max(spent, Number(budgets[i].current_usage) || 0); }",
+              "var requests = (quota.rate_limit && Number(quota.rate_limit.request_current_usage)) || 0;",
+              "var retry = Number(pm.collectionVariables.get('q_poll_retry') || 0);",
+              "if (spent <= 0 && requests < 1 && retry < 30) {",
+              "  pm.collectionVariables.set('q_poll_retry', String(retry + 1));",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.setNextRequest) { pm.execution.setNextRequest(pm.info.requestName); } else { postman.setNextRequest(pm.info.requestName); }",
+              "  return;",
+              "}",
+              "// Cost can legitimately stay zero without pricing data, but the request",
+              "// counter always moves on a usage-bearing response.",
+              "pm.test('Usage from the priming request is visible', function() {",
+              "  pm.expect(spent > 0 || requests >= 1, 'spent=' + spent + ' requests=' + requests + ' after ' + retry + ' polls').to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{q_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Setup - Create VK with a short expiry",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ts = Date.now();",
+              "var uniqueName = 'Quota Expiry VK ' + ts;",
+              "var provider = pm.variables.get('provider') || 'openai';",
+              "pm.collectionVariables.set('exp_vk_name', uniqueName);",
+              "// Absolute expiry instant so the wait below can anchor to it. The",
+              "// window has to outlast the unexpired-quota check that runs before",
+              "// it on a slow runner; the 403 check waits to this exact epoch, so a",
+              "// wider window costs almost no extra wall clock.",
+              "var expiryEpoch = ts + 20000;",
+              "pm.collectionVariables.set('exp_expiry_epoch', String(expiryEpoch));",
+              "var body = {",
+              "  name: uniqueName,",
+              "  expires_at: new Date(expiryEpoch).toISOString(),",
+              "  budgets: [{max_limit: 10, reset_duration: '1d'}],",
+              "  provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]",
+              "};",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create expiring VK returns 2xx', function() { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+              "if (code < 200 || code > 299) { return; }",
+              "var vk = pm.response.json().virtual_key || {};",
+              "// Same contract as the first setup item: no credentials means the expiry",
+              "// assertions below would silently skip instead of running.",
+              "pm.test('Created expiring VK exposes usable credentials', function() {",
+              "  pm.expect(vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (!vk.id || !vk.value) { return; }",
+              "pm.collectionVariables.set('exp_vk_id', vk.id);",
+              "pm.collectionVariables.set('exp_vk_value', vk.value);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Quota works while the key is unexpired",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Unexpired VK reads quota (200)', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "pm.test('Quota identifies the expiring VK', function() { pm.expect(pm.response.json().virtual_key_name).to.equal(pm.collectionVariables.get('exp_vk_name')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{exp_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Expired key is rejected with 403",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_value\", \"exp_expiry_epoch\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "// Wait past the absolute expiry instant recorded at creation time.",
+              "// Newman drains pending timers before sending the request.",
+              "var deadline = Number(pm.collectionVariables.get('exp_expiry_epoch') || 0) + 2000;",
+              "(function waitForExpiry() {",
+              "  if (Date.now() < deadline) {",
+              "    setTimeout(waitForExpiry, 250);",
+              "  }",
+              "})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// An expired key cannot make requests, so it must not read its",
+              "// governance data either.",
+              "pm.test('Expired VK quota returns 403', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+              "pm.test('Rejection names the expiry', function() { pm.expect(pm.response.text()).to.include('Virtual key has expired'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{exp_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Expired key is rejected via Authorization Bearer too",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Expired VK quota via Bearer returns 403', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{exp_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Clearing the expiry restores quota access",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.request.body.raw = JSON.stringify({expires_at: ''});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Clear expiry returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{exp_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{exp_vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Quota reads again after the expiry is cleared",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Un-expired VK reads quota again (200)', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{exp_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Inactive key still reads its quota",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.request.body.raw = JSON.stringify({is_active: false});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Deactivate returns 2xx', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{exp_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{exp_vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Inactive key quota returns 200 with is_active false",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "// Deliberate asymmetry with expiry: an inactive key still reads its",
+              "// quota so a dashboard can show why it is blocked.",
+              "pm.test('Inactive VK quota returns 200', function() { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+              "if (code !== 200) { return; }",
+              "pm.test('is_active is false', function() { pm.expect(pm.response.json().is_active).to.be.false; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{exp_vk_value}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/quota",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "quota"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete expiring VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"exp_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('exp_vk_id');",
+              "if (!vkId) { pm.test('Teardown skipped - no VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+              "pm.test('Delete expiring VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{exp_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{exp_vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Teardown - Delete VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"q_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var vkId = pm.collectionVariables.get('q_vk_id');",
+              "if (!vkId) { pm.test('Teardown skipped - no VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+              "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{q_vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{q_vk_id}}"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSSEStreamReaderHeartbeatNeverSplitsDataLine is the regression test for #5905.
@@ -1344,4 +1347,131 @@ func TestStartSSEHeartbeatCallsOnDisconnectAfterClose(t *testing.T) {
 	if got := onDisconnectCalls.Load(); got != 1 {
 		t.Errorf("onDisconnect calls = %d, want exactly 1", got)
 	}
+}
+
+// TestSSEStreamReaderSendHeartbeatNone verifies the SSEHeartbeatNone framing writes nothing
+// to the wire while keeping StartSSEHeartbeat's return-value contract: true while the reader
+// is open, false once the client has gone. Routes whose official decoder rejects any SSE
+// comment line (google-genai Python) select it to opt out of the heartbeat entirely.
+func TestSSEStreamReaderSendHeartbeatNone(t *testing.T) {
+	r := NewSSEStreamReader()
+	go func() {
+		if !r.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+			t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) on an open reader = false, want true")
+		}
+		r.SendEvent("", []byte(`{"ok":true}`))
+		r.Done()
+	}()
+
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "data: {\"ok\":true}\n\n"; string(got) != want {
+		t.Errorf("stream = %q, want only the event %q (no heartbeat bytes)", got, want)
+	}
+
+	closed := NewSSEStreamReader()
+	closed.Close()
+	if closed.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+		t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) after Close = true, want false (disconnect must still be reported)")
+	}
+}
+
+// TestRecoverStreamProducerCancelsAndDrains pins that a panic in a stream producer is
+// recovered, cancels upstream, and drains the provider channel so its sender is not left
+// blocked. A nil panic value path (no panic) must leave the channel and cancel untouched.
+func TestRecoverStreamProducerCancelsAndDrains(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	cancelled := make(chan struct{})
+	cancel := func() { close(cancelled) }
+
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		for i := 0; i < 3; i++ {
+			stream <- &schemas.BifrostStreamChunk{}
+		}
+		close(stream)
+	}()
+
+	require.NotPanics(t, func() {
+		defer RecoverStreamProducer(cancel, stream, nil)
+		var chunk *schemas.BifrostStreamChunk
+		_ = chunk.BifrostChatResponse
+	})
+
+	select {
+	case <-sendDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sender stayed blocked: the stream was not drained")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel was not called")
+	}
+
+	untouched := make(chan *schemas.BifrostStreamChunk, 1)
+	untouched <- &schemas.BifrostStreamChunk{}
+	func() {
+		defer RecoverStreamProducer(func() { t.Fatal("cancel called without a panic") }, untouched, nil)
+	}()
+	require.Len(t, untouched, 1, "no panic must leave the stream unread")
+}
+
+// TestRecoverStreamProducerReportsPanic pins that the producer's recover hands the client a
+// terminal error frame (onPanic) before it cancels upstream, that a panic inside onPanic
+// itself is contained and the drain still runs, and that onPanic never runs without a panic.
+func TestRecoverStreamProducerReportsPanic(t *testing.T) {
+	t.Run("onPanic runs once, before cancel", func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		close(stream)
+		var order []string
+		require.NotPanics(t, func() {
+			defer RecoverStreamProducer(func() { order = append(order, "cancel") }, stream, func() { order = append(order, "onPanic") })
+			panic("boom")
+		})
+		require.Equal(t, []string{"onPanic", "cancel"}, order)
+	})
+	t.Run("a panicking onPanic is contained and the stream is still drained", func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		sendDone := make(chan struct{})
+		go func() {
+			defer close(sendDone)
+			stream <- &schemas.BifrostStreamChunk{}
+			close(stream)
+		}()
+		cancelled := false
+		require.NotPanics(t, func() {
+			defer RecoverStreamProducer(func() { cancelled = true }, stream, func() { panic("error frame") })
+			panic("boom")
+		})
+		require.True(t, cancelled, "cancel must still run after onPanic panicked")
+		select {
+		case <-sendDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("sender stayed blocked: the stream was not drained after onPanic panicked")
+		}
+	})
+	t.Run("no panic, no onPanic", func(t *testing.T) {
+		func() {
+			defer RecoverStreamProducer(func() {}, nil, func() { t.Fatal("onPanic called without a panic") })
+		}()
+	})
+}
+
+// TestRunRecovered pins that a teardown step's panic is contained, so the steps after it
+// in a stream producer's deferred cleanup (closing the client stream, completing the
+// trace) still run.
+func TestRunRecovered(t *testing.T) {
+	ran := false
+	require.NotPanics(t, func() {
+		RunRecovered("test step", func() {
+			ran = true
+			var chunk *schemas.BifrostStreamChunk
+			_ = chunk.BifrostChatResponse // nil dereference: a runtime.Error panic
+		})
+	})
+	require.True(t, ran)
 }

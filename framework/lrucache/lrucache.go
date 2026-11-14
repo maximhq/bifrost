@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Loader produces the value for a cache key on a miss. It returns the value,
@@ -53,6 +54,10 @@ type inflightCall[V any] struct {
 	done   chan struct{}
 	result V
 	err    error
+	// waiters counts followers that joined this call. Tests read it to know
+	// a follower is attached before releasing the leader; nothing else may
+	// depend on it.
+	waiters atomic.Int32
 }
 
 type entry[V any] struct {
@@ -180,6 +185,7 @@ func (c *Cache[V]) Fill(ctx context.Context, key string, load Loader[V]) (V, err
 	c.inflightMu.Lock()
 	if call, ok := c.inflight[key]; ok {
 		c.inflightMu.Unlock()
+		call.waiters.Add(1)
 		select {
 		case <-call.done:
 			return call.result, call.err
@@ -409,15 +415,33 @@ func (c *Cache[V]) Len() int {
 // the identical string, aliasing two distinct tuples onto one cache entry
 // and skewing any eviction predicate that parses the key back apart.
 // Length-prefixing each part makes that forgery impossible regardless of
-// what bytes a part contains. Pair with DecodeKey to parse it back.
+// what bytes a part contains. Pair with DecodeKey to parse it back. The key
+// is built in one allocation of its exact size.
 func EncodeKey(parts ...string) string {
-	var b strings.Builder
+	size := 0
 	for _, p := range parts {
-		b.WriteString(strconv.Itoa(len(p)))
+		size += decimalLen(len(p)) + 1 + len(p)
+	}
+	var b strings.Builder
+	b.Grow(size)
+	var digits [20]byte
+	for _, p := range parts {
+		b.Write(strconv.AppendInt(digits[:0], int64(len(p)), 10))
 		b.WriteByte(':')
 		b.WriteString(p)
 	}
 	return b.String()
+}
+
+// decimalLen is how many digits strconv.Itoa writes for n, which is never
+// negative here.
+func decimalLen(n int) int {
+	digits := 1
+	for n >= 10 {
+		n /= 10
+		digits++
+	}
+	return digits
 }
 
 // DecodeKey is EncodeKey's inverse: it parses exactly n length-prefixed

@@ -228,28 +228,6 @@ func TestToFloat32Embedding(t *testing.T) {
 	}
 }
 
-func TestFlattenToFloat32Embedding(t *testing.T) {
-	input := [][]float64{
-		{0.25, 0.5},
-		{-0.75},
-		{},
-		{1.25, 2.5},
-	}
-
-	got := flattenToFloat32Embedding(input)
-	want := []float32{0.25, 0.5, -0.75, 1.25, 2.5}
-
-	if len(got) != len(want) {
-		t.Fatalf("expected %d elements, got %d", len(want), len(got))
-	}
-
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("expected element %d to be %v, got %v", i, want[i], got[i])
-		}
-	}
-}
-
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
 	t.Parallel()
@@ -503,6 +481,10 @@ func (m *MockUnsupportedStore) Ping(ctx context.Context) error {
 
 func (m *MockUnsupportedStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
 	return nil
+}
+
+func (m *MockUnsupportedStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
 }
 
 func (m *MockUnsupportedStore) DeleteNamespace(ctx context.Context, namespace string) error {

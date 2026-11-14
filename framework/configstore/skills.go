@@ -823,7 +823,11 @@ func (s *RDBConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSki
 		}
 		objectWrites = append(objectWrites, writes...)
 
-		if !serve {
+		if serve {
+			// Populate the response from the version being served; the caller's
+			// LatestVersion can be stale or unset (e.g. config-driven updates).
+			skill.LatestVersion = version
+		} else {
 			// Restore the existing serving data for the response.
 			skill.LatestVersion = existing.LatestVersion
 			skill.SkillMDBody = existing.SkillMDBody

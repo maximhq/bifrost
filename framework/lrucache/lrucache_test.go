@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -270,8 +271,17 @@ func TestCache_InflightDedup(t *testing.T) {
 			results[i] = v
 		}()
 	}
-	// Let both goroutines reach the fill before releasing the leader.
+	// Release the leader only after the follower has provably joined the
+	// inflight call. Waiting for calls==1 alone only proves the leader
+	// started: if the follower is scheduled late, the leader finishes,
+	// clears the inflight slot, and the follower runs a second legitimate
+	// load, failing the exactly-once assertion.
 	assert.Eventually(t, func() bool { return calls.Load() == 1 }, time.Second, time.Millisecond)
+	c.inflightMu.Lock()
+	call := c.inflight["k1"]
+	c.inflightMu.Unlock()
+	require.NotNil(t, call)
+	require.Eventually(t, func() bool { return call.waiters.Load() == 1 }, time.Second, time.Millisecond)
 	close(release)
 	wg.Wait()
 
@@ -597,6 +607,23 @@ func TestEncodeDecodeKey_RoundTrip(t *testing.T) {
 	got, ok := DecodeKey(key, len(parts))
 	require.True(t, ok)
 	assert.Equal(t, parts, got)
+}
+
+// Keys are built on request paths, so one is a single allocation of its exact size, whatever its
+// parts' lengths.
+func TestEncodeKey_BuildsTheKeyInOneAllocation(t *testing.T) {
+	cases := [][]string{
+		{"user", "alice", "client-1"},
+		{"client-1", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{"", strings.Repeat("x", 1234), "y"},
+	}
+	for _, parts := range cases {
+		var key string
+		assert.Equal(t, 1.0, testing.AllocsPerRun(100, func() { key = EncodeKey(parts...) }), "parts %q", parts)
+		got, ok := DecodeKey(key, len(parts))
+		require.True(t, ok)
+		assert.Equal(t, parts, got)
+	}
 }
 
 // TestEncodeDecodeKey_NoCollisionOnEmbeddedDelimiter pins the reason this

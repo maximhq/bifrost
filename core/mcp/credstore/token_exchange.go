@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -42,7 +43,16 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 				MCPClientID:         config.ID,
 				MCPClientName:       config.Name,
 				SubjectTokenMissing: true,
-				Message:             fmt.Sprintf("Authentication required for %s: this server uses your identity token, so the request must be authenticated with one. Retry with your identity-provider credential.", config.Name),
+				Message:             subjectTokenMissingMessage(ctx, config),
+			}
+		}
+		if errors.Is(err, schemas.ErrStoredSignInExpired) {
+			return nil, &schemas.MCPAuthRequiredError{
+				Kind:                schemas.MCPAuthRequiredKindExchange,
+				MCPClientID:         config.ID,
+				MCPClientName:       config.Name,
+				SubjectTokenMissing: true,
+				Message:             storedSignInExpiredMessage(ctx, config.Name),
 			}
 		}
 		var rejected *schemas.TokenExchangeRejectedError
@@ -59,6 +69,42 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 	}
 
 	return bearerHeader(accessToken), nil
+}
+
+// storedSignInExpiredMessage tells a caller whose request used their stored sign-in, because it
+// carried no identity-provider token, that the sign-in has expired. Signing in to Bifrost again is
+// the only fix, so the message names where, when the request's base URL is known.
+func storedSignInExpiredMessage(ctx *schemas.BifrostContext, clientName string) string {
+	signIn := "Sign in to Bifrost again"
+	if base := utils.BuildMCPCallbackBaseURL(ctx); base != "" {
+		signIn += " at " + base
+	}
+	return fmt.Sprintf("Authentication required for %s: this server uses your identity token, and your Bifrost sign-in has expired. %s, then retry.", clientName, signIn)
+}
+
+// subjectTokenMissingMessage explains why there was no identity-provider token to exchange, as
+// precisely as the request can say. The auth layer that handled the inbound credential is the only
+// thing that knows whether a token was presented and rejected or never presented, and it records a
+// rejection under BifrostContextKeyMCPInboundBearerOmitted. A caller who sent a token and is told to
+// send one has nothing to act on; naming what happened to it does.
+//
+// The id_jag profile never uses the request's access token: its subject is the user's SSO session,
+// so the only fix is signing in to Bifrost through the identity provider.
+func subjectTokenMissingMessage(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) string {
+	clientName := config.Name
+	if config.TokenExchange.IsIDJAG() {
+		return fmt.Sprintf("Authentication required for %s: this server is reached through your identity provider (Cross App Access), which needs an active Bifrost SSO session for you. Sign in to Bifrost with your identity provider and retry.", clientName)
+	}
+	var reason schemas.MCPInboundBearerOmittedReason
+	if ctx != nil {
+		reason, _ = ctx.Value(schemas.BifrostContextKeyMCPInboundBearerOmitted).(schemas.MCPInboundBearerOmittedReason)
+	}
+	switch reason {
+	case schemas.MCPInboundBearerRejected:
+		return fmt.Sprintf("Authentication required for %s: this server uses your identity token, but the identity-provider token on this request was rejected. Sign in to your identity provider again, and check that the token was issued for the application this deployment is configured with.", clientName)
+	default:
+		return fmt.Sprintf("Authentication required for %s: this server uses your identity token, so the request must carry one. Send your identity-provider access token as the Authorization bearer and retry.", clientName)
+	}
 }
 
 func (r *tokenExchangeResolver) RequiresPerCallConnection() bool { return true }

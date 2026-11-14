@@ -42,7 +42,6 @@ batches:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   get:
@@ -91,7 +90,6 @@ batches:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 batches-by-id:
@@ -136,7 +134,6 @@ batches-by-id:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 batches-cancel:
@@ -181,7 +178,6 @@ batches-cancel:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 batches-results:
@@ -225,6 +221,5 @@ batches-results:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

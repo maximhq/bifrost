@@ -19,6 +19,8 @@
 
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
+import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Button } from "@/components/ui/button";
 import {
 	AlertDialog,
@@ -37,10 +39,28 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
+import { getErrorMessage, useReauthMCPSessionMutation, useRefreshMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
-import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
+import { formatRelativePast, formatTokenExpiry } from "@/lib/utils/mcpCredential";
+import { sessionDiscoveryCell } from "@/lib/utils/mcpPerUserDiscovery";
+import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
+import { ScopeChips } from "@/components/scopeChips";
+import {
+	ExternalLink,
+	Fingerprint,
+	KeyRound,
+	Loader2,
+	MoreHorizontal,
+	Pencil,
+	RefreshCcw,
+	RefreshCw,
+	Trash2,
+	UserRound,
+} from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -65,9 +85,12 @@ export default function SessionsTable({
 	limit,
 	onOffsetChange,
 }: SessionsTableProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	const { toast } = useToast();
 	const [reauth, { isLoading: reauthing }] = useReauthMCPSessionMutation();
 	const [revoke, { isLoading: revoking }] = useRevokeMCPSessionMutation();
+	const [refresh, { isLoading: refreshing }] = useRefreshMCPSessionMutation();
 	const [pendingDelete, setPendingDelete] = useState<MCPSessionRow | null>(null);
 	const [pendingActionRowId, setPendingActionRowId] = useState<string | null>(null);
 
@@ -80,7 +103,19 @@ export default function SessionsTable({
 			window.location.href = res.authorize_url;
 		} catch (err) {
 			setPendingActionRowId(null);
-			toast({ title: "Re-authentication failed", description: getErrorMessage(err), variant: "destructive" });
+			toast({ title: t("sessions.toast.reauthFailed"), description: getErrorMessage(err), variant: "destructive" });
+		}
+	};
+
+	const handleRefresh = async (row: MCPSessionRow) => {
+		setPendingActionRowId(row.id);
+		try {
+			const res = await refresh(row.id).unwrap();
+			toast({ title: t("sessions.toast.toolsRefreshed", { count: res.tool_count }) });
+		} catch (err) {
+			toast({ title: t("sessions.toast.toolsRefreshFailed"), description: getErrorMessage(err), variant: "destructive" });
+		} finally {
+			setPendingActionRowId(null);
 		}
 	};
 
@@ -91,10 +126,22 @@ export default function SessionsTable({
 		setPendingActionRowId(row.id);
 		try {
 			await revoke(row.id).unwrap();
-			toast({ title: row.kind === "header" ? "Header values revoked" : "Session revoked" });
+			toast({
+				title:
+					row.kind === "header"
+						? t("sessions.toast.headerRevoked")
+						: row.kind === "flow"
+							? t("sessions.toast.flowRevoked")
+							: t("sessions.toast.sessionRevoked"),
+			});
 		} catch (err) {
 			toast({
-				title: row.kind === "header" ? "Failed to revoke header values" : "Failed to revoke session",
+				title:
+					row.kind === "header"
+						? t("sessions.toast.headerRevokeFailed")
+						: row.kind === "flow"
+							? t("sessions.toast.flowRevokeFailed")
+							: t("sessions.toast.sessionRevokeFailed"),
 				description: getErrorMessage(err),
 				variant: "destructive",
 			});
@@ -110,41 +157,38 @@ export default function SessionsTable({
 					<AlertDialogHeader>
 						{pendingDelete?.kind === "header" ? (
 							<>
-								<AlertDialogTitle>Revoke these stored header values?</AlertDialogTitle>
-								<AlertDialogDescription>
-									Bifrost will remove the stored credential values for this binding. There is no upstream token to revoke; the user will
-									need to resubmit their header values to use this MCP again.
-								</AlertDialogDescription>
+								<AlertDialogTitle>{t("sessions.revokeHeaderTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("sessions.revokeHeaderDescription")}</AlertDialogDescription>
+							</>
+						) : pendingDelete?.kind === "flow" ? (
+							<>
+								<AlertDialogTitle>{t("sessions.revokeFlowTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("sessions.revokeFlowDescription")}</AlertDialogDescription>
 							</>
 						) : (
 							<>
-								<AlertDialogTitle>Revoke this MCP session?</AlertDialogTitle>
-								<AlertDialogDescription>
-									Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it
-									stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.
-								</AlertDialogDescription>
+								<AlertDialogTitle>{t("sessions.revokeSessionTitle")}</AlertDialogTitle>
+								<AlertDialogDescription>{t("sessions.revokeSessionDescription")}</AlertDialogDescription>
 							</>
 						)}
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={confirmRevoke} data-testid="mcp-session-revoke-confirm">
-							Revoke
+							{t("sessions.actions.revoke")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<PageTitle title="MCP Auth Sessions">
-				Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
-			</PageTitle>
+			<PageTitle title={t("sessions.title")}>{t("sessions.description")}</PageTitle>
 
 			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search sessions"
-						placeholder="Search MCP, user, VK, session..."
+						aria-label={t("sessions.searchAria")}
+						placeholder={t("sessions.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -158,46 +202,45 @@ export default function SessionsTable({
 					<Table>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead>MCP server</TableHead>
+								<TableHead>{t("sessions.columns.mcpServer")}</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Type"
-										tooltip="OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission."
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.type")} tooltip={t("sessions.tooltips.type")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Bound to"
-										tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.boundTo")} tooltip={t("sessions.tooltips.boundTo")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Status"
-										tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.status")} tooltip={t("sessions.tooltips.status")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Access token expiry"
-										tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
-									/>
+									<HeaderWithTooltip label={t("sessions.scopes")} tooltip={t("sessions.scopesHelp")} />
 								</TableHead>
-								<TableHead>Created</TableHead>
+								<TableHead>
+									<HeaderWithTooltip label={t("sessions.columns.accessTokenExpiry")} tooltip={t("sessions.tooltips.accessTokenExpiry")} />
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip label={t("sessions.refreshToken")} tooltip={t("sessions.refreshTokenHelp")} />
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip label={t("sessions.columns.discovery")} tooltip={t("sessions.columns.discoveryHelp")} />
+								</TableHead>
+								<TableHead>{t("sessions.columns.created")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{sessions.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={7} className="h-24 text-center">
-										{hasActiveFilters ? (
-											<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
+									<TableCell colSpan={10} className="h-24 text-center">
+										{isFetching ? (
+											<div role="status" className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
+												<Loader2 className="size-4 animate-spin" aria-hidden="true" />
+												{tc("loading")}
+											</div>
+										) : hasActiveFilters ? (
+											<div className="text-muted-foreground text-sm">{t("sessions.noMatch")}</div>
 										) : (
-											<span className="text-muted-foreground text-sm">
-												No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
-												(OAuth or header submission).
-											</span>
+											<span className="text-muted-foreground text-sm">{t("sessions.empty")}</span>
 										)}
 									</TableCell>
 								</TableRow>
@@ -214,11 +257,22 @@ export default function SessionsTable({
 										<TableCell>
 											<StatusBadge status={row.status} />
 										</TableCell>
+										<TableCell>
+											<ScopesCell row={row} />
+										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
 											<div className="flex flex-col">
 												<span>{formatAccessExpiry(row)}</span>
-												{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
+												{row.last_refreshed_at && (
+													<span className="text-xs">{t("sessions.refreshed", { time: formatRelativePast(row.last_refreshed_at) })}</span>
+												)}
 											</div>
+										</TableCell>
+										<TableCell className="text-sm">
+											<RefreshTokenCell row={row} />
+										</TableCell>
+										<TableCell className="text-sm">
+											<DiscoveryCell row={row} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
 										<TableCell
@@ -228,9 +282,11 @@ export default function SessionsTable({
 												row={row}
 												reauthing={reauthing}
 												revoking={revoking}
+												refreshing={refreshing}
 												isPendingRow={pendingActionRowId === row.id}
 												onReauth={() => handleReauth(row)}
 												onRevoke={() => setPendingDelete(row)}
+												onRefresh={() => handleRefresh(row)}
 											/>
 										</TableCell>
 									</TableRow>
@@ -243,8 +299,11 @@ export default function SessionsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -254,15 +313,13 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-sessions-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("common.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								{t("common.pageRange", { page: Math.floor(offset / limit) + 1, total: Math.ceil(totalCount / limit) })}
 							</div>
 
 							<Button
@@ -271,7 +328,7 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-sessions-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("common.nextPage")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -300,6 +357,7 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
 }
 
 function BindingCell({ row }: { row: MCPSessionRow }) {
+	const { t } = useTranslation("mcp");
 	if (row.auth_mode === "user" && row.user_id) {
 		const displayName = row.user?.name || row.user?.email;
 		return (
@@ -325,57 +383,95 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 			</div>
 		);
 	}
-	return <span className="text-muted-foreground text-sm">Session-bound</span>;
+	return <span className="text-muted-foreground text-sm">{t("sessions.sessionBound")}</span>;
+}
+
+// Granted scopes on token rows. A dash when the provider reported none, and
+// for header rows and pending sign-ins, which have no token.
+function ScopesCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || !row.scopes?.length) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <ScopeChips scopes={row.scopes} />;
+}
+
+// Refresh token presence on token rows; a dash for header rows and pending
+// sign-ins, which have no token.
+function RefreshTokenCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || row.has_refresh_token === undefined) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <RefreshTokenStatus hasRefreshToken={row.has_refresh_token} status={row.status} />;
+}
+
+// What the row's binding holds on its server: counts and when for a held
+// discovery, else why it holds none (see sessionDiscoveryCell).
+function DiscoveryCell({ row }: { row: MCPSessionRow }) {
+	const cell = sessionDiscoveryCell(row);
+	return (
+		<div className="flex flex-col" data-testid={`mcp-session-discovery-${row.id}`}>
+			<span className={cell.muted ? "text-muted-foreground" : undefined}>{cell.text}</span>
+			{cell.sub && <span className="text-muted-foreground text-xs">{cell.sub}</span>}
+		</div>
+	);
 }
 
 function TypeBadge({ authKind }: { authKind: string }) {
+	const { t } = useTranslation("mcp");
 	if (authKind === "headers") {
-		return <Badge variant="outline">Headers</Badge>;
+		return <Badge variant="outline">{t("sessions.kind.headers")}</Badge>;
 	}
-	return <Badge variant="outline">OAuth</Badge>;
+	return <Badge variant="outline">{t("sessions.kind.oauth")}</Badge>;
 }
 
+// Colors come from the shared credential palette so a session's status reads
+// the same as the credential block in the server sheet and the server state
+// badge in the registry: green for usable, red for "a human must act", amber
+// and gray for informational.
 function StatusBadge({ status }: { status: string }) {
-	if (status === "pending") {
-		return <Badge variant="secondary">Pending</Badge>;
-	}
-	if (status === "orphaned") {
-		// Muted amber: distinct from destructive (red, action-required) and
-		// secondary (gray, in-progress). Signals "informational, no action
-		// needed from you" — the auto-restore cascade handles it.
-		return (
-			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				Orphaned
-			</Badge>
-		);
-	}
-	if (status === "needs_reauth") {
-		return <Badge variant="destructive">Needs re-auth</Badge>;
-	}
-	if (status === "needs_update") {
-		// Outlined red: signals user action required, but visually distinct from
-		// needs_reauth's solid destructive badge (which represents a hard auth failure).
-		// Distinct copy so the row affordance ("Update values") matches.
-		return (
-			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				Needs update
-			</Badge>
-		);
-	}
-	return <Badge>Active</Badge>;
+	const { t } = useTranslation("mcp");
+	const labels: Record<string, string> = {
+		pending: t("sessions.status.pending"),
+		orphaned: t("sessions.status.orphaned"),
+		needs_reauth: t("sessions.status.needsReauth"),
+		needs_update: t("sessions.status.needsUpdate"),
+		active: t("sessions.status.active"),
+	};
+	return (
+		<Badge className={MCP_CREDENTIAL_STATUS_COLORS[status] ?? MCP_CREDENTIAL_STATUS_COLORS.unknown}>
+			{labels[status] ?? titleCaseFromSnakeCase(status)}
+		</Badge>
+	);
 }
 
 interface RowActionsProps {
 	row: MCPSessionRow;
 	reauthing: boolean;
 	revoking: boolean;
+	refreshing: boolean;
 	isPendingRow: boolean;
 	onReauth: () => void;
 	onRevoke: () => void;
+	onRefresh: () => void;
 }
 
-function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke }: RowActionsProps) {
-	const busy = reauthing || revoking;
+/** Per-row actions menu for an MCP session: complete auth, re-authenticate, refresh tools or revoke. */
+function RowActions({ row, reauthing, revoking, refreshing, isPendingRow, onReauth, onRevoke, onRefresh }: RowActionsProps) {
+	const { t } = useTranslation("mcp");
+	const busy = reauthing || revoking || refreshing;
+	// Discovers the caller's tools again with the stored credential; the server
+	// decides who may (can_refresh), the same callers as re-authentication.
+	const refreshItem = row.can_refresh && (
+		<DropdownMenuItem
+			className="cursor-pointer"
+			disabled={busy}
+			data-testid="mcp-session-refresh-menu-item"
+			onSelect={onRefresh}
+		>
+			<RefreshCw className="h-4 w-4" />
+			{t("sessions.actions.refreshTools")}
+		</DropdownMenuItem>
+	);
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -383,7 +479,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP session actions"
+					aria-label={t("sessions.actionsAria")}
 					data-testid={`mcp-session-row-actions-${row.id}`}
 					disabled={busy}
 				>
@@ -392,33 +488,49 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				{row.kind === "flow" ? (
-					row.status === "needs_reauth" ? (
-						// The PKCE state on this flow row is dead; a fresh request to the
-						// MCP client will start a new flow. No action we can offer wires
-						// up to the existing flow row, so surface guidance instead.
-						<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
-							Trigger a request to re-authenticate
-						</DropdownMenuItem>
-					) : (
+					<>
+						{row.status === "needs_reauth" ? (
+							// The PKCE state on this flow row is dead; a fresh request to the
+							// MCP client will start a new flow. No action we can offer wires
+							// up to the existing flow row, so surface guidance instead.
+							<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
+								{t("sessions.actions.triggerReauth")}
+							</DropdownMenuItem>
+						) : (
+							<DropdownMenuItem
+								className="cursor-pointer"
+								data-testid="mcp-session-complete-auth-menu-item"
+								onSelect={(e) => {
+									e.preventDefault();
+									// Header flows need &kind=headers so the auth landing page
+									// routes to the per-user-headers backend; OAuth flows use
+									// the default branch.
+									const url =
+										row.auth_kind === "headers"
+											? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
+											: `/workspace/mcp-sessions/auth?flow=${row.id}`;
+									window.location.href = withBasePath(url);
+								}}
+							>
+								<ExternalLink className="h-4 w-4" />
+								{t("sessions.actions.completeAuth")}
+							</DropdownMenuItem>
+						)}
+						{/* A pending flow holds no credential yet: revoking it drops the row and its link. */}
 						<DropdownMenuItem
+							variant="destructive"
 							className="cursor-pointer"
-							data-testid="mcp-session-complete-auth-menu-item"
+							disabled={busy}
+							data-testid="mcp-session-revoke-menu-item"
 							onSelect={(e) => {
 								e.preventDefault();
-								// Header flows need &kind=headers so the auth landing page
-								// routes to the per-user-headers backend; OAuth flows use
-								// the default branch.
-								const url =
-									row.auth_kind === "headers"
-										? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
-										: `/workspace/mcp-sessions/auth?flow=${row.id}`;
-								window.location.href = url;
+								onRevoke();
 							}}
 						>
-							<ExternalLink className="h-4 w-4" />
-							Complete authentication
+							<Trash2 className="h-4 w-4" />
+							{t("sessions.actions.revoke")}
 						</DropdownMenuItem>
-					)
+					</>
 				) : row.kind === "header" ? (
 					<>
 						{row.status !== "orphaned" && row.can_reauth && (
@@ -438,9 +550,10 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								}}
 							>
 								<Pencil className="h-4 w-4" />
-								{row.status === "needs_update" ? "Update values" : "Edit values"}
+								{row.status === "needs_update" ? t("sessions.actions.updateValues") : t("sessions.actions.editValues")}
 							</DropdownMenuItem>
 						)}
+						{refreshItem}
 						<DropdownMenuItem
 							variant="destructive"
 							className="cursor-pointer"
@@ -452,7 +565,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							}}
 						>
 							<Trash2 className="h-4 w-4" />
-							Revoke
+							{t("sessions.actions.revoke")}
 						</DropdownMenuItem>
 					</>
 				) : (
@@ -473,9 +586,10 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								}}
 							>
 								<RefreshCcw className="h-4 w-4" />
-								Re-authenticate
+								{t("sessions.actions.reauthenticate")}
 							</DropdownMenuItem>
 						)}
+						{refreshItem}
 						<DropdownMenuItem
 							variant="destructive"
 							className="cursor-pointer"
@@ -487,30 +601,13 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							}}
 						>
 							<Trash2 className="h-4 w-4" />
-							Revoke
+							{t("sessions.actions.revoke")}
 						</DropdownMenuItem>
 					</>
 				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
-}
-
-function formatRelativePast(iso: string): string {
-	try {
-		const t = new Date(iso).getTime();
-		if (Number.isNaN(t)) return iso;
-		const diffMs = Date.now() - t;
-		if (diffMs < 60_000) return "just now";
-		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 60) return `${mins} min ago`;
-		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours < 48) return `${hours}h ago`;
-		const days = Math.floor(diffMs / 86_400_000);
-		return `${days}d ago`;
-	} catch {
-		return iso;
-	}
 }
 
 function formatAccessExpiry(row: MCPSessionRow): string {
@@ -521,33 +618,5 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 	if (row.kind === "header") {
 		return "-";
 	}
-	if (!row.expires_at) return "-";
-	try {
-		const t = new Date(row.expires_at).getTime();
-		if (Number.isNaN(t)) return row.expires_at;
-		const diffMs = t - Date.now();
-		if (diffMs < 0) {
-			// Active rows auto-refresh on next use via the refresh token.
-			// Orphaned rows still hold a valid upstream credential — the past
-			// expiry just means the cached access token is stale; if access
-			// is restored, refresh kicks in. Only 'needs_reauth' is genuinely
-			// expired (the refresh token itself is dead).
-			switch (row.status) {
-				case "active":
-					return "Refreshes on next use";
-				case "orphaned":
-					return "Refreshes when access is restored";
-				default:
-					return "expired";
-			}
-		}
-		const days = Math.floor(diffMs / 86_400_000);
-		if (days > 1) return `in ${days} days`;
-		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours > 1) return `in ${hours} hours`;
-		const mins = Math.floor(diffMs / 60_000);
-		return `in ${Math.max(mins, 1)} min`;
-	} catch {
-		return row.expires_at;
-	}
+	return formatTokenExpiry(row.expires_at, row.status, row.has_refresh_token);
 }

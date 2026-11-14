@@ -1,13 +1,20 @@
 package groq_test
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/groq"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGroq(t *testing.T) {
@@ -25,11 +32,11 @@ func TestGroq(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
+		ChatModel: "qwen/qwen3.8-27b",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-120b"},
 		},
-		TextModel: "llama-3.3-70b-versatile",
+		TextModel: "qwen/qwen3.8-27b",
 		TextCompletionFallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
@@ -65,4 +72,67 @@ func TestGroq(t *testing.T) {
 	t.Run("GroqTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
+}
+
+// A retrieve must land on /v1/models/{model} with the key's bearer token, map the
+// provider's model object onto the Bifrost shape, and refuse a path-shaping model id
+// before anything is dispatched.
+func TestGroqModelRetrieve(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotPath, gotMethod, gotAuth string
+	dispatched := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		dispatched++
+		mu.Unlock()
+		id := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+		_, _ = w.Write([]byte(`{"id":"` + id + `","object":"model","created":1693721698,"owned_by":"Meta","context_window":131072}`))
+	}))
+	defer server.Close()
+
+	provider, err := groq.NewGroqProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("gsk-test")}
+
+	response, bifrostErr := provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "llama-3.3-70b-versatile"})
+	require.Nil(t, bifrostErr)
+
+	mu.Lock()
+	path, method, auth := gotPath, gotMethod, gotAuth
+	mu.Unlock()
+	require.Equal(t, "/v1/models/llama-3.3-70b-versatile", path)
+	require.Equal(t, http.MethodGet, method)
+	require.Equal(t, "Bearer gsk-test", auth)
+
+	require.Equal(t, "groq/llama-3.3-70b-versatile", response.ID)
+	require.Equal(t, schemas.Ptr("Meta"), response.OwnedBy)
+	require.Equal(t, schemas.Ptr(131072), response.ContextLength)
+
+	// Most current Groq models are namespaced ("openai/gpt-oss-120b"); each segment is a path segment.
+	response, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "openai/gpt-oss-120b"})
+	require.Nil(t, bifrostErr)
+	mu.Lock()
+	path = gotPath
+	mu.Unlock()
+	require.Equal(t, "/v1/models/openai/gpt-oss-120b", path)
+	require.Equal(t, "groq/openai/gpt-oss-120b", response.ID)
+
+	mu.Lock()
+	before := dispatched
+	mu.Unlock()
+	for _, invalid := range []string{"../models", "openai/../models", "openai/./gpt", "openai//gpt", "/openai", "openai/", "openai/%2e%2e", "openai/gpt?x=1", "openai\\gpt"} {
+		_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: invalid})
+		require.NotNil(t, bifrostErr, invalid)
+		require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode, invalid)
+	}
+	mu.Lock()
+	require.Equal(t, before, dispatched, "a path-shaping model id must never be dispatched upstream")
+	mu.Unlock()
 }

@@ -45,6 +45,8 @@ type FileObject struct {
 	CreatedAt     int64       `json:"created_at"`
 	UpdatedAt     int64       `json:"updated_at,omitempty"`
 	Filename      string      `json:"filename"`
+	ContentType   string      `json:"content_type,omitempty"` // MIME type reported by the provider
+	Downloadable  *bool       `json:"downloadable,omitempty"` // Nil when the provider does not report downloadability
 	Purpose       FilePurpose `json:"purpose"`
 	Status        FileStatus  `json:"status,omitempty"`
 	StatusDetails *string     `json:"status_details,omitempty"`
@@ -105,6 +107,8 @@ type BifrostFileUploadResponse struct {
 	Bytes         int64       `json:"bytes"`
 	CreatedAt     int64       `json:"created_at"`
 	Filename      string      `json:"filename"`
+	ContentType   string      `json:"content_type,omitempty"` // MIME type reported by the provider
+	Downloadable  *bool       `json:"downloadable,omitempty"` // Nil when the provider does not report downloadability
 	Purpose       FilePurpose `json:"purpose"`
 	Status        FileStatus  `json:"status,omitempty"`
 	StatusDetails *string     `json:"status_details,omitempty"`
@@ -187,6 +191,8 @@ type BifrostFileRetrieveResponse struct {
 	CreatedAt     int64       `json:"created_at"`
 	UpdatedAt     int64       `json:"updated_at,omitempty"`
 	Filename      string      `json:"filename"`
+	ContentType   string      `json:"content_type,omitempty"` // MIME type reported by the provider
+	Downloadable  *bool       `json:"downloadable,omitempty"` // Nil when the provider does not report downloadability
 	Purpose       FilePurpose `json:"purpose"`
 	Status        FileStatus  `json:"status,omitempty"`
 	StatusDetails *string     `json:"status_details,omitempty"`

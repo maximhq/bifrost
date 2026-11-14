@@ -192,3 +192,47 @@ func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
 
 	t.Log("✅ Embedding requests properly handle TTL expiration")
 }
+
+// task_type / title / auto_truncate change the vector a provider returns, so they must
+// be part of the params hash; otherwise a RETRIEVAL_QUERY request hits a cached
+// RETRIEVAL_DOCUMENT vector.
+func TestEmbeddingParamsHashIncludesTaskTypeTitleAutoTruncate(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig()}
+	text := "hello world"
+	hashFor := func(params *schemas.EmbeddingParameters) string {
+		t.Helper()
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.EmbeddingRequest,
+			EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-embedding-001",
+				Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+				Params:   params,
+			},
+		}
+		metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
+		if err != nil {
+			t.Fatalf("buildRequestMetadataForCaching failed: %v", err)
+		}
+		hash, err := hashMap(metadata)
+		if err != nil {
+			t.Fatalf("hashMap failed: %v", err)
+		}
+		return hash
+	}
+
+	query := hashFor(&schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_QUERY")})
+	if query != hashFor(&schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_QUERY")}) {
+		t.Fatal("identical params must hash the same")
+	}
+	variants := map[string]*schemas.EmbeddingParameters{
+		"task_type":     {TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT")},
+		"title":         {TaskType: schemas.Ptr("RETRIEVAL_QUERY"), Title: schemas.Ptr("t")},
+		"auto_truncate": {TaskType: schemas.Ptr("RETRIEVAL_QUERY"), AutoTruncate: schemas.Ptr(false)},
+	}
+	for name, params := range variants {
+		if hashFor(params) == query {
+			t.Errorf("%s change must change the params hash", name)
+		}
+	}
+}

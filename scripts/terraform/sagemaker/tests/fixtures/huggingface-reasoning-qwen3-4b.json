@@ -1,0 +1,390 @@
+{
+  "model_id": "huggingface-reasoning-qwen3-4b",
+  "version": "1.42.0",
+  "inference_environment_variables": [
+    {
+      "name": "ENDPOINT_SERVER_TIMEOUT",
+      "type": "int",
+      "default": 3600,
+      "scope": "container"
+    },
+    {
+      "name": "HF_MODEL_ID",
+      "type": "text",
+      "default": "/opt/ml/model",
+      "scope": "container"
+    },
+    {
+      "name": "MODEL_CACHE_ROOT",
+      "type": "text",
+      "default": "/opt/ml/model",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_CONTAINER_LOG_LEVEL",
+      "type": "text",
+      "default": "20",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_ENV",
+      "type": "text",
+      "default": "1",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_MODEL_SERVER_TIMEOUT",
+      "type": "text",
+      "default": "3600",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_MODEL_SERVER_WORKERS",
+      "type": "int",
+      "default": 1,
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_PROGRAM",
+      "type": "text",
+      "default": "inference.py",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_SUBMIT_DIRECTORY",
+      "type": "text",
+      "default": "/opt/ml/model/code",
+      "scope": "container"
+    }
+  ],
+  "hosting_ecr_specs": {
+    "framework": "djl-lmi-18",
+    "framework_version": "0.36.0",
+    "py_version": "py310"
+  },
+  "hosting_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference/v1.0.0/",
+  "hosting_prepacked_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference-prepack/v2.0.0/",
+  "hosting_artifact_s3_data_type": "S3Prefix",
+  "hosting_artifact_compression_type": "None",
+  "hosting_eula_key": null,
+  "gated_bucket": null,
+  "hosting_use_script_uri": false,
+  "inference_enable_network_isolation": true,
+  "default_inference_instance_type": "ml.g6e.12xlarge",
+  "supported_inference_instance_types": [
+    "ml.g6.2xlarge",
+    "ml.g6e.4xlarge",
+    "ml.g6e.xlarge",
+    "ml.g5.16xlarge",
+    "ml.g5.8xlarge",
+    "ml.g6e.16xlarge",
+    "ml.p4d.24xlarge",
+    "ml.g5.4xlarge",
+    "ml.g6.16xlarge",
+    "ml.g6.xlarge",
+    "ml.g6e.12xlarge",
+    "ml.g6e.24xlarge",
+    "ml.g6e.2xlarge",
+    "ml.g5.48xlarge",
+    "ml.g6.4xlarge",
+    "ml.g6.12xlarge",
+    "ml.g6.24xlarge",
+    "ml.g5.24xlarge",
+    "ml.g4dn.12xlarge",
+    "ml.g6.48xlarge",
+    "ml.g6.8xlarge",
+    "ml.g5.12xlarge",
+    "ml.g6e.8xlarge",
+    "ml.g5.xlarge",
+    "ml.g5.2xlarge"
+  ],
+  "hosting_resource_requirements": null,
+  "hosting_instance_type_variants": {
+    "regional_aliases": {
+      "us-east-1": {
+        "alias_ecr_uri_1": "763104351884.dkr.ecr.us-east-1.amazonaws.com/djl-inference:0.36.0-lmi18.0.0-cu128"
+      }
+    },
+    "variants": {
+      "g5": {
+        "regional_properties": {
+          "image_uri": "$alias_ecr_uri_1"
+        }
+      },
+      "g6": {
+        "regional_properties": {
+          "image_uri": "$alias_ecr_uri_1"
+        }
+      },
+      "ml.g6.2xlarge": {
+        "properties": {
+          "environment_variables": {
+            "MAX_BATCH_SIZE": "128",
+            "MAX_CONCURRENT_REQUESTS": "256",
+            "OPTION_DTYPE": "fp16",
+            "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+            "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+            "OPTION_MAX_MODEL_LEN": "40960",
+            "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+            "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+            "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+            "OPTION_TOOL_CALL_PARSER": "hermes",
+            "TENSOR_PARALLEL_DEGREE": "1",
+            "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+          },
+          "resource_requirements": {
+            "min_memory_mb": 16384,
+            "num_accelerators": 1
+          }
+        }
+      },
+      "ml.g6.xlarge": {
+        "properties": {
+          "environment_variables": {
+            "MAX_BATCH_SIZE": "128",
+            "MAX_CONCURRENT_REQUESTS": "256",
+            "OPTION_DTYPE": "fp16",
+            "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+            "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+            "OPTION_MAX_MODEL_LEN": "40960",
+            "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+            "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+            "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+            "OPTION_TOOL_CALL_PARSER": "hermes",
+            "TENSOR_PARALLEL_DEGREE": "1",
+            "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+          },
+          "resource_requirements": {
+            "min_memory_mb": 8192,
+            "num_accelerators": 1
+          }
+        }
+      }
+    }
+  },
+  "inference_config_rankings": {
+    "overall": {
+      "description": "default",
+      "rankings": [
+        "all_purpose",
+        "lowest_cost"
+      ]
+    }
+  },
+  "inference_configs": {
+    "all_purpose": {
+      "component_names": [
+        "all_purpose"
+      ]
+    },
+    "lowest_cost": {
+      "component_names": [
+        "lowest_cost"
+      ]
+    }
+  },
+  "inference_config_components": {
+    "all_purpose": {
+      "hosting_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference/v1.0.0/",
+      "hosting_prepacked_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference-prepack/v2.0.0/",
+      "hosting_artifact_s3_data_type": "S3Prefix",
+      "hosting_artifact_compression_type": "None",
+      "default_inference_instance_type": "ml.g6e.12xlarge",
+      "supported_inference_instance_types": [
+        "ml.g6.2xlarge",
+        "ml.g6e.4xlarge",
+        "ml.g6e.xlarge",
+        "ml.g5.16xlarge",
+        "ml.g5.8xlarge",
+        "ml.g6e.16xlarge",
+        "ml.p4d.24xlarge",
+        "ml.g5.4xlarge",
+        "ml.g6.16xlarge",
+        "ml.g6.xlarge",
+        "ml.g6e.12xlarge",
+        "ml.g6e.24xlarge",
+        "ml.g6e.2xlarge",
+        "ml.g5.48xlarge",
+        "ml.g6.4xlarge",
+        "ml.g6.12xlarge",
+        "ml.g6.24xlarge",
+        "ml.g5.24xlarge",
+        "ml.g4dn.12xlarge",
+        "ml.g6.48xlarge",
+        "ml.g6.8xlarge",
+        "ml.g5.12xlarge",
+        "ml.g6e.8xlarge",
+        "ml.g5.xlarge",
+        "ml.g5.2xlarge"
+      ],
+      "deploy_kwargs": {
+        "container_startup_health_check_timeout": 3600,
+        "model_data_download_timeout": 3600
+      },
+      "hosting_instance_type_variants": {
+        "regional_aliases": {
+          "us-east-1": {
+            "alias_ecr_uri_1": "763104351884.dkr.ecr.us-east-1.amazonaws.com/djl-inference:0.36.0-lmi18.0.0-cu128"
+          }
+        },
+        "variants": {
+          "g5": {
+            "regional_properties": {
+              "image_uri": "$alias_ecr_uri_1"
+            }
+          },
+          "g6": {
+            "regional_properties": {
+              "image_uri": "$alias_ecr_uri_1"
+            }
+          },
+          "ml.g6.2xlarge": {
+            "properties": {
+              "environment_variables": {
+                "MAX_BATCH_SIZE": "128",
+                "MAX_CONCURRENT_REQUESTS": "256",
+                "OPTION_DTYPE": "fp16",
+                "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+                "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+                "OPTION_MAX_MODEL_LEN": "40960",
+                "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+                "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+                "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+                "OPTION_TOOL_CALL_PARSER": "hermes",
+                "TENSOR_PARALLEL_DEGREE": "1",
+                "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+              },
+              "resource_requirements": {
+                "min_memory_mb": 16384,
+                "num_accelerators": 1
+              }
+            }
+          },
+          "ml.g6.xlarge": {
+            "properties": {
+              "environment_variables": {
+                "MAX_BATCH_SIZE": "128",
+                "MAX_CONCURRENT_REQUESTS": "256",
+                "OPTION_DTYPE": "fp16",
+                "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+                "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+                "OPTION_MAX_MODEL_LEN": "40960",
+                "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+                "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+                "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+                "OPTION_TOOL_CALL_PARSER": "hermes",
+                "TENSOR_PARALLEL_DEGREE": "1",
+                "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+              },
+              "resource_requirements": {
+                "min_memory_mb": 8192,
+                "num_accelerators": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "lowest_cost": {
+      "hosting_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference/v1.0.0/",
+      "hosting_prepacked_artifact_key": "huggingface-reasoning/huggingface-reasoning-qwen3-4b/artifacts/inference-prepack/v2.0.0/",
+      "hosting_artifact_s3_data_type": "S3Prefix",
+      "hosting_artifact_compression_type": "None",
+      "default_inference_instance_type": "ml.g6.xlarge",
+      "supported_inference_instance_types": [
+        "ml.g6.2xlarge",
+        "ml.g6e.4xlarge",
+        "ml.g6e.xlarge",
+        "ml.g5.16xlarge",
+        "ml.g5.8xlarge",
+        "ml.g6e.16xlarge",
+        "ml.p4d.24xlarge",
+        "ml.g5.4xlarge",
+        "ml.g6.16xlarge",
+        "ml.g6.xlarge",
+        "ml.g6e.12xlarge",
+        "ml.g6e.24xlarge",
+        "ml.g6e.2xlarge",
+        "ml.g5.48xlarge",
+        "ml.g6.4xlarge",
+        "ml.g6.12xlarge",
+        "ml.g6.24xlarge",
+        "ml.g5.24xlarge",
+        "ml.g4dn.12xlarge",
+        "ml.g6.48xlarge",
+        "ml.g6.8xlarge",
+        "ml.g5.12xlarge",
+        "ml.g6e.8xlarge",
+        "ml.g5.xlarge",
+        "ml.g5.2xlarge"
+      ],
+      "deploy_kwargs": {
+        "container_startup_health_check_timeout": 3600,
+        "model_data_download_timeout": 3600
+      },
+      "hosting_instance_type_variants": {
+        "regional_aliases": {
+          "us-east-1": {
+            "alias_ecr_uri_1": "763104351884.dkr.ecr.us-east-1.amazonaws.com/djl-inference:0.36.0-lmi18.0.0-cu128"
+          }
+        },
+        "variants": {
+          "g5": {
+            "regional_properties": {
+              "image_uri": "$alias_ecr_uri_1"
+            }
+          },
+          "g6": {
+            "regional_properties": {
+              "image_uri": "$alias_ecr_uri_1"
+            }
+          },
+          "ml.g6.2xlarge": {
+            "properties": {
+              "environment_variables": {
+                "MAX_BATCH_SIZE": "128",
+                "MAX_CONCURRENT_REQUESTS": "256",
+                "OPTION_DTYPE": "fp16",
+                "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+                "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+                "OPTION_MAX_MODEL_LEN": "40960",
+                "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+                "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+                "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+                "OPTION_TOOL_CALL_PARSER": "hermes",
+                "TENSOR_PARALLEL_DEGREE": "1",
+                "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+              },
+              "resource_requirements": {
+                "min_memory_mb": 16384,
+                "num_accelerators": 1
+              }
+            }
+          },
+          "ml.g6.xlarge": {
+            "properties": {
+              "environment_variables": {
+                "MAX_BATCH_SIZE": "128",
+                "MAX_CONCURRENT_REQUESTS": "256",
+                "OPTION_DTYPE": "fp16",
+                "OPTION_ENABLE_CHUNKED_PREFILL": "true",
+                "OPTION_GPU_MEMORY_UTILIZATION": "0.88",
+                "OPTION_MAX_MODEL_LEN": "40960",
+                "OPTION_MAX_NUM_BATCHED_TOKENS": "81920",
+                "OPTION_MAX_ROLLING_BATCH_SIZE": "128",
+                "OPTION_TENSOR_PARALLEL_DEGREE": "1",
+                "OPTION_TOOL_CALL_PARSER": "hermes",
+                "TENSOR_PARALLEL_DEGREE": "1",
+                "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"
+              },
+              "resource_requirements": {
+                "min_memory_mb": 8192,
+                "num_accelerators": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

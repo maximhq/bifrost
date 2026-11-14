@@ -9,6 +9,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
@@ -530,7 +532,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 // (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
 // (line 784), never onto the outer tool_result block, so every cached tool result built via the
 // unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
-// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// hoists the last CacheControl found among a tool message's content blocks onto the tool_result
 // block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
 // pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
@@ -592,6 +594,82 @@ func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.
 	}
 	if toolResultBlock.Content.ContentBlocks[0].CacheControl != nil {
 		t.Error("nested content block must not carry cache_control -- Anthropic's real API rejects it there")
+	}
+}
+
+func TestToAnthropicChatRequest_ToolCallCacheControlCarriedToToolUse(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:   schemas.Ptr(toolCallID),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"nyc"}`,
+							},
+							CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+						},
+						{
+							ID:   schemas.Ptr("toolu_2"),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"sf"}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("68F, partly cloudy.")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolUseBlocks []AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "assistant" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUseBlocks = append(toolUseBlocks, msg.Content.ContentBlocks[j])
+			}
+		}
+	}
+	if len(toolUseBlocks) != 2 {
+		t.Fatalf("expected 2 tool_use blocks in the converted request, got %d", len(toolUseBlocks))
+	}
+
+	if toolUseBlocks[0].CacheControl == nil {
+		t.Fatal("expected cache_control on the tool_calls entry to be carried onto its tool_use block")
+	}
+	if toolUseBlocks[0].CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_use cache_control type = %q, want %q", toolUseBlocks[0].CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+	if toolUseBlocks[1].CacheControl != nil {
+		t.Error("tool_use block without a marker on its tool_calls entry must not gain cache_control")
 	}
 }
 
@@ -1292,6 +1370,163 @@ func TestToAnthropicChatRequest_NonOpus47_NoDefaultDisplay(t *testing.T) {
 	}
 }
 
+// Haiku 5.5 takes the Sonnet 5+ request surface: reasoning.effort becomes
+// adaptive thinking plus output_config.effort, and temperature/top_p/top_k are
+// dropped, since any non-default value is a 400 on this model. Unrecognised, the
+// effort fell through to the budget_tokens branch and the sampling knobs were
+// forwarded. Haiku 4.5 keeps its extended-thinking surface.
+func TestToAnthropicChatRequest_Haiku55_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-haiku-5-5",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Thinking == nil || result.Thinking.Type != "adaptive" {
+				t.Fatalf("expected adaptive thinking for Haiku 5.5, got %+v", result.Thinking)
+			}
+			if result.Thinking.BudgetTokens != nil {
+				t.Errorf("expected no budget_tokens for Haiku 5.5, got %v", *result.Thinking.BudgetTokens)
+			}
+			if result.Thinking.Display == nil || *result.Thinking.Display != "summarized" {
+				t.Errorf("expected Display to default to 'summarized' for Haiku 5.5, got %v", result.Thinking.Display)
+			}
+			if result.OutputConfig == nil || result.OutputConfig.Effort == nil || *result.OutputConfig.Effort != effort {
+				t.Errorf("expected output_config.effort %q, got %+v", effort, result.OutputConfig)
+			}
+		})
+	}
+
+	t.Run("haiku 4.5 keeps budget_tokens", func(t *testing.T) {
+		effort := "low"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5-20251001",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("think")}},
+			},
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: new(8192),
+				Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if result.Thinking == nil || result.Thinking.Type != "enabled" || result.Thinking.BudgetTokens == nil {
+			t.Errorf("expected enabled thinking with a budget for Haiku 4.5, got %+v", result.Thinking)
+		}
+		if result.OutputConfig != nil && result.OutputConfig.Effort != nil {
+			t.Errorf("expected no output_config.effort for Haiku 4.5, got %q", *result.OutputConfig.Effort)
+		}
+	})
+}
+
+func TestToAnthropicChatRequest_Haiku55_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.0
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-5-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Haiku 5.5, got %v", *result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Haiku 5.5, got %v", *result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Haiku 5.5, got %v", *result.TopK)
+	}
+}
+
+// A custom provider's own key matches no datasheet row; the worker stamps the
+// built-in provider it wraps on the context, and the converter resolves through it.
+// Without that, a model only the datasheet knows falls back to the name checks:
+// budget thinking without effort, and the sampling params forwarded.
+func TestToAnthropicChatRequest_CustomProviderUsesBaseProviderRow(t *testing.T) {
+	const model = "claude-datasheet-only-test"
+	yes, no := true, false
+	setOverride(t, model, schemas.ModelCapabilities{SupportsAdaptiveThinking: &yes, SupportsNativeEffort: &yes, SupportsSamplingParams: &no})
+
+	for _, tc := range []struct {
+		name        string
+		stampedBase bool
+	}{
+		{"base provider on the context", true},
+		{"no base provider on the context", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := 0.0
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.stampedBase {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+			}
+			result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.ModelProvider("my-claude"),
+				Model:    model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(8192),
+					Temperature:         &temp,
+					Reasoning:           &schemas.ChatReasoning{Effort: new("low")},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			rowApplied := result.Thinking != nil && result.Thinking.Type == "adaptive" &&
+				result.OutputConfig != nil && result.OutputConfig.Effort != nil && *result.OutputConfig.Effort == "low" &&
+				result.Temperature == nil
+			if rowApplied != tc.stampedBase {
+				t.Errorf("datasheet row applied = %v, want %v (thinking=%+v output_config=%+v temperature=%v)",
+					rowApplied, tc.stampedBase, result.Thinking, result.OutputConfig, result.Temperature)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Structured output (response_format: json_schema) round-trip tests
 // ---------------------------------------------------------------------------
@@ -1373,6 +1608,50 @@ func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *te
 				t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
 			}
 		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice mirrors the
+// thinking-enabled case for Fable 5.1 / Mythos 5.1: the synthetic tool is still
+// added, but the pin is not, because those models reject tool_choice "tool" and
+// "any" with a 400. With only the bf_so_* tool bound the model reaches it under
+// the default "auto".
+func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+			t.Run(string(provider)+"/"+model, func(t *testing.T) {
+				rf := makeSOResponseFormat("my_schema")
+				bifrostReq := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    model,
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+					},
+					Params: &schemas.ChatParameters{ResponseFormat: &rf},
+				}
+
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				defer cancel()
+				result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+
+				var soTool *AnthropicTool
+				for i := range result.Tools {
+					if strings.HasPrefix(result.Tools[i].Name, "bf_so_") {
+						soTool = &result.Tools[i]
+						break
+					}
+				}
+				if soTool == nil {
+					t.Fatalf("expected the synthetic bf_so_* tool to still be added for %s/%s", provider, model)
+				}
+				if result.ToolChoice != nil {
+					t.Errorf("expected no forced ToolChoice for %s/%s, got %+v", provider, model, result.ToolChoice)
+				}
+			})
+		}
 	}
 }
 
@@ -2317,5 +2596,573 @@ func TestToAnthropicChatRequest_ThinkingPassthroughUnchanged(t *testing.T) {
 	}
 	if raw["type"] != "enabled" || raw["budget_tokens"] != float64(2048) {
 		t.Errorf("passthrough thinking was rewritten: got %#v, want type=enabled budget_tokens=2048", raw)
+	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InlinesForNonAnthropicFamily removes the
+// Anthropic-family gate from the inline fallback. DeepSeek, Fireworks and SGL serve the Anthropic
+// wire shape too, and DeepSeek's context cache is automatic and prefix-based ("a subsequent
+// request must fully match a cached prefix unit", api-docs.deepseek.com/guides/kv_cache), so
+// hoisting a mid-conversation reminder into top-level `system` collapses their cache exactly as
+// it did for Claude. The reminder must inline as a user turn for every family.
+func TestToAnthropicChatRequest_MidConversationSystem_InlinesForNonAnthropicFamily(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-chat",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial system.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Mid-conv instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	result, err := ToAnthropicChatRequest(&schemas.BifrostContext{}, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.System == nil {
+		t.Fatal("expected the leading system prompt to remain in top-level System")
+	}
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"] (mid-conversation content must not be hoisted for non-Anthropic families either)", got)
+	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
+}
+
+// TestToAnthropicResponsesRequest_MidConversationSystem_InlinesForNonAnthropicFamily is the
+// Responses-path twin of the test above; ConvertBifrostMessagesToAnthropicMessages carries its own
+// copy of the family gate.
+func TestToAnthropicResponsesRequest_MidConversationSystem_InlinesForNonAnthropicFamily(t *testing.T) {
+	msg := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-chat",
+		Input: []schemas.ResponsesMessage{
+			msg(schemas.ResponsesInputMessageRoleSystem, "Initial system."),
+			msg(schemas.ResponsesInputMessageRoleUser, "Hello"),
+			msg(schemas.ResponsesInputMessageRoleAssistant, "Hi!"),
+			msg(schemas.ResponsesInputMessageRoleSystem, "Mid-conv instruction."),
+			msg(schemas.ResponsesInputMessageRoleUser, "Continue"),
+		},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+	}
+
+	result, err := ToAnthropicResponsesRequest(&schemas.BifrostContext{}, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.System == nil {
+		t.Fatal("expected the leading system prompt to remain in top-level System")
+	}
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"] (mid-conversation content must not be hoisted for non-Anthropic families either)", got)
+	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
+}
+
+// restrictionRequest builds a two-tool chat request so that a restriction has
+// something to remove. The model is a current one so that no capability
+// override drops the tool choice before these paths run.
+func restrictionRequest(tc *schemas.ChatToolChoice, parallel *bool) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")},
+		}},
+		Params: &schemas.ChatParameters{
+			ToolChoice:        tc,
+			ParallelToolCalls: parallel,
+			Tools: []schemas.ChatTool{
+				{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "tool_a"}},
+				{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "tool_b"}},
+			},
+		},
+	}
+}
+
+func allowedTools(mode string, names ...string) *schemas.ChatToolChoice {
+	tools := make([]schemas.ChatToolChoiceAllowedToolsTool, 0, len(names))
+	for _, n := range names {
+		tools = append(tools, schemas.ChatToolChoiceAllowedToolsTool{
+			Type:     "function",
+			Function: schemas.ChatToolChoiceFunction{Name: n},
+		})
+	}
+	return &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+		Type:         schemas.ChatToolChoiceTypeAllowedTools,
+		AllowedTools: &schemas.ChatToolChoiceAllowedTools{Mode: mode, Tools: tools},
+	}}
+}
+
+func toolNames(req *AnthropicMessageRequest) []string {
+	names := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
+// A caller that allows only tool_a must not have tool_b forwarded. Anthropic
+// has no subset form on tool_choice, so the restriction has to be carried by
+// the declaration list; mapping to "any" and forwarding both tools told the
+// upstream it could call either one.
+func TestToAnthropicChatRequest_AllowedToolsRestrictsDeclarations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req, err := ToAnthropicChatRequest(ctx, restrictionRequest(allowedTools("required", "tool_a"), nil))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"tool_a"}, toolNames(req), "tool_b was not allowed and must not be forwarded")
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "any", req.ToolChoice.Type, `mode "required" means a tool must be called`)
+}
+
+// mode "auto" means the model may call one of the allowed tools or none at all.
+// Forcing "any" changed an optional call into a mandatory one.
+func TestToAnthropicChatRequest_AllowedToolsAutoModeDoesNotForceACall(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req, err := ToAnthropicChatRequest(ctx, restrictionRequest(allowedTools("auto", "tool_a"), nil))
+	require.NoError(t, err)
+
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "auto", req.ToolChoice.Type, `mode "auto" must not force a tool call`)
+	assert.Equal(t, []string{"tool_a"}, toolNames(req))
+}
+
+// An allowed list naming only tools this request does not declare permits
+// nothing. Forwarding the declarations anyway would hand the model every tool
+// the caller just excluded - the same failure this conversion exists to stop,
+// arrived at from the other direction.
+func TestToAnthropicChatRequest_AllowedToolsUnknownNamesPermitNothing(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req, err := ToAnthropicChatRequest(ctx, restrictionRequest(allowedTools("required", "not_declared"), nil))
+	require.NoError(t, err)
+
+	assert.Empty(t, toolNames(req), "no declared tool was allowed, so none may be forwarded")
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "none", req.ToolChoice.Type,
+		`"any" with an empty tool list is a request Anthropic rejects`)
+}
+
+// parallel_tool_calls: false has a direct Anthropic equivalent that was never
+// populated, so the instruction was dropped and calls stayed parallel.
+func TestToAnthropicChatRequest_ParallelToolCallsFalseDisablesParallelUse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	t.Run("with an explicit tool choice", func(t *testing.T) {
+		req, err := ToAnthropicChatRequest(ctx, restrictionRequest(
+			&schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("auto")}, schemas.Ptr(false)))
+		require.NoError(t, err)
+		require.NotNil(t, req.ToolChoice)
+		require.NotNil(t, req.ToolChoice.DisableParallelToolUse)
+		assert.True(t, *req.ToolChoice.DisableParallelToolUse)
+	})
+
+	t.Run("with no tool choice of its own", func(t *testing.T) {
+		req, err := ToAnthropicChatRequest(ctx, restrictionRequest(nil, schemas.Ptr(false)))
+		require.NoError(t, err)
+		require.NotNil(t, req.ToolChoice, "the flag has nowhere to live without a tool_choice")
+		assert.Equal(t, "auto", req.ToolChoice.Type, "auto is Anthropic's default, so this adds no restriction")
+		require.NotNil(t, req.ToolChoice.DisableParallelToolUse)
+		assert.True(t, *req.ToolChoice.DisableParallelToolUse)
+	})
+}
+
+// parallel_tool_calls: true is Anthropic's default, so nothing should be sent.
+func TestToAnthropicChatRequest_ParallelToolCallsTrueSendsNothing(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req, err := ToAnthropicChatRequest(ctx, restrictionRequest(nil, schemas.Ptr(true)))
+	require.NoError(t, err)
+	if req.ToolChoice != nil {
+		assert.Nil(t, req.ToolChoice.DisableParallelToolUse)
+	}
+}
+
+// A server tool - MCP toolset, web search, computer use - cannot be named in
+// an OpenAI allowed_tools list, which describes function tools only. Filtering
+// it on a name it cannot have would switch off a capability the caller enabled
+// elsewhere in the same request.
+func TestToAnthropicChatRequest_AllowedToolsLeavesServerToolsAlone(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req := restrictionRequest(allowedTools("required", "tool_a"), nil)
+	// Stand in for a converted server tool: it carries a Type, which a
+	// converted function tool never does.
+	converted, err := ToAnthropicChatRequest(ctx, req)
+	require.NoError(t, err)
+
+	// Two server-tool shapes, because they are filtered by different fields:
+	// web search sets Type, while an MCP toolset leaves Type nil and carries
+	// everything in MCPToolset with an empty Name.
+	webSearch := AnthropicToolType("web_search")
+	withServer := append([]AnthropicTool{
+		{Name: "web-search", Type: &webSearch},
+		{MCPToolset: &AnthropicMCPToolsetTool{Type: "mcp_toolset", MCPServerName: "docs"}},
+	}, converted.Tools...)
+	filtered := filterToolsByAllowed(withServer, []schemas.ChatToolChoiceAllowedToolsTool{
+		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "tool_a"}},
+	})
+
+	names := make([]string, 0, len(filtered))
+	for _, tl := range filtered {
+		names = append(names, tl.Name)
+	}
+	assert.Contains(t, names, "web-search", "a Type-carrying server tool must survive")
+	assert.Contains(t, names, "tool_a")
+	assert.NotContains(t, names, "tool_b")
+
+	mcpKept := false
+	for _, tl := range filtered {
+		if tl.MCPToolset != nil {
+			mcpKept = true
+		}
+	}
+	assert.True(t, mcpKept, "an MCP toolset has Type nil and an empty Name; it must not be matched against the allowlist")
+}
+
+// With every nameable tool excluded, the choice must still be "none" even
+// though server tools remain in the list.
+func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testing.T) {
+	webSearch := AnthropicToolType("web_search")
+	tools := []AnthropicTool{
+		{Name: "web-search", Type: &webSearch},
+		{MCPToolset: &AnthropicMCPToolsetTool{Type: "mcp_toolset", MCPServerName: "docs"}},
+		{Name: "tool_a"},
+	}
+	assert.Equal(t, 1, countFunctionTools(tools), "only tool_a is nameable; neither server shape counts")
+
+	filtered := filterToolsByAllowed(tools, []schemas.ChatToolChoiceAllowedToolsTool{
+		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "not_declared"}},
+	})
+	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed, so the choice must be none")
+	assert.Len(t, filtered, 2, "both server tools are still there")
+}
+
+// TestStopSequence_ChatResponseEgress verifies that a chat response's StopString becomes
+// stop_reason "stop_sequence" with the matched string, while a plain stop maps to end_turn.
+func TestStopSequence_ChatResponseEgress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		stopString *string
+		wantReason AnthropicStopReason
+		wantSeq    *string
+	}{
+		{"matched sequence", schemas.Ptr("###"), AnthropicStopReasonStopSequence, schemas.Ptr("###")},
+		{"plain stop", nil, AnthropicStopReasonEndTurn, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := ToAnthropicChatResponse(&schemas.BifrostChatResponse{
+				Model: "claude-sonnet-4-5",
+				Choices: []schemas.BifrostResponseChoice{{
+					FinishReason: schemas.Ptr(string(schemas.BifrostFinishReasonStop)),
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("1 2 3")},
+						},
+						StopString: tt.stopString,
+					},
+				}},
+			})
+			assertStopFields(t, result.StopReason, result.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
+}
+
+// Anthropic takes images in a tool_result; audio a tool returned becomes a placeholder beside them.
+func TestToAnthropicChatRequest_ToolResultKeepsImagesNamesOtherMedia(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("plot it")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}},
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var nested []AnthropicContentBlock
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolResult && block.Content != nil {
+				nested = block.Content.ContentBlocks
+			}
+		}
+	}
+	if len(nested) != 3 || nested[1].Type != AnthropicContentBlockTypeImage || nested[2].Text == nil || !strings.Contains(*nested[2].Text, "[audio/mp3") {
+		t.Fatalf("expected text, image, audio placeholder; got %+v", nested)
+	}
+}
+
+// A cache marker on a tool result that also carried media Anthropic cannot take still reaches the tool_result.
+func TestToAnthropicChatRequest_ToolResultCacheControlSurvivesMediaPlaceholder(t *testing.T) {
+	marker := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("play it")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("clip below"), CacheControl: marker},
+				{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+			}}},
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var toolResult *AnthropicContentBlock
+	for _, msg := range result.Messages {
+		for i, block := range msg.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &msg.Content.ContentBlocks[i]
+			}
+		}
+	}
+	if toolResult == nil || toolResult.CacheControl == nil {
+		t.Fatalf("expected cache_control on the tool_result; got %+v", toolResult)
+	}
+}
+
+// TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl is the Chat
+// Completions twin of the Responses breakpoint translation test.
+func TestToAnthropicChatRequest_PromptCacheBreakpointBecomesCacheControl(t *testing.T) {
+	body := `[
+		{"role":"user","content":[{"type":"text","text":"stable prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+		{"role":"assistant","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":[{"type":"text","text":"18C","prompt_cache_breakpoint":{"mode":"explicit"}}]}
+	]`
+	var input []schemas.ChatMessage
+	require.NoError(t, sonic.Unmarshal([]byte(body), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, result.Messages)
+	first := result.Messages[0].Content.ContentBlocks
+	require.Len(t, first, 1)
+	require.NotNil(t, first[0].CacheControl, "user breakpoint must become cache_control")
+	assert.Equal(t, schemas.CacheControlTypeEphemeral, first[0].CacheControl.Type)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl, "tool message breakpoint must become tool_result.cache_control")
+	require.NotNil(t, toolResult.Content)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
+
+	assert.Nil(t, input[0].Content.ContentBlocks[0].CacheControl, "the caller's input was mutated")
+}
+
+// openAICompatibleMessageLevelCacheControl is a turn as the AI SDK openai-compatible
+// provider sends it: cache_control on the message objects, string content, and
+// content "" on the tool-call-only assistant turn.
+const openAICompatibleMessageLevelCacheControl = `[
+  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+  {"role":"user","content":"Create notes.txt"},
+  {"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}],"cache_control":{"type":"ephemeral"}},
+  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
+]`
+
+func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(openAICompatibleMessageLevelCacheControl), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, result.System)
+	require.NotEmpty(t, result.System.ContentBlocks)
+	assert.NotNil(t, result.System.ContentBlocks[len(result.System.ContentBlocks)-1].CacheControl,
+		"system breakpoint must reach Anthropic")
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, 3, strings.Count(string(body), `"cache_control"`),
+		"system, tool_use and tool result breakpoints must all reach Anthropic: %s", body)
+
+	var toolUse *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUse = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolUse)
+	assert.NotNil(t, toolUse.CacheControl, "the assistant's content \"\" must not swallow its marker")
+}
+
+// A tool result carries one breakpoint on Anthropic, hoisted onto the tool_result
+// block, which ends where the last nested block ends. When nested blocks carry more
+// than one marker, the last one is the one that describes that position, including a
+// message-level marker that decoding placed on the last block.
+func TestToAnthropicChatRequest_ToolResultHoistsLastCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"user","content":"Create notes.txt"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}
+	]`), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl)
+	require.NotNil(t, toolResult.CacheControl.TTL, "the last marker, with its 1h ttl, must be the one hoisted")
+	assert.Equal(t, "1h", *toolResult.CacheControl.TTL)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
+}
+
+// invalidToolArgumentCases are function.arguments strings a client can replay
+// in an OpenAI-shaped history. OpenAI documents that the model "does not always
+// generate valid JSON", and a max_tokens cutoff leaves arguments truncated, so
+// these show up in real traffic. Anthropic needs tool_use.input to be an object.
+var invalidToolArgumentCases = map[string]string{
+	"concatenated objects": `{"query": "morning brief"}{"pattern": "brief|morning"}`,
+	"truncated at cutoff":  `{"query": "mor`,
+	"plain text":           `not json`,
+}
+
+// toolUseInputsFromBody returns the raw input of every tool_use block in an
+// Anthropic request body, in order.
+func toolUseInputsFromBody(t *testing.T, body []byte) []string {
+	t.Helper()
+	var parsed struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	var inputs []string
+	for _, msg := range parsed.Messages {
+		var blocks []struct {
+			Type  string          `json:"type"`
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(msg.Content, &blocks) != nil {
+			continue // string content
+		}
+		for _, block := range blocks {
+			if block.Type == string(AnthropicContentBlockTypeToolUse) {
+				inputs = append(inputs, string(block.Input))
+			}
+		}
+	}
+	return inputs
+}
+
+// Invalid function.arguments in a replayed assistant turn used to reach the
+// request marshal as raw bytes and fail it with a 500 ("failed to marshal request
+// body to JSON") before any provider call. They replay as {} instead: Anthropic
+// does not check history tool_use inputs against the tool schema, so the turn
+// succeeds and the model re-calls the tool after the error tool_result.
+func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t *testing.T) {
+	cases := map[string]struct{ arguments, wantInput string }{
+		"empty":            {``, `{}`},
+		"valid keeps keys": {`{"z": 1, "a": {"b": true}}`, `{"z":1,"a":{"b":true}}`},
+	}
+	for name, arguments := range invalidToolArgumentCases {
+		cases[name] = struct{ arguments, wantInput string }{arguments, `{}`}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock} {
+		for name, tc := range cases {
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				req := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "claude-sonnet-4-6",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("find my notes")}},
+						{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+								ID:   schemas.Ptr("toolu_test_1"),
+								Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("memory_search"),
+									Arguments: tc.arguments,
+								},
+							}},
+						}},
+						{
+							Role:            schemas.ChatMessageRoleTool,
+							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_test_1")},
+							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Error: arguments were not valid JSON, tool not called.")},
+						},
+					},
+					Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: req.Model})
+				require.Nil(t, bifrostErr, "build failed: %+v", bifrostErr)
+				assert.Equal(t, []string{tc.wantInput}, toolUseInputsFromBody(t, body))
+			})
+		}
 	}
 }

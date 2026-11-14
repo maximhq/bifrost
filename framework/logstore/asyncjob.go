@@ -148,21 +148,32 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 	}
 
 	var contextValues map[any]any
+	var g schemas.Grant
 	if bifrostCtx != nil {
 		contextValues = bifrostCtx.GetUserValues()
+		g = bifrostCtx.Grant()
 	}
-	go e.executeJob(job, operation, contextValues)
+	go e.executeJob(job, operation, contextValues, g)
 
 	return job, nil
 }
 
 // executeJob runs the operation in the background and updates the job record.
-func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, contextValues map[any]any) {
+func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, contextValues map[any]any, g schemas.Grant) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Restore original request context values (virtual key, tracing headers, etc.)
 	for k, v := range contextValues {
 		ctx.SetValue(k, v)
+	}
+
+	// The job is the submit call's request, run later: it carries that request's grant, not a
+	// copy, the same way a realtime turn carries its session's grant (see
+	// newRealtimeTurnContext). GetUserValues above does not include it — Grant is held on its own
+	// field, not the user-values map — so without this, governance sees a context nobody settled
+	// an identity on and refuses it outright.
+	if g != nil {
+		ctx.SetGrant(g)
 	}
 
 	// Clear trace context inherited from the original HTTP request.
@@ -237,7 +248,7 @@ func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, c
 		return
 	}
 
-	respJSON, err := sonic.Marshal(resp)
+	respJSON, err := marshalAsyncResponse(resp)
 	if err != nil {
 		e.logger.Warn("failed to marshal result: %v", err)
 		markFailed(fmt.Sprintf("failed to serialize result: %v", err))
@@ -416,4 +427,17 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 		return nil
 	}
 	return &vkValue
+}
+
+// marshalAsyncResponse preserves completion counts before the job leaves memory.
+// Encoding stays sonic.Marshal as before the fix; only Chat/Text with an explicit
+// zero are wrapped.
+func marshalAsyncResponse(resp any) ([]byte, error) {
+	switch result := resp.(type) {
+	case *schemas.BifrostChatResponse:
+		resp = result.WithPreservedUsage()
+	case *schemas.BifrostTextCompletionResponse:
+		resp = result.WithPreservedUsage()
+	}
+	return sonic.Marshal(resp)
 }

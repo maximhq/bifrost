@@ -19,6 +19,9 @@ func TestVertex(t *testing.T) {
 		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}
 
+	// Live sessions need a project and OAuth credentials; an API key alone cannot authenticate them.
+	liveConfigured := strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) != "" && strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) != ""
+
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
@@ -50,19 +53,22 @@ func TestVertex(t *testing.T) {
 	}
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:             schemas.Vertex,
-		ChatModel:            "gemini-2.5-pro",
-		PromptCachingModel:   "claude-sonnet-4-5",
-		VisionModel:          "claude-sonnet-4-5",
-		TextModel:            "", // Vertex doesn't support text completion in newer models
-		EmbeddingModel:       "text-multilingual-embedding-002",
-		RerankModel:          rerankModel,
-		ReasoningModel:       "claude-4.5-haiku",
-		ImageGenerationModel: "gemini-2.5-flash-image",
-		ImageEditModel:       "imagen-3.0-capability-001",
-		VideoGenerationModel: "veo-3.1-generate-preview",
-		FileStorageConfig:    fileStorageConfig,
-		BatchOutputFolder:    batchOutputFolder,
+		Provider:                 schemas.Vertex,
+		ChatModel:                "gemini-2.5-pro",
+		PromptCachingModel:       "claude-sonnet-4-5",
+		VisionModel:              "claude-sonnet-4-5",
+		TextModel:                "", // Vertex doesn't support text completion in newer models
+		EmbeddingModel:           "text-multilingual-embedding-002",
+		MultimodalEmbeddingModel: "gemini-embedding-2-preview",
+		RerankModel:              rerankModel,
+		ReasoningModel:           "claude-4.5-haiku",
+		WebSearchChatModel:       "claude-sonnet-4-5", // Anthropic web_search is a Claude-on-Vertex tool; Gemini drops it
+		ImageGenerationModel:     "gemini-2.5-flash-image",
+		ImageEditModel:           "gemini-2.5-flash-image",
+		VideoGenerationModel:     "veo-3.1-generate-preview",
+		RealtimeModel:            "gemini-3.8-live",
+		FileStorageConfig:        fileStorageConfig,
+		BatchOutputFolder:        batchOutputFolder,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:               false, // Not supported
 			SimpleChat:                   true,
@@ -89,6 +95,7 @@ func TestVertex(t *testing.T) {
 			CompleteEnd2End:              true,
 			FileBase64:                   true,
 			Embedding:                    true,
+			MultimodalEmbedding:          true,
 			Rerank:                       rerankModel != "",
 			Reasoning:                    true,
 			PromptCaching:                true,
@@ -105,6 +112,7 @@ func TestVertex(t *testing.T) {
 			FileContent:                  true,
 			FileBatchInput:               true,
 			BatchCreate:                  true,
+			Realtime:                     liveConfigured, // gemini-3.8-live through the translated Live protocol
 			BatchList:                    true,
 			BatchRetrieve:                true,
 			BatchCancel:                  true,

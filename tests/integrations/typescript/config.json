@@ -1,5 +1,6 @@
 {
     "$schema": "https://www.getbifrost.ai/schema",
+    "setup_token": "bifrost-e2e-setup-token",
     "providers": {
         "openai": {
             "keys": [
@@ -9,6 +10,20 @@
                     "weight": 1,
                     "models": ["*"],
                     "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "typesafe": {
+            "keys": [
+                {
+                    "name": "Typesafe API Key",
+                    "value": "env.TYPESAFE_API_KEY",
+                    "weight": 1,
+                    "models": ["*"],
+                    "use_for_batch_api": false
                 }
             ],
             "network_config": {
@@ -205,6 +220,7 @@
                 "is_active": true,
                 "provider_configs": [
                     { "provider": "openai",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "typesafe",   "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
                     { "provider": "anthropic",  "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
                     { "provider": "gemini",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
                     { "provider": "vertex",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },

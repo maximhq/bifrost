@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -16,12 +18,15 @@ import {
 } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { CreateBudgetRequest, ProviderGovernance } from "@/lib/types/governance";
+import { budgetSignature } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
+import i18n, { getLocale } from "@/lib/i18n";
 
 interface GovernanceFormFragmentProps {
 	provider: ModelProvider;
@@ -29,8 +34,12 @@ interface GovernanceFormFragmentProps {
 
 const budgetLineSchema = z.object({
 	id: z.string().optional(),
-	max_limit: z.number({ error: "Budget limit must be a number" }).nonnegative("Budget limit cannot be negative").optional(),
-	reset_duration: z.string().min(1, "Reset duration is required"),
+	max_limit: z
+		.number({ error: () => i18n.t("providers.governanceForm.budgetLimitNumber", { ns: "models" }) })
+		.nonnegative({ error: () => i18n.t("providers.governanceForm.budgetLimitNonnegative", { ns: "models" }) })
+		.optional(),
+	reset_duration: z.string().min(1, { error: () => i18n.t("providers.governanceForm.resetDurationRequired", { ns: "models" }) }),
+	reset_config: z.object({ quarter_start_month: z.number().optional() }).optional(),
 });
 
 const formSchema = z.object({
@@ -60,6 +69,7 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 			id: b.id,
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
 		})),
 		calendarAligned: provGov.calendar_aligned ?? false,
 		tokenMaxLimit: provGov.rate_limit?.token_max_limit ?? undefined,
@@ -70,6 +80,7 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 }
 
 export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps) {
+	const { t } = useTranslation("models");
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	// Defers the save until the operator says whether to clear accumulated spend.
 	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
@@ -93,7 +104,9 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const watchedBudgets = form.watch("budgets");
 	const watchedCalendarAligned = form.watch("calendarAligned");
 	const configuredBudgets = watchedBudgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-	const showCalendarAlignment = configuredBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
+	const showCalendarAlignment = configuredBudgets.some(
+		(b) => supportsCalendarAlignment(b.reset_duration) || isMultiUnitDuration(b.reset_duration),
+	);
 
 	useEffect(() => {
 		if (providerGovernance && !form.formState.isDirty) {
@@ -118,15 +131,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	// A budget config change on existing provider governance is when clearing
 	// accumulated spend becomes a meaningful choice.
 	const budgetsChanged = (data: FormData) => {
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
-			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
-				.sort()
-				.join("|");
 		const existing = providerGovernance?.budgets ?? [];
 		if (existing.length === 0) return false;
 		const next = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-		return signature(next) !== signature(existing);
+		return budgetSignature(next) !== budgetSignature(existing);
 	};
 
 	const onSubmit = async (data: FormData) => {
@@ -140,7 +148,9 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const saveGovernance = async (data: FormData, resetBudgetUsage: boolean) => {
 		try {
 			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-			const hasAlignableBudget = validBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
+			const hasAlignableBudget = validBudgets.some(
+				(b) => supportsCalendarAlignment(b.reset_duration) || isMultiUnitDuration(b.reset_duration),
+			);
 			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
@@ -151,6 +161,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					id: b.id,
 					max_limit: b.max_limit!,
 					reset_duration: b.reset_duration,
+					reset_config: b.reset_config,
 				}));
 			} else if (hadBudgets) {
 				budgetsPayload = [];
@@ -186,10 +197,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				},
 			}).unwrap();
 
-			toast.success("Governance configuration saved successfully");
+			toast.success(t("providers.governanceSaved"));
 			form.reset(data);
 		} catch (error) {
-			toast.error("Failed to update provider governance", {
+			toast.error(t("providers.failedUpdateGovernance"), {
 				description: getErrorMessage(error),
 			});
 		}
@@ -198,10 +209,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const handleDelete = async () => {
 		try {
 			await deleteProviderGovernance(provider.name).unwrap();
-			toast.success("Governance removed successfully");
+			toast.success(t("providers.governanceRemoved"));
 			form.reset(DEFAULT_GOVERNANCE_FORM_VALUES);
 		} catch (error) {
-			toast.error("Failed to remove governance", {
+			toast.error(t("providers.failedRemoveGovernance"), {
 				description: getErrorMessage(error),
 			});
 		}
@@ -218,15 +229,14 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				/>
 
 				{/* Calendar Alignment — only shown when a budget uses a calendar-alignable period (day/week/month/year) */}
+				<CalendarAlignmentNotice enabled={watchedCalendarAligned} durations={calendarWindowDurations([{ budgets: configuredBudgets }])} />
 				{showCalendarAlignment && (
 					<div className="flex items-center justify-between gap-4">
 						<div className="space-y-1">
 							<Label className="text-sm" htmlFor="provider-calendar-aligned">
-								Align to calendar cycle
+								{t("providers.alignCalendarCycle")}
 							</Label>
-							<p className="text-muted-foreground text-xs">
-								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
-							</p>
+							<p className="text-muted-foreground text-xs">{t("providers.alignCalendarCycleHelp")}</p>
 						</div>
 						<Switch
 							id="provider-calendar-aligned"
@@ -241,11 +251,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 				{/* Rate Limiting Configuration */}
 				<div className="space-y-4">
-					<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+					<Label className="text-sm font-medium">{t("providers.rateLimitingConfiguration")}</Label>
 					<NumberAndSelect
 						id="providerTokenMaxLimit"
 						labelClassName="font-normal"
-						label="Maximum Tokens"
+						label={t("modelLimits.maximumTokens")}
 						value={form.watch("tokenMaxLimit")}
 						selectValue={form.watch("tokenResetDuration") || "1h"}
 						onChangeNumber={(value) => form.setValue("tokenMaxLimit", value, { shouldDirty: true })}
@@ -254,7 +264,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					<NumberAndSelect
 						id="providerRequestMaxLimit"
 						labelClassName="font-normal"
-						label="Maximum Requests"
+						label={t("modelLimits.maximumRequests")}
 						value={form.watch("requestMaxLimit")}
 						selectValue={form.watch("requestResetDuration") || "1h"}
 						onChangeNumber={(value) => form.setValue("requestMaxLimit", value, { shouldDirty: true })}
@@ -267,11 +277,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					<>
 						<DottedSeparator />
 						<div className="space-y-4">
-							<Label className="text-sm font-medium">Current Usage</Label>
+							<Label className="text-sm font-medium">{t("providers.governanceForm.currentUsage")}</Label>
 							<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 								{providerGovernance?.budgets?.map((b) => (
 									<div key={b.id} className="space-y-1">
-										<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
+										<p className="text-muted-foreground text-xs">{t("providers.budgetParenDuration", { duration: b.reset_duration })}</p>
 										<p className="text-sm font-medium">
 											${b.current_usage.toFixed(2)} / ${b.max_limit.toFixed(2)}
 										</p>
@@ -279,19 +289,19 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 								))}
 								{providerGovernance?.rate_limit?.token_max_limit && (
 									<div className="space-y-1">
-										<p className="text-muted-foreground text-xs">Token Usage</p>
+										<p className="text-muted-foreground text-xs">{t("providers.tokenUsage")}</p>
 										<p className="text-sm font-medium">
-											{providerGovernance.rate_limit.token_current_usage.toLocaleString()} /{" "}
-											{providerGovernance.rate_limit.token_max_limit.toLocaleString()}
+											{providerGovernance.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+											{providerGovernance.rate_limit.token_max_limit.toLocaleString(getLocale())}
 										</p>
 									</div>
 								)}
 								{providerGovernance?.rate_limit?.request_max_limit && (
 									<div className="space-y-1">
-										<p className="text-muted-foreground text-xs">Request Usage</p>
+										<p className="text-muted-foreground text-xs">{t("providers.requestUsage")}</p>
 										<p className="text-sm font-medium">
-											{providerGovernance.rate_limit.request_current_usage.toLocaleString()} /{" "}
-											{providerGovernance.rate_limit.request_max_limit.toLocaleString()}
+											{providerGovernance.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
+											{providerGovernance.rate_limit.request_max_limit.toLocaleString(getLocale())}
 										</p>
 									</div>
 								)}
@@ -308,10 +318,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 						onClick={handleDelete}
 						disabled={!hasUpdateProviderAccess || isDeleting || !hasExistingGovernance}
 					>
-						Remove configuration
+						{t("providers.removeConfiguration")}
 					</Button>
 					<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdating} isLoading={isUpdating}>
-						Save Governance Configuration
+						{t("providers.saveGovernanceConfig")}
 					</Button>
 				</div>
 			</form>

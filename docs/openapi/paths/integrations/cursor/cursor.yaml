@@ -39,7 +39,6 @@ chat-completions:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -62,7 +61,6 @@ models:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -104,7 +102,6 @@ anthropic-messages:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -151,7 +148,6 @@ anthropic-messages-wildcard:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -177,7 +173,6 @@ anthropic-complete:
               $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextResponse'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -204,7 +199,6 @@ anthropic-count-tokens:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -241,7 +235,6 @@ genai-model-action:
               $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -262,7 +255,6 @@ genai-models:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -293,7 +285,6 @@ genai-video-operation:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -322,7 +313,6 @@ genai-rank:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -354,7 +344,6 @@ bedrock-converse:
               $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -386,7 +375,6 @@ bedrock-converse-stream:
               format: binary
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -419,7 +407,6 @@ bedrock-invoke:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -452,7 +439,6 @@ bedrock-invoke-stream:
               format: binary
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -479,7 +465,6 @@ bedrock-rerank:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -520,7 +505,6 @@ bedrock-count-tokens:
                   type: integer
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -548,7 +532,6 @@ cohere-chat:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -575,7 +558,6 @@ cohere-embed:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -602,7 +584,6 @@ cohere-rerank:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -629,6 +610,5 @@ cohere-tokenize:
               additionalProperties: true
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

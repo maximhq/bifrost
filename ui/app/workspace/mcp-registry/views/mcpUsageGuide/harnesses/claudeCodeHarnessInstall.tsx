@@ -1,28 +1,34 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { buildClaudeCodeCommand } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { ClaudeScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for Claude Code: the generated config or command for the selected MCP servers. */
 export function ClaudeCodeHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const [scope, setScope] = useState<ClaudeScope>("local");
 
-	const command = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildClaudeCodeCommand({
-			clientConfig,
-			scope,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, scope, selectedServers, serverScope, virtualKey]);
+	const command = useMemo(
+		() =>
+			buildClaudeCodeCommand({
+				clientConfig,
+				headers,
+				scope,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, scope, selectedServers, serverScope],
+	);
 
 	return (
 		<HarnessCommandSection
@@ -34,15 +40,15 @@ export function ClaudeCodeHarnessInstall({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="local">Local</SelectItem>
-						<SelectItem value="project">Project</SelectItem>
-						<SelectItem value="user">User</SelectItem>
+						<SelectItem value="local">{t("usageGuide.scopeLocal")}</SelectItem>
+						<SelectItem value="project">{t("usageGuide.scopeProject")}</SelectItem>
+						<SelectItem value="user">{t("usageGuide.scopeUser")}</SelectItem>
 					</SelectContent>
 				</Select>
 			}
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the command."}
+			emptyMessage={emptyMessage}
 			harnessName="Claude Code"
-			logoSrc="/images/harness/claudecode.svg"
+			logoSrc={withBasePath("/images/harness/claudecode.svg")}
 			registrationLabel={getRegistrationLabel(serverScope, selectedServers)}
 		/>
 	);

@@ -1,6 +1,15 @@
 clear-by-cache-id:
   delete:
     operationId: clearCacheByCacheId
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Clear cache entry by cache ID
     description: |
       Deletes a single cache entry by its storage ID. Read the cache ID from
@@ -17,6 +26,7 @@ clear-by-cache-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cache cleared successfully
@@ -32,8 +42,18 @@ clear-by-cache-id:
 clear-by-cache-key:
   delete:
     operationId: clearCacheByCacheKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Clear cache by cache key
-    description: Clears a cache entry by its direct cache key.
+    description: |
+      Clears a cache entry by its direct cache key.
     tags:
       - Cache
     parameters:
@@ -45,6 +65,7 @@ clear-by-cache-key:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cache cleared successfully

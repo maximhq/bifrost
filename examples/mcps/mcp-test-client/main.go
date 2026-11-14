@@ -31,6 +31,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -183,7 +184,23 @@ func connect(cfg *config) (*client.Client, error) {
 		}
 	}
 	fmt.Printf("connected to %s %s\n", res.ServerInfo.Name, res.ServerInfo.Version)
+	// Pointed at Bifrost's /mcp endpoint this is the aggregate of every upstream the
+	// virtual key may see; pointed at a server directly it is that server's own text.
+	if res.Instructions != "" {
+		fmt.Printf("server instructions:\n%s\n", stripControlChars(res.Instructions))
+	}
 	return c, nil
+}
+
+// stripControlChars drops terminal control sequences an upstream server could smuggle
+// into its instructions; newlines and tabs stay so the text still reads.
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 // withAuthRetry runs the OAuth authorization flow if err signals it, then calls

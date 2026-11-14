@@ -1,34 +1,36 @@
 import type { CoreConfig } from "@/lib/types/config";
 import type { VirtualKey } from "@/lib/types/governance";
 import type { MCPClient } from "@/lib/types/mcp";
-import type { HarnessPlatform, ServerScope } from "./types";
+import i18n from "@/lib/i18n";
+import { getExampleBaseUrl } from "@/lib/utils/port";
+import type { AuthMethod, HarnessPlatform, ServerScope } from "./types";
 
-/** Default port Bifrost serves on; used when guessing the gateway URL in local dev. */
-const DEFAULT_BIFROST_PORT = "8080";
+/** The client-config settings that can pin Bifrost's public base URL for a given surface. */
+export type ExternalClientUrlKey = "mcp_external_client_url" | "a2a_external_client_url";
 
 /**
  * Resolve the externally reachable Bifrost base URL used in generated commands/configs.
  *
  * Order of preference:
- *  1. The admin-configured `mcp_external_client_url`. When sourced from an env var the
- *     value is still honoured as long as it resolves to a concrete http(s) URL — a
+ *  1. The admin-configured external client URL (`mcp_external_client_url` by default,
+ *     `a2a_external_client_url` for agent-gateway surfaces). It is returned verbatim: the
+ *     admin's value already includes any `server.base_path`. When sourced from an env var
+ *     the value is still honoured as long as it resolves to a concrete http(s) URL — a
  *     redacted/empty value falls through to the window-origin heuristic below.
- *  2. The current window origin. For local dev on a non-default port we assume the
- *     gateway listens on DEFAULT_BIFROST_PORT (the UI is often proxied on another port).
+ *  2. The gateway origin plus `server.base_path` (`getExampleBaseUrl`): the window origin
+ *     for a production build, which Go serves itself, or the Go server port for a Vite dev
+ *     build. The build mode decides, never the port, so a Bifrost listening on any
+ *     localhost port prints its real origin.
  *  3. A placeholder the user must replace by hand.
  */
-export function getExternalBaseUrl(clientConfig?: CoreConfig): string {
-	const configuredURL = clientConfig?.mcp_external_client_url?.value?.trim();
+export function getExternalBaseUrl(clientConfig?: CoreConfig, urlKey: ExternalClientUrlKey = "mcp_external_client_url"): string {
+	const configuredURL = clientConfig?.[urlKey]?.value?.trim();
 	if (configuredURL && /^https?:\/\//i.test(configuredURL)) {
 		return configuredURL.replace(/\/+$/, "");
 	}
-	if (typeof window !== "undefined" && window.location.origin) {
-		const { protocol, hostname, port } = window.location;
-		const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-		if (isLocalHost && port && port !== DEFAULT_BIFROST_PORT) {
-			return `${protocol}//${hostname}:${DEFAULT_BIFROST_PORT}`;
-		}
-		return window.location.origin.replace(/\/+$/, "");
+	const baseURL = getExampleBaseUrl();
+	if (/^https?:\/\//i.test(baseURL)) {
+		return baseURL;
 	}
 	return "<YOUR_BIFROST_URL>";
 }
@@ -67,7 +69,7 @@ export function encodeBase64(value: string): string {
 /** Whether an MCP client is reachable using the given virtual key. */
 export function isClientAllowedForVirtualKey(client: MCPClient, virtualKey: VirtualKey): boolean {
 	if (client.config.disabled) return false;
-	if (client.config.allow_on_all_virtual_keys) return true;
+	if (client.config.allow_by_default) return true;
 	return client.vk_configs?.some((config) => config.virtual_key_id === virtualKey.id) ?? false;
 }
 
@@ -81,7 +83,7 @@ export function maskSecret(value?: string): string {
 /** Human-readable label describing how many servers a command registers. */
 export function getRegistrationLabel(serverScope: ServerScope, selectedServers: MCPClient[]): string {
 	if (serverScope === "selected" && selectedServers.length > 0) {
-		return `${selectedServers.length} ${selectedServers.length === 1 ? "server" : "servers"}`;
+		return i18n.t("usageGuide.serverCount", { ns: "mcp", count: selectedServers.length });
 	}
 	return "bifrost";
 }
@@ -99,4 +101,34 @@ export function getIncludeClients(selectedServers?: MCPClient[]): string | undef
 
 export function getUserHomePrefix(platform: HarnessPlatform): string {
 	return platform === "windows" ? "%USERPROFILE%" : "~";
+}
+
+/** Stand-in for the identity-provider bearer the user pastes into their own config. */
+export const IDP_TOKEN_PLACEHOLDER = "<YOUR_IDP_ACCESS_TOKEN>";
+
+/**
+ * Headers the generated client config must send, derived from the chosen
+ * authentication method. OAuth clients carry no credential at all: the token
+ * arrives from the consent flow, and sending a virtual key alongside it is
+ * rejected by the gateway as conflicting credentials. The server filter is a
+ * credential-free header, but it is only offered on the virtual-key path, where
+ * the allowed server list can be resolved from the key.
+ */
+export function buildMCPHeaders({
+	authMethod,
+	selectedServers,
+	virtualKey,
+}: {
+	authMethod: AuthMethod;
+	selectedServers?: MCPClient[];
+	virtualKey?: VirtualKey;
+}): Record<string, string> {
+	if (authMethod === "oauth") return {};
+	if (authMethod === "idp_token") return { Authorization: `Bearer ${IDP_TOKEN_PLACEHOLDER}` };
+
+	if (!virtualKey) return {};
+	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
+	const includeClients = getIncludeClients(selectedServers);
+	if (includeClients) headers["x-bf-mcp-include-clients"] = includeClients;
+	return headers;
 }

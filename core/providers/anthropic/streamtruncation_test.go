@@ -2,12 +2,15 @@ package anthropic
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Anthropic's Messages stream carries no [DONE] sentinel: message_stop is the
@@ -371,4 +374,365 @@ func TestAnthropicResponsesStreamTruncatedBillsCachedTokens(t *testing.T) {
 	final := chunks[len(chunks)-1]
 	assertAnthropicTruncationError(t, final.BifrostError)
 	assertCacheFoldedBilledUsage(t, final.BifrostError)
+}
+
+// A turn the provider cut short at its output-token cap arrives on the Responses
+// stream as response.incomplete, not response.completed. Anthropic's Messages
+// stream has no [DONE] sentinel, so an egress that drops that event leaves the
+// client holding a half-written tool_use with no stop_reason to explain it —
+// Claude Code then fails to parse the partial input_json and retries in a loop.
+func TestAnthropicEgressIncompleteEmitsTerminalEvents(t *testing.T) {
+	cases := []struct {
+		name       string
+		stopReason *string
+		incomplete *schemas.ResponsesResponseIncompleteDetails
+		want       AnthropicStopReason
+	}{
+		{
+			name:       "MaxTokens",
+			stopReason: schemas.Ptr("length"),
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+			want:       AnthropicStopReasonMaxTokens,
+		},
+		{
+			// Stop reason absent: the reason has to come off incomplete_details,
+			// never the end_turn default, which would report a clean finish.
+			name:       "MaxTokensFromIncompleteDetailsOnly",
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+			want:       AnthropicStopReasonMaxTokens,
+		},
+		{
+			name:       "ContentFilterFromIncompleteDetailsOnly",
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+			want:       AnthropicStopReasonRefusal,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeIncomplete,
+				Response: &schemas.BifrostResponsesResponse{
+					Status:            schemas.Ptr(schemas.ResponsesResponseStatusIncomplete),
+					StopReason:        tc.stopReason,
+					IncompleteDetails: tc.incomplete,
+					Usage:             &schemas.ResponsesResponseUsage{InputTokens: 55974, OutputTokens: 4096, TotalTokens: 60070},
+				},
+			})
+
+			if len(events) != 2 {
+				t.Fatalf("got %d events, want message_delta + message_stop", len(events))
+			}
+			if events[0].Type != AnthropicStreamEventTypeMessageDelta {
+				t.Errorf("first event = %s, want message_delta", events[0].Type)
+			}
+			if events[1].Type != AnthropicStreamEventTypeMessageStop {
+				t.Errorf("second event = %s, want message_stop", events[1].Type)
+			}
+			if events[0].Delta == nil || events[0].Delta.StopReason == nil {
+				t.Fatal("message_delta must carry a stop_reason")
+			}
+			if got := *events[0].Delta.StopReason; got != tc.want {
+				t.Errorf("stop_reason = %q, want %q", got, tc.want)
+			}
+			if events[0].Usage == nil || events[0].Usage.OutputTokens != 4096 {
+				t.Error("message_delta must carry the turn's usage")
+			}
+		})
+	}
+}
+
+// response.failed is terminal too. Anthropic spells a failed turn as an error
+// event; dropping it stalls the client with no frame at all.
+func TestAnthropicEgressFailedEmitsErrorEvent(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeFailed,
+		Response: &schemas.BifrostResponsesResponse{
+			Error: &schemas.ResponsesResponseError{Message: "upstream generation failed"},
+		},
+	})
+
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want a single error event", len(events))
+	}
+	if events[0].Type != AnthropicStreamEventTypeError {
+		t.Fatalf("event = %s, want error", events[0].Type)
+	}
+	if events[0].Error == nil || events[0].Error.Message != "upstream generation failed" {
+		t.Error("error event must carry the upstream failure message")
+	}
+}
+
+// An SSE error event rides a committed HTTP 200, so the error carries no status of its
+// own. Left nil it reached metrics as a caller 400, and ClassifyFailure had nothing to
+// act on — an overloaded_error mid-stream was neither retried nor rotated away from.
+func TestStreamErrorStatusMapsAnthropicErrorTypes(t *testing.T) {
+	cases := []struct {
+		errType string
+		want    int
+	}{
+		{"overloaded_error", 529}, // Anthropic's own; already in the transient retry set
+		{"api_error", 500},
+		{"rate_limit_error", 429},
+		{"request_too_large", 413},
+		{"invalid_request_error", 400},
+		{"authentication_error", 401},
+		{"permission_error", 403},
+		{"not_found_error", 404},
+		{"some_future_type", 502}, // unknown: upstream failed and gave nothing to go on
+		{"", 502},
+	}
+	for _, tc := range cases {
+		if got := streamErrorStatus(tc.errType); got != tc.want {
+			t.Errorf("streamErrorStatus(%q) = %d, want %d", tc.errType, got, tc.want)
+		}
+	}
+}
+
+// TestStreamRawResponseDeclaresAnthropicFormat verifies every streamed Chat and Responses chunk that carries an
+// Anthropic event as its raw payload declares the Anthropic format, and that the text delta's payload follows a
+// change to the normalized text it backs.
+func TestStreamRawResponseDeclaresAnthropicFormat(t *testing.T) {
+	newRawCaptureProvider := func(baseURL string) *AnthropicProvider {
+		return NewAnthropicProvider(&schemas.ProviderConfig{
+			NetworkConfig:       schemas.NetworkConfig{BaseURL: baseURL},
+			SendBackRawResponse: true,
+		}, truncationTestLogger{})
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	body := anthropicMessageStart + anthropicTextDelta + anthropicMessageStop
+
+	// assertDeclared fails on any raw payload without the Anthropic format and on a stream that carried none.
+	assertDeclared := func(t *testing.T, extras []*schemas.BifrostResponseExtraFields) {
+		t.Helper()
+		withRaw := 0
+		for _, extra := range extras {
+			if extra.RawResponse == nil {
+				continue
+			}
+			withRaw++
+			if extra.RawResponseFormat != schemas.RawResponseFormatAnthropicMessagesStreamEvent {
+				t.Errorf("chunk %d carries raw %v with format %q", extra.ChunkIndex, extra.RawResponse, extra.RawResponseFormat)
+			}
+		}
+		if withRaw == 0 {
+			t.Fatal("no chunk carried a raw response; the assertion would be vacuous")
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		server := anthropicSSEServer(t, body, false)
+		defer server.Close()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := newRawCaptureProvider(server.URL).ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		var extras []*schemas.BifrostResponseExtraFields
+		var text *schemas.BifrostChatResponse
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			extras = append(extras, &chunk.BifrostChatResponse.ExtraFields)
+			if chunksContainContent([]*schemas.BifrostStreamChunk{chunk}, anthropicPartialText) {
+				text = chunk.BifrostChatResponse
+			}
+		}
+		assertDeclared(t, extras)
+		if text == nil {
+			t.Fatal("no chunk carried the text delta")
+		}
+
+		after := *text
+		choice := after.Choices[0]
+		streamChoice := *choice.ChatStreamResponseChoice
+		delta := *streamChoice.Delta
+		delta.Content = schemas.Ptr("[REDACTED]")
+		streamChoice.Delta = &delta
+		choice.ChatStreamResponseChoice = &streamChoice
+		after.Choices = []schemas.BifrostResponseChoice{choice}
+		synced, err := schemas.SyncRawResponseText(text.ExtraFields.RawResponse, text.ExtraFields.RawResponseFormat, text, &after)
+		if err != nil {
+			t.Fatalf("raw payload did not follow the text change: %v", err)
+		}
+		if got := gjson.Get(synced.(string), "delta.text").String(); got != "[REDACTED]" {
+			t.Fatalf("raw text = %q, want the redacted text", got)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		server := anthropicSSEServer(t, body, false)
+		defer server.Close()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-repro",
+			Input: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		}
+		stream, bifrostErr := newRawCaptureProvider(server.URL).ResponsesStream(ctx, truncationPassthroughPostHook, nil, key, request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		var extras []*schemas.BifrostResponseExtraFields
+		var text *schemas.BifrostResponsesStreamResponse
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			event := chunk.BifrostResponsesStreamResponse
+			if event == nil {
+				continue
+			}
+			extras = append(extras, &event.ExtraFields)
+			if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && event.Delta != nil && *event.Delta == anthropicPartialText {
+				text = event
+			}
+		}
+		assertDeclared(t, extras)
+		if text == nil || text.ExtraFields.RawResponse == nil {
+			t.Fatal("the text delta carried no raw payload")
+		}
+
+		after := *text
+		after.Delta = schemas.Ptr("[REDACTED]")
+		synced, err := schemas.SyncRawResponseText(text.ExtraFields.RawResponse, text.ExtraFields.RawResponseFormat, text, &after)
+		if err != nil {
+			t.Fatalf("raw payload did not follow the text change: %v", err)
+		}
+		if got := gjson.Get(synced.(string), "delta.text").String(); got != "[REDACTED]" {
+			t.Fatalf("raw text = %q, want the redacted text", got)
+		}
+	})
+}
+
+// A client that cancels mid-stream must also end the upstream request: the
+// connection to Anthropic is closed at once, so Claude stops generating (and
+// billing) output nobody will read. The upstream here holds the stream open and
+// reports how long it waited for the client to leave.
+func TestAnthropicStreamCancelClosesUpstreamConnection(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		name := "chat"
+		if responses {
+			name = "responses"
+		}
+		t.Run(name, func(t *testing.T) {
+			released := make(chan time.Duration, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// net/http notices a client hang-up only once the request body is consumed.
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(anthropicMessageStart + anthropicTextDelta))
+				w.(http.Flusher).Flush()
+				held := time.Now()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(10 * time.Second):
+				}
+				released <- time.Since(held)
+			}))
+			defer server.Close()
+
+			provider := newTruncationTestProvider(server.URL)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			if responses {
+				stream, bifrostErr = provider.ResponsesStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest().ToResponsesRequest())
+			} else {
+				stream, bifrostErr = provider.ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest())
+			}
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			for chunk := range stream {
+				if chunk != nil && chunk.BifrostError == nil {
+					cancel()
+				}
+			}
+			select {
+			case held := <-released:
+				if held > 2*time.Second {
+					t.Fatalf("upstream connection stayed open %v after the cancel", held)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("upstream handler never returned")
+			}
+		})
+	}
+}
+
+// The message_start output count is provisional: the handlers mark it so on the
+// context until a message_delta reports usage, which a cancelled stream's
+// estimate reads to decide whether to re-count the received output.
+func TestAnthropicStreamMarksProvisionalUsage(t *testing.T) {
+	const messageDelta = "event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":3}}` + "\n\n"
+	for _, tc := range []struct {
+		name        string
+		body        string
+		provisional bool
+	}{
+		{name: "message_start only", body: anthropicMessageStart + anthropicTextDelta, provisional: true},
+		{name: "after message_delta", body: anthropicMessageStart + anthropicTextDelta + messageDelta, provisional: false},
+	} {
+		for _, responses := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/responses=%v", tc.name, responses), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(tc.body))
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+				}))
+				defer server.Close()
+				provider := newTruncationTestProvider(server.URL)
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				defer cancel()
+				key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+				var stream chan *schemas.BifrostStreamChunk
+				var bifrostErr *schemas.BifrostError
+				if responses {
+					stream, bifrostErr = provider.ResponsesStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest().ToResponsesRequest())
+				} else {
+					stream, bifrostErr = provider.ChatCompletionStream(ctx, truncationPassthroughPostHook, nil, key, truncationChatRequest())
+				}
+				if bifrostErr != nil {
+					t.Fatalf("stream setup failed: %v", bifrostErr)
+				}
+				seen := false
+				for chunk := range stream {
+					if chunk == nil || chunk.BifrostError != nil {
+						continue
+					}
+					if !seen && chunksContainContent([]*schemas.BifrostStreamChunk{chunk}, anthropicPartialText) || chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Delta != nil && *chunk.BifrostResponsesStreamResponse.Delta == anthropicPartialText {
+						seen = true
+					}
+					if seen {
+						// The handler may still be reading the rest of the flushed body.
+						for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+							if got, ok := ctx.Value(schemas.BifrostContextKeyStreamUsageProvisional).(bool); ok && got == tc.provisional {
+								break
+							}
+						}
+						cancel()
+					}
+				}
+				if !seen {
+					t.Fatal("the text delta never arrived")
+				}
+				got, ok := ctx.Value(schemas.BifrostContextKeyStreamUsageProvisional).(bool)
+				if !ok || got != tc.provisional {
+					t.Fatalf("provisional usage mark = %v (set=%v), want %v", got, ok, tc.provisional)
+				}
+			})
+		}
+	}
 }

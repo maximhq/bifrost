@@ -11,9 +11,13 @@ interface Props {
 	label: string;
 	value: React.ReactNode | null;
 	tooltip?: string;
+	/** Full text for the value's tooltip when it truncates, for values passed as elements rather than strings. */
+	valueTooltip?: string;
 	hideExpandable?: boolean;
 	orientation?: "horizontal" | "vertical";
 	align?: "left" | "right";
+	/** Show the label exactly as given: for names that are case-sensitive data, such as query parameters. */
+	rawLabel?: boolean;
 }
 
 const isPrimitive = (value: React.ReactNode): boolean =>
@@ -35,13 +39,19 @@ export default function LogEntryDetailsView(props: Props) {
 			<div className={cn("min-w-0 max-w-full", props.containerClassName)}>
 				{props.label !== "" && (
 					<div className="text-muted-foreground flex shrink-0 flex-row items-center gap-1.5 pb-2 text-xs font-medium">
-						{props.label.toUpperCase().replace(/_/g, " ")}
+						{props.rawLabel ? (
+							<span className="block min-w-0 truncate font-mono normal-case" title={props.label}>
+								{props.label}
+							</span>
+						) : (
+							props.label.toUpperCase().replace(/_/g, " ")
+						)}
 						{props.tooltip && (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Info className="text-muted-foreground/60 hover:text-muted-foreground h-3 w-3 cursor-help" />
 								</TooltipTrigger>
-								<TooltipContent sideOffset={6} className="max-w-xs">
+								<TooltipContent sideOffset={6} className="max-w-xs whitespace-pre-line">
 									{props.tooltip}
 								</TooltipContent>
 							</Tooltip>
@@ -59,7 +69,7 @@ export default function LogEntryDetailsView(props: Props) {
 					<TruncatedLabel
 						className="text-bifrost-gray-300 max-w-full min-w-0 flex-1 text-sm"
 						tooltipSide="top"
-						tooltip={isPrimitive(props.value) ? String(props.value) : undefined}
+						tooltip={props.valueTooltip ?? (isPrimitive(props.value) ? String(props.value) : undefined)}
 					>
 						{typeof props.value === "boolean" ? String(props.value) : props.value}
 					</TruncatedLabel>

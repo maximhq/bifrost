@@ -33,7 +33,12 @@ const OUT = args.out || "tmp/harness-cache-parity.md";
 const HTML = args.html || "tmp/newman-report.html";
 
 const dir = dirname(GLOB);
-const pattern = new RegExp("^" + basename(GLOB).replace(/[.]/g, "\\.").replace(/\*/g, ".*") + "$");
+// Escape every regex metacharacter except *, then translate * to .*. Escaping only
+// "." left \ ^ $ | ? + ( ) [ ] { } live, so a glob containing any of them built a
+// regex that matched the wrong files, or threw on an unbalanced bracket.
+const globToRegExp = (glob) =>
+  new RegExp("^" + glob.replace(/[\\^$.|?+()[\]{}]/g, "\\$&").replace(/\*/g, ".*") + "$");
+const pattern = globToRegExp(basename(GLOB));
 const fragmentFiles = existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)) : [];
 
 const rows = [];

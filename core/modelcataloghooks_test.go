@@ -12,13 +12,15 @@ import (
 // reading a real one proves the handle reached it rather than that some other
 // lookup happened to succeed.
 type probeCatalog struct {
-	info *schemas.Model
-	cost float64
+	info      *schemas.Model
+	cost      float64
+	breakdown *schemas.BifrostCost
 
-	gotProvider schemas.ModelProvider
-	gotModel    string
-	infoCalls   int
-	costCalls   int
+	gotProvider    schemas.ModelProvider
+	gotModel       string
+	infoCalls      int
+	costCalls      int
+	breakdownCalls int
 }
 
 func (p *probeCatalog) GetModelInfo(provider schemas.ModelProvider, model string) *schemas.Model {
@@ -33,13 +35,20 @@ func (p *probeCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *s
 	return p.cost
 }
 
-// catalogProbePlugin reads ctx.GetModelInfo / ctx.CalculateCost from each hook
-// and records what it saw, then short-circuits so no provider is called.
+func (p *probeCatalog) CalculateRequestCostBreakdown(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *schemas.BifrostCost {
+	p.breakdownCalls++
+	return p.breakdown
+}
+
+// catalogProbePlugin reads ctx.GetModelInfo / ctx.CalculateCost /
+// ctx.CalculateCostBreakdown from each hook and records what it saw, then
+// short-circuits so no provider is called.
 type catalogProbePlugin struct {
 	preRequestInfo *schemas.Model
 	preLLMInfo     *schemas.Model
 	postInfo       *schemas.Model
 	postCost       float64
+	postBreakdown  *schemas.BifrostCost
 
 	preRequestRan bool
 	preLLMRan     bool
@@ -80,6 +89,7 @@ func (d *catalogProbePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *sche
 	d.postRan = true
 	d.postInfo = ctx.GetModelInfo(schemas.OpenAI, "gpt-4o")
 	d.postCost = ctx.CalculateCost(resp)
+	d.postBreakdown = ctx.CalculateCostBreakdown(resp)
 	return resp, bifrostErr, nil
 }
 
@@ -126,7 +136,13 @@ func chatProbeRequest() *schemas.BifrostChatRequest {
 // in a third-party plugin.
 func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	want := &schemas.Model{ID: "gpt-4o", ContextLength: new(128000)}
-	catalog := &probeCatalog{info: want, cost: 0.25}
+	wantBreakdown := &schemas.BifrostCost{
+		InputCost:        0.15,
+		InputCostDetails: &schemas.InputCostDetails{TextCost: 0.1, CachedReadCost: 0.02, CachedWriteCost: 0.03},
+		OutputCost:       0.1,
+		TotalCost:        0.25,
+	}
+	catalog := &probeCatalog{info: want, cost: 0.25, breakdown: wantBreakdown}
 	plugin := &catalogProbePlugin{}
 	client := newCatalogProbeClient(t, catalog, plugin)
 
@@ -154,6 +170,12 @@ func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	}
 	if plugin.postCost != 0.25 {
 		t.Errorf("PostLLMHook CalculateCost = %v, want 0.25", plugin.postCost)
+	}
+	if plugin.postBreakdown != wantBreakdown {
+		t.Errorf("PostLLMHook CalculateCostBreakdown = %v, want the catalog's breakdown", plugin.postBreakdown)
+	}
+	if catalog.breakdownCalls != 1 {
+		t.Errorf("CalculateRequestCostBreakdown called %d times, want 1", catalog.breakdownCalls)
 	}
 
 	// The arguments must arrive unchanged; a mangled provider would silently
@@ -192,5 +214,8 @@ func TestModelCatalogAbsentLeavesHooksInert(t *testing.T) {
 	}
 	if plugin.postCost != 0 {
 		t.Errorf("CalculateCost = %v with no catalog wired, want 0", plugin.postCost)
+	}
+	if plugin.postBreakdown != nil {
+		t.Errorf("CalculateCostBreakdown = %v with no catalog wired, want nil", plugin.postBreakdown)
 	}
 }

@@ -1,0 +1,44 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["jsx-a11y"],
+	"categories": { "correctness": "off" },
+	"rules": {
+		"jsx-a11y/alt-text": "warn",
+		"jsx-a11y/anchor-ambiguous-text": "warn",
+		"jsx-a11y/anchor-has-content": "warn",
+		"jsx-a11y/anchor-is-valid": "warn",
+		"jsx-a11y/aria-activedescendant-has-tabindex": "warn",
+		"jsx-a11y/aria-props": "warn",
+		"jsx-a11y/aria-proptypes": "warn",
+		// off: role is a chat-message prop (user, assistant, tool) on our own components, not an ARIA role
+		"jsx-a11y/aria-role": "off",
+		"jsx-a11y/aria-unsupported-elements": "warn",
+		"jsx-a11y/autocomplete-valid": "warn",
+		"jsx-a11y/click-events-have-key-events": "warn",
+		"jsx-a11y/heading-has-content": "warn",
+		"jsx-a11y/html-has-lang": "warn",
+		"jsx-a11y/iframe-has-title": "warn",
+		"jsx-a11y/img-redundant-alt": "warn",
+		"jsx-a11y/label-has-associated-control": "warn",
+		"jsx-a11y/lang": "warn",
+		"jsx-a11y/media-has-caption": "warn",
+		"jsx-a11y/mouse-events-have-key-events": "warn",
+		"jsx-a11y/no-access-key": "warn",
+		"jsx-a11y/no-aria-hidden-on-focusable": "warn",
+		// off: autoFocus is deliberate in dialogs, sheets and inline editors, where focus must move to the new surface
+		"jsx-a11y/no-autofocus": "off",
+		"jsx-a11y/no-distracting-elements": "warn",
+		// off: tooltip and scroll-region triggers need tabIndex 0 so keyboard users can reach them
+		"jsx-a11y/no-noninteractive-tabindex": "off",
+		"jsx-a11y/no-redundant-roles": "warn",
+		"jsx-a11y/no-static-element-interactions": "warn",
+		// off: role=button is kept where the row holds nested interactive content (badges, menus), which a native button cannot contain
+		"jsx-a11y/prefer-tag-over-role": "off",
+		// off: role=combobox on Radix PopoverTrigger buttons; Radix adds aria-controls at runtime, which the linter cannot see
+		"jsx-a11y/role-has-required-aria-props": "off",
+		"jsx-a11y/role-supports-aria-props": "warn",
+		"jsx-a11y/scope": "warn",
+		"jsx-a11y/tabindex-no-positive": "warn"
+	},
+	"ignorePatterns": ["out/**", "node_modules/**", "*.config.*"]
+}

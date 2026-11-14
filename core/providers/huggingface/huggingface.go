@@ -260,7 +260,16 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseHuggingFaceImageError(resp), latency)
 	}
 
+	// Time the body read/decompress as the response-finalize phase.
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
@@ -473,7 +482,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceChatRequest, error) {
 			reqBody, err := ToHuggingFaceChatCompletionRequest(request)
 			if err != nil {
 				return nil, err
@@ -501,7 +510,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	var rawResponse interface{}
 	var rawRequest interface{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bifrostResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, bifrostResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -554,12 +563,9 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 	}
 
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
-		reqBody, err := ToHuggingFaceChatCompletionRequest(request)
-		if err != nil {
-			return nil, err
-		}
-		if reqBody != nil {
-			reqBody.Stream = schemas.Ptr(true)
+		reqBody, err := ToHuggingFaceChatCompletionStreamRequest(request)
+		if err != nil || reqBody == nil {
+			return nil, err // a literal nil: a nil *HuggingFaceChatRequest would pass the interface nil check
 		}
 		return reqBody, nil
 	}
@@ -636,7 +642,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceEmbeddingRequest, error) {
 			req, err := ToHuggingFaceEmbeddingRequest(request)
 			return req, err
 		})
@@ -676,8 +682,17 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 		}
 	}
 
-	// Unmarshal directly to BifrostEmbeddingResponse with custom logic
+	// Unmarshal directly to BifrostEmbeddingResponse with custom logic.
+	// Time the decode as the response-parse phase.
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
 	bifrostResponse, convErr := UnmarshalHuggingFaceEmbeddingResponse(responseBody, request.Model)
+	if pt != nil {
+		if convErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
 	if convErr != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -719,7 +734,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceSpeechRequest, error) {
 			return ToHuggingFaceSpeechRequest(request)
 		})
 	if err != nil {
@@ -785,6 +800,11 @@ func (provider *HuggingFaceProvider) Rerank(ctx *schemas.BifrostContext, key sch
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
+// Decision is not supported by the HuggingFace provider.
+func (provider *HuggingFaceProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Huggingface provider.
 func (provider *HuggingFaceProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -825,7 +845,7 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*HuggingFaceTranscriptionRequest, error) {
 				return ToHuggingFaceTranscriptionRequest(request)
 			})
 		if err != nil {
@@ -915,12 +935,13 @@ func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext
 		}
 	}
 
-	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
+	// The converter picks a body type per inference provider, so its result is the
+	// interface; it returns a literal nil whenever it has no body.
+	jsonBody, err := providerUtils.CheckContextAndGetRequestBodyFromInterface(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			req, err := ToHuggingFaceImageGenerationRequest(request)
-			return req, err
+			return ToHuggingFaceImageGenerationRequest(request)
 		})
 	if err != nil {
 		return nil, err
@@ -1022,7 +1043,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageStreamRequest, error) {
 			return ToHuggingFaceImageStreamRequest(request)
 		})
 	if bifrostErr != nil {
@@ -1107,7 +1128,8 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 	go func() {
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer close(responseChan)
+		defer providerUtils.CloseStream(ctx, responseChan)
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1186,14 +1208,20 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 				}
 			}
 
-			// Parse fal-ai response
+			// Parse fal-ai response. Timed as the "response-parse" stream phase (per-event JSON decode).
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
+			parseStart := time.Now()
+			umErr := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", umErr))
 				continue
 			}
-			// Extract images from response (handles both Data.Images and top-level Images)
+			// Extract images from response (handles both Data.Images and top-level Images).
+			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
+			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
 				// Create a fresh chunk for each image to avoid data race
@@ -1297,7 +1325,7 @@ func (provider *HuggingFaceProvider) ImageEdit(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageEditRequest, error) {
 			req, err := ToHuggingFaceImageEditRequest(request)
 			return req, err
 		})
@@ -1410,7 +1438,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*HuggingFaceFalAIImageEditRequest, error) {
 			return ToHuggingFaceImageEditRequest(request)
 		})
 	if bifrostErr != nil {
@@ -1491,7 +1519,8 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	go func() {
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		defer close(responseChan)
+		defer providerUtils.CloseStream(ctx, responseChan)
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1570,14 +1599,20 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 				}
 			}
 
-			// Parse fal-ai response
+			// Parse fal-ai response. Timed as the "response-parse" stream phase (per-event JSON decode).
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
+			parseStart := time.Now()
+			umErr := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", umErr))
 				continue
 			}
-			// Extract images from response (handles both Data.Images and top-level Images)
+			// Extract images from response (handles both Data.Images and top-level Images).
+			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
+			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
 				// Create a fresh chunk for each image to avoid data race
@@ -1755,6 +1790,11 @@ func (provider *HuggingFaceProvider) FileContent(_ *schemas.BifrostContext, _ []
 // CountTokens is not supported by the Hugging Face provider.
 func (provider *HuggingFaceProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Hugging Face provider.
+func (provider *HuggingFaceProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Hugging Face provider.

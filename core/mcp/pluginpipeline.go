@@ -25,6 +25,17 @@ var (
 // into a BifrostError by the gate before being handed to PostMCPHooks.
 type MCPOpFunc func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
+// mcpToolReportedError reports whether a tool answered with a failure in its own result.
+// That is not a transport error, so the span stays ok and the attribute is what lets a
+// backend show the call as failed.
+func mcpToolReportedError(resp *schemas.BifrostMCPResponse) bool {
+	if resp == nil || resp.ChatMessage == nil || resp.ChatMessage.ChatToolMessage == nil {
+		return false
+	}
+	isErr := resp.ChatMessage.ChatToolMessage.IsError
+	return isErr != nil && *isErr
+}
+
 // RunWithPluginPipeline wraps an MCP wire operation (connect / ping / list_tools / execute_tool)
 // with the plugin pipeline. It is the single source of truth for the MCP plugin gate
 // pattern — handleMCPToolExecution in core/bifrost.go calls into this same function,
@@ -96,6 +107,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 			return
 		}
 		tracer.SetAttribute(handle, schemas.AttrMCPMethodName, r.RequestType.OTelMethodName())
+		if r.ClientName != "" {
+			tracer.SetAttribute(handle, schemas.AttrBifrostMCPClientName, r.ClientName)
+		}
 		if transport := m.connectionTypeForClientName(r.ClientName).OTelNetworkTransport(); transport != "" {
 			tracer.SetAttribute(handle, schemas.AttrNetworkTransport, transport)
 		}
@@ -138,6 +152,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 				if data, err := schemas.MarshalString(finalResponse); err == nil {
 					tracer.SetAttribute(opSpanHandle, schemas.AttrToolCallResult, data)
 				}
+				if mcpToolReportedError(finalResponse) {
+					tracer.SetAttribute(opSpanHandle, schemas.AttrBifrostMCPToolIsError, true)
+				}
 			}
 		}
 		setMCPGovernanceSpanAttrs(tracer, opSpanHandle, ctx)
@@ -153,6 +170,13 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 	}()
 
+	// Attribution for the errors and short-circuit responses below, so PostHooks and observers
+	// see ClientName/ToolName; the PreHooks may retarget it.
+	var clientName, toolName string
+	if req != nil {
+		clientName, toolName = req.ClientName, req.GetToolName()
+	}
+
 	// No pipeline configured → run the op directly under its own span, no hooks.
 	pipeline := m.GetPluginPipeline()
 	if pipeline == nil {
@@ -162,8 +186,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 			bErr := &schemas.BifrostError{
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
-				ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 			}
+			bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 			var authRequiredErr *schemas.MCPAuthRequiredError
 			if errors.As(opErr, &authRequiredErr) {
 				bErr.ExtraFields.MCPAuthRequired = authRequiredErr
@@ -178,16 +202,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 	// the /mcp HTTP span — no op span exists yet.
 	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(ctx, req)
 
-	// Pull attribution from the request so short-circuit responses still carry
-	// ClientName/ToolName when PostHooks or observers consume them.
-	clientName := ""
-	toolName := ""
 	if preReq != nil {
-		clientName = preReq.ClientName
-		toolName = preReq.GetToolName()
-	} else if req != nil {
-		clientName = req.ClientName
-		toolName = req.GetToolName()
+		clientName, toolName = preReq.ClientName, preReq.GetToolName()
 	}
 
 	if shortCircuit != nil {
@@ -203,9 +219,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 		// Short-circuit with error — still run PostHooks (they may recover).
 		if shortCircuit.Error != nil {
-			if shortCircuit.Error.ExtraFields.MCPRequestType == "" {
-				shortCircuit.Error.ExtraFields.MCPRequestType = mcpReqType
-			}
+			shortCircuit.Error.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainMCPPluginLogs(ctx)
 			if finalErr != nil {
@@ -220,11 +234,12 @@ func (m *MCPManager) RunWithPluginPipeline(
 	}
 
 	if preReq == nil {
-		return nil, &schemas.BifrostError{
+		bErr := &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: "MCP request after plugin hooks cannot be nil"},
-			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 		}
+		bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
+		return nil, bErr
 	}
 
 	// Op span created after the PreHooks so it nests under the last PreHook; PostHooks nest
@@ -244,8 +259,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 		bErr = &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
-			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 		}
+		bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 		var authRequiredErr *schemas.MCPAuthRequiredError
 		if errors.As(opErr, &authRequiredErr) {
 			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
@@ -445,13 +460,13 @@ func drainMCPPluginLogs(ctx *schemas.BifrostContext) {
 // runListToolsWithHooks wraps retrieveExternalToolsDetailed in the MCP plugin gate.
 // All four list_tools call sites (connect / oauth-verify / sync / health-check fallback)
 // go through this helper so plugins see one consistent hook. The PostHook may mutate
-// the Tools / ToolNameMapping fields on the response — the caller receives the mutated
-// values via the returned maps.
+// the Tools field on the response, and the caller receives the mutated value via the
+// returned map.
 //
 // A PreHook short-circuit with Response is treated as a synthetic tool list (used as-is).
 // A PreHook short-circuit with Error returns the error; the caller decides whether to
 // keep existing state.
-func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
 	req := &schemas.BifrostMCPRequest{
 		RequestType:                schemas.MCPRequestTypeListTools,
 		ClientName:                 clientName,
@@ -471,10 +486,9 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 		}
 		return &schemas.BifrostMCPResponse{
 			BifrostMCPListToolsResponse: &schemas.BifrostMCPListToolsResponse{
-				Tools:           detailed.tools,
-				ToolNameMapping: detailed.toolNameMapping,
-				RawToolCount:    detailed.rawCount,
-				SkippedTools:    detailed.skipped,
+				Tools:        detailed.tools,
+				RawToolCount: detailed.rawCount,
+				SkippedTools: detailed.skipped,
 			},
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
 				Latency: time.Since(start).Milliseconds(),
@@ -483,14 +497,14 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	})
 
 	if bErr != nil {
-		return nil, nil, fmt.Errorf("failed to list tools: %s", bErr.GetErrorString())
+		return nil, fmt.Errorf("failed to list tools: %s", bErr.GetErrorString())
 	}
 	if resp == nil || resp.BifrostMCPListToolsResponse == nil {
 		// Defensive: response somehow lost its list_tools payload (e.g. PostHook nilled it).
-		// Surface empty maps rather than nil to mirror the underlying list_tools contract.
-		return make(map[string]schemas.ChatTool), make(map[string]string), nil
+		// Surface an empty map rather than nil to mirror the underlying list_tools contract.
+		return make(map[string]schemas.ChatTool), nil
 	}
-	return resp.Tools, resp.ToolNameMapping, nil
+	return resp.Tools, nil
 }
 
 // runPingWithHooks wraps conn.Ping in the MCP plugin gate. A PreHook may short-circuit
@@ -581,4 +595,6 @@ func setMCPGovernanceSpanAttrs(tracer schemas.Tracer, handle schemas.SpanHandle,
 	setIfPresent(schemas.BifrostContextKeyGovernanceCustomerName, schemas.AttrBifrostCustomerName)
 	setIfPresent(schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.AttrBifrostBusinessUnitID)
 	setIfPresent(schemas.BifrostContextKeyGovernanceBusinessUnitName, schemas.AttrBifrostBusinessUnitName)
+	setIfPresent(schemas.BifrostContextKeyGovernanceProjectID, schemas.AttrBifrostProjectID)
+	setIfPresent(schemas.BifrostContextKeyGovernanceProjectName, schemas.AttrBifrostProjectName)
 }

@@ -183,16 +183,16 @@ and prevent unexpected behavior from runtime updates.
 
 | Runtime | Pinned Version | Used For |
 | --- | --- | --- |
-| Go | `1.26.1` | Core build, tests |
+| Go | `1.27.3` | Core build, tests |
 | Node | `25` | UI build, npm packages |
-| Python | `3.11` | Integration and governance tests |
+| Python | `3.11` / `3.12` | `3.12` for integration and live tests (matches `tests/integrations/python/.python-version`), `3.11` for PR tests, OpenAPI bundling and Snyk |
 | uv | SHA-pinned via `astral-sh/setup-uv` | Python package management |
 
 Python test dependencies are locked via `uv.lock` files for deterministic, reproducible installs:
 
 ```
-tests/integrations/uv.lock
-tests/governance/uv.lock
+tests/integrations/python/uv.lock
+tests/live/python/uv.lock
 ```
 
 <Frame>

@@ -20,6 +20,7 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 	cases := []struct {
 		name        string
 		provider    schemas.ModelProvider
+		model       string // defaults to claude-opus-4-5
 		input       []schemas.ResponsesTool
 		wantKeep    int
 		wantDropped []string
@@ -70,10 +71,34 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 			wantKeep: 1,
 		},
 		{
-			name:     "bedrock keeps web_search via nova_grounding",
+			name:     "bedrock keeps web_search via nova_grounding on nova 2",
 			provider: schemas.Bedrock,
-			input:    []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			model:    "us.amazon.nova-2-lite-v1:0",
+			input: []schemas.ResponsesTool{
+				serverTool(schemas.ResponsesToolTypeWebSearch),
+				serverTool(schemas.ResponsesToolTypeCodeInterpreter),
+			},
+			wantKeep: 2,
+		},
+		{
+			// The Nova carve-out must not keep these for Claude: on the InvokeModel
+			// route they go out as web_search_20250305 / code_execution_* and Bedrock
+			// answers 400 "tool type ... is not supported for this model".
+			name:     "bedrock claude drops web_search and code_interpreter",
+			provider: schemas.Bedrock,
+			model:    "global.anthropic.claude-sonnet-5-5",
+			input: []schemas.ResponsesTool{
+				fnTool,
+				serverTool(schemas.ResponsesToolTypeWebSearch),
+				serverTool(schemas.ResponsesToolTypeWebSearchPreview),
+				serverTool(schemas.ResponsesToolTypeCodeInterpreter),
+			},
 			wantKeep: 1,
+			wantDropped: []string{
+				string(schemas.ResponsesToolTypeWebSearch),
+				string(schemas.ResponsesToolTypeWebSearchPreview),
+				string(schemas.ResponsesToolTypeCodeInterpreter),
+			},
 		},
 		{
 			name:        "bedrock drops web_fetch",
@@ -87,6 +112,50 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 			provider: schemas.Bedrock,
 			input:    []schemas.ResponsesTool{fnTool, fnTool},
 			wantKeep: 2,
+		},
+		{
+			// The reported Fireworks failure: its Anthropic-compatible endpoint
+			// answers a server web_search tool with 400 "server-side web search
+			// is not supported on this endpoint", so the tool has to be dropped
+			// before the request leaves Bifrost.
+			name:        "fireworks drops web_search",
+			provider:    schemas.Fireworks,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+			assertNotes: "Anthropic-hosted server tools do not exist on Fireworks",
+		},
+		{
+			name:     "fireworks keeps the caller's function tools",
+			provider: schemas.Fireworks,
+			input:    []schemas.ResponsesTool{fnTool, serverTool(schemas.ResponsesToolTypeWebSearch), fnTool},
+			wantKeep: 2,
+			wantDropped: []string{
+				string(schemas.ResponsesToolTypeWebSearch),
+			},
+		},
+		{
+			name:        "vllm drops web_search",
+			provider:    schemas.VLLM,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+		},
+		{
+			name:        "sgl drops web_search",
+			provider:    schemas.SGL,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+		},
+		{
+			// DeepSeek's endpoint does serve web search, so its entry keeps the
+			// tool. Guards the three entries above against a copy-paste that
+			// would silently disable a working feature.
+			name:     "deepseek keeps web_search",
+			provider: schemas.DeepSeek,
+			input:    []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep: 1,
 		},
 		{
 			name:     "unknown provider keeps everything (forward-compat)",
@@ -104,7 +173,11 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, dropped := ValidateResponsesToolsForProvider(tc.input, schemas.ResolveModelCaps(tc.provider, "claude-opus-4-5"))
+			model := tc.model
+			if model == "" {
+				model = "claude-opus-4-5"
+			}
+			keep, dropped := ValidateResponsesToolsForProvider(tc.input, schemas.ResolveModelCaps(tc.provider, model))
 			if len(keep) != tc.wantKeep {
 				t.Errorf("keep count: got %d, want %d (%s)", len(keep), tc.wantKeep, tc.assertNotes)
 			}
@@ -120,5 +193,21 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BenchmarkValidateResponsesToolsForProviderBedrockClaude measures the per-request tool
+// filter on the Codex tool set (tool_search + web_search + functions) for Bedrock Claude.
+func BenchmarkValidateResponsesToolsForProviderBedrockClaude(b *testing.B) {
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeToolSearch},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+		{Type: schemas.ResponsesToolTypeFunction},
+		{Type: schemas.ResponsesToolTypeFunction},
+	}
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, "global.anthropic.claude-sonnet-5-5")
+	b.ReportAllocs()
+	for b.Loop() {
+		ValidateResponsesToolsForProvider(tools, caps)
 	}
 }

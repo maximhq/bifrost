@@ -1,11 +1,184 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestVertexEndpointAliasRoundTrip(t *testing.T) {
+	for _, method := range []string{"raw_predict", "chat_completions"} {
+		t.Run(method, func(t *testing.T) {
+			input := `{"vllm":{"model_id":"custom-model-version","vertex_endpoint":{"endpoint_id":"2222222222","format":"openai_chat","method":"` + method + `"}}}`
+			var aliases KeyAliases
+			if err := json.Unmarshal([]byte(input), &aliases); err != nil {
+				t.Fatal(err)
+			}
+			if err := aliases.Validate(Vertex); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(aliases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"vertex_endpoint"`) || !strings.Contains(string(encoded), `"format":"openai_chat"`) {
+				t.Fatalf("custom endpoint configuration lost on round trip: %s", encoded)
+			}
+			if err := aliases.Validate(OpenAI); err == nil {
+				t.Fatal("Vertex endpoint must be rejected on an OpenAI key")
+			}
+		})
+	}
+}
+
+func TestVertexEndpointValidation(t *testing.T) {
+	for _, id := range []string{"", " a", "a ", "../a", "a/b", "a?key=x", "a#x", "a:predict", "a%2fb", "モデル"} {
+		endpoint := &VertexEndpoint{EndpointID: id, Format: VertexEndpointOpenAIChat}
+		if endpoint.Validate() == nil {
+			t.Errorf("accepted endpoint ID %q", id)
+		}
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat}).Validate(); err != nil {
+		t.Fatalf("omitted method must default to raw_predict: %v", err)
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat, Method: "predict"}).Validate(); err == nil {
+		t.Fatal("accepted unsupported method")
+	}
+	for _, format := range []VertexEndpointFormat{"", "openai", "gemini", "predict"} {
+		if (&VertexEndpoint{EndpointID: "2222", Format: format}).Validate() == nil {
+			t.Errorf("accepted format %q; the body shape must be explicit and implemented", format)
+		}
+	}
+}
+
+func TestAliasConfigRedactedPreservesShape(t *testing.T) {
+	for name, original := range map[string]AliasConfig{
+		"empty":  {},
+		"legacy": {ModelID: "model"},
+		"metadata": {
+			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
+			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
+			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
+			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
+			BedrockAliasCfg:   &BedrockAliasCfg{},
+			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+			BasetenAliasCfg:   &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			redacted := original.Redacted()
+			if !reflect.DeepEqual(original, redacted) {
+				t.Fatalf("redaction changed non-secret fields: got %+v, want %+v", redacted, original)
+			}
+			before, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatalf("redaction changed wire shape: got %s, want %s", after, before)
+			}
+		})
+	}
+}
+
+// TestBasetenAliasRoundTripAndRedaction pins the deployment_url wire key (distinct from
+// Azure's "endpoint", so the embedded sub-configs never share a JSON name) and that an
+// env-backed deployment URL is masked on read while a literal one stays readable.
+func TestBasetenAliasRoundTripAndRedaction(t *testing.T) {
+	raw := `{"dedicated":{"model_id":"not-required","deployment_url":"https://model-abc.api.baseten.co/environments/production/sync/v1"}}`
+	var ka KeyAliases
+	if err := json.Unmarshal([]byte(raw), &ka); err != nil {
+		t.Fatal(err)
+	}
+	ac := ka["dedicated"]
+	if ac.BasetenAliasCfg == nil || ac.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url not decoded into BasetenAliasCfg: %+v", ac)
+	}
+	if ac.AzureAliasCfg != nil {
+		t.Fatalf("deployment_url must not populate the Azure sub-config: %+v", ac.AzureAliasCfg)
+	}
+	out, err := json.Marshal(ka)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back KeyAliases
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back["dedicated"].BasetenAliasCfg; got == nil || got.DeploymentURL.GetValue() != "https://model-abc.api.baseten.co/environments/production/sync/v1" {
+		t.Fatalf("deployment_url lost on round trip: %s", out)
+	}
+
+	t.Setenv("BASETEN_DEPLOYMENT_URL_REDACT_TEST", "https://model-secret.api.baseten.co/sync/v1")
+	fromEnv := AliasConfig{ModelID: "m", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_REDACT_TEST")}}
+	redacted := fromEnv.Redacted()
+	if got := redacted.BasetenAliasCfg.DeploymentURL.GetValue(); strings.Contains(got, "model-secret") {
+		t.Fatalf("an env-backed deployment_url must be masked, got %q", got)
+	}
+	if fromEnv.BasetenAliasCfg.DeploymentURL.GetValue() != "https://model-secret.api.baseten.co/sync/v1" {
+		t.Fatal("redaction mutated the live config")
+	}
+}
+
+func TestBedrockEndpointsRedactedPreservesUnsetFields(t *testing.T) {
+	var unset *BedrockEndpoints
+	if unset.Redacted() != nil {
+		t.Fatal("nil endpoints must remain nil")
+	}
+	original := &BedrockEndpoints{Runtime: NewSecretVar("runtime.example.com")}
+	redacted := original.Redacted()
+	if !reflect.DeepEqual(original, redacted) {
+		t.Fatalf("literal endpoints or nil fields changed: got %+v, want %+v", redacted, original)
+	}
+	redacted.Runtime.Val = "changed.example.com"
+	if original.Runtime.GetValue() != "runtime.example.com" {
+		t.Fatal("redacted endpoints share secrets with live config")
+	}
+}
+
+func TestAnthropicKeyConfigRedacted(t *testing.T) {
+	var unset *AnthropicKeyConfig
+	if unset.Redacted() != nil || unset.HasWorkloadIdentity() {
+		t.Fatal("a nil config must stay nil and carry no workload identity")
+	}
+	if (&AnthropicKeyConfig{}).HasWorkloadIdentity() {
+		t.Fatal("an empty config carries no workload identity")
+	}
+	original := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{
+		FederationRuleID: *NewSecretVar("fdrl_rule"),
+		OrganizationID:   *NewSecretVar("00000000-0000-0000-0000-000000000000"),
+		ServiceAccountID: *NewSecretVar("svac_account"),
+		WorkspaceID:      NewSecretVar("wrkspc_workspace"),
+		IdentitySource:   &IdentitySource{Type: IdentitySourceFile, Path: NewSecretVar("/var/run/secrets/anthropic.com/token")},
+	}}
+	redacted := original.Redacted().WorkloadIdentity
+	if redacted.FederationRuleID.GetValue() != "fdrl_rule" || redacted.ServiceAccountID.GetValue() != "svac_account" ||
+		redacted.WorkspaceID.GetValue() != "wrkspc_workspace" || redacted.IdentitySource.Path.GetValue() != "/var/run/secrets/anthropic.com/token" {
+		t.Fatalf("literal identifiers must stay readable: %+v", redacted)
+	}
+	inline := (&IdentitySource{Type: IdentitySourceInline, Token: NewSecretVar("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.signature")}).Redacted()
+	if inline.Type != IdentitySourceInline || !inline.Token.IsRedacted() || strings.Contains(inline.Token.GetValue(), "eyJzdWIiOiJ4In0") {
+		t.Fatalf("the identity token is a credential and must be masked: %+v", inline)
+	}
+	redacted.WorkspaceID.Val = "changed"
+	if original.WorkloadIdentity.WorkspaceID.GetValue() != "wrkspc_workspace" {
+		t.Fatal("redacted config shares pointers with live config")
+	}
+
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST", "fdrl_from_env")
+	fromEnv := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{FederationRuleID: *NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST")}}
+	if got := fromEnv.Redacted().WorkloadIdentity.FederationRuleID.GetValue(); got == "fdrl_from_env" {
+		t.Fatal("an env-backed identifier must be masked")
+	}
+}
 
 func TestKeyAliasesUnmarshalLegacyStringShape(t *testing.T) {
 	in := []byte(`{"best-model": "gpt-4o-deployment"}`)
@@ -27,7 +200,8 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
             "model_name": "claude-3-5-sonnet",
             "model_family": "anthropic",
             "description": "prod",
-            "api_version": "2024-08-01-preview"
+            "api_version": "2024-08-01-preview",
+            "use_speech_endpoints": true
         }
     }`)
 	var ka KeyAliases
@@ -49,6 +223,9 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
 	}
 	if got.AzureAliasCfg == nil || got.APIVersion == nil || *got.APIVersion != "2024-08-01-preview" {
 		t.Fatalf("AzureAliasCfg.APIVersion mismatch: %+v", got.AzureAliasCfg)
+	}
+	if got.UseSpeechEndpoints == nil || !*got.UseSpeechEndpoints {
+		t.Fatalf("AzureAliasCfg.UseSpeechEndpoints mismatch: %+v", got.AzureAliasCfg)
 	}
 }
 
@@ -198,6 +375,7 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
 		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
 		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -384,6 +562,40 @@ func TestKeyAliasesValidate(t *testing.T) {
 			provider: Bedrock,
 			ka:       KeyAliases{"k": {ModelID: "v", ReplicateAliasCfg: replicateCfg}},
 			wantErr:  "replicate sub-config is only valid on Replicate keys",
+		},
+		{
+			name:     "baseten deployment_url on baseten key — ok",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}}},
+		},
+		{
+			name:     "baseten deployment_url from env — ok without resolving",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("env.BASETEN_DEPLOYMENT_URL_UNSET_IN_TEST")}}},
+		},
+		{
+			name:     "baseten deployment_url over http — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("http://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url without host — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("model-abc/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten deployment_url with a port but no hostname — error",
+			provider: Baseten,
+			ka:       KeyAliases{"k": {ModelID: "not-required", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://:443/sync/v1")}}},
+			wantErr:  "baseten deployment_url must be an absolute https URL",
+		},
+		{
+			name:     "baseten sub-config on openai key — error",
+			provider: OpenAI,
+			ka:       KeyAliases{"k": {ModelID: "v", BasetenAliasCfg: &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/sync/v1")}}},
+			wantErr:  "baseten sub-config is only valid on Baseten keys",
 		},
 	}
 	for _, c := range cases {
@@ -687,5 +899,271 @@ func TestModelFamilyIsValid(t *testing.T) {
 	var nilMF *ModelFamily
 	if nilMF.IsValid() {
 		t.Fatal("nil ModelFamily should be invalid")
+	}
+}
+
+func TestIsMoonshotModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Every id Moonshot publishes starts with "kimi-"; Bedrock and Groq wrap it
+		// in a "moonshotai" namespace.
+		{"kimi-k3", true},
+		{"kimi-k2.7-code", true},
+		{"KIMI-K3", true},
+		{"moonshotai.kimi-k3", true},
+		{"global.moonshotai.kimi-k3", true},
+		{"us.moonshotai.kimi-k2.5", true},
+		{"moonshotai/kimi-k2-instruct", true},
+
+		// Near misses that a substring match would wrongly claim. The predicate
+		// gates a lossy tool-schema rewrite, so these must stay false.
+		{"kimina-prover", false},
+		{"mykimi", false},
+		{"kimi", false},
+		{"akimi-k3", false},
+		{"deepseek-chat", false},
+		{"gpt-4o-mini", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := IsMoonshotModel(tc.model); got != tc.want {
+				t.Fatalf("IsMoonshotModel(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyRequestRouting pins that RoutingInfo picks up the caller's route core stamped on the
+// context, and that a context without one (an SDK caller, or a nil context) leaves it empty.
+func TestApplyRequestRouting(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyRequestedProvider, OpenAI)
+	ctx.SetValue(BifrostContextKeyRequestedModel, "gpt-4o-mini")
+
+	info := BuildRoutingInfo(ctx, OpenAI, "gpt-4o", Key{Name: "openai-key"})
+	if info.RequestedProvider != OpenAI || info.RequestedModel != "gpt-4o-mini" {
+		t.Fatalf("requested route = (%q, %q), want (openai, gpt-4o-mini)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Fatalf("Model = %q, want the attempt's gpt-4o", info.Model)
+	}
+
+	empty := BuildRoutingInfo(NewBifrostContext(context.Background(), NoDeadline), OpenAI, "gpt-4o", Key{})
+	if empty.RequestedProvider != "" || empty.RequestedModel != "" {
+		t.Fatalf("requested route without a stamp = (%q, %q), want empty", empty.RequestedProvider, empty.RequestedModel)
+	}
+
+	var nilInfo *RoutingInfo
+	nilInfo.ApplyRequestRouting(ctx)
+	(&RoutingInfo{}).ApplyRequestRouting(nil)
+}
+
+// TestBasetenAliasValidateRejectsUserinfoQueryFragment pins that a literal deployment_url
+// carries no credential (it is read back in plain text) and no query or fragment (the
+// provider appends the endpoint path, which would land inside them).
+func TestBasetenAliasValidateRejectsUserinfoQueryFragment(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pass@model-abc.api.baseten.co/environments/production/sync/v1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1?x=1",
+		"https://model-abc.api.baseten.co/environments/production/sync/v1#frag",
+	} {
+		if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar(raw)}).Validate(); err == nil {
+			t.Errorf("Validate(%q) = nil, want an error", raw)
+		}
+	}
+	if err := (&BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")}).Validate(); err != nil {
+		t.Fatalf("valid deployment_url rejected: %v", err)
+	}
+}
+
+func TestKeyAliasesResolvePatternAlias(t *testing.T) {
+	name := "canon-$1"
+	aliases := KeyAliases{
+		"claude-opus-4-8":         AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)":       AliasConfig{ModelID: "global.anthropic.$1"},
+		"regex:(claude-haiku-.*)": AliasConfig{ModelID: "us.anthropic.$1", ModelName: &name},
+		"regex:(?P<m>gpt-.*)":     AliasConfig{ModelID: "openai.${m}"},
+	}
+	cases := []struct {
+		model, wantID, wantName string
+	}{
+		{"claude-opus-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"CLAUDE-OPUS-4-8", "us.anthropic.claude-opus-4-8", ""},
+		{"claude-fable-5", "global.anthropic.claude-fable-5", ""},
+		{"Claude-Fable-5", "global.anthropic.Claude-Fable-5", ""},
+		{"claude-haiku-4-5", "us.anthropic.claude-haiku-4-5", "canon-claude-haiku-4-5"},
+		{"gpt-5.4", "openai.gpt-5.4", ""},
+	}
+	for _, c := range cases {
+		ac := aliases.ResolveConfig(c.model)
+		if ac == nil {
+			t.Fatalf("ResolveConfig(%q) = nil", c.model)
+		}
+		if ac.ModelID != c.wantID {
+			t.Errorf("ResolveConfig(%q).ModelID = %q, want %q", c.model, ac.ModelID, c.wantID)
+		}
+		gotName := ""
+		if ac.ModelName != nil {
+			gotName = *ac.ModelName
+		}
+		if gotName != c.wantName {
+			t.Errorf("ResolveConfig(%q).ModelName = %q, want %q", c.model, gotName, c.wantName)
+		}
+	}
+	for _, model := range []string{"mistral-large", "regex:(claude-.*)", "xclaude-1"} {
+		if ac := aliases.ResolveConfig(model); ac != nil {
+			t.Errorf("ResolveConfig(%q) = %+v, want nil", model, *ac)
+		}
+	}
+	if aliases["regex:(claude-.*)"].ModelID != "global.anthropic.$1" || *aliases["regex:(claude-haiku-.*)"].ModelName != "canon-$1" {
+		t.Error("resolving a pattern alias mutated the stored template")
+	}
+}
+
+func TestKeyAliasesValidatePatternAlias(t *testing.T) {
+	name := "$2"
+	cases := map[string]KeyAliases{
+		"no compile":     {"regex:(claude-": AliasConfig{ModelID: "x"}},
+		"bare wildcard":  {"regex:*": AliasConfig{ModelID: "x"}},
+		"empty pattern":  {"regex:": AliasConfig{ModelID: "x"}},
+		"missing group":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.$2"}},
+		"missing named":  {"regex:(claude-.*)": AliasConfig{ModelID: "global.anthropic.${m}"}},
+		"ambiguous name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1x"}},
+		"bad model_name": {"regex:(claude-.*)": AliasConfig{ModelID: "$1", ModelName: &name}},
+	}
+	for label, aliases := range cases {
+		if err := aliases.Validate(Bedrock); err == nil {
+			t.Errorf("%s: Validate accepted %v", label, aliases)
+		}
+	}
+	ok := KeyAliases{
+		"regex:(claude-.*)":   AliasConfig{ModelID: "global.anthropic.${1}"},
+		"regex:(?P<m>gpt-.*)": AliasConfig{ModelID: "openai.$m"},
+		"regex:mistral-.*":    AliasConfig{ModelID: "mistral.fixed-$$"},
+		"claude-sonnet-5-pin": AliasConfig{ModelID: "2d8tchjis5cl"},
+	}
+	if err := ok.Validate(Bedrock); err != nil {
+		t.Errorf("Validate rejected valid pattern aliases: %v", err)
+	}
+}
+
+// TestKeyAliasesPatternEmptyExpansionIsNoMatch pins that a template expanding to an empty model id does not resolve.
+func TestKeyAliasesPatternEmptyExpansionIsNoMatch(t *testing.T) {
+	only := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}}
+	if ac := only.ResolveConfig("bar"); ac != nil {
+		t.Errorf("ResolveConfig(bar) = %+v, want nil for an empty expansion", *ac)
+	}
+	if got := only.Resolve("foobar"); got != "foo" {
+		t.Errorf("Resolve(foobar) = %q, want foo", got)
+	}
+	// The next matching pattern serves the name the first one expanded to nothing.
+	next := KeyAliases{"regex:(foo)?bar": AliasConfig{ModelID: "$1"}, "regex:(b.*)": AliasConfig{ModelID: "next.$1"}}
+	if got := next.Resolve("bar"); got != "next.bar" {
+		t.Errorf("Resolve(bar) = %q, want next.bar", got)
+	}
+}
+
+func TestKeyAliasesPatternOrder(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-.*":      AliasConfig{ModelID: "short"},
+		"regex:claude-opus-.*": AliasConfig{ModelID: "long"},
+		"regex:claude-sonn.*":  AliasConfig{ModelID: "b"},
+		"regex:claude-sona.*":  AliasConfig{ModelID: "a"},
+		"exact":                AliasConfig{ModelID: "e"},
+	}
+	if got := strings.Join(aliases.PatternKeys(), ","); got != "regex:claude-opus-.*,regex:claude-sona.*,regex:claude-sonn.*,regex:claude-.*" {
+		t.Errorf("PatternKeys() = %s", got)
+	}
+	if got := aliases.Resolve("claude-opus-5"); got != "long" {
+		t.Errorf("Resolve(claude-opus-5) = %q, want long", got)
+	}
+}
+
+// TestKeyAliasesPatternTieIsLexical pins that equal-length patterns that both match resolve to the alphabetically first.
+func TestKeyAliasesPatternTieIsLexical(t *testing.T) {
+	aliases := KeyAliases{
+		"regex:claude-op.*": AliasConfig{ModelID: "second"},
+		"regex:cl.*-opus-5": AliasConfig{ModelID: "first"},
+	}
+	for i := 0; i < 20; i++ {
+		if got := aliases.Resolve("claude-opus-5"); got != "first" {
+			t.Fatalf("Resolve(claude-opus-5) = %q, want first", got)
+		}
+	}
+}
+
+// TestKeyAliasesExactBeatsLongerPattern pins that an exact alias wins in any casing, however long the matching pattern is.
+func TestKeyAliasesExactBeatsLongerPattern(t *testing.T) {
+	aliases := KeyAliases{
+		"claude-opus-5":                      AliasConfig{ModelID: "exact"},
+		"regex:(claude-(?:opus|sonnet)-\\d)": AliasConfig{ModelID: "long.$1"},
+		"regex:(claude-.*)":                  AliasConfig{ModelID: "short.$1"},
+	}
+	for model, want := range map[string]string{
+		"claude-opus-5":   "exact",
+		"Claude-OPUS-5":   "exact",
+		"claude-sonnet-5": "long.claude-sonnet-5",
+		"claude-haiku-5":  "short.claude-haiku-5",
+	} {
+		if got := aliases.Resolve(model); got != want {
+			t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+// TestKeyAliasesResolveConfigConcurrent runs first-use pattern lookups in parallel so the race detector covers the regex cache.
+func TestKeyAliasesResolveConfigConcurrent(t *testing.T) {
+	aliases := KeyAliases{"pinned": AliasConfig{ModelID: "exact"}}
+	for i := 0; i < 8; i++ {
+		aliases[fmt.Sprintf("regex:(race%d-.*)", i)] = AliasConfig{ModelID: fmt.Sprintf("t%d.$1", i)}
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				n := (w + i) % 8
+				model := fmt.Sprintf("race%d-%d-%d", n, w, i)
+				if got, want := aliases.Resolve(model), fmt.Sprintf("t%d.%s", n, model); got != want {
+					t.Errorf("Resolve(%q) = %q, want %q", model, got, want)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
+func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
+	exact := KeyAliases{
+		"claude-opus-4-8": {ModelID: "us.anthropic.claude-opus-4-8"},
+		"claude-sonnet-5": {ModelID: "global.anthropic.claude-sonnet-5"},
+		"gpt-5.4":         {ModelID: "openai.gpt-5.4"},
+	}
+	withPattern := KeyAliases{
+		"claude-opus-4-8":   {ModelID: "us.anthropic.claude-opus-4-8"},
+		"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		"regex:(gpt-.*)":    {ModelID: "openai.$1"},
+	}
+	for _, c := range []struct {
+		name    string
+		aliases KeyAliases
+		model   string
+	}{
+		{"exact-hit", exact, "claude-sonnet-5"},
+		{"exact-miss", exact, "mistral-large"},
+		{"pattern-hit", withPattern, "claude-fable-5"},
+		{"pattern-miss", withPattern, "mistral-large"},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = c.aliases.ResolveConfig(c.model)
+			}
+		})
 	}
 }

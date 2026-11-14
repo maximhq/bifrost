@@ -124,7 +124,7 @@ ImageGenerationRequest:
         fallbacks:
           type: array
           items:
-            $ref: './common.yaml#/Fallback'
+            $ref: "./common.yaml#/Fallback"
           description: Fallback models to try if primary model fails
 
 ImageGenerationResponse:
@@ -143,7 +143,7 @@ ImageGenerationResponse:
     data:
       type: array
       items:
-        $ref: '#/ImageData'
+        $ref: "#/ImageData"
       description: Array of generated images
     background:
       type: string
@@ -171,9 +171,9 @@ ImageGenerationResponse:
         - "auto"
       description: Size of the generated image
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"
 
 ImageData:
   type: object
@@ -199,7 +199,7 @@ ImageData:
     detections:
       type: array
       items:
-        $ref: '#/ImageDetection'
+        $ref: "#/ImageDetection"
       description: Regions located by a masking or segmentation operation
 
 ImageDetection:
@@ -234,7 +234,7 @@ ImageUsage:
       type: integer
       description: Number of input tokens
     input_tokens_details:
-      $ref: '#/ImageTokenDetails'
+      $ref: "#/ImageTokenDetails"
     total_tokens:
       type: integer
       description: Total tokens used
@@ -242,7 +242,7 @@ ImageUsage:
       type: integer
       description: Number of output tokens
     output_tokens_details:
-      $ref: '#/ImageTokenDetails'
+      $ref: "#/ImageTokenDetails"
 
 ImageTokenDetails:
   type: object
@@ -321,13 +321,13 @@ ImageGenerationStreamResponse:
       type: string
       description: Revised prompt
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
       description: Token usage
     error:
-      $ref: './common.yaml#/BifrostError'
+      $ref: "./common.yaml#/BifrostError"
       description: Error information if generation failed
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"
 
 # Image Edit Schemas (application/json and multipart/form-data)
 
@@ -373,7 +373,7 @@ ImageEditRequest:
     images:
       type: array
       items:
-        $ref: '#/ImageInput'
+        $ref: "#/ImageInput"
       description: |
         Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no
         usable image is rejected. Providers treat the first image as the primary one (Runware's seed
@@ -514,7 +514,7 @@ ImageEditRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        $ref: "./common.yaml#/Fallback"
       description: Fallback models to try if primary model fails
 
 ImageEditMultipartRequest:
@@ -678,7 +678,7 @@ ImageEditMultipartRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        $ref: "./common.yaml#/Fallback"
       description: Fallback models to try if primary model fails
 
 # Image Variation Schemas (multipart/form-data)
@@ -727,7 +727,7 @@ ImageVariationRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        $ref: "./common.yaml#/Fallback"
       description: Fallback models to try if primary model fails
 
 # Image Edit Streaming (SSE)
@@ -785,10 +785,10 @@ ImageEditStreamResponse:
       type: string
       description: Revised prompt
     usage:
-      $ref: '#/ImageUsage'
+      $ref: "#/ImageUsage"
       description: Token usage
     error:
-      $ref: './common.yaml#/BifrostError'
+      $ref: "./common.yaml#/BifrostError"
       description: Error information if edit failed
     extra_fields:
-      $ref: './common.yaml#/BifrostResponseExtraFields'
+      $ref: "./common.yaml#/BifrostResponseExtraFields"

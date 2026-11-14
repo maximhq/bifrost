@@ -28,12 +28,12 @@ const itemNamed = (fragment) => {
 // the series it left in the collection variable, plus the CACHE_MATRIX_REPORT it logged. The
 // script is executed rather than string-matched because the property under test is arithmetic
 // across rounds, which a substring search cannot see.
-function runRound(item, usage, vars) {
+function runRound(item, usage, vars, responseFields = {}) {
   const script = scriptOf(item, "test");
   const logged = [];
   const failures = [];
   const pm = {
-    response: { code: 200, json: () => ({ usage }), text: () => JSON.stringify({ usage }) },
+    response: { code: 200, json: () => ({ usage, ...responseFields }), text: () => JSON.stringify({ usage, ...responseFields }) },
     collectionVariables: {
       get: (k) => (k in vars ? vars[k] : null),
       set: (k, v) => {
@@ -174,6 +174,44 @@ test("the verdict report carries writes summed across rounds, not just the best 
   // would call this cold run warm.
   assert.strictEqual(report.write, 0, "fixture no longer exercises the best-round-is-not-round-1 case");
   assert.ok(report.writeTotal > report.write, "writeTotal must outlive the best round's write");
+});
+
+
+
+
+test("a refused response fails request success even when cache writes are reported", () => {
+  const item = itemNamed("anthropic/claude-opus-5 / control round 1 (write)");
+  const result = runRound(item, {input_tokens: 73, cache_creation_input_tokens: 29672}, {}, {
+    content: [], stop_reason: "refusal", stop_details: {category: "reasoning_extraction"},
+  });
+  assert.ok(result.failures.some(([name, message]) => name.includes("succeeds") && message.includes("reasoning_extraction")),
+    "HTTP 200 and cache-write usage must not make a refused request succeed");
+});
+
+test("Opus 5 reference conversation preserves byte-identical rounds and cache placement", () => {
+  for (const arm of ["control", "midconv"]) {
+    const first = itemNamed(`anthropic/claude-opus-5 / ${arm} round 1 (write)`);
+    const second = itemNamed(`anthropic/claude-opus-5 / ${arm} round 2 (read)`);
+    assert.strictEqual(first.request.body.raw, second.request.body.raw);
+    const body = JSON.parse(first.request.body.raw);
+    assert.strictEqual(body.system.length, 2);
+    assert.ok(body.system.every(block => block.cache_control?.type === "ephemeral"));
+    assert.deepStrictEqual(body.messages.slice(0, 4).map(message => message.role), ["user", "assistant", "user", "assistant"]);
+    const last = body.messages.at(-1);
+    assert.strictEqual(last.role, arm === "midconv" ? "system" : "user");
+    assert.strictEqual(last.content[0].cache_control.type, "ephemeral");
+    assert.ok(body.messages.some(message => message.content.some(block => block.text.includes("Where does the Thursday book group meet?"))));
+    assert.ok(!first.request.body.raw.includes("{{cachePrefix}}"));
+  }
+});
+
+test("Opus 5 must answer the updated location as well as reporting usage", () => {
+  const item = itemNamed("anthropic/claude-opus-5 / midconv round 1 (write)");
+  const usage = {input_tokens: 2, cache_creation_input_tokens: 2900};
+  const accepted = runRound(item, usage, {}, {content: [{type: "text", text: "The group meets in the Cedar study room upstairs."}], stop_reason: "end_turn"});
+  assert.deepStrictEqual(accepted.failures, []);
+  const wrong = runRound(item, usage, {}, {content: [{type: "text", text: "The group meets in the ground-floor meeting room."}], stop_reason: "end_turn"});
+  assert.ok(wrong.failures.some(([, message]) => message.includes("Cedar study room")));
 });
 
 console.log(`\n${passed} passed`);

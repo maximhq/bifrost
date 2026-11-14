@@ -1,0 +1,452 @@
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
+import PageTitle from "@/components/pageTitle";
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useToast } from "@/hooks/use-toast";
+import {
+	getErrorMessage,
+	useDeleteVirtualMCPMutation,
+	useGetCoreConfigQuery,
+	useGetMCPClientsQuery,
+	useGetVirtualKeyQuery,
+	useUpdateVirtualMCPMutation,
+} from "@/lib/store";
+import { VirtualMCP, VirtualMCPToolSpec } from "@/lib/types/virtualMcps";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
+
+interface VirtualMCPsTableProps {
+	virtualMcps: VirtualMCP[];
+	totalCount: number;
+	isFetching: boolean;
+	search: string;
+	onSearchChange: (value: string) => void;
+	hasActiveSearch: boolean;
+	offset: number;
+	limit: number;
+	onOffsetChange: (offset: number) => void;
+	onCreate: () => void;
+	onEdit: (id: number) => void;
+}
+
+export default function VirtualMCPsTable({
+	virtualMcps,
+	totalCount,
+	isFetching,
+	search,
+	onSearchChange,
+	hasActiveSearch,
+	offset,
+	limit,
+	onOffsetChange,
+	onCreate,
+	onEdit,
+}: VirtualMCPsTableProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
+	const { toast } = useToast();
+	const [deleteVirtualMCP, { isLoading: deleting }] = useDeleteVirtualMCPMutation();
+	const [updateVirtualMCP] = useUpdateVirtualMCPMutation();
+	const canUpdate = useRbac(RbacResource.VirtualMCPs, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.VirtualMCPs, RbacOperation.Delete);
+
+	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
+
+	const [pendingDelete, setPendingDelete] = useState<VirtualMCP | null>(null);
+	const [pendingId, setPendingId] = useState<number | null>(null);
+	const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
+
+	// PATCH-style update: send only `enabled`, so the toggle never touches the tools or name.
+	const toggleEnabled = async (row: VirtualMCP, enabled: boolean) => {
+		setTogglingIds((prev) => new Set(prev).add(row.id));
+		try {
+			await updateVirtualMCP({ id: row.id, data: { enabled } }).unwrap();
+			toast({ title: enabled ? t("virtualMcps.enabledToast") : t("virtualMcps.disabledToast") });
+		} catch (err) {
+			toast({ title: t("virtualMcps.updateFailed"), description: getErrorMessage(err), variant: "destructive" });
+		} finally {
+			setTogglingIds((prev) => {
+				const next = new Set(prev);
+				next.delete(row.id);
+				return next;
+			});
+		}
+	};
+
+	const confirmDelete = async () => {
+		if (!pendingDelete) return;
+		const row = pendingDelete;
+		setPendingDelete(null);
+		setPendingId(row.id);
+		try {
+			await deleteVirtualMCP(row.id).unwrap();
+			// Deleting the last row on a non-zero page leaves offset past the end; step back a page.
+			if (virtualMcps.length === 1 && offset > 0) {
+				onOffsetChange(Math.max(0, offset - limit));
+			}
+			toast({ title: t("virtualMcps.deleted") });
+		} catch (err) {
+			toast({ title: t("virtualMcps.deleteFailed"), description: getErrorMessage(err), variant: "destructive" });
+		} finally {
+			setPendingId(null);
+		}
+	};
+
+	return (
+		<div className="flex grow flex-col overflow-auto">
+			<AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{t("virtualMcps.deleteTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>
+							<Trans
+								t={t}
+								i18nKey="virtualMcps.deleteDesc"
+								values={{ name: pendingDelete?.name, slug: pendingDelete?.endpoint_slug }}
+								components={{ mono: <span className="font-mono" /> }}
+							/>
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid="virtual-mcp-delete-cancel">{tc("cancel")}</AlertDialogCancel>
+						<AlertDialogAction onClick={confirmDelete} data-testid="virtual-mcp-delete-confirm">
+							{tc("delete")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+
+			<PageTitle title={t("virtualMcps.title")}>{t("virtualMcps.description")}</PageTitle>
+
+			<div className="mb-4 flex items-center justify-between gap-3">
+				<div className="relative max-w-sm min-w-[200px] flex-1">
+					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+					<Input
+						aria-label={t("virtualMcps.searchAria")}
+						placeholder={t("virtualMcps.searchPlaceholder")}
+						value={search}
+						onChange={(e) => onSearchChange(e.target.value)}
+						className="pl-9"
+						data-testid="virtual-mcps-search-input"
+					/>
+				</div>
+				<Button onClick={onCreate} data-testid="virtual-mcp-create-btn">
+					<Plus className="h-4 w-4" />
+					{t("virtualMcps.add")}
+				</Button>
+			</div>
+
+			<div className="flex grow flex-col overflow-auto">
+				<div className={`mb-2 grow overflow-auto rounded-sm border ${isFetching ? "opacity-70 transition-opacity" : ""}`}>
+					<Table>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
+								<TableHead>{t("common.name")}</TableHead>
+								<TableHead>{t("registry.columns.endpoint")}</TableHead>
+								<TableHead>{t("virtualMcps.sourceServers")}</TableHead>
+								<TableHead>{t("virtualMcps.includedTools")}</TableHead>
+								<TableHead>{t("common.created")}</TableHead>
+								<TableHead>{t("virtualMcps.assignedTo")}</TableHead>
+								<TableHead>{t("common.enabled")}</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{virtualMcps.length === 0 ? (
+								<TableRow>
+									<TableCell colSpan={8} className="h-24 text-center">
+										{isFetching ? (
+											<div className="text-muted-foreground text-sm">{t("virtualMcps.loading")}</div>
+										) : hasActiveSearch ? (
+											<div className="text-muted-foreground text-sm">{t("virtualMcps.noMatch")}</div>
+										) : (
+											<div className="flex flex-col items-center gap-3 py-6">
+												<Server className="text-muted-foreground h-10 w-10" strokeWidth={1} />
+												<span className="text-muted-foreground text-sm">{t("virtualMcps.empty")}</span>
+												<Button size="sm" onClick={onCreate}>
+													<Plus className="h-4 w-4" />
+													{t("virtualMcps.add")}
+												</Button>
+											</div>
+										)}
+									</TableCell>
+								</TableRow>
+							) : (
+								virtualMcps.map((row) => (
+									<TableRow key={row.id} className="group">
+										<TableCell className="font-medium">{row.name}</TableCell>
+										<TableCell>
+											<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
+										<TableCell className="text-muted-foreground text-sm" data-testid={`virtual-mcp-included-tools-${row.id}`}>
+											<IncludedToolsCell tools={row.tools ?? []} />
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
+										<TableCell data-testid={`virtual-mcp-assigned-${row.id}`}>
+											<AssignedToCell vkIds={row.virtual_key_ids ?? []} />
+										</TableCell>
+										<TableCell onClick={(e) => e.stopPropagation()}>
+											<Switch
+												size="md"
+												checked={row.enabled}
+												disabled={!canUpdate || togglingIds.has(row.id)}
+												onAsyncCheckedChange={(checked) => toggleEnabled(row, checked)}
+												aria-label={row.enabled ? t("virtualMcps.disableAria") : t("virtualMcps.enableAria")}
+												data-testid={`virtual-mcp-enabled-switch-${row.id}`}
+											/>
+										</TableCell>
+										<TableCell
+											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+											onClick={(e) => e.stopPropagation()}
+										>
+											<RowActions
+												busy={deleting && pendingId === row.id}
+												canUpdate={canUpdate}
+												canDelete={canDelete}
+												onEdit={() => onEdit(row.id)}
+												onDelete={() => setPendingDelete(row)}
+											/>
+										</TableCell>
+									</TableRow>
+								))
+							)}
+						</TableBody>
+					</Table>
+				</div>
+
+				{totalCount > 0 && (
+					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
+						<div className="text-muted-foreground flex items-center gap-2">
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
+							})}
+						</div>
+
+						<div className="flex items-center gap-2">
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+								disabled={offset === 0}
+								data-testid="virtual-mcps-pagination-prev-btn"
+								aria-label={t("common.previousPage")}
+							>
+								<ChevronLeft className="size-3" />
+							</Button>
+
+							<div className="flex items-center gap-1">
+								<span>{t("common.page")}</span>
+								<span>{Math.floor(offset / limit) + 1}</span>
+								<span>{t("common.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
+							</div>
+
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => onOffsetChange(offset + limit)}
+								disabled={offset + limit >= totalCount}
+								data-testid="virtual-mcps-pagination-next-btn"
+								aria-label={t("common.nextPage")}
+							>
+								<ChevronRight className="size-3" />
+							</Button>
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
+	const { t } = useTranslation("mcp");
+	const fullUrl = `${baseUrl}/mcp/${slug}`;
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
+	return (
+		<button
+			type="button"
+			onClick={() => copy(fullUrl)}
+			className="text-muted-foreground hover:text-foreground inline-flex cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
+			aria-label={t("registry.sheet.copyEndpointAria")}
+			data-testid={`virtual-mcp-endpoint-copy-${slug}`}
+		>
+			{withBasePath(`/mcp/${slug}`)}
+			<span className="opacity-0 transition-opacity group-hover:opacity-100">
+				{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
+			</span>
+		</button>
+	);
+}
+
+// "All tools" grants count the server's live tools. Each server is read by id, since the
+// clients list is paged server-side and a server past its first page would count as zero.
+function IncludedToolsCell({ tools }: { tools: VirtualMCPToolSpec[] }) {
+	const [allToolCounts, setAllToolCounts] = useState<Record<string, number | null>>({});
+	const handleResolved = useCallback((id: string, count: number | null) => {
+		setAllToolCounts((prev) => (prev[id] === count ? prev : { ...prev, [id]: count }));
+	}, []);
+	const allIds = Array.from(new Set(tools.filter(isAllTools).map((spec) => spec.mcp_client_id)));
+	const pending = allIds.some((id) => allToolCounts[id] === undefined);
+	const failed = allIds.some((id) => allToolCounts[id] === null);
+	const total = tools.reduce(
+		(sum, spec) => sum + (isAllTools(spec) ? (allToolCounts[spec.mcp_client_id] ?? 0) : spec.tool_names.length),
+		0,
+	);
+	return (
+		<>
+			{allIds.map((id) => (
+				<MCPClientToolCountResolver key={id} id={id} onResolved={handleResolved} />
+			))}
+			{pending ? "…" : failed ? "—" : total}
+		</>
+	);
+}
+
+function isAllTools(spec: VirtualMCPToolSpec): boolean {
+	return spec.tool_names.length === 1 && spec.tool_names[0] === "*";
+}
+
+// Reports one server's tool count: null when the read fails, 0 when the server no longer exists.
+function MCPClientToolCountResolver({ id, onResolved }: { id: string; onResolved: (id: string, count: number | null) => void }) {
+	const { data, isError } = useGetMCPClientsQuery({ server: id, limit: 1 });
+	useEffect(() => {
+		if (isError) onResolved(id, null);
+		else if (data) onResolved(id, data.clients?.[0]?.tools?.length ?? 0);
+	}, [data, isError, id, onResolved]);
+	return null;
+}
+
+// A key's name, read by id; the virtual keys list is paged server-side, so a key past its first
+// page would otherwise show as a raw id. Falls back to the id when the key cannot be read.
+function VirtualKeyLabel({ id }: { id: string }) {
+	const { t } = useTranslation("mcp");
+	const { data, isLoading } = useGetVirtualKeyQuery(id);
+	if (isLoading) return <span className="bg-muted/60 inline-block h-3 w-20 animate-pulse rounded align-middle" />;
+	return <>{t("virtualMcps.keyNamed", { name: data?.virtual_key?.name || id })}</>;
+}
+
+function AssignedToCell({ vkIds }: { vkIds: string[] }) {
+	if (vkIds.length === 0) return <span className="text-muted-foreground text-sm">-</span>;
+	const VISIBLE = 2;
+	const visible = vkIds.slice(0, VISIBLE);
+	const overflow = vkIds.slice(VISIBLE);
+	return (
+		<div className="flex flex-wrap items-center gap-1">
+			{visible.map((id) => (
+				<Badge key={id} variant="outline" className="max-w-[180px] font-normal">
+					<span className="truncate">
+						<VirtualKeyLabel id={id} />
+					</span>
+				</Badge>
+			))}
+			{overflow.length > 0 && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Badge variant="outline" className="cursor-help font-normal">
+							+{overflow.length}
+						</Badge>
+					</TooltipTrigger>
+					<TooltipContent className="max-w-xs">
+						{overflow.map((id, i) => (
+							<span key={id}>
+								{i > 0 && ", "}
+								<VirtualKeyLabel id={id} />
+							</span>
+						))}
+					</TooltipContent>
+				</Tooltip>
+			)}
+		</div>
+	);
+}
+
+function RowActions({
+	busy,
+	canUpdate,
+	canDelete,
+	onEdit,
+	onDelete,
+}: {
+	busy: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
+	onEdit: () => void;
+	onDelete: () => void;
+}) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
+	// A read-only user (no update or delete permission) gets no actions menu at all.
+	if (!canUpdate && !canDelete) return null;
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("virtualMcps.actionsAria")} disabled={busy}>
+					{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				{canUpdate && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onEdit();
+						}}
+					>
+						<Pencil className="h-4 w-4" />
+						{tc("edit")}
+					</DropdownMenuItem>
+				)}
+				{canDelete && (
+					<DropdownMenuItem
+						variant="destructive"
+						className="cursor-pointer"
+						onSelect={(e) => {
+							e.preventDefault();
+							onDelete();
+						}}
+					>
+						<Trash2 className="h-4 w-4" />
+						{tc("delete")}
+					</DropdownMenuItem>
+				)}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
+function formatDate(iso: string): string {
+	try {
+		const t = new Date(iso).getTime();
+		if (Number.isNaN(t)) return iso;
+		return new Date(t).toLocaleDateString(getLocale(), { year: "numeric", month: "short", day: "numeric" });
+	} catch {
+		return iso;
+	}
+}

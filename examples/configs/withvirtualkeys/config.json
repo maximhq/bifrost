@@ -28,7 +28,6 @@
     "auth_config": {
       "admin_password": "env.BIFROST_ADMIN_PASSWORD",
       "admin_username": "env.BIFROST_ADMIN_USERNAME",
-      "disable_auth_on_inference": true,
       "is_enabled": false
     },
     "virtual_keys": [

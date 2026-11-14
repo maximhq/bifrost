@@ -1,31 +1,66 @@
 # Routing rule and complexity analyzer endpoints.
 #
-# Every operation appears twice: once under its canonical /api/routing path, and once under
-# the /api/governance path it was served on while routing rules lived inside the governance
-# plugin. The *-legacy entries describe that second form. They are the same operations with
-# distinct operationIds, since OpenAPI requires operationIds to be unique, and are marked
-# deprecated so generated clients steer callers to the canonical paths.
+# Routing rules and the complexity analyzer config are also served on the /api/governance
+# paths they used while routing rules lived inside the governance plugin. The *-legacy entries
+# are aliases of the canonical operations: they $ref them with their own operationIds, since
+# OpenAPI requires operationIds to be unique, and x-bifrost-successor marks them deprecated
+# when the spec is bundled.
 
 rules:
   get:
     operationId: listRoutingRules
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List routing rules
-    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    description: |
+      Returns a list of all routing rules configured for intelligent request routing across providers.
     tags:
       - Routing
     parameters:
       - name: scope
         in: query
-        description: Filter routing rules by scope (global, team, customer, virtual_key)
+        description: Filter by scope. Returns only enabled rules in that scope and ignores limit, offset and search. A scope other than global needs scope_id.
         schema:
           type: string
+          enum: [global, team, customer, virtual_key, user]
       - name: scope_id
         in: query
-        description: Filter routing rules by scope ID
+        description: Filter by scope ID. Required with a scope other than global.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. Sending limit, offset or
+          search returns one page; without them every rule is returned. Ignored when
+          scope is set.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
+      - name: offset
+        in: query
+        description: Number of rules to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: search
+        in: query
+        description: Case-insensitive match against the rule's name or CEL expression.
         schema:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -33,13 +68,25 @@ rules:
           application/json:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
   post:
     operationId: createRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create routing rule
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+    description: |
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Only `name` and at least one target are required: `scope` defaults to `global`, `priority` to `0`, `enabled` to `true` and `chain_rule` to `false`, and an empty `cel_expression` matches every request.
     tags:
       - Routing
     requestBody:
@@ -50,6 +97,7 @@ rules:
             $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule created successfully
@@ -59,14 +107,30 @@ rules:
               $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name."
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
 rules-by-id:
   get:
     operationId: getRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get routing rule
-    description: Returns a specific routing rule by ID.
+    description: |
+      Returns a specific routing rule by ID.
     tags:
       - Routing
     parameters:
@@ -78,6 +142,7 @@ rules-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -99,8 +164,18 @@ rules-by-id:
 
   put:
     operationId: updateRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update routing rule
-    description: Updates an existing routing rule's configuration.
+    description: |
+      Updates an existing routing rule's configuration.
     tags:
       - Routing
     parameters:
@@ -118,6 +193,7 @@ rules-by-id:
             $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule updated successfully
@@ -133,13 +209,29 @@ rules-by-id:
           application/json:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name."
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
   delete:
     operationId: deleteRoutingRule
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RoutingRules:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete routing rule
-    description: Deletes a routing rule.
+    description: |
+      Deletes a routing rule.
     tags:
       - Routing
     parameters:
@@ -151,6 +243,7 @@ rules-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Routing rule deleted successfully
@@ -167,17 +260,27 @@ rules-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# Model Configs CRUD
+# Complexity analyzer
 
 complexity:
   get:
     operationId: getComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config retrieved successfully
@@ -192,8 +295,17 @@ complexity:
 
   put:
     operationId: updateComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Phrase suggestions are set per model router, so a suggestions block is refused with 400.
     tags:
       - Routing
     requestBody:
@@ -204,6 +316,7 @@ complexity:
             $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config updated successfully
@@ -221,12 +334,23 @@ complexity:
 complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reset complexity analyzer config
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.
+    description: |
+      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved.
     tags:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity analyzer config reset successfully
@@ -241,110 +365,382 @@ complexity-reset:
 
 rules-legacy:
   get:
+    $ref: '#/rules/get'
     operationId: listRoutingRulesLegacy
-    deprecated: true
-    summary: List routing rules (deprecated path)
-    description: Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    parameters:
-      - name: scope
-        in: query
-        description: Filter routing rules by scope (global, team, customer, virtual_key)
-        schema:
-          type: string
-      - name: scope_id
-        in: query
-        description: Filter routing rules by scope ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      '200':
-        description: Successful response
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
+    x-bifrost-successor: '/api/routing/rules'
+    x-bifrost-removal: following-major-release
   post:
+    $ref: '#/rules/post'
     operationId: createRoutingRuleLegacy
-    deprecated: true
-    summary: Create routing rule (deprecated path)
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      '200':
-        description: Routing rule created successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    x-bifrost-successor: '/api/routing/rules'
+    x-bifrost-removal: following-major-release
 
 rules-by-id-legacy:
   get:
+    $ref: '#/rules-by-id/get'
     operationId: getRoutingRuleLegacy
-    deprecated: true
-    summary: Get routing rule (deprecated path)
-    description: Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: '#/rules-by-id/put'
+    operationId: updateRoutingRuleLegacy
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: '#/rules-by-id/delete'
+    operationId: deleteRoutingRuleLegacy
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
+
+complexity-status:
+  get:
+    operationId: getComplexityAnalyzerStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get complexity classifier status
+    description: |
+      Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
     tags:
       - Routing
-    parameters:
-      - name: rule_id
-        in: path
-        required: true
-        description: Routing rule ID
-        schema:
-          type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
-        description: Successful response
+        description: Complexity classifier status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-status-retry:
+  post:
+    operationId: retryComplexityAnalyzerWarmup
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Retry failed complexity classifier warmup
+    description: |
+      Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '202':
+        description: Semantic warmup retry accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '409':
+        description: The semantic classifier is not currently failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-generations:
+  get:
+    operationId: listComplexityGenerations
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List complexity classifier generations
+    description: |
+      Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Generations retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityGenerations'
+      '503':
+        description: The vector store could not be enumerated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-generation-delete:
+  delete:
+    operationId: deleteComplexityGeneration
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a retired complexity generation
+    description: |
+      Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - name: namespace
+        in: path
+        required: true
+        description: The fingerprinted namespace to remove, as returned by the generations listing.
+        schema:
+          type: string
+          example: BifrostComplexityRouter_943f4d9a1b0502568b4dc4911c81cfa8c8b3fb3eb71311e732c95b18003cfdb5
+    responses:
+      '200':
+        description: Generation deleted
         content:
           application/json:
             schema:
               type: object
               properties:
-                rule:
-                  $ref: '../../schemas/management/governance.yaml#/RoutingRule'
-      '404':
-        description: Routing rule not found
+                status:
+                  type: string
+                  example: deleted
+                namespace:
+                  type: string
+      '400':
+        description: The namespace is not a complexity routing generation
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The generation is currently serving classification requests
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The vector store could not be reached
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
 
+complexity-legacy:
+  get:
+    $ref: '#/complexity/get'
+    operationId: getComplexityAnalyzerConfigLegacy
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config'
+    x-bifrost-removal: following-major-release
   put:
-    operationId: updateRoutingRuleLegacy
-    deprecated: true
-    summary: Update routing rule (deprecated path)
-    description: Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    $ref: '#/complexity/put'
+    operationId: updateComplexityAnalyzerConfigLegacy
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config'
+    x-bifrost-removal: following-major-release
+
+complexity-reset-legacy:
+  post:
+    $ref: '#/complexity-reset/post'
+    operationId: resetComplexityAnalyzerConfigLegacy
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config/reset'
+    x-bifrost-removal: following-major-release
+
+complexity-suggestions:
+  get:
+    operationId: listComplexitySuggestions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List phrase suggestions
+    description: |
+      Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the model router config.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
     parameters:
-      - name: rule_id
+      - name: router_id
         in: path
         required: true
-        description: Routing rule ID
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        description: Comma-separated statuses to list (open, accepted, dismissed, superseded); default open.
+        schema:
+          type: string
+          example: open,dismissed
+      - name: limit
+        in: query
+        required: false
+        description: Page size; default 100, at most 500.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+      - name: offset
+        in: query
+        required: false
+        description: Suggestions to skip, in list order; default 0.
+        schema:
+          type: integer
+          minimum: 0
+    responses:
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '200':
+        description: Suggestions retrieved
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionsList'
+      '400':
+        description: Unknown status, or a limit or offset out of range
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestions could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion:
+  get:
+    operationId: getComplexitySuggestion
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a phrase suggestion with its examples
+    description: |
+      Returns one suggestion and the text of the requests it was written from, read from their logs within the caller's access scope. An example whose log was deleted, hides its content, or is outside the caller's access is listed without text.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Suggestion retrieved
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionDetail'
+      '404':
+        description: The model router is not saved, or it has no suggestion with this id
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion or its examples could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-status:
+  put:
+    operationId: updateComplexitySuggestionStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Accept, dismiss or reopen a phrase suggestion
+    description: |
+      Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank, with POST /api/routing/model-routers/{router_id}/phrases or a router update. Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: suggestion_id
+        in: path
+        required: true
         schema:
           type: string
     requestBody:
@@ -352,130 +748,1066 @@ rules-by-id-legacy:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
-    security:
-      - ManagementBearerAuth: []
+            $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionStatusUpdate'
     responses:
       '200':
-        description: Routing rule updated successfully
+        description: Status updated
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestion'
+      '400':
+        description: Invalid request body, or a status that does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router is not saved, or it has no suggestion with this id
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The suggestion cannot move to that status from its current one, or it changed since it was read (another decision, or a run superseded it)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion could not be read or updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-test:
+  post:
+    operationId: testComplexitySuggestionPhrases
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Test phrases against routed requests
+    description: |
+      Routes example requests the way the semantic router does, by nearest phrase, against the serving phrase bank and against the bank with the given phrases added, without saving anything. Use it to try an edited phrase before staging it. Each tested phrase also reports its nearest existing phrase, which shows a near-duplicate. The phrases and examples are embedded with the router's embedding model.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityPhraseTestRequest'
+    responses:
+      '200':
+        description: Phrases tested
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityPhraseTest'
+      '400':
+        description: No phrases, too many, a phrase without text or a valid tier, or a phrase over 2,000 characters
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router is not saved, or the suggestion_id sent is not one of its suggestions
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion or the example logs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '502':
+        description: The embedding provider failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-runs:
+  get:
+    operationId: listComplexitySuggestionRuns
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List phrase suggestion runs
+    description: |
+      Lists suggestion runs newest first, scheduled and manual, with what each read, created, refreshed and superseded, what its model calls cost, and why it failed if it did. The latest 200 runs are kept.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
+    responses:
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '200':
+        description: Runs retrieved
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                runs:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRun'
+                next_run_at:
+                  type: string
+                  format: date-time
+      '400':
+        description: Invalid limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The runs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+  post:
+    operationId: startComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Start a phrase suggestion run now
+    description: |
+      Starts a run outside the schedule. It is queued in the background and answers at once with the run's ID; the run appears in the runs listing when it starts. Refused while suggestions are off, another run is queued or running, or no phrase bank is serving yet (a previous one still serving while a new one warms is enough).
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: window
+        in: query
+        required: false
+        description: How much of the lookback the run reads, as hours or days (24h, 7d). Omitted reads the whole lookback; shorter than one second or longer than the lookback is 400.
+        schema:
+          type: string
+          example: 7d
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    responses:
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '202':
+        description: Run started
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                run_id:
+                  type: string
+      '400':
+        description: The window is not a duration, is shorter than one second, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off, or a run is already queued or running
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be started
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or it has no warmed phrase bank to suggest against yet
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-run-estimate:
+  get:
+    operationId: estimateComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Estimate a phrase suggestion run
+    description: |
+      Sizes a run of the router's current settings over a window without starting it: how many captured requests the window holds, the size of the sample the run would cluster, how many more requests it would try to assign to the clusters it finds, how many fall past its assignment bound, and at most how many suggestion-model calls it would make. These describe the work planned, not its outcome. The count reads only captured timestamps where the vector store can page that read; on one that cannot (Pinecone), the window is counted again through the vector read, a page at a time, so the estimate reads vectors there.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: window
+        in: query
+        required: false
+        description: Hours or days (24h, 7d); omitted is the whole lookback. Shorter than one second or longer than the lookback is 400.
+        schema:
+          type: string
+          example: 7d
+    responses:
+      '200':
+        description: Run estimated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRunEstimate'
+      '400':
+        description: The window is not a duration, is shorter than one second, or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off for this router
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be estimated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-routers:
+  get:
+    operationId: listModelRouters
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List model routers
+    description: Returns every model router, oldest first. The list is empty until a router is created. A router stored in a form this version cannot read is left out of the list.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model routers retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a model router
+    description: |
+      Creates a named model router and starts serving it. An omitted id is generated. Targets in the body are ignored; set them with PUT /api/routing/model-routers/{router_id}/targets. Routing is optional and checked as on PUT /api/routing/model-routers/{router_id}/routing; without it the router starts off, global, with the priority after the last global router. A priority another router in the same scope has is 409.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-routers-by-id:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  get:
+    operationId: getModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a model router
+    description: Returns one model router.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The router is stored in a form this version cannot read; save or reset it
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a model router
+    description: Changes a router's name, description and classifier config, and hot-reloads it. The id in the path names the router. Only what the body sends changes - an omitted name or description keeps the stored one, and a body without any classifier setting keeps the stored config; a body with classifier settings replaces the whole config. Targets and routing in the body are ignored and stay as stored; each is set on its own endpoint.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterUpdate'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: Routing rule not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: Another router has this name, or the stored router is in a form this version cannot read and the body sends no classifier settings to replace it; save or reset it
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
   delete:
-    operationId: deleteRoutingRuleLegacy
-    deprecated: true
-    summary: Delete routing rule (deprecated path)
-    description: Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    operationId: deleteModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a model router
+    description: Deletes a router with its targets and routing.
     tags:
       - Routing
-    parameters:
-      - name: rule_id
-        in: path
-        required: true
-        description: Routing rule ID
-        schema:
-          type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
-        description: Routing rule deleted successfully
+        description: Model router deleted successfully
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/common.yaml#/MessageResponse'
       '404':
-        description: Routing rule not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# Model Configs CRUD
+model-router-reset:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: resetModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
 
-complexity-legacy:
-  get:
-    operationId: getComplexityAnalyzerConfigLegacy
-    deprecated: true
-    summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Reset a model router
+    description: Restores the router's reference phrases to the built-in defaults and hot-reloads it. Its name, classifier, targets, routing and other settings are kept.
     tags:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
-        description: Complexity analyzer config retrieved successfully
+        description: Model router reset successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
-      '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
-  put:
-    operationId: updateComplexityAnalyzerConfigLegacy
-    deprecated: true
-    summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+model-router-defaults:
+  get:
+    operationId: getModelRouterDefaults
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get model router defaults
+    description: Returns what a new model router starts from, so a client can show it before saving anything - the built-in config with its reference phrases, the decision model's per-tier guidance, and the llm classifier's default prompt.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router defaults retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterDefaults'
+
+model-router-targets:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  put:
+    operationId: setModelRouterTargets
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Set a model router's targets
+    description: Replaces the model each tier of the router gets, and serves the new targets without restarting the router's classifiers. A tier with no target keeps the request's model; an empty list clears them.
     requestBody:
       required: true
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      '200':
-        description: Complexity analyzer config updated successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-      '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
-
-complexity-reset-legacy:
-  post:
-    operationId: resetComplexityAnalyzerConfigLegacy
-    deprecated: true
-    summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterTargetsRequest'
     tags:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
-        description: Complexity analyzer config reset successfully
+        description: Model router targets saved successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-routing:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  put:
+    operationId: setModelRouterRouting
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a model router's routing
+    description: |
+      Changes which requests the router takes: whether it is on, its scope, its condition and its priority within the scope. Each field the body sends replaces the stored value and an omitted field keeps it, as in a routing rule update, so `{"enabled": false}` turns the router off and leaves the rest as it is. A `cel_expression` sent without `query` clears the stored builder state, which described the old condition. Unknown fields are refused with 400. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, global), by priority within a scope. The first enabled router whose condition holds classifies the request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model; no other router is tried. A condition of model == "<name>" lets apps ask for the router by that model name. The condition cannot use complexity_tier. Priorities are unique within a scope among model routers, separate from routing rule priorities. The router's classifier and targets are left as they are.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterRoutingUpdate'
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router routing saved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouter'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-router-status:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  get:
+    operationId: getModelRouterStatus
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get a model router's classifier status
+    description: Returns the readiness of one router's semantic classifier and llm fallback, in the shape of the complexity analyzer status.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Model router status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+        description: The model router is saved but not loaded (the message says why), or the routing plugin could not report its status
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-router-status-retry:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: retryModelRouterWarmup
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Retry a model router's failed warmup
+    description: Restarts one router's semantic classifier warmup when its state is failed. The retry runs asynchronously.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '202':
+        description: Warmup retry started
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The router's semantic classifier warmup is not currently failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The model router is saved but not loaded (the message says why), or the routing plugin could not retry its warmup
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-router-classify:
+  parameters:
+    - name: router_id
+      in: path
+      required: true
+      description: Model router id.
+      schema:
+        type: string
+  post:
+    operationId: classifyWithModelRouter
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Classify statements with a model router
+    description: |
+      Classifies up to 100 statements with one model router as it is served now, and returns the complexity tier each one gets. Each statement is classified as the latest user turn of a chat request, through the same input extraction, classifier, and fallback chain as live traffic.
+
+      Nothing is saved. No session tier is read or changed, and the statements are not captured for phrase suggestions. A router whose classifier is the decision model, or that falls back to the decision model or the LLM classifier, makes one model call per statement that reaches it, billed like any routing call.
+
+      Label statements with `expected_tier` to score a dataset: the summary then reports accuracy over the labelled statements and a confusion matrix. Send a larger dataset in pages of 100.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ModelRouterClassifyRequest'
+          example:
+            inputs:
+              - id: row-1
+                text: what time is it in Tokyo?
+                expected_tier: SIMPLE
+              - id: row-2
+                text: now add retries with exponential backoff to the upload client
+                previous_user_messages:
+                  - here is our S3 upload client in Go
+                expected_tier: MEDIUM
+    responses:
+      '200':
+        description: One classification per statement, in input order, and a summary
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelRouterClassifyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Classification is not available on this deployment, the routing plugin is not loaded, the model router is saved but not loaded, or classifying failed for another reason; the message says which.
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-run-cancel:
+  post:
+    operationId: cancelComplexitySuggestionRun
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Cancel a phrase suggestion run
+    description: |
+      Stops a queued or running run, on whichever gateway node runs it. A queued run is recorded as cancelled at once. A running run stops at its next check and records itself as cancelled, keeping what it had written; the call waits a few seconds for that and returns the run as it ended, or, if it has not stopped by then, as it stands, still running.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Run cancelled, or asked to stop
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRun'
+      '404':
+        description: The model router is not saved, or it has no run with this id
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: The run has already ended, or suggestions are off
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be cancelled
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+complexity-suggestion-impact:
+  post:
+    operationId: replayComplexitySuggestionImpact
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Check what phrases would do to recent traffic
+    description: |
+      Adds the phrases given, by tier, to the router's saved phrases for this replay only, routes the router's captured requests from the window, by nearest phrase, against the saved bank and against the bank with the phrases added, and reports what would change. Nothing is saved: the phrases are dropped after the replay, and only the add phrases endpoint saves phrases. A phrase its tier already holds is skipped and reported; one another tier holds is refused. A window that reaches back before the router captured requests is first filled from its logs. Reported: each tier's request counts under both, the requests that change tier (the first 25 listed with their text when the caller may read their logs), and new phrases that take requests the live bank placed confidently in another tier. Past 10,000 requests a uniform sample of the window is replayed.
+
+      Only requests that change tier are priced, both sides at the router's current models: their logged tokens at the highest-weighted target model of their live tier (or, when the live tier has no target, the model that served them), and at the router's highest-weighted target model for their new tier, at list price before caching. A change into no match, to a tier without a target model or known price, or of a log that is gone is counted as unpriced. A sampled replay's costs are scaled up to the whole window. Draft phrases the live bank lacks are embedded with the router's embedding model.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+      - name: window
+        in: query
+        required: false
+        description: Hours or days (24h, 7d); omitted is the whole lookback.
+        schema:
+          type: string
+          example: 7d
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionImpactRequest'
+    responses:
+      '200':
+        description: Draft replayed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionImpact'
+      '400':
+        description: No phrases, an empty or too-long phrase, an unknown tier, a phrase another tier already holds, a bank past its phrase limit, or a window that is not a duration or is longer than the lookback
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: Suggestions are off for this router, or the stored router is in a form this version cannot read; save or reset it
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The stored router could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '502':
+        description: The embedding provider failed the draft's new phrases, or the logs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or the config store is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+
+model-router-phrases:
+  post:
+    operationId: addModelRouterPhrases
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Routers:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add phrases to a model router
+    description: |
+      Appends phrases, by tier, to the router's saved phrase bank and serves it; the one phrase suggestion endpoint that changes routing. A phrase its tier already holds is skipped and reported. A phrase another tier holds, a bank past its phrase limit, or a suggestion named that is not the router's or not open refuses the request, and nothing is saved. Once the phrases are saved, the suggestions named are marked accepted: the phrases stay saved even when one cannot be (a run superseded it meanwhile, or its status could not be written), and `accepted` lists only those that were. The router is served again even when every phrase was already there, so a retry after a failed reload reaches it. Unknown fields are refused with 400. Changed phrases are re-embedded in the background, as any phrase save is.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: router_id
+        in: path
+        required: true
+        description: The model router; an unknown router is 404.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/AddModelRouterPhrasesRequest'
+    responses:
+      '200':
+        description: Phrases added and the router served
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/AddModelRouterPhrasesResponse'
+      '400':
+        description: No phrases, an empty or too-long phrase, an unknown tier, a tier given twice, a phrase another tier already holds, or a bank past its phrase limit
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '404':
+        description: The router, or a suggestion named, does not exist
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '409':
+        description: A suggestion named is not open, or the stored router is one this version cannot read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestions named could not be read, the save failed, or the phrases were saved but the router could not be served; a retry saves nothing more and reaches the reload again
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: suggestion_ids were sent while phrase suggestions are unavailable (no routing plugin or log store)
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'

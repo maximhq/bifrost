@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,17 +68,36 @@ func (m *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // MockClientManager implements ClientManager for testing
 type MockClientManager struct{}
 
-func (m *MockClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
-	return nil // Return nil to simulate no client found
+func (m *MockClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	return nil, nil // Return nil to simulate no client found
 }
 
 func (m *MockClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
 }
 
+func (m *MockClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *MockClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
+}
+
 func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
 }
+
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *MockClientManager) GetCallerDiscovery(ctx context.Context, _ bool) CallerDiscovery {
+	return CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
+}
+
+func (m *MockClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
+	return nil
+}
+
+func (m *MockClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
 
 func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
 func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
@@ -557,7 +577,7 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 // MockAutoClientManager returns a client state that marks all tools as auto-executable.
 type MockAutoClientManager struct{}
 
-func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+func (m *MockAutoClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	return &schemas.MCPClientState{
 		Name: "test-client",
 		ExecutionConfig: &schemas.MCPClientConfig{
@@ -565,16 +585,35 @@ func (m *MockAutoClientManager) GetClientForTool(toolName string) *schemas.MCPCl
 			ToolsToExecute:     []string{"*"},
 			ToolsToAutoExecute: []string{"*"},
 		},
-	}
+	}, &schemas.MCPDiscovery{}
 }
 
 func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return nil
 }
 
+func (m *MockAutoClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *MockAutoClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
+}
+
 func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
 }
+
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *MockAutoClientManager) GetCallerDiscovery(ctx context.Context, _ bool) CallerDiscovery {
+	return CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
+}
+
+func (m *MockAutoClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
+	return nil
+}
+
+func (m *MockAutoClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
 
 func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             { return nil }
 func (m *MockAutoClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
@@ -956,5 +995,30 @@ func TestExecuteAgentForResponsesRequest_OutputStructured(t *testing.T) {
 		t.Error("Expected output blocks for structured content")
 	} else if len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) != 2 {
 		t.Errorf("Expected 2 output blocks, got %d", len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
+	}
+}
+
+// An automatically executed tool's media is named in the summary returned beside a pending tool call.
+func TestExecutedToolSummaryNamesMedia(t *testing.T) {
+	results := []*schemas.ChatMessage{{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		}},
+	}}
+	executed := []schemas.ChatAssistantMessageToolCall{{ID: schemas.Ptr("call_1"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot")}}}
+	pending := []schemas.ChatAssistantMessageToolCall{{ID: schemas.Ptr("call_2"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("deploy")}}}
+
+	chat := createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(&schemas.BifrostChatResponse{}, results, executed, pending)
+	responses := createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(&schemas.BifrostResponsesResponse{}, results, executed, pending)
+	for name, response := range map[string]any{"chat": chat, "responses": responses} {
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		if !strings.Contains(string(data), "[image/png") {
+			t.Errorf("%s: expected the image placeholder in the summary; got %s", name, data)
+		}
 	}
 }

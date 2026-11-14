@@ -4,7 +4,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // LangChainRouter holds route registrations for LangChain endpoints.
@@ -16,7 +16,7 @@ type LangChainRouter struct {
 }
 
 // NewLangChainRouter creates a new LangChainRouter with the given bifrost client.
-func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *LangChainRouter {
+func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *LangChainRouter {
 	routes := []RouteConfig{}
 
 	// Add OpenAI routes to LangChain for OpenAI API compatibility
@@ -38,7 +38,7 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateCohereRouteConfigs("/langchain")...)
 
 	return &LangChainRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

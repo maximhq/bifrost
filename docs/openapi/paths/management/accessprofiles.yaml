@@ -10,8 +10,17 @@ access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List access profiles
-    description: Returns access profiles visible to the caller.
+    description: |
+      Returns access profiles visible to the caller.
     tags:
       - Access Profiles
     parameters:
@@ -38,6 +47,7 @@ access-profiles:
           type: boolean
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -57,6 +67,14 @@ access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create access profile
     description: |
       Creates a new access profile template. The profile is inactive until attached to a role.
@@ -71,6 +89,7 @@ access-profiles:
             $ref: '../../schemas/management/accessprofiles.yaml#/CreateAccessProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Profile created
@@ -95,8 +114,17 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get access profile by ID
-    description: Returns the profile plus its role attachments and the count of users holding a copy.
+    description: |
+      Returns the profile plus its role attachments and the count of users holding a copy.
     tags:
       - Access Profiles
     parameters:
@@ -107,6 +135,7 @@ access-profiles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -128,6 +157,14 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update access profile
     description: |
       Partial update. Omitted fields preserve the current value.
@@ -149,6 +186,7 @@ access-profiles-by-id:
             $ref: '../../schemas/management/accessprofiles.yaml#/UpdateAccessProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile updated
@@ -174,8 +212,17 @@ access-profiles-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete access profile
-    description: Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
+    description: |
+      Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
     tags:
       - Access Profiles
     parameters:
@@ -186,6 +233,7 @@ access-profiles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile deleted
@@ -210,8 +258,17 @@ access-profiles-activate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Activate access profile
-    description: Sets the profile active. Idempotent.
+    description: |
+      Sets the profile active. Idempotent.
     tags:
       - Access Profiles
     parameters:
@@ -222,6 +279,7 @@ access-profiles-activate:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile is active.
@@ -244,8 +302,17 @@ access-profiles-deactivate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Deactivate access profile
-    description: Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
+    description: |
+      Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
     tags:
       - Access Profiles
     parameters:
@@ -256,6 +323,7 @@ access-profiles-deactivate:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile is inactive.
@@ -278,8 +346,17 @@ access-profiles-clone:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Clone an access profile
-    description: Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
+    description: |
+      Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
     tags:
       - Access Profiles
     parameters:
@@ -296,6 +373,7 @@ access-profiles-clone:
             $ref: '../../schemas/management/accessprofiles.yaml#/CloneProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Cloned profile created.
@@ -322,6 +400,14 @@ access-profiles-propagate:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Propagate template changes to user copies
     description: |
       Pushes selected fields from the template to every user that holds a copy.
@@ -342,6 +428,7 @@ access-profiles-propagate:
             $ref: '../../schemas/management/accessprofiles.yaml#/PropagateRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Propagation result.
@@ -366,6 +453,14 @@ access-profiles-roles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Attach roles to access profile
     description: |
       Attaches one or more roles. Setting `is_default: true` makes the profile the role's default
@@ -386,6 +481,7 @@ access-profiles-roles:
             $ref: '../../schemas/management/accessprofiles.yaml#/AttachRolesRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Roles attached.
@@ -410,6 +506,14 @@ access-profiles-role-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach role from access profile
     tags:
       - Access Profiles
@@ -426,6 +530,7 @@ access-profiles-role-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role detached.
@@ -448,6 +553,14 @@ access-profiles-versions:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List version snapshots for an access profile
     tags:
       - Access Profiles
@@ -459,6 +572,7 @@ access-profiles-versions:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -479,6 +593,14 @@ access-profiles-version-by-number:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a single version snapshot
     tags:
       - Access Profiles
@@ -495,6 +617,7 @@ access-profiles-version-by-number:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -517,6 +640,14 @@ access-profiles-audit-logs-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List audit log entries for a single profile
     tags:
       - Access Profiles
@@ -545,6 +676,7 @@ access-profiles-audit-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -565,6 +697,14 @@ access-profiles-audit-logs-all:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List workspace-wide audit log entries
     tags:
       - Access Profiles
@@ -587,6 +727,7 @@ access-profiles-audit-logs-all:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -607,6 +748,14 @@ users-access-profiles:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List access profiles held by a user
     tags:
       - Access Profiles
@@ -618,6 +767,7 @@ users-access-profiles:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -638,8 +788,17 @@ users-access-profile-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Detach a user's access profile
-    description: Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
+    description: |
+      Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
     tags:
       - Access Profiles
     parameters:
@@ -655,6 +814,7 @@ users-access-profile-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile detached.
@@ -677,6 +837,14 @@ users-access-profile-budget-override:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set a user's access-profile budget override
     description: |
       Sets or replaces the spending override on one budget of a single user's copy of an access profile.
@@ -691,8 +859,8 @@ users-access-profile-budget-override:
       calendar period start — so every node in a cluster derives the same number of remaining cycles.
       The change is propagated cluster-wide and survives access-profile cloning and propagation.
 
-      Requires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy
-      of the profile, not on the shared template.
+      `budget_id` must be a budget on the user's own copy of the profile, not on the
+      shared template.
     tags:
       - Access Profiles
     parameters:
@@ -722,6 +890,7 @@ users-access-profile-budget-override:
             $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override applied successfully
@@ -745,13 +914,19 @@ users-access-profile-budget-override:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove a user's access-profile budget override
     description: |
       Removes any active override from the user's budget, so it is enforced against its base `max_limit`
       again. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a
       cleared grant cannot be re-derived. Safe to call on a budget that has no override.
-
-      Requires the `AccessProfiles.Update` permission.
     tags:
       - Access Profiles
     parameters:
@@ -775,6 +950,7 @@ users-access-profile-budget-override:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override removed successfully
@@ -790,6 +966,9 @@ users-access-profile-budget-override:
 users-access-profile-virtual-keys:
   post:
     operationId: addUserAccessProfileVirtualKey
+    deprecated: true
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
     x-mint:
       metadata:
         tag: Enterprise
@@ -797,7 +976,26 @@ users-access-profile-virtual-keys:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
-    summary: Add an extra virtual key under a user's access profile
+        <Warning>
+          **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)
+          instead. This path still works and behaves identically, but will be removed in a future major release.
+        </Warning>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Add an extra virtual key under a user's access profile (deprecated)
+    description: |
+      Issues an additional virtual key for the user. 
+
+      Virtual keys are scoped to the **user**, not to one access profile: what a request may do with
+      the key is resolved at request time from whichever of the user's active profiles grant it. So
+      `profile_id` is ignored — the key minted is the same whichever profile is named, and it is not
+      bound to that profile or removed with it. The user must hold at least one access profile.
     tags:
       - Access Profiles
     parameters:
@@ -809,6 +1007,9 @@ users-access-profile-virtual-keys:
       - name: profile_id
         in: path
         required: true
+        description: >
+          Ignored. Kept so the path shape stays valid for existing clients; keys are user-scoped, so
+          any value produces the same result.
         schema:
           type: integer
     requestBody:
@@ -819,6 +1020,7 @@ users-access-profile-virtual-keys:
             $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key created.
@@ -826,8 +1028,16 @@ users-access-profile-virtual-keys:
           application/json:
             schema:
               $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: User access profile not found
+        description: User has no access profiles
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '409':
+        description: A virtual key with this name already exists
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -841,6 +1051,14 @@ users-access-profile-virtual-key-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `AccessProfiles:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a virtual key from a user's access profile
     tags:
       - Access Profiles
@@ -857,6 +1075,7 @@ users-access-profile-virtual-key-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key deleted.

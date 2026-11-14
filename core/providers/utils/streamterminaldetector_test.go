@@ -153,3 +153,55 @@ func TestStreamTerminalDetectorObserveChunkUndelimitedOverflowKeepsPrefix(t *tes
 		t.Fatalf("expected pending buffer to keep original prefix")
 	}
 }
+
+func TestStreamTerminalDetectorObserveChunkAnthropicMessageStop(t *testing.T) {
+	detector := &StreamTerminalDetector{}
+	chunks := [][]byte{
+		[]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"),
+		[]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":522,\"output_tokens\":13}}\n\n"),
+		[]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+	}
+	if detector.ObserveChunk(chunks[0]) {
+		t.Fatalf("unexpected terminal detection on content_block_stop")
+	}
+	if detector.ObserveChunk(chunks[1]) {
+		t.Fatalf("unexpected terminal detection on message_delta (usage must still be observed)")
+	}
+	if !detector.ObserveChunk(chunks[2]) {
+		t.Fatalf("expected terminal detection for anthropic message_stop")
+	}
+}
+
+func TestStreamTerminalDetectorObserveChunkAnthropicMessageStopSplitAcrossChunks(t *testing.T) {
+	detector := &StreamTerminalDetector{}
+	if detector.ObserveChunk([]byte("event: message_stop\ndata: {\"type\":")) {
+		t.Fatalf("unexpected terminal detection on partial frame")
+	}
+	if !detector.ObserveChunk([]byte("\"message_stop\"}\n\n")) {
+		t.Fatalf("expected terminal detection for split anthropic message_stop")
+	}
+}
+
+// Vertex returns errors as a streamed JSON array with the body left open; without terminal
+// detection the stream hangs until the idle timeout (issue #6073).
+func TestStreamTerminalDetectorObserveChunkVertexErrorArray(t *testing.T) {
+	detector := &StreamTerminalDetector{}
+	body := []byte("[{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"Publisher Model is not servable in region us-central1.\",\n    \"status\": \"FAILED_PRECONDITION\"\n  }\n}\n]")
+	if !detector.ObserveChunk(body) {
+		t.Fatalf("expected terminal detection for vertex error array")
+	}
+}
+
+func TestStreamTerminalDetectorObserveChunkGoogleErrorObject(t *testing.T) {
+	detector := &StreamTerminalDetector{}
+	if !detector.ObserveChunk([]byte("data: {\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"quota\"}}\n\n")) {
+		t.Fatalf("expected terminal detection for google error object")
+	}
+}
+
+func TestStreamTerminalDetectorObserveChunkPlainErrorStringIsNotTerminal(t *testing.T) {
+	detector := &StreamTerminalDetector{}
+	if detector.ObserveChunk([]byte("data: {\"error\":\"\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n")) {
+		t.Fatalf("unexpected terminal detection for a non-envelope error field")
+	}
+}

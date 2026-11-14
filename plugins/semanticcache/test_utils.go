@@ -666,7 +666,7 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 		return
 	}
 
-	// Check the actual CacheHit field instead of just checking if CacheDebug exists
+	// Check the actual CacheHit field instead of just checking whether cache metadata exists.
 	if extraFields.CacheDebug.CacheHit {
 		t.Error("❌ Response was cached when it shouldn't be")
 		return
@@ -705,9 +705,14 @@ func CreateEmbeddingRequest(texts []string) *schemas.BifrostEmbeddingRequest {
 	return &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.OpenAI,
 		Model:    "text-embedding-3-small",
-		Input: &schemas.EmbeddingInput{
-			Texts: texts,
-		},
+		Input: func() []schemas.EmbeddingInputItem {
+			items := make([]schemas.EmbeddingInputItem, len(texts))
+			for i, text := range texts {
+				t := text
+				items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}}
+			}
+			return items
+		}(),
 	}
 }
 

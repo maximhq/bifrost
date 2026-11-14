@@ -1,16 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { NoPermissionView } from "@/components/noPermissionView";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import MCPToolGroupsPage from "./page";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-function RouteComponent() {
-	const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
-	if (!hasMCPToolGroupsAccess) {
-		return <NoPermissionView entity="MCP tool groups" />;
-	}
-	return <MCPToolGroupsPage />;
-}
-
+// MCP Tool Groups is superseded by Virtual MCPs. Redirect the old path so
+// existing links and bookmarks land on the new page.
 export const Route = createFileRoute("/workspace/mcp-tool-groups")({
-	component: RouteComponent,
+	beforeLoad: () => {
+		throw redirect({ to: "/workspace/virtual-mcps" });
+	},
 });

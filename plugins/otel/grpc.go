@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 
+	"github.com/maximhq/bifrost/core/network"
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -32,7 +33,9 @@ func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert str
 		}
 		creds = credentials.NewTLS(tlsConfig)
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
+	// The global proxy when it is enabled for API traffic, else the environment's
+	// HTTPS proxy as gRPC reads it (network.DefaultGRPCDialer).
+	conn, err := grpc.NewClient(network.GRPCPassthroughTarget(endpoint), grpc.WithTransportCredentials(creds), grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI)))
 	if err != nil {
 		return nil, err
 	}

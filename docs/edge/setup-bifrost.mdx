@@ -1,0 +1,58 @@
+---
+title: "Prepare identity and access"
+description: "Configure the identity provider, provision users, and assign roles and access profiles before installing Bifrost Edge."
+icon: "users-gear"
+---
+
+Edge links every device to an individual Bifrost user who signs in through your identity provider. Complete these steps before installing the agent so that sign-in succeeds and Bifrost has a policy to apply to the user's AI traffic.
+
+## 1. Confirm the Edge entitlement
+
+Edge enforces the device limit in the Bifrost license when a new device signs in. Confirm that the deployment has an Edge entitlement and an available device seat before starting the rollout.
+
+If the limit has been reached, the agent reports **Device limit reached - contact your admin** and the new device cannot complete sign-in.
+
+## 2. Configure the identity provider
+
+Edge sign-in uses the same OIDC login as the Bifrost dashboard. It is unavailable until a provider is enabled.
+
+1. Go to **Governance → User Provisioning**.
+2. Select your provider and follow its setup guide for the issuer, OAuth client, redirect URI, and role or group claims:
+   [Okta](/enterprise/setting-up-okta/oidc), [Microsoft Entra ID](/enterprise/setting-up-entra/oidc), [Keycloak](/enterprise/setting-up-keycloak/oidc), [Zitadel](/enterprise/setting-up-zitadel/oidc), [Google Workspace](/enterprise/setting-up-google-workspace), [Auth0](/enterprise/setting-up-auth0/oidc), or [generic OIDC](/enterprise/setting-up-generic-oidc/oidc).
+3. Enable the provider and confirm that a test user can sign in to the Bifrost dashboard with SSO.
+
+See [User Provisioning](/enterprise/user-provisioning) for the complete configuration reference.
+
+## 3. Provision Edge users
+
+Provision the people who will use Edge before deploying the agent to them. Depending on the provider, use bulk import, background directory sync, or inbound [SCIM](/enterprise/user-provisioning). Unless **SCIM only** mode is enabled, a user who has not been provisioned is created on first SSO sign-in. In SCIM-only mode, sign-in is refused until the IdP pushes the user. See [How identity sync works](/enterprise/how-identity-sync-works).
+
+Start with a small pilot group.
+
+## 4. Assign roles and access profiles
+
+Edge traffic is governed by the virtual key Bifrost issues to the signed-in user. The standard way to issue that key is an access profile attached to the user's role.
+
+<Steps>
+  <Step title="Choose or create the role">
+    Under **Governance → Roles & Permissions**, use an existing role or create one for Edge users. To assign it from IdP claims or groups, add the attribute-to-role mapping in **User Provisioning**. Mapped roles apply on the user's next sign-in or directory sync. See [Role-Based Access Control](/enterprise/rbac).
+  </Step>
+  <Step title="Create the access profile">
+    Under **Governance → Access Profiles**, create a profile with the providers, models, budgets, rate limits, and MCP access Edge users should have.
+  </Step>
+  <Step title="Attach the profile to the role">
+    Open the role and select **Attach Access Profile**. Choose **Set as default for new users** so users who gain the role receive the profile, and **Apply to existing users with this role** to provision current users immediately.
+  </Step>
+</Steps>
+
+When a user becomes eligible, Bifrost creates a per-user copy of the profile and issues the user a governed virtual key. See [Access Profiles](/enterprise/access-profiles) for assignment and propagation behavior.
+
+## Checkpoint
+
+You are ready to configure Edge when, for each pilot user:
+
+- The user can sign in to Bifrost with SSO.
+- The expected role is assigned.
+- The intended access profile is assigned, and the resulting virtual key is active and permits the required providers and models.
+
+Continue to [Configure Edge](/edge/setup-edge-control).

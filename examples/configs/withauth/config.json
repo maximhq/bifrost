@@ -4,8 +4,7 @@
         "auth_config": {
             "admin_username": "env.BIFROST_ADMIN_USERNAME",
             "admin_password": "env.BIFROST_ADMIN_PASSWORD",
-            "is_enabled": true,
-            "disable_auth_on_inference": false
+            "is_enabled": true
         }
     },
     "config_store": {

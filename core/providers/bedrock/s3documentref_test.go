@@ -97,7 +97,9 @@ func TestBedrockImageS3URIFormatVocabulary(t *testing.T) {
 		t.Helper()
 		return &schemas.BifrostChatRequest{
 			Provider: schemas.Bedrock,
-			Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			// Nova: the s3Location path this exercises is only reached for a model whose
+			// Converse backend resolves the reference. See BedrockModelSupportsS3Location.
+			Model: novaModel,
 			Input: []schemas.ChatMessage{
 				{
 					Role: schemas.ChatMessageRoleUser,

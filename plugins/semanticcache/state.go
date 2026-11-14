@@ -22,16 +22,23 @@ type cacheState struct {
 	ParamsHash            string
 	Embeddings            []float32
 	EmbeddingsInputTokens int
+	PlaceholderEmbeddings bool // Embeddings is the placeholder vector, not an embedding of the prompt
 
 	// FilteredInput caches getInputForCaching(req) so attachment extraction,
 	// embedding text extraction, and history-threshold checks reuse the same
 	// filtered slice instead of re-filtering on each call.
 	FilteredInput interface{}
 
+	// IdentityScope is who the request is made by, folded into the params hash
+	// so an entry is only ever served to the identity that wrote it. Nil when
+	// identity scoping is disabled; empty (not nil) for a request with no
+	// identity. See resolveIdentityScope.
+	IdentityScope map[string]interface{}
+
 	// ShortCircuited is set when PreLLMHook served the response from cache
 	// (returned a non-nil LLMPluginShortCircuit). PostLLMHook uses this to
 	// skip the entire cache-write path: only the FINAL replay chunk carries
-	// CacheDebug.CacheHit=true, so shouldSkipCaching() can't catch the
+	// cache metadata's CacheHit=true, so shouldSkipCaching() can't catch the
 	// non-final chunks on its own — without this flag they'd flow into
 	// addStreamingResponse and trigger a duplicate write at the same
 	// directCacheID (Weaviate 422 "id already exists").

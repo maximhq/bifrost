@@ -2,9 +2,15 @@ package complexity
 
 import "math"
 
-// ComplexityAnalyzer computes complexity scores from normalized text input.
-// It holds immutable tierBoundaries and matcher configuration after construction,
-// so it is safe for concurrent use.
+// ComplexityAnalyzer computes complexity scores from normalized text input by
+// keyword matching. It holds immutable tierBoundaries and matcher configuration
+// after construction, so it is safe for concurrent use.
+//
+// Nothing on the request path calls it any more: the semantic classifier is the
+// only mechanism that publishes a tier (see the compute closure in
+// plugins/governance/main.go), and a request semantic cannot serve is recorded
+// as "skipped" rather than scored here. Retained because stored configs still
+// carry its tier boundaries and keyword lists.
 type ComplexityAnalyzer struct {
 	tierBoundaries TierBoundaries
 	matcher        *compiledKeywordMatcher
@@ -52,33 +58,27 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 	}
 
 	// Score primary message signals.
-	userCodeScore := scoreCount(lastSignals.codeCount, 3)
-	reasoningScore := scoreCount(lastSignals.reasoningCount, 2)
-	userTechnicalScore := scoreCount(lastSignals.technicalCount, 3)
-	userSimpleScore := scoreCount(lastSignals.simpleCount, 2)
+	userMediumScore := scoreCount(lastSignals.mediumCount, mediumMatchSaturation)
+	complexScore := scoreCount(lastSignals.complexCount, complexMatchSaturation)
+	userSimpleScore := scoreCount(lastSignals.simpleCount, simpleMatchSaturation)
 	tokenScore := 0.0
 	if hasPositiveSignal || isContinuation {
 		tokenScore = scoreTokenCount(wordCount)
 	}
 
-	// System prompt provides soft lexical context for code/technical signals,
-	// but never drives reasoning override or token count.
-	systemCodeScore := scoreCount(systemSignals.codeCount, 3)
-	systemTechnicalScore := scoreCount(systemSignals.technicalCount, 3)
+	// System prompts provide soft Medium evidence, but never drive the Complex
+	// override or token count.
+	systemMediumScore := scoreCount(systemSignals.mediumCount, mediumMatchSaturation)
+	mediumScore := clamp(userMediumScore+(systemMediumScore*systemPromptAssistFactor), 0.0, 1.0)
 
-	codeScore := clamp(userCodeScore+(systemCodeScore*systemPromptAssistFactor), 0.0, 1.0)
-	technicalScore := clamp(userTechnicalScore+(systemTechnicalScore*systemPromptAssistFactor), 0.0, 1.0)
-
-	codeContribution := codeScore * codeWeight
-	reasoningContribution := reasoningScore * reasoningWeight
-	technicalContribution := technicalScore * technicalWeight
+	mediumContribution := mediumScore * mediumWeight
+	complexContribution := complexScore * complexWeight
 	simplePenalty := -(userSimpleScore * simpleWeight)
 	tokenContribution := tokenScore * tokenCountWeight
 
 	// Weighted sum for last message.
-	lastMsgScore := codeContribution +
-		reasoningContribution +
-		technicalContribution +
+	lastMsgScore := mediumContribution +
+		complexContribution +
 		simplePenalty +
 		tokenContribution
 	lastMsgScore = clamp(lastMsgScore, 0.0, 1.0)
@@ -91,6 +91,13 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 		if isContinuation {
 			lastWeight = referentialLastMessageBlendWeight
 			contextWeight = referentialConversationBlendWeight
+			if !hasPositiveSignal {
+				// The follow-up adds no content of its own ("why?", "fix it"),
+				// so blending against it would only dilute the conversation
+				// score. The conversation is the request; inherit its score.
+				lastWeight = 0.0
+				contextWeight = 1.0
+			}
 		}
 
 		weightedBlend := (lastMsgScore * lastWeight) + (convScore * contextWeight)
@@ -101,13 +108,14 @@ func (a *ComplexityAnalyzer) Analyze(input ComplexityInput) *ComplexityResult {
 
 	finalScore := clamp(blended, 0.0, 1.0)
 
-	// Tier classification with reasoning override.
-	strongCount := lastSignals.strongReasoningCount
+	// Complex evidence has explicit product-level guarantees in addition to the
+	// numeric score: one match guarantees at least MEDIUM and two force COMPLEX.
+	complexCount := lastSignals.complexCount
 	tier := a.classifyTier(finalScore)
-	if strongCount >= 2 {
-		tier = TierReasoning
-	} else if strongCount >= 1 && (userCodeScore > 0.5 || userTechnicalScore > 0.5) {
-		tier = TierReasoning
+	if complexCount >= complexOverrideMatchCount {
+		tier = TierComplex
+	} else if complexCount >= 1 && tier == TierSimple {
+		tier = TierMedium
 	}
 
 	return &ComplexityResult{
@@ -132,11 +140,10 @@ func (a *ComplexityAnalyzer) scoreConversationContext(priorUserTexts []string) f
 	lastIdx := len(texts) - 1
 	for idx, text := range texts {
 		signals := a.matcher.analyzeText(text, contextTextScanMask)
-		code := scoreCount(signals.codeCount, 3)
-		tech := scoreCount(signals.technicalCount, 3)
-		reasoning := scoreCount(signals.reasoningCount, 2)
-		msgScore := (code*codeWeight + tech*technicalWeight + reasoning*reasoningWeight) /
-			(codeWeight + technicalWeight + reasoningWeight)
+		medium := scoreCount(signals.mediumCount, mediumMatchSaturation)
+		complex := scoreCount(signals.complexCount, complexMatchSaturation)
+		msgScore := (medium*mediumWeight + complex*complexWeight) /
+			(mediumWeight + complexWeight)
 		weight := 1.0
 		if lastIdx > 0 {
 			weight = 1.0 + (2.0 * float64(idx) / float64(lastIdx))
@@ -153,14 +160,26 @@ func (a *ComplexityAnalyzer) scoreConversationContext(priorUserTexts []string) f
 }
 
 func hasPositiveSignal(signals textSignalCounts) bool {
-	return signals.codeCount > 0 || signals.reasoningCount > 0 || signals.technicalCount > 0
+	return signals.mediumCount > 0 || signals.complexCount > 0
 }
 
+// isContinuationFollowup reports whether the last message should lean on
+// conversation context. Two triggers, both gated on the conversation actually
+// carrying meaningful complexity context (convScore): an explicit continuation
+// phrase, or a message short enough that brevity itself is the signal ("yes
+// but make it faster"). The short-message path defers to simple-keyword
+// matches so conversation closers like "thanks!" keep classifying as SIMPLE
+// instead of inheriting the conversation's complexity.
 func isContinuationFollowup(signals textSignalCounts, convScore float64) bool {
 	if convScore < referentialMinContextScore {
 		return false
 	}
-	return signals.continuationPhraseCount > 0
+	if signals.continuationPhraseCount > 0 {
+		return true
+	}
+	return signals.wordCount > 0 &&
+		signals.wordCount <= referentialShortMessageMaxWords &&
+		signals.simpleCount == 0
 }
 
 func (a *ComplexityAnalyzer) classifyTier(score float64) string {
@@ -169,9 +188,7 @@ func (a *ComplexityAnalyzer) classifyTier(score float64) string {
 		return TierSimple
 	case score < a.tierBoundaries.MediumComplex:
 		return TierMedium
-	case score < a.tierBoundaries.ComplexReasoning:
-		return TierComplex
 	default:
-		return TierReasoning
+		return TierComplex
 	}
 }

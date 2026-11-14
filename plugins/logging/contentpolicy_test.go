@@ -62,6 +62,73 @@ func TestResolveContentPolicyStaticDisable(t *testing.T) {
 	assert.False(t, policy.hidden)
 }
 
+// The virtual key's decision (stamped by governance) sits between the client flag and the
+// per-request header: it overrides the client flag in both directions, and the header, when the
+// deployment allows per-request overrides at all, still has the final word.
+func TestResolveContentPolicyVirtualKeyOverridesClientFlag(t *testing.T) {
+	t.Run("key forces content off while the client flag is on", func(t *testing.T) {
+		p := policyTestPlugin(nil, nil, true)
+		policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: true,
+		}))
+		assert.False(t, policy.storeContent)
+		assert.False(t, policy.visible())
+	})
+
+	t.Run("key forces content on while the client flag is off", func(t *testing.T) {
+		p := policyTestPlugin(boolPtr(true), nil, true)
+		policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: false,
+		}))
+		assert.True(t, policy.storeContent)
+		assert.True(t, policy.visible())
+	})
+
+	t.Run("key decision does not need the per-request override gate", func(t *testing.T) {
+		// The header is caller input and is gated; the key's decision is admin configuration
+		// and applies whether or not callers may override anything.
+		p := policyTestPlugin(nil, nil, true)
+		policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: true,
+		}))
+		assert.False(t, policy.storeContent)
+	})
+
+	t.Run("header still wins over the key when overrides are allowed", func(t *testing.T) {
+		p := policyTestPlugin(nil, nil, true)
+		policy := p.resolveContentPolicy(policyCtx(true, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: true,
+			schemas.BifrostContextKeyDisableContentLogging:           false,
+		}))
+		assert.True(t, policy.storeContent, "an allowed header re-enables content the key turned off")
+
+		policy = p.resolveContentPolicy(policyCtx(true, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: false,
+			schemas.BifrostContextKeyDisableContentLogging:           true,
+		}))
+		assert.False(t, policy.storeContent, "an allowed header disables content the key turned on")
+	})
+
+	t.Run("header is ignored over the key when overrides are not allowed", func(t *testing.T) {
+		p := policyTestPlugin(nil, nil, true)
+		policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: true,
+			schemas.BifrostContextKeyDisableContentLogging:           false,
+		}))
+		assert.False(t, policy.storeContent, "without the gate the header cannot undo the key")
+	})
+
+	t.Run("key forcing content off with retention on stores hidden", func(t *testing.T) {
+		p := policyTestPlugin(nil, boolPtr(true), true)
+		policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{
+			schemas.BifrostContextKeyGovernanceDisableContentLogging: true,
+		}))
+		assert.True(t, policy.storeContent)
+		assert.True(t, policy.hidden)
+		assert.False(t, policy.visible())
+	})
+}
+
 func TestResolveContentPolicyHeaderDisableWithoutGateIgnored(t *testing.T) {
 	p := policyTestPlugin(nil, nil, true)
 

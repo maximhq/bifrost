@@ -1,10 +1,15 @@
 import type { LogsHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
+import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface LogVolumeChartProps {
 	data: LogsHistogramResponse | null;
@@ -29,6 +34,7 @@ interface CustomTooltipProps {
 }
 
 function CustomTooltip({ active, payload }: CustomTooltipProps) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -40,24 +46,24 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-emerald-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="bg-chart-success h-2 w-2 rounded-full" />
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
-					<span className="font-medium text-emerald-600 dark:text-emerald-400">{data.success.toLocaleString()}</span>
+					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-red-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
+						<span className="bg-chart-error h-2 w-2 rounded-full" />
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
-					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
+					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cancelled")}</span>
 					</span>
-					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
+					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString(getLocale())}</span>
 				</div>
 			</div>
 		</div>
@@ -65,6 +71,7 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 }
 
 function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -79,7 +86,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	const commonProps = {
@@ -89,7 +96,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 
 	return (
 		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
-			<ResponsiveContainer width="100%" height="100%">
+			<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
 						<CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-zinc-200 dark:stroke-zinc-700" />
@@ -113,33 +120,11 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="success"
-							stackId="requests"
-							fill={CHART_COLORS.success}
-							fillOpacity={0.9}
-							radius={[0, 0, 0, 0]}
-							barSize={30}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="error"
-							stackId="requests"
-							fill={CHART_COLORS.error}
-							fillOpacity={0.9}
-							radius={[0, 0, 0, 0]}
-							barSize={30}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="cancelled"
-							stackId="requests"
-							fill={CHART_COLORS.cancelled}
-							fillOpacity={0.9}
-							radius={[2, 2, 0, 0]}
-							barSize={30}
-						/>
+						<CappedBarStack buckets={chartData.length}>
+							<Bar isAnimationActive={false} dataKey="success" fill={CHART_COLORS.success} fillOpacity={0.9} barSize={30} />
+							<Bar isAnimationActive={false} dataKey="error" fill={CHART_COLORS.error} fillOpacity={0.9} barSize={30} />
+							<Bar isAnimationActive={false} dataKey="cancelled" fill={CHART_COLORS.cancelled} fillOpacity={0.9} barSize={30} />
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

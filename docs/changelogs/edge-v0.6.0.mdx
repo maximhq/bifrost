@@ -1,0 +1,26 @@
+---
+title: "v0.6.0"
+description: "Edge v0.6.0 changelog - 2026-09-08"
+---
+
+<Update label="Bifrost Edge" description="v0.6.0">
+
+## Changelog
+
+v0.6.0 adds Cursor and OpenCode to the tools Bifrost Edge captures, and makes every captured tool's model picker show only the models the gateway allows for the signed-in user. It also introduces an optional transparent-proxy capture mode for environments where the default capture path cannot be used, shipped as a selectable component of a single macOS installer. License expiry is now surfaced in the tray instead of failing silently.
+
+## ✨ Features
+
+- **Cursor Support** - The agent captures Cursor's agent, inference, and model-list traffic and routes it through the gateway. Bounded chat, native file reads, foreground shell, and new-file creation flows are supported; unsupported run variants, Tab completion, and edit-and-apply fail closed rather than bypassing governance. Rollout is controlled from the server through a `cursor` block in the agent settings (`enabled`, on by default, plus `default_model` and `tab_model` for operations that carry no client model selection). Cursor's model RPCs are answered from the user's allowed catalog. [Docs](https://docs.getbifrost.ai/edge/supported-applications)
+- **OpenCode Support** - OpenCode Zen and Go requests are rewritten to the gateway's OpenAI-compatible route with the model qualified by provider. While signed in, the agent holds a `bifrost` credential entry in OpenCode's auth file and keeps OpenCode's model cache pointed at the gateway catalog, so OpenCode lists only allowed models regardless of which process started first. Both are removed on sign-out. [Docs](https://docs.getbifrost.ai/edge/supported-applications)
+- **Managed Model Lists Across Every Captured Tool** - The agent fetches the allowed model set from the gateway with its own credential, caches it for five minutes, refreshes it in the background and on every auth change, and serves it stale for up to an hour when the gateway is unreachable. That list replaces the picker in Claude Code and Cowork (a managed `modelPicker` in settings), Codex CLI and Codex Desktop (the intercepted manifest, the desktop model cache file, and a managed configuration layer that Codex reads but never writes), ChatGPT and Claude desktop pickers, OpenCode, and the Anthropic and OpenAI `/v1/models` endpoints used by SDK clients. Every row is labelled with the provider-qualified gateway id so the model's provider is always visible. With no usable copy the agent answers 503 in the vendor's error shape and the tool falls back to its own list.
+- **Transparent Proxy Capture Mode** - A new local `capture.mode` setting (`tun` by default, `trp` to opt in, also settable with the `-capture-mode` flag) selects a transparent-proxy capture front-end for devices where the default tunnel-based capture cannot be used, such as machines running another network security client. On macOS this uses a system network extension that hands flows to the daemon with the real source process attached, so per-app coverage matches the default mode, and the daemon honours the system proxy for upstream connections in this mode. The governed domain list served to the extension is synced from the server. The extension is activated and deactivated automatically from the capture mode. The setting is not server-managed and the agent never switches modes on its own. Windows ships the default capture mode only in this release.
+- **Unified macOS Installer** - macOS now ships one package for the agent and the optional network extension. The installer always shows a customization step with an "Install network extension for transparent proxy (TRP) capture" choice, unchecked on a fresh install and checked when the extension is already present; unchecking it removes an installed extension. Unattended deployments select the option with a choices plist. Installing the extension does not change the capture mode. Separate network-extension installers are no longer published. [Docs](https://docs.getbifrost.ai/edge/install-mdm)
+- **License Expiry in the Tray** - When the gateway reports that the Edge trial has expired, the tray shows the expired state with a note that an administrator must renew, and the diagnostics report carries a matching status code. The state is kept across transient network failures and clears as soon as tokens are issued again.
+- **Diagnostics Show Capture Mode** - The Diagnostics window's overview and traffic panel show whether the device is capturing in tunnel or transparent-proxy mode, and the interception check no longer reports tunnel route or resolver failures when the device is in transparent-proxy mode.
+
+## 🐞 Fixed
+
+- **Codex Managed Catalog Lifecycle** - The managed Codex catalog is removed or restored immediately on every transition that stops or resumes managing Codex (sign-out, interception disabled, sign-in), instead of waiting for the next allowed-models refresh, and a refresh that runs while interception is off no longer brings the catalog back. The managed files are written under the signed-in user's resolved home path with that user's ownership so Codex can read them when the daemon runs as a system service.
+
+</Update>

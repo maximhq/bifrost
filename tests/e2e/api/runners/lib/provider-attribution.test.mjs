@@ -2,7 +2,7 @@
 // No test framework needed (the tests/e2e/api dir has no test runner configured), same shape as
 // chained-vars.test.mjs next door.
 import assert from "node:assert";
-import { makeMatchProvider, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
+import { makeMatchProvider, providerOfFolder, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -12,7 +12,7 @@ function test(name, fn) {
 }
 
 // The providers a sequential run tracks.
-const match = makeMatchProvider((p) => ["openai", "anthropic", "bedrock", "gemini", "vertex", "azure"].includes(p));
+const match = makeMatchProvider((p) => ["openai", "anthropic", "bedrock", "gemini", "vertex", "azure", "huggingface"].includes(p));
 
 // A direct Vertex row, exactly as provider-harness.json carries it: the model
 // is a collection variable, and 46 rows look like this.
@@ -70,6 +70,16 @@ test("an unattributable folder falls back to the row's own signals", () => {
   );
 });
 
+test("a Hugging Face folder is attributed to its harness partition", () => {
+  const folder = "61. Hugging Face Baseten model discovery (#6631)";
+  const row = {
+    name: "Hugging Face Baseten models appear in /v1/models - #6631",
+    request: { url: { raw: "{{baseUrl}}/v1/models?provider=huggingface" } },
+  };
+  assert.strictEqual(providerOfItem(row, [folder], match), "huggingface");
+  assert.strictEqual(providerOfLogLine("get http://localhost:8080/v1/models?provider=huggingface [200 ok]", folder, match), "huggingface");
+});
+
 // Ordering still has to keep the more specific provider ahead of the broader
 // one when both keywords are present in a single heading.
 test("a Vertex heading that also mentions Gemini stays with vertex", () => {
@@ -77,6 +87,22 @@ test("a Vertex heading that also mentions Gemini stays with vertex", () => {
     providerOfLogLine("post http://x/y [200 ok, 1kb, 9ms]", "Vertex Backlog Round 2 (Gemini-on-Vertex variants)", match),
     "vertex"
   );
+});
+
+// Baseten rows reach the gateway through /anthropic and name OpenAI-only fields; they belong to
+// the baseten partition filter-collection.mjs forks, while Hugging Face's Baseten-hosted rows stay
+// with huggingface.
+test("Baseten rows stay with baseten and Hugging Face Baseten rows with huggingface", () => {
+  const withBaseten = makeMatchProvider((p) => ["openai", "anthropic", "huggingface", "baseten"].includes(p));
+  const folder = "337. Baseten provider (baseten provider)";
+  const anthropicRoute = {
+    name: "/anthropic/v1/messages - Anthropic SDK shape routed to baseten/zai-org/GLM-5.3",
+    request: { url: { raw: "{{baseUrl}}/anthropic/v1/messages" } },
+  };
+  assert.strictEqual(providerOfItem(anthropicRoute, [folder], withBaseten), "baseten");
+  assert.strictEqual(providerOfLogLine("post http://localhost:8080/anthropic/v1/messages [200 ok]", folder, withBaseten), "baseten");
+  assert.strictEqual(withBaseten("/v1/chat/completions - openai-only fields are dropped - baseten/zai-org/glm-5.3"), "baseten");
+  assert.strictEqual(providerOfFolder("61. Hugging Face Baseten model discovery (#6631)", withBaseten), "huggingface");
 });
 
 console.log(`\n${passed} passed`);

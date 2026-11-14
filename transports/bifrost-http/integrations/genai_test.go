@@ -2,6 +2,8 @@ package integrations
 
 import (
 	"context"
+	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -10,8 +12,97 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text, function-call argument values, and function-result values without touching metadata.
+func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"systemInstruction":{"parts":[{"text":"system alice@example.com"}]},
+		"contents":[
+			{"role":"user","parts":[{"text":"first alice@example.com"}]},
+			{"role":"model","parts":[
+				{"thought":true,"text":"reason alice@example.com","thoughtSignature":"alice@example.com"},
+				{"functionCall":{"name":"lookup","args":{"email":"alice@example.com"}}}
+			]},
+			{"role":"user","parts":[{"functionResponse":{"name":"lookup","response":{"output":"tool alice@example.com","nested.value":{"contact:key":"alice@example.com"}}}}]}
+		],
+		"instances":[{"prompt":"image alice@example.com"}],
+		"labels":{"owner":"alice@example.com"},
+		"tools":[{"functionDeclarations":[{"name":"lookup","description":"alice@example.com"}]}]
+	}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+
+	redactedPaths := []string{
+		"systemInstruction.parts.0.text",
+		"contents.0.parts.0.text",
+		"contents.1.parts.0.text",
+		"contents.1.parts.1.functionCall.args.email",
+		"contents.2.parts.0.functionResponse.response.output",
+		`contents.2.parts.0.functionResponse.response.nested\.value.contact:key`,
+		"instances.0.prompt",
+	}
+	for _, path := range redactedPaths {
+		value := gjson.GetBytes(got, path).String()
+		assert.NotContains(t, value, "alice@example.com", path)
+		assert.Contains(t, value, "[EMAIL]", path)
+	}
+
+	untouchedPaths := []string{
+		"contents.1.parts.0.thoughtSignature",
+		"labels.owner",
+		"tools.0.functionDeclarations.0.description",
+	}
+	for _, path := range untouchedPaths {
+		assert.Equal(t, "alice@example.com", gjson.GetBytes(got, path).String(), path)
+	}
+	assert.True(t, strings.Contains(string(got), `"labels":{"owner":"alice@example.com"}`))
+}
+
+// TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope verifies both documented envelope spelling and snake-case system instructions use the same content allowlist.
+func TestRewriteGenAIRawRequestBodySupportsCountTokensEnvelope(t *testing.T) {
+	rawBody := []byte(`{"generate_content_request":{"system_instruction":{"parts":[{"text":"system alice@example.com"}]},"contents":[{"parts":[{"text":"user alice@example.com"}]}]}}`)
+
+	got, err := rewriteGenAIRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assert.Equal(t, "system [EMAIL]", gjson.GetBytes(got, "generate_content_request.system_instruction.parts.0.text").String())
+	assert.Equal(t, "user [EMAIL]", gjson.GetBytes(got, "generate_content_request.contents.0.parts.0.text").String())
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral verifies a normalized runtime mutation cannot silently leave Gemini content unredacted.
+func TestRewriteGenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.Error(t, err)
+}
+
+// TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals verifies a literal cut from escaped argument JSON text
+// redacts the decoded function-call argument value it stands for, keeping argument keys and other values.
+func TestRewriteGenAIRawRequestBodyMatchesEscapedArgumentLiterals(t *testing.T) {
+	got, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"role":"model","parts":[{"functionCall":{"name":"write","args":{"path":"key.pem","content":"head\nkey line one\nkey line two\ntail","mode":420}}}]}]}`),
+		map[string]string{`key line one\nkey line two`: "[SECRET]"},
+	)
+	require.NoError(t, err)
+	args := gjson.GetBytes(got, "contents.0.parts.0.functionCall.args")
+	assert.Equal(t, "head\n[SECRET]\ntail", args.Get("content").String())
+	assert.Equal(t, "key.pem", args.Get("path").String())
+	assert.Equal(t, int64(420), args.Get("mode").Int())
+}
+
+// TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys verifies unsupported key mutation fails closed inside a function-result subtree.
+func TestRewriteGenAIRawRequestBodyRejectsSensitiveObjectKeys(t *testing.T) {
+	_, err := rewriteGenAIRawRequestBody(
+		[]byte(`{"contents":[{"parts":[{"functionResponse":{"response":{"alice@example.com":"value"}}}]}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.ErrorContains(t, err, "unsupported JSON object key")
+}
 
 func TestCreateGenAIRerankRouteConfig(t *testing.T) {
 	route := createGenAIRerankRouteConfig("/genai")
@@ -58,6 +149,122 @@ func findGenAIRouteForTest(t *testing.T, routes []RouteConfig, path, method stri
 	return RouteConfig{}
 }
 
+func TestGenAISpeechStreamResponseConverter(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	require.NotNil(t, route.StreamConfig)
+	require.NotNil(t, route.StreamConfig.SpeechStreamResponseConverter)
+
+	audio := []byte{0x01, 0x02, 0x03, 0x04}
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type:  schemas.SpeechStreamResponseTypeDelta,
+		Audio: audio,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini},
+		},
+	})
+	require.NoError(t, err)
+
+	response, ok := converted.(*gemini.GenerateContentResponse)
+	require.True(t, ok)
+	require.Len(t, response.Candidates, 1)
+	require.NotNil(t, response.Candidates[0].Content)
+	require.Len(t, response.Candidates[0].Content.Parts, 1)
+	require.NotNil(t, response.Candidates[0].Content.Parts[0].InlineData)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(audio), response.Candidates[0].Content.Parts[0].InlineData.Data)
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", response.Candidates[0].Content.Parts[0].InlineData.MIMEType)
+}
+
+func TestGenAISpeechStreamDoneResponseIncludesUsageAndFinishReason(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type: schemas.SpeechStreamResponseTypeDone,
+		Usage: &schemas.SpeechUsage{
+			InputTokens:  3,
+			OutputTokens: 5,
+			TotalTokens:  8,
+		},
+	})
+	require.NoError(t, err)
+
+	response := converted.(*gemini.GenerateContentResponse)
+	require.Len(t, response.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonStop, response.Candidates[0].FinishReason)
+	require.NotNil(t, response.UsageMetadata)
+	assert.Equal(t, int32(3), response.UsageMetadata.PromptTokenCount)
+	assert.Equal(t, int32(5), response.UsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, int32(8), response.UsageMetadata.TotalTokenCount)
+}
+
+func TestGenAICamelCaseSpeechVoiceSurvivesConversion(t *testing.T) {
+	rawBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"generationConfig":{
+			"responseModalities":["AUDIO"],
+			"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"alloy"}}}
+		}
+	}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "gpt-4o-mini-tts:streamGenerateContent")
+	requestCtx.Request.Header.Set("x-model-provider", "openai")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	require.NotNil(t, converted.SpeechRequest)
+	require.NotNil(t, converted.SpeechRequest.Params)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig.Voice)
+	assert.Equal(t, "alloy", *converted.SpeechRequest.Params.VoiceConfig.Voice)
+}
+
+// TestGenAISpeechReachesVertexChirp pins that a GenAI SDK speech request for Vertex's Chirp 3 HD keeps its
+// voice and language through the route, builds a Cloud Text-to-Speech request, and comes back as inline audio.
+func TestGenAISpeechReachesVertexChirp(t *testing.T) {
+	for name, speechConfig := range map[string]string{
+		"camelCase":  `{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"hi-IN-Chirp3-HD-Erinome"}},"languageCode":"hi-IN"}`,
+		"snake_case": `{"voice_config":{"prebuilt_voice_config":{"voice_name":"hi-IN-Chirp3-HD-Erinome"}},"language_code":"hi-IN"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"नमस्ते"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":` + speechConfig + `}}`)
+			requestCtx := &fasthttp.RequestCtx{}
+			requestCtx.SetUserValue("model", "vertex/chirp-3-hd:generateContent")
+			requestCtx.Request.SetBody(rawBody)
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			geminiReq := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+			require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+			route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+			converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+			require.NoError(t, err)
+			speech := converted.SpeechRequest
+			require.NotNil(t, speech)
+			assert.Equal(t, schemas.Vertex, speech.Provider)
+			assert.Equal(t, "chirp-3-hd", speech.Model)
+			require.NotNil(t, speech.Params.LanguageCode)
+			assert.Equal(t, "hi-IN", *speech.Params.LanguageCode)
+
+			request, err := vertex.ToVertexSpeechRequest(speech)
+			require.NoError(t, err)
+			assert.Equal(t, "hi-IN", request.Voice.LanguageCode)
+			assert.Equal(t, "hi-IN-Chirp3-HD-Erinome", request.Voice.Name)
+			assert.Equal(t, "MP3", request.AudioConfig.AudioEncoding)
+
+			response, err := route.SpeechResponseConverter(bifrostCtx, &schemas.BifrostSpeechResponse{Audio: []byte("ID3\x04\x00chirp-mp3-frames")})
+			require.NoError(t, err)
+			encoded, err := sonic.Marshal(response)
+			require.NoError(t, err)
+			assert.Equal(t, "audio/mp3", gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.mimeType").String())
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("ID3\x04\x00chirp-mp3-frames")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+		})
+	}
+}
+
 func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}}`)
 	ctx := &fasthttp.RequestCtx{}
@@ -75,6 +282,8 @@ func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *t
 
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, rawBody, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	assert.True(t, hasRewriter)
 }
 
 func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t *testing.T) {
@@ -96,6 +305,7 @@ func TestExtractAndSetModelAndRequestTypeNoRawPassthroughWithoutExplicitGemini(t
 
 	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter))
 }
 
 func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testing.T) {
@@ -114,6 +324,41 @@ func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testi
 
 	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+}
+
+func TestExtractAndSetModelAndRequestTypeDetectsImageEditAtAnyPartPosition(t *testing.T) {
+	textPart := `{"text":"change only the red area to black"}`
+	imagePart := `{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}`
+	cases := map[string]string{
+		"image first": imagePart + "," + textPart,
+		"text first":  textPart + "," + imagePart,
+	}
+
+	for name, parts := range cases {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[` + parts + `]}],"generationConfig":{"responseModalities":["IMAGE"]}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", "vertex/gemini-3-pro-image:generateContent")
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			_, reqType := extractModelAndRequestType(ctx)
+			assert.Equal(t, schemas.ImageEditRequest, reqType)
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+			assert.True(t, req.IsImageEdit)
+			assert.False(t, req.IsImageGeneration)
+
+			editReq := req.ToBifrostImageEditRequest(bifrostCtx)
+			require.NotNil(t, editReq)
+			assert.Equal(t, "change only the red area to black", editReq.Input.Prompt)
+			assert.Len(t, editReq.Input.Images, 1)
+		})
+	}
 }
 
 func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
@@ -137,6 +382,39 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 
 	assert.Equal(t, rawBody, batchReq.CreateRequest.RawRequestBody)
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
+}
+
+// TestGenAIBatchCreateConverterCarriesDisplayNameAndInlineTools verifies the typed batch
+// create path (used when the request is not an explicit-gemini raw passthrough) carries the
+// batch display name and every modeled inline-request field (tools, cachedContent) through.
+func TestGenAIBatchCreateConverterCarriesDisplayNameAndInlineTools(t *testing.T) {
+	rawBody := []byte(`{"batch":{"displayName":"my-batch","inputConfig":{"requests":{"requests":[{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"get_weather"}]}],"cachedContent":"cachedContents/abc"},"metadata":{"key":"req-1"}}]}}}}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini-2.5-flash:batchGenerateContent")
+	ctx.Request.Header.SetMethod("POST")
+	// No x-model-provider header, so the typed path (not raw passthrough) is exercised.
+	ctx.Request.SetBody(rawBody)
+
+	req := &gemini.GeminiBatchCreateRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	batchReq, err := route.BatchRequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, batchReq.CreateRequest)
+
+	// #2: batch display name carried through.
+	require.NotNil(t, batchReq.CreateRequest.DisplayName)
+	assert.Equal(t, "my-batch", *batchReq.CreateRequest.DisplayName)
+
+	// #3: inline tools + cachedContent survive (not dropped by the converter).
+	require.Len(t, batchReq.CreateRequest.Requests, 1)
+	body := batchReq.CreateRequest.Requests[0].Body
+	assert.Contains(t, body, "tools")
+	assert.Equal(t, "cachedContents/abc", body["cachedContent"])
+	assert.Equal(t, "req-1", batchReq.CreateRequest.Requests[0].CustomID)
 }
 
 func TestGenAICachedContentCreateParserRejectsNonStringScalars(t *testing.T) {
@@ -357,4 +635,211 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	model, ok := converted.(gemini.GeminiModel)
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+}
+
+// Both generation endpoints normalize the same native thinking config before
+// governance can switch Gemini and Vertex. Exercise that conversion explicitly;
+// native Vertex project/location URLs use the separate passthrough router.
+func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	for _, source := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, target := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+			for _, method := range []string{"generateContent", "streamGenerateContent"} {
+				t.Run(string(source)+" to "+string(target)+"/"+method, func(t *testing.T) {
+					body := []byte(`{"contents":[{"role":"user","parts":[{"text":"Say OK."}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"MINIMAL"}}}`)
+					requestCtx := &fasthttp.RequestCtx{}
+					requestCtx.SetUserValue("model", string(source)+"/gemini-3.1-flash-lite:"+method)
+					requestCtx.Request.Header.SetMethod("POST")
+					requestCtx.Request.SetBody(body)
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					native := &gemini.GeminiGenerationRequest{}
+					require.NoError(t, sonic.Unmarshal(body, native))
+					require.NoError(t, route.PreCallback(requestCtx, ctx, native))
+					assert.Equal(t, method == "streamGenerateContent", native.Stream)
+					converted, err := route.RequestConverter(ctx, native)
+					require.NoError(t, err)
+					require.NotNil(t, converted.ResponsesRequest)
+					normalized := converted.ResponsesRequest
+					require.Equal(t, source, normalized.Provider)
+					normalized.Provider = target
+					// Inspect the normalized path even when explicit Gemini selection
+					// also retained raw bytes; rerouting must not depend on that shortcut.
+					out, err := gemini.ToGeminiResponsesRequest(ctx, normalized)
+					require.NoError(t, err)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Equal(t, "minimal", *out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Nil(t, out.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				})
+			}
+		}
+	}
+}
+
+// TestGenAISpeechReachesVertexGeminiTTS pins that a GenAI SDK speech request for a Gemini TTS model on Vertex keeps
+// its voice through the route and comes back as inline audio.
+func TestGenAISpeechReachesVertexGeminiTTS(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/gemini-2.5-flash-tts:generateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "gemini-2.5-flash-tts", speech.Model)
+
+	request, err := gemini.ToGeminiSpeechRequest(speech)
+	require.NoError(t, err)
+	assert.Equal(t, "Kore", request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
+
+	response, err := route.SpeechResponseConverter(bifrostCtx, &schemas.BifrostSpeechResponse{Audio: []byte("pcm-audio-bytes")})
+	require.NoError(t, err)
+	encoded, err := sonic.Marshal(response)
+	require.NoError(t, err)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("pcm-audio-bytes")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+}
+
+// TestGenAIStreamSpeechReachesVertexGeminiTTS pins that a streamGenerateContent speech request for a Gemini TTS
+// model on Vertex is routed as a stream, and that the chunks the provider sends come back to the SDK as inline
+// PCM audio, with the finish reason and token usage on the last one.
+func TestGenAIStreamSpeechReachesVertexGeminiTTS(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/gemini-2.5-flash-tts:streamGenerateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+	assert.True(t, geminiReq.IsStreamingRequested(), "the :streamGenerateContent suffix makes it a stream")
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "gemini-2.5-flash-tts", speech.Model)
+
+	routing := schemas.BifrostResponseExtraFields{RoutingInfo: schemas.RoutingInfo{Provider: schemas.Vertex}}
+	convert := route.StreamConfig.SpeechStreamResponseConverter
+	_, delta, err := convert(bifrostCtx, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte("pcm-chunk"), ExtraFields: routing})
+	require.NoError(t, err)
+	encoded, err := sonic.Marshal(delta)
+	require.NoError(t, err)
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.mimeType").String(), "the chunks are headerless PCM")
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("pcm-chunk")), gjson.GetBytes(encoded, "candidates.0.content.parts.0.inlineData.data").String())
+	assert.False(t, gjson.GetBytes(encoded, "candidates.0.finishReason").Exists(), "a delta does not end the stream")
+
+	usage := &schemas.SpeechUsage{InputTokens: 12, OutputTokens: 340, TotalTokens: 352}
+	_, done, err := convert(bifrostCtx, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Usage: usage, ExtraFields: routing})
+	require.NoError(t, err)
+	encoded, err = sonic.Marshal(done)
+	require.NoError(t, err)
+	assert.Equal(t, "STOP", gjson.GetBytes(encoded, "candidates.0.finishReason").String())
+	assert.Equal(t, int64(340), gjson.GetBytes(encoded, "usageMetadata.candidatesTokenCount").Int())
+	assert.Equal(t, int64(352), gjson.GetBytes(encoded, "usageMetadata.totalTokenCount").Int())
+}
+
+// TestGenAIStreamSpeechForVertexChirpIsRefused pins that a streamGenerateContent request for Chirp 3 HD is routed
+// as a stream and refused by the provider with a 400 the SDK can read. Cloud Text-to-Speech streams over gRPC
+// only, so REST has nothing to send.
+func TestGenAIStreamSpeechForVertexChirpIsRefused(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"नमस्ते"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"hi-IN-Chirp3-HD-Erinome"}},"languageCode":"hi-IN"}}}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "vertex/chirp-3-hd:streamGenerateContent")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+	assert.True(t, geminiReq.IsStreamingRequested(), "the :streamGenerateContent suffix makes it a stream")
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	speech := converted.SpeechRequest
+	require.NotNil(t, speech)
+	assert.Equal(t, schemas.Vertex, speech.Provider)
+	assert.Equal(t, "chirp-3-hd", speech.Model)
+
+	provider, err := vertex.NewVertexProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}, nil)
+	require.NoError(t, err)
+	stream, bifrostErr := provider.SpeechStream(bifrostCtx, nil, func(context.Context) {}, schemas.Key{}, speech)
+	require.Nil(t, stream)
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, fasthttp.StatusBadRequest, bifrostErr.EffectiveHTTPStatus())
+
+	body, err := sonic.Marshal(route.ErrorConverter(bifrostCtx, bifrostErr))
+	require.NoError(t, err)
+	assert.Contains(t, gjson.GetBytes(body, "error.message").String(), "not supported")
+}
+
+// TestGenAIGenerateContentNullEntriesDoNotPanic pins that a JSON null inside a
+// pointer slice of a generateContent body (parts, function declarations,
+// function-response parts) is skipped by request-type detection and by every
+// request converter: no panic, no error, the same request type the body would
+// get without the null, and the valid entries beside it reach the Bifrost request.
+func TestGenAIGenerateContentNullEntriesDoNotPanic(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	audio := `{"inlineData":{"mimeType":"audio/wav","data":"UklGRg=="}}`
+	image := `{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}}`
+	cases := map[string]struct {
+		model, body string
+		wantType    schemas.RequestType
+		wantContent string // text from a valid entry that must survive conversion; empty when the body has none
+	}{
+		"null part":                   {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null]}]}`, schemas.ResponsesRequest, ""},
+		"null part before text":       {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.ResponsesRequest, "null-sibling-text"},
+		"null part stream":            {"gemini-2.5-flash:streamGenerateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.ResponsesRequest, "null-sibling-text"},
+		"null part count tokens":      {"gemini-2.5-flash:countTokens", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}]}`, schemas.CountTokensRequest, "null-sibling-text"},
+		"null system part":            {"gemini-2.5-flash:generateContent", `{"systemInstruction":{"parts":[null,{"text":"null-sibling-system"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, schemas.ResponsesRequest, "null-sibling-system"},
+		"null function declaration":   {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[null,{"name":"null_sibling_tool"}]}]}`, schemas.ResponsesRequest, "null_sibling_tool"},
+		"null function response part": {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[{"functionResponse":{"name":"null_sibling_fn","response":{},"parts":[null]}}]}]}`, schemas.ResponsesRequest, "null_sibling_fn"},
+		"null part speech":            {"gemini-2.5-flash-preview-tts:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-text"}]}],"generationConfig":{"responseModalities":["AUDIO"]}}`, schemas.SpeechRequest, "null-sibling-text"},
+		"null part transcription":     {"gemini-2.5-flash:generateContent", `{"contents":[{"role":"user","parts":[null,` + audio + `,{"text":"null-sibling-prompt"}]}]}`, schemas.TranscriptionRequest, "null-sibling-prompt"},
+		"null part image generation":  {"gemini-2.5-flash-image:generateContent", `{"contents":[{"role":"user","parts":[null,{"text":"null-sibling-prompt"}]}],"generationConfig":{"responseModalities":["IMAGE"]}}`, schemas.ImageGenerationRequest, "null-sibling-prompt"},
+		"null part image edit":        {"gemini-2.5-flash-image:generateContent", `{"contents":[{"role":"user","parts":[null,` + image + `,{"text":"null-sibling-prompt"}]}],"generationConfig":{"responseModalities":["IMAGE"]}}`, schemas.ImageEditRequest, "null-sibling-prompt"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(tc.body)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", tc.model)
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			var detected schemas.RequestType
+			require.NotPanics(t, func() { _, detected = extractModelAndRequestType(ctx) })
+			assert.Equal(t, tc.wantType, detected, "request type detected for a body with a null entry")
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var setupErr error
+			require.NotPanics(t, func() { setupErr = extractAndSetModelAndRequestType(ctx, bifrostCtx, req) })
+			require.NoError(t, setupErr)
+			assert.Equal(t, strings.HasSuffix(tc.model, ":streamGenerateContent"), req.Stream, "stream flag")
+
+			var bifrostReq *schemas.BifrostRequest
+			var convErr error
+			require.NotPanics(t, func() { bifrostReq, convErr = route.RequestConverter(bifrostCtx, req) })
+			require.NoError(t, convErr)
+			require.NotNil(t, bifrostReq)
+			if tc.wantContent != "" {
+				converted, err := sonic.Marshal(bifrostReq)
+				require.NoError(t, err)
+				assert.Contains(t, string(converted), tc.wantContent, "valid entry beside the null was dropped by conversion")
+			}
+		})
+	}
 }

@@ -5,6 +5,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,11 +18,39 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ClientManager interface for accessing MCP clients and tools
+// ClientManager interface for accessing MCP clients and tools.
+// Client state snapshots carry connection state only; tools and instructions
+// always come from the discovery store, which lookups consult with the
+// caller's ctx (a ctx-aware store may serve different callers different
+// discoveries).
 type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
-	GetClientForTool(toolName string) *schemas.MCPClientState
+	// GetClientForTool resolves toolName for the caller on ctx and returns
+	// the owning client's state together with the discovery the tool was
+	// found in, as an atomic pair; (nil, nil) when no client serves it.
+	GetClientForTool(ctx context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery)
+	// GetToolsForClient returns the tools the caller on ctx should see for
+	// one client, or nil when it has none recorded.
+	GetToolsForClient(ctx context.Context, clientID string) map[string]schemas.ChatTool
+	// GetInstructionsForClient returns the upstream instructions the caller on
+	// ctx should see for one client, from the same discovery its tools come
+	// from; "" when it has none.
+	GetInstructionsForClient(ctx context.Context, clientID string) string
+	// GetToolPerClient returns the tools the caller on ctx may call, per client:
+	// the tools part of GetCallerDiscovery, for a caller that wants nothing else.
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	// GetCallerDiscovery returns what the caller on ctx sees of the clients for a
+	// request, from one read of each client's discovery: the tools per client,
+	// the connect tools offered in place of the clients with per_user_discovery
+	// on it has not connected to, and, when withInstructions is set, the
+	// upstream `instructions` of the clients it can reach (see CallerDiscovery).
+	GetCallerDiscovery(ctx context.Context, withInstructions bool) CallerDiscovery
+	// ConnectToolClient returns the client whose connect tool toolName is for
+	// the caller on ctx, or nil.
+	ConnectToolClient(ctx context.Context, toolName string) *schemas.MCPClientState
+	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
+	InstructionCaps() InstructionCaps
+
 	GetPluginPipeline() PluginPipeline
 	ReleasePluginPipeline(pipeline PluginPipeline)
 	// AcquireClientConn returns a live upstream MCP client connection for the
@@ -36,7 +65,7 @@ type ClientManager interface {
 	// client's persistent upstream connection by ID. Used outside its usual
 	// health-monitor/API callers to repair a shared connection in the
 	// background after a live tool call hits a clean upstream auth
-	// rejection — see attemptAuthFailureRecovery. No-op-with-error for
+	// rejection — see attemptCallFailureRecovery. No-op-with-error for
 	// per-call-connection (per-user) auth types, matching its existing
 	// contract.
 	ReconnectClient(id string) error
@@ -55,6 +84,18 @@ type ClientManager interface {
 	// an MCP tool/list/ping outside the gateway path — e.g. nested tool calls
 	// from the Starlark codemode sandbox — to stay in sync with the gateway.
 	RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+}
+
+// CallerDiscovery is the caller's discovery of every MCP client with the
+// visibility rules applied, for a request on its context: the tools of each
+// client it may call, the connect tools it is offered in place of clients with
+// per_user_discovery on it has not connected to, and, when asked for, the
+// instructions of the clients it can reach. Building it reads each client's
+// discovery for the caller once.
+type CallerDiscovery struct {
+	ToolsPerClient map[string][]schemas.ChatTool
+	ConnectTools   []schemas.ChatTool
+	Instructions   []schemas.MCPServerInstructions
 }
 
 // MCPToolExecutor is the per-call executor signature used by the agent loop.
@@ -81,9 +122,12 @@ type ToolsManager struct {
 	toolExecutionTimeout  atomic.Value
 	maxAgentDepth         atomic.Int32
 	disableAutoToolInject atomic.Bool
-	clientManager         ClientManager
-	logger                schemas.Logger
-	agentModeExecutor     *AgentModeExecutor
+	// Byte bounds on forwarded instructions; 0 means the built-in default.
+	maxInstructionsPerClient atomic.Int64
+	maxInstructionsTotal     atomic.Int64
+	clientManager            ClientManager
+	logger                   schemas.Logger
+	agentModeExecutor        *AgentModeExecutor
 
 	// CredentialStore resolves per-call credentials (headers, Bearer tokens)
 	// and signals whether a client needs an ephemeral upstream connection.
@@ -196,6 +240,8 @@ func NewToolsManagerWithCodeMode(
 	manager.toolExecutionTimeout.Store(time.Duration(config.ToolExecutionTimeout))
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	manager.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
+	manager.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
 	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
@@ -238,7 +284,14 @@ func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
 }
 
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
-	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
+	tools, _ := m.availableTools(ctx, m.clientManager.GetCallerDiscovery(ctx, false))
+	return tools
+}
+
+// availableTools is GetAvailableTools over the caller's discovery, also naming which
+// of the tools are connect tools; nil when none is.
+func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscovery CallerDiscovery) ([]schemas.ChatTool, map[string]struct{}) {
+	availableToolsPerClient := callerDiscovery.ToolsPerClient
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
 	var includeCodeModeTools bool
@@ -259,7 +312,8 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
-		if client.ExecutionConfig.IsCodeModeClient {
+		direct, codeMode := codeModeListing(ctx, client.ExecutionConfig)
+		if codeMode {
 			includeCodeModeTools = true
 		}
 		// Add tools from this client, checking for duplicates
@@ -267,11 +321,30 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
 				seenToolNames[tool.Function.Name] = true
 				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
-				if !client.ExecutionConfig.IsCodeModeClient {
+				if direct {
 					availableTools = append(availableTools, tool)
 				}
 			}
 		}
+	}
+
+	// Connect tools are direct tools on every client, code mode included: they
+	// are answered by Bifrost, and a code-mode binding would send them upstream.
+	// They stay off BifrostContextKeyMCPAddedTools: that list is checked tool by
+	// tool against the caller's grant, and connect is not one of the client's
+	// tools. Its call is checked against the client when it runs.
+	var connectNames map[string]struct{}
+	for _, tool := range callerDiscovery.ConnectTools {
+		name := tool.Function.Name
+		if seenToolNames[name] {
+			continue
+		}
+		seenToolNames[name] = true
+		if connectNames == nil {
+			connectNames = make(map[string]struct{})
+		}
+		connectNames[name] = struct{}{}
+		availableTools = append(availableTools, tool)
 	}
 
 	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
@@ -288,7 +361,7 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 		}
 	}
 
-	return availableTools
+	return availableTools, connectNames
 }
 
 // buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates
@@ -482,7 +555,18 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	availableTools := m.GetAvailableTools(ctx)
+	// One CallerDiscovery gives the request its tools, its connect tools and, on the turn
+	// that has not added them yet, its server instructions.
+	callerDiscovery := m.clientManager.GetCallerDiscovery(ctx, !serverInstructionsInjected(ctx))
+	availableTools, connectNames := m.availableTools(ctx, callerDiscovery)
+	dropStaleConnectTools(ctx, req, connectNames)
+	// A connect tool counts as added only once it is in the request, so a
+	// caller's own tool of the same name is never taken back.
+	recordAdded := func(toolName string) {
+		if _, ok := connectNames[toolName]; ok {
+			schemas.AppendToContextList(ctx, addedConnectToolsKey, toolName)
+		}
+	}
 
 	if len(availableTools) == 0 {
 		return req
@@ -522,6 +606,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 				isDuplicate := integrationDuplicateCheck(duplicateCheckMap, toolName, integrationUserAgentStr)
 				if !isDuplicate {
 					tools = append(tools, mcpTool)
+					recordAdded(toolName)
 					// Update the duplicate check map to prevent duplicates within MCP tools as well
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
@@ -567,13 +652,114 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 						continue
 					}
 					tools = append(tools, *responsesTool)
+					recordAdded(toolName)
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
 			}
 			req.ResponsesRequest.Params.Tools = tools
 		}
 	}
+
+	m.addServerInstructionsToRequest(ctx, req, callerDiscovery.Instructions)
 	return req
+}
+
+// dropStaleConnectTools takes out of req the connect tools Bifrost added on an
+// earlier agent turn that it no longer offers as connect tools (offered names the
+// ones it does): their caller has connected, and the client's own tools take their
+// place, including an upstream tool of the same name, whose definition then goes
+// in where Bifrost's was. The agent loop reuses the first turn's tools and
+// injection only adds, so without this a connect tool would stay for the rest of
+// the loop. Only tools Bifrost itself added are taken out, and a name taken out
+// stops counting as one, so a same-named upstream tool is left alone afterwards.
+func dropStaleConnectTools(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, offered map[string]struct{}) {
+	added, _ := ctx.Value(addedConnectToolsKey).([]string)
+	if len(added) == 0 {
+		return
+	}
+	var kept []string
+	for _, name := range added {
+		if _, ok := offered[name]; ok {
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == len(added) {
+		return
+	}
+	ctx.SetValue(addedConnectToolsKey, kept)
+	stale := func(name string) bool {
+		if _, ok := offered[name]; ok {
+			return false
+		}
+		return slices.Contains(added, name)
+	}
+	switch {
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		req.ChatRequest.Params.Tools = slices.DeleteFunc(req.ChatRequest.Params.Tools, func(tool schemas.ChatTool) bool {
+			return tool.Function != nil && stale(tool.Function.Name)
+		})
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		req.ResponsesRequest.Params.Tools = slices.DeleteFunc(req.ResponsesRequest.Params.Tools, func(tool schemas.ResponsesTool) bool {
+			return tool.Name != nil && stale(*tool.Name)
+		})
+	}
+}
+
+// serverInstructionsInjected reports whether an earlier turn of this request already
+// added the server instructions to its prompt.
+func serverInstructionsInjected(ctx *schemas.BifrostContext) bool {
+	injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool)
+	return ok && injected
+}
+
+// addServerInstructionsToRequest carries the upstream servers' own usage guidance into the
+// prompt, so a policy set on the MCP server ("always update the doc on a relevant change")
+// reaches the model instead of having to be duplicated into every client's system prompt.
+//
+// Unconditional, and it costs tokens plus a changed prompt prefix on every MCP-bearing request.
+// Only mcp_disable_auto_tool_inject suppresses it, and that drops the tools too; the caps are not
+// an off switch, since InstructionCaps clamps a non-positive value back to the default.
+//
+// parts are the instructions of the request's CallerDiscovery, read with its tools.
+func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, parts []schemas.MCPServerInstructions) {
+	// The agent loop re-enters this path once per turn against the same context. Without
+	// this guard the block would be prepended again on every turn, growing the prompt
+	// without bound over a long tool-calling conversation.
+	if serverInstructionsInjected(ctx) {
+		return
+	}
+
+	instructions := AggregateServerInstructions(parts, m.instructionCaps())
+	if instructions == "" {
+		return
+	}
+
+	switch req.RequestType {
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		// Prepended as its own message rather than merged into the caller's system
+		// message: theirs is left byte-identical, and staying ahead of it leaves the
+		// caller's own instructions last, where a conflict resolves in their favour.
+		req.ChatRequest.Input = append([]schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{ContentStr: &instructions},
+		}}, req.ChatRequest.Input...)
+		// Recorded so prompt-cache placement can tell this message from the caller's and
+		// resolve its points against the caller's transcript (see promptCacheChatRequest).
+		ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		if req.ResponsesRequest.Params == nil {
+			req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
+		}
+		if existing := req.ResponsesRequest.Params.Instructions; existing != nil && *existing != "" {
+			combined := *existing + "\n\n" + instructions
+			req.ResponsesRequest.Params.Instructions = &combined
+		} else {
+			req.ResponsesRequest.Params.Instructions = &instructions
+		}
+	default:
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsInjected, true)
 }
 
 // ============================================================================
@@ -588,7 +774,6 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 //   - request: The MCP request containing the tool call (Chat or Responses format)
 //   - clientConn: The client connection for executing the tool
 //   - executionConfig: The MCP client configuration for execution context
-//   - toolNameMapping: Mapping of sanitized tool names to original MCP tool names for accurate logging and response metadata
 //
 // Returns:
 //   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
@@ -598,7 +783,6 @@ func (m *ToolsManager) ExecuteTool(
 	request *schemas.BifrostMCPRequest,
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
-	toolNameMapping map[string]string,
 ) (*schemas.BifrostMCPResponse, error) {
 	// Validate request is not nil
 	if request == nil {
@@ -636,7 +820,7 @@ func (m *ToolsManager) ExecuteTool(
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +845,7 @@ func (m *ToolsManager) ExecuteTool(
 		if chatResult == nil {
 			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
 		}
-		responsesMessage := chatResult.ToResponsesToolMessage()
+		responsesMessage := schemas.ToolResultForResponses(chatResult).ToResponsesToolMessage()
 		if responsesMessage == nil {
 			return nil, fmt.Errorf("failed to convert tool result to Responses format")
 		}
@@ -682,7 +866,6 @@ func (m *ToolsManager) executeToolInternal(
 	toolCall *schemas.ChatAssistantMessageToolCall,
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
-	toolNameMapping map[string]string,
 ) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
@@ -708,19 +891,24 @@ func (m *ToolsManager) executeToolInternal(
 		}
 	}
 
-	// Strip the client name prefix from tool name before calling MCP server
-	// The MCP server expects the original tool name (with hyphens), not the sanitized version
-	sanitizedToolName := stripClientPrefix(toolName, executionConfig.Name)
-	originalMCPToolName := getOriginalToolName(sanitizedToolName, toolNameMapping)
+	// Strip the client name prefix from tool name before calling MCP server. Tools are listed and
+	// resolved by their exact upstream names, so what remains is the name the server expects.
+	originalMCPToolName := StripClientPrefix(toolName, executionConfig.Name)
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
-	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-	if executionConfig != nil && executionConfig.ToolExecutionTimeout > 0 {
-		toolExecutionTimeout = executionConfig.ToolExecutionTimeout
-	}
+	toolExecutionTimeout := m.executionTimeout(executionConfig)
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
+	// What a timeout reports: the client's timeout, or less when the caller's own deadline comes
+	// first, so the message never names a limit that did not stop the call. A deadline that has
+	// already passed leaves a budget of zero, not a negative one.
+	callBudget := toolExecutionTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < callBudget {
+			callBudget = max(remaining, 0).Round(time.Millisecond)
+		}
+	}
 
 	// The connection (shared persistent OR ephemeral per-call) is supplied by
 	// the caller via AcquireClientConn. Admin-level credentials live on the
@@ -742,95 +930,171 @@ func (m *ToolsManager) executeToolInternal(
 	// unlike a bare connect, this call may not be idempotent, so it only gets
 	// a couple of quick, latency-conscious attempts. isTransientToolCallError
 	// (ToolCallRetryConfig's configured classifier) already treats
-	// 401/403/unauthorized/forbidden as non-retryable — those fail
-	// immediately here with zero retries and fall through to the
-	// isAuthFailureErrorText handling below unchanged.
-	toolCallStart := time.Now()
+	// auth-shaped failures as non-retryable. Those fail immediately here
+	// with zero retries and reach the isAuthFailure check below unchanged.
+	toolWait := schemas.BeginUpstreamWait(ctx)
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
+			toolResponse, err = CallUpstreamTool(toolCtx, clientConn, callRequest, true)
 			return err
 		},
 		ToolCallRetryConfig,
 		m.logger,
 	)
-	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
+	toolWait.End()
 	if callErr != nil {
+		// Set by the recovery below when it gave up because the tool budget ran
+		// out, as opposed to because the reconnect or the retry failed on its
+		// own. Only the recovery can tell those apart, so it reports it rather
+		// than leaving this to infer it from a deadline that expires at the
+		// same instant the wait ends.
+		recoveryExhaustedBudget := false
+
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", callBudget, toolName, ErrMCPToolTimeout)
 		}
 
-		// A clean upstream auth rejection on an otherwise-healthy connection
-		// (AcquireClientConn already succeeded once to get this far) means
-		// Bifrost's own credential bookkeeping and the upstream server
-		// disagree about whether it's still valid. React to it instead of
-		// surfacing an opaque failure — see attemptAuthFailureRecovery for
-		// the per-auth-type mechanics.
-		if isAuthFailureErrorText(callErr.Error()) {
-			if retryResponse, recovered := m.attemptAuthFailureRecovery(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout); recovered {
-				responseText := extractTextFromMCPResponse(retryResponse, toolName)
-				// Mirrors the non-retry success path below: the retry's own
-				// IsError is the upstream server reporting a failed execution
-				// over an otherwise-successful call, and must reach the model
-				// as a failure the same way, not be silently swallowed just
-				// because the retry itself succeeded at the transport level.
-				retryIsToolError := retryResponse != nil && retryResponse.IsError
-				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), executionConfig.Name, sanitizedToolName, nil
+		// Two failures are worth reacting to instead of surfacing an opaque
+		// error, because the same reconnect fixes both and the caller's own
+		// request can usually be salvaged behind it:
+		//
+		//   - A clean upstream auth rejection on an otherwise-healthy
+		//     connection (AcquireClientConn already succeeded once to get this
+		//     far) means Bifrost's own credential bookkeeping and the upstream
+		//     server disagree about whether it's still valid.
+		//   - A session the upstream has abandoned. This one had no recovery
+		//     at all: it is not auth-shaped, and it matches no transient
+		//     substring, so ToolCallRetryConfig does not even retry it. Every
+		//     later call failed the same way until the periodic connection
+		//     checker reconnected, up to a full check interval away. Only on
+		//     revisions that have sessions: mcp-go reports any 404 as a
+		//     terminated session, which on 2026-07-28 it cannot be.
+		//
+		// See attemptCallFailureRecovery for the per-auth-type mechanics.
+		if isAuthFailure(callErr) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
+			// Recovery runs inside this call's own budget, not the caller's.
+			// The attempt above already spent part of toolCtx, and handing the
+			// parent ctx down instead would let the reconnect wait its full
+			// budget and then grant the retry a second, complete
+			// tool_execution_timeout - so a recovered call could take twice the
+			// configured bound plus the wait, once per step in agent mode.
+			// Deriving from toolCtx caps the wait and the retry together
+			// against what is left of the one budget (BifrostContext.Deadline
+			// falls through to the parent when it carries none of its own).
+			// The background reconnect stays independent of it either way:
+			// triggerBackgroundReconnect runs on context.Background().
+			recoveryCtx := schemas.NewBifrostContext(toolCtx, schemas.NoDeadline)
+			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout)
+			recoveryExhaustedBudget = budgetExhausted
+			if recovered {
+				// Mirrors the non-retry success path below, IsError included.
+				return createToolResponseMessage(*toolCall, retryResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 			}
 		}
 
 		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, executionConfig.Name, callErr)
+		// Reported by the recovery itself rather than inferred from toolCtx:
+		// recovery runs inside that budget, so consuming what was left of it is
+		// an ordinary outcome of the bounded wait, but the wait ends AT the
+		// binding deadline, so re-reading toolCtx.Err() here is a coin flip
+		// against a clock mid-flip. The call did run out of time, and callers
+		// classify on these sentinels (see mcpErrorType), so it has to read as
+		// a timeout. No duration is quoted because the binding deadline may
+		// have been the caller's own rather than toolExecutionTimeout; the
+		// original cause is kept instead.
+		if recoveryExhaustedBudget {
+			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
+		}
+		if explained, ok := DescribeUnservableInput(callErr, executionConfig.Name); ok {
+			return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %s: %w", toolName, explained, ErrMCPToolCallFailed)
+		}
 		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
-	// Extract text from MCP response
-	responseText := extractTextFromMCPResponse(toolResponse, toolName)
-
-	// Create tool response message. toolResponse.IsError is the server reporting a
-	// failed execution over a successful call, so it must reach the model as a
-	// failure rather than as ordinary result text. toolResponse is nil-checked for
-	// the same reason extractTextFromMCPResponse checks it above.
-	isToolError := toolResponse != nil && toolResponse.IsError
-	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 }
 
-// attemptAuthFailureRecovery reacts to a clean upstream auth rejection
-// (401/403/unauthorized/forbidden) on a live tool call. The mechanics differ
-// by auth type:
+// CallToolWithin calls the tool and answers no later than ctx's deadline. A
+// remote transport stops at the deadline itself, but an in-process server runs
+// the handler on the calling goroutine and returns only when the handler does,
+// so the call runs on its own goroutine and a late result is dropped. A result
+// that arrives once the deadline has passed is dropped too: a handler that
+// returns when its context ends has not finished the work in time.
+func CallToolWithin(ctx context.Context, conn *client.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	type outcome struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := conn.CallTool(ctx, req)
+		done <- outcome{result, err}
+	}()
+	select {
+	case o := <-done:
+		if o.err == nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return o.result, o.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// attemptCallFailureRecovery reacts to a live tool call that failed for a
+// reason a fresh connection repairs: a clean upstream auth rejection (a 401
+// or 403 from the upstream's transport), or a session the upstream has
+// abandoned (isDeadSessionError). Both land here because the remedy is identical;
+// the credential force-refresh below is simply redundant, not harmful, for the
+// session case, and a dead session and a rotated credential often arrive
+// together anyway. The mechanics differ by auth type:
 //
 //   - Per-user (RequiresPerCallConnection==true): cheap and ephemeral, no
 //     rate limiter guards it — force a credential refresh, re-acquire a
 //     fresh connection, and retry the SAME call synchronously, exactly once.
+//     The refresh runs even when the safety opt-out suppresses the retry,
+//     detached so the caller's error is not held up for it: otherwise the
+//     credential just rejected stays cached, and every later call from this
+//     caller to this server, for any tool, reuses it and fails until it
+//     expires. A dead session cannot persist here (every call dials fresh),
+//     so in practice only the auth reason reaches this branch.
 //   - Shared (RequiresPerCallConnection==false): the bearer is baked into the
-//     persistent transport at connect time, so healing requires a full
-//     ReconnectClient, which chains multiple retried connection steps and can
-//     take minutes worst-case. Trigger it in the background unconditionally
+//     persistent transport at connect time, and so is the session, so healing
+//     either requires a full ReconnectClient, which chains multiple retried
+//     connection steps and can take minutes worst-case. Trigger it in the background unconditionally
 //     (the connection must heal even when the retry below is suppressed),
 //     then wait a bounded budget for it to finish; if it completes in time,
 //     retry the SAME call once on the healed connection. If it does not,
 //     surface the original error while the reconnect keeps running so the
 //     NEXT call succeeds.
 //
-// Returns (response, true) only when a synchronous retry ran and actually
+// Returns (response, true, _) only when a synchronous retry ran and actually
 // succeeded — the only case where the caller should treat this as a success
 // instead of the original failure. Every other outcome (opt-out gate,
-// reconnect timeout or failure, retry-also-failed) is (nil, false).
-func (m *ToolsManager) attemptAuthFailureRecovery(
+// reconnect timeout or failure, retry-also-failed) is (nil, false, _).
+//
+// The third result reports whether the attempt gave up because the tool's
+// remaining budget ran out, as opposed to because the reconnect or the retry
+// failed on its own. Only this function can tell those apart, and the caller
+// needs the distinction to classify the failure as a timeout rather than a
+// tool error: see executeToolInternal. Always false on the per-user branch,
+// which has no budget to exhaust.
+func (m *ToolsManager) attemptCallFailureRecovery(
 	ctx *schemas.BifrostContext,
 	toolName string,
 	callRequest mcp.CallToolRequest,
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
-) (*mcp.CallToolResult, bool) {
-	state := m.clientManager.GetClientForTool(toolName)
+) (*mcp.CallToolResult, bool, bool) {
+	state, stateDiscovery := m.clientManager.GetClientForTool(ctx, toolName)
 
 	// Safety opt-out: a spurious retry against a destructive, non-idempotent
 	// tool could cause a real-world side effect twice. This gates only the
-	// retry; on the shared path the connection is still healed first.
+	// retry; on either path the credential or connection is still healed first.
 	//
 	// Fail closed on missing hints, matching the MCP spec's own defaults
 	// (destructiveHint defaults to true, idempotentHint to false, each only
@@ -841,7 +1105,7 @@ func (m *ToolsManager) attemptAuthFailureRecovery(
 	// simply never set the hint.
 	retryOptedOut := false
 	if state != nil {
-		if tool, ok := state.ToolMap[toolName]; ok {
+		if tool, ok := stateDiscovery.GetTools()[toolName]; ok {
 			readOnly := false
 			destructive := true
 			idempotent := false
@@ -863,17 +1127,57 @@ func (m *ToolsManager) attemptAuthFailureRecovery(
 		}
 	}
 
-	if !m.credStore.RequiresPerCallConnection(executionConfig) {
-		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, retryOptedOut)
+	var retryResponse *mcp.CallToolResult
+	recovered, budgetExhausted := m.recoverCall(ctx, toolName, state, executionConfig, toolExecutionTimeout, retryOptedOut,
+		func(state *schemas.MCPClientState) bool {
+			_, ok := m.clientManager.GetToolsForClient(ctx, state.ExecutionConfig.ID)[toolName]
+			return ok
+		},
+		func(ctx context.Context, conn *client.Client) error {
+			var err error
+			retryResponse, err = CallUpstreamTool(ctx, conn, callRequest, true)
+			return err
+		})
+	if !recovered {
+		return nil, false, budgetExhausted
 	}
+	return retryResponse, true, false
+}
 
-	if retryOptedOut {
-		return nil, false
+// recoverCall heals the connection a call failed on and, unless retryOptedOut, runs retry once on a
+// fresh one (attemptCallFailureRecovery has the mechanics). serves, when set, reports whether the
+// reconnected client still offers what failed. Returns (recovered, budgetExhausted).
+func (m *ToolsManager) recoverCall(
+	ctx *schemas.BifrostContext,
+	label string,
+	state *schemas.MCPClientState,
+	executionConfig *schemas.MCPClientConfig,
+	toolExecutionTimeout time.Duration,
+	retryOptedOut bool,
+	serves func(*schemas.MCPClientState) bool,
+	retry func(context.Context, *client.Client) error,
+) (bool, bool) {
+	if !m.credStore.RequiresPerCallConnection(executionConfig) {
+		return m.recoverSharedConnection(ctx, label, executionConfig, toolExecutionTimeout, retryOptedOut, serves, retry)
 	}
 
 	if state == nil {
-		// No client state means no connection to re-acquire — nothing to retry.
-		return nil, false
+		// No client state means no connection to re-acquire: nothing to retry.
+		return false, false
+	}
+	if state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
+		// The tool name now resolves to another client: this one was deleted
+		// and re-added under the same name while the call was in flight. The
+		// call was permitted for the old client, so it is not retried against
+		// the new one (the shared branch guards the same way).
+		return false, false
+	}
+
+	if retryOptedOut {
+		// No retry will use the refreshed credential, so the caller's error is
+		// not held up for it; the next call picks it up.
+		go m.forceRefreshDetached(ctx, executionConfig, toolExecutionTimeout)
+		return false, false
 	}
 
 	if err := m.credStore.ForceRefresh(ctx, executionConfig); err != nil {
@@ -889,28 +1193,50 @@ func (m *ToolsManager) attemptAuthFailureRecovery(
 
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)
 	if err != nil {
-		m.logger.Debug("%s Auth-failure retry could not re-acquire a connection for %s: %v", MCPLogPrefix, toolName, err)
-		return nil, false
+		m.logger.Debug("%s Auth-failure retry could not re-acquire a connection for %s: %v", MCPLogPrefix, label, err)
+		return false, false
 	}
 	defer release()
 
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
-	retryResponse, retryErr := conn.CallTool(retryCtx, callRequest)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait := schemas.BeginUpstreamWait(ctx)
+	retryErr := retry(retryCtx, conn)
+	retryWait.End()
 	if retryErr != nil {
-		m.logger.Debug("%s Auth-failure retry also failed for %s: %v", MCPLogPrefix, toolName, retryErr)
-		return nil, false
+		m.logger.Debug("%s Auth-failure retry also failed for %s: %v", MCPLogPrefix, label, retryErr)
+		return false, false
 	}
 
-	m.logger.Debug("%s Auth-failure retry succeeded for %s", MCPLogPrefix, toolName)
-	return retryResponse, true
+	m.logger.Debug("%s Auth-failure retry succeeded for %s", MCPLogPrefix, label)
+	return true, false
+}
+
+// executionTimeout is config's own tool execution timeout, else the global one.
+func (m *ToolsManager) executionTimeout(config *schemas.MCPClientConfig) time.Duration {
+	if config != nil && config.ToolExecutionTimeout > 0 {
+		return config.ToolExecutionTimeout
+	}
+	return m.toolExecutionTimeout.Load().(time.Duration)
+}
+
+// forceRefreshDetached refreshes config's credential for the caller on ctx
+// without holding the caller up, for a failed call whose retry was skipped.
+// The refresh keeps ctx's values, which say whose credential it is, but not
+// its cancellation, since the request ends as soon as its error is returned;
+// timeout bounds it instead. A failure is only logged: the next call resolves
+// the credential again either way.
+func (m *ToolsManager) forceRefreshDetached(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, timeout time.Duration) {
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	if err := m.credStore.ForceRefresh(schemas.NewBifrostContext(refreshCtx, schemas.NoDeadline), config); err != nil {
+		m.logger.Debug("%s Forced credential refresh after a skipped retry failed for %s: %v", MCPLogPrefix, config.Name, err)
+	}
 }
 
 // recoverSharedConnection handles the shared-connection half of
-// attemptAuthFailureRecovery. It always triggers the background force-refresh
+// attemptCallFailureRecovery. It always triggers the background force-refresh
 // + reconnect first, so the connection heals even when retryOptedOut
 // suppresses the retry. It then waits up to MCPSharedAuthRetryReconnectBudget
 // (further capped by the caller's remaining deadline) for the reconnect to
@@ -921,25 +1247,35 @@ func (m *ToolsManager) attemptAuthFailureRecovery(
 // surfaces, with the reconnect still running in the background on a timeout.
 func (m *ToolsManager) recoverSharedConnection(
 	ctx *schemas.BifrostContext,
-	toolName string,
-	callRequest mcp.CallToolRequest,
+	label string,
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
 	retryOptedOut bool,
-) (*mcp.CallToolResult, bool) {
+	serves func(*schemas.MCPClientState) bool,
+	retry func(context.Context, *client.Client) error,
+) (bool, bool) {
 	reconnectResult := m.triggerBackgroundReconnect(executionConfig)
 	if retryOptedOut || reconnectResult == nil || executionConfig == nil {
-		return nil, false
+		return false, false
 	}
 
 	budget := MCPSharedAuthRetryReconnectBudget
+	// Whether the caller's remaining time, rather than the reconnect budget, is
+	// what bounds this wait. Only then does the wait expiring mean the tool call
+	// itself ran out of time: the reconnect budget lapsing on its own leaves the
+	// tool's budget untouched, and with a 30s default tool timeout against a 10s
+	// reconnect budget that is the ordinary case rather than a corner.
+	deadlineBound := false
 	if callerDeadline, hasDeadline := ctx.Deadline(); hasDeadline {
 		if remaining := time.Until(callerDeadline); remaining < budget {
 			budget = remaining
+			deadlineBound = true
 		}
 	}
 	if budget <= 0 {
-		return nil, false
+		// Only reachable through the branch above, with the deadline already
+		// passed, so deadlineBound is necessarily true here.
+		return false, deadlineBound
 	}
 	waitDeadline := time.Now().Add(budget)
 
@@ -955,17 +1291,20 @@ func (m *ToolsManager) recoverSharedConnection(
 			// no in-flight operation left and this returns immediately.
 			joined, joinErr := m.clientManager.AwaitReconnect(executionConfig.ID, time.Until(waitDeadline))
 			if !joined || joinErr != nil {
-				return nil, false
+				return false, false
 			}
 		}
 	case <-ctx.Done():
 		// Caller cancellation, not just deadline: a canceled request must not
 		// park here for the remaining budget. The reconnect keeps running in
 		// the background either way.
-		return nil, false
+		// Deadline and cancellation both land here and only the former is a
+		// timeout. Reading ctx.Err() inside this branch is well defined: Done
+		// is already closed, so there is no clock mid-flip to lose a race to.
+		return false, errors.Is(ctx.Err(), context.DeadlineExceeded)
 	case <-timer.C:
 		m.logger.Debug("%s Reconnect for %s did not finish within the retry budget; surfacing the original auth failure", MCPLogPrefix, executionConfig.Name)
-		return nil, false
+		return false, deadlineBound
 	}
 
 	// The reconnect replaces the client state entry, so re-resolve it to pick
@@ -980,34 +1319,35 @@ func (m *ToolsManager) recoverSharedConnection(
 	// letting the original auth failure surface is strictly safer than
 	// guessing. GetClientByName returns a snapshot copy of the client state,
 	// so it must be re-resolved after the reconnect to pick up the fresh
-	// connection.
+	// connection; the tool's continued presence is checked against the
+	// discovery store's current discovery for this client.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
-		return nil, false
+		return false, false
 	}
-	if _, ok := state.ToolMap[toolName]; !ok {
-		return nil, false
+	if serves != nil && !serves(state) {
+		return false, false
 	}
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)
 	if err != nil {
-		m.logger.Debug("%s Auth-failure retry could not acquire the reconnected client for %s: %v", MCPLogPrefix, toolName, err)
-		return nil, false
+		m.logger.Debug("%s Auth-failure retry could not acquire the reconnected client for %s: %v", MCPLogPrefix, label, err)
+		return false, false
 	}
 	defer release()
 
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
-	retryResponse, retryErr := conn.CallTool(retryCtx, callRequest)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait := schemas.BeginUpstreamWait(ctx)
+	retryErr := retry(retryCtx, conn)
+	retryWait.End()
 	if retryErr != nil {
-		m.logger.Debug("%s Auth-failure retry after reconnect also failed for %s: %v", MCPLogPrefix, toolName, retryErr)
-		return nil, false
+		m.logger.Debug("%s Auth-failure retry after reconnect also failed for %s: %v", MCPLogPrefix, label, retryErr)
+		return false, false
 	}
 
-	m.logger.Debug("%s Auth-failure retry after reconnect succeeded for %s", MCPLogPrefix, toolName)
-	return retryResponse, true
+	m.logger.Debug("%s Auth-failure retry after reconnect succeeded for %s", MCPLogPrefix, label)
+	return true, false
 }
 
 // triggerBackgroundReconnect forces a credential refresh and reconnects a
@@ -1018,7 +1358,7 @@ func (m *ToolsManager) recoverSharedConnection(
 // the health monitor's independent ping-failure cycle to eventually notice.
 //
 // Runs on a fresh background context — the caller's request context ends as
-// soon as attemptAuthFailureRecovery returns the original failure to the
+// soon as attemptCallFailureRecovery returns the original failure to the
 // tool call's caller.
 //
 // The returned channel (buffered, never blocks the goroutine) receives the
@@ -1110,6 +1450,13 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	)
 }
 
+// UpdateCodeModeLimits replaces the per-execution code mode limits; nil keeps them.
+func (m *ToolsManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	if m.codeMode != nil && limits != nil {
+		m.codeMode.UpdateConfig(&CodeModeConfig{Limits: limits})
+	}
+}
+
 // UpdateConfig updates tool manager configuration atomically.
 // This method is safe to call concurrently from multiple goroutines.
 func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
@@ -1123,17 +1470,28 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
 
-	// Update CodeMode configuration — propagate whenever either field is set
-	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
+	// Update CodeMode configuration — propagate whenever any field is set
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0 || config.CodeModeLimits != nil) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: time.Duration(config.ToolExecutionTimeout),
+			Limits:               config.CodeModeLimits,
 		})
 	}
 
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
+	m.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
+	m.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
+}
+
+// instructionCaps reports the configured byte bounds; zero fields fall back to the defaults.
+func (m *ToolsManager) instructionCaps() InstructionCaps {
+	return InstructionCaps{
+		PerClient: int(m.maxInstructionsPerClient.Load()),
+		Total:     int(m.maxInstructionsTotal.Load()),
+	}
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
