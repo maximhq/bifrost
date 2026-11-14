@@ -6513,7 +6513,54 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 						}
 					}
 				} else if msg.ResponsesToolMessage.CallID != nil {
-					// This is a tool result (user providing result of tool execution)
+					// This is a tool result (user providing result of tool execution).
+					// Commit any reasoning that arrived after the MCP call into the
+					// assistant turn that issued the call before buffering this
+					// output, so the thinking stays in its originating turn instead
+					// of being flushed by the end-of-input flush into a new
+					// assistant message after the tool result (issue #7768 ordering
+					// rule, see #9888). Mirrors the function_call_output branch
+					// (L6403-6424) and the other *CallOutput branches.
+					if len(pendingToolCalls) > 0 && len(pendingReasoningContentBlocks) > 0 {
+						// The call is still pending: the reasoning joins its call
+						// blocks and is committed together with them when the call
+						// turn is flushed.
+						pendingToolCalls = append(pendingToolCalls, pendingReasoningContentBlocks...)
+						pendingReasoningContentBlocks = nil
+					} else if len(pendingReasoningContentBlocks) > 0 && msg.ResponsesToolMessage.CallID != nil {
+						// The call was already committed to an assistant turn (a
+						// message arrived between the call and this output). Attach
+						// the buffered reasoning to that turn - the assistant
+						// message holding the mcp_tool_use whose id matches this
+						// output's call id - so it stays in the call's turn, ahead
+						// of the tool result. Prepending keeps thinking leading its
+						// turn. If no matching turn exists (orphan output), the
+						// reasoning stays pending and the end-of-input flush handles
+						// it as before. MCP calls are tracked
+						// (currentToolCallIDs/pendingToolCalls), unlike unsupported
+						// calls, so the turn is identifiable by its tool_use id;
+						// lastUnsupportedCallCommitted is not relevant here.
+						attached := false
+						for n := len(anthropicMessages) - 1; n >= 0 && !attached; n-- {
+							if anthropicMessages[n].Role != AnthropicMessageRoleAssistant {
+								continue
+							}
+							for _, block := range anthropicMessages[n].Content.ContentBlocks {
+								if block.ID != nil && *block.ID == *msg.ResponsesToolMessage.CallID &&
+									(block.Type == AnthropicContentBlockTypeMCPToolUse ||
+										block.Type == AnthropicContentBlockTypeToolUse ||
+										block.Type == AnthropicContentBlockTypeServerToolUse) {
+									copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+									copy(copied, pendingReasoningContentBlocks)
+									blocks := anthropicMessages[n].Content.ContentBlocks
+									anthropicMessages[n].Content.ContentBlocks = append(copied, blocks...)
+									pendingReasoningContentBlocks = nil
+									attached = true
+									break
+								}
+							}
+						}
+					}
 					// Accumulate with other tool results
 					mcpToolResultBlock := convertBifrostMCPCallOutputToAnthropicToolResultBlock(&msg)
 					if mcpToolResultBlock != nil {

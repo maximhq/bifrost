@@ -4932,3 +4932,83 @@ func TestConvertBifrostMessagesToAnthropicMessages_EndFlushReasoningBeforeTextIn
 		t.Fatalf("block 2: expected text hello, got %+v", blocks[2])
 	}
 }
+
+func TestConvertBifrostMessagesToAnthropicMessages_ReasoningBeforeMCPResultStaysInTurn(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Call the mcp tool.")},
+	}
+	mcpCall := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("mcp_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("mcp_1"),
+			Name:      schemas.Ptr("get_workspace_id"),
+			Arguments: schemas.Ptr(`{}`),
+		},
+	}
+	assistantText := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("calling the mcp tool")},
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "reasoning after mcp call"}},
+		},
+	}
+	mcpOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("mcp_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesToolCallOutputStr: schemas.Ptr("ok"),
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{user, mcpCall, assistantText, reasoning, mcpOutput}, true, caps)
+	// Expect exactly 4 messages: user, assistant (the committed mcp call turn,
+	// now holding the reasoning that arrived after the call), assistant (the
+	// intervening text turn), user (the mcp tool result). The reasoning must
+	// stay in the call's assistant turn, ahead of the tool result, with no
+	// trailing assistant message after the result.
+	if len(msgs) != 4 {
+		t.Fatalf("expected user + assistant(call) + assistant(text) + user(tool_result), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != AnthropicMessageRoleUser {
+		t.Fatalf("msg 0: expected user, got %+v", msgs[0])
+	}
+	if msgs[1].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("msg 1: expected assistant (mcp call turn), got %+v", msgs[1])
+	}
+	blocks := msgs[1].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("msg 1: expected 2 blocks [thinking, mcp_tool_use], got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[0].Thinking == nil || *blocks[0].Thinking != "reasoning after mcp call" {
+		t.Fatalf("msg 1 block 0: expected leading thinking, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeMCPToolUse || blocks[1].ID == nil {
+		t.Fatalf("msg 1 block 1: expected mcp_tool_use, got %+v", blocks[1])
+	}
+	if msgs[2].Role != AnthropicMessageRoleAssistant {
+		t.Fatalf("msg 2: expected assistant (text), got %+v", msgs[2])
+	}
+	if len(msgs[2].Content.ContentBlocks) != 1 || msgs[2].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("msg 2: expected [text], got %+v", msgs[2].Content.ContentBlocks)
+	}
+	if msgs[3].Role != AnthropicMessageRoleUser {
+		t.Fatalf("msg 3: expected user (mcp tool result), got %+v", msgs[3])
+	}
+	result := msgs[3].Content.ContentBlocks
+	if len(result) == 0 || result[0].Type != AnthropicContentBlockTypeMCPToolResult || result[0].ToolUseID == nil || *result[0].ToolUseID != *blocks[1].ID {
+		t.Fatalf("msg 3: expected mcp_tool_result for mcp_1, got %+v", result)
+	}
+}
