@@ -328232,6 +328232,113 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Total request timeout: x-bf-request-timeout caps retries and fallbacks (request timeout) (PR #10010)",
+      "description": "x-bf-request-timeout sets the deadline of the whole request: every retry, the backoff between retries and every fallback run under it. Without it a request can run for the provider timeout (300 s by default) multiplied by its retries and fallbacks. The first case sends a 50ms cap with a fallback configured: no provider can answer that fast, so the request must end with a 504 request_timed_out and the fallback must not rescue it. The second case sends a generous cap and pins that the header does not break a normal request.",
+      "item": [
+        {
+          "name": "[EXPECT-504] openai/gpt-4o-mini with a fallback ends in 504 request_timed_out when x-bf-request-timeout passes via POST /v1/chat/completions - request timeout - #10010",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "50ms"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"fallbacks\": [\n    \"openai/gpt-4.1-nano\"\n  ],\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// The collection-level [EXPECT-504] tag asserts the status. No provider answers within",
+                  "// 50ms, so the cap ends the request, and the fallback does not get to serve it.",
+                  "pm.test('the request ends as a typed timeout', function () {",
+                  "  var err = body.error || {};",
+                  "  pm.expect(err.type, 'error.type: ' + txt.slice(0, 400)).to.eql('request_timed_out');",
+                  "});",
+                  "pm.test('no completion was returned', function () {",
+                  "  pm.expect(body.choices, 'choices present: ' + txt.slice(0, 400)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini answers under a generous x-bf-request-timeout via POST /v1/chat/completions - request timeout - #10010",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "120s"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var body = pm.response.json() || {};",
+                  "  pm.expect(body.choices, 'choices: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

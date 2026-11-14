@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -282,6 +283,11 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 //   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
+//
+// 10. Request Timeout Header:
+//   - x-bf-request-timeout: total time the request may take, including every retry, the backoff
+//     between retries and every fallback (duration string e.g. "90s" or seconds integer). It is the
+//     deadline of the returned context; once it passes the request ends with a 504 timeout.
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -310,6 +316,30 @@ func ClientForwardedIP(ctx *fasthttp.RequestCtx) string {
 		return xff
 	}
 	return strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP")))
+}
+
+// requestDeadline reads x-bf-request-timeout, a Go duration or a whole number of seconds, as the
+// deadline of the whole request. A value that is neither, or is not positive, sets no deadline.
+func requestDeadline(ctx *fasthttp.RequestCtx) time.Time {
+	raw := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-request-timeout")))
+	if raw == "" {
+		return schemas.NoDeadline
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		// Bound the seconds before converting so the multiplication cannot overflow into a
+		// positive duration; a value outside the range falls through to the warning below.
+		if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && seconds > 0 && seconds <= math.MaxInt64/int64(time.Second) {
+			timeout = time.Duration(seconds) * time.Second
+		}
+	}
+	if timeout <= 0 {
+		if logger != nil {
+			logger.Warn("x-bf-request-timeout is not a positive duration or number of seconds, ignoring")
+		}
+		return schemas.NoDeadline
+	}
+	return time.Now().Add(timeout)
 }
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
@@ -350,7 +380,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			// A context seeded by a transport hook (large-payload detection) takes this
 			// path, so the client socket is watched here too; the branch above, where a
 			// cancel func already exists, means a watcher is already running.
-			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			bifrostCtx = schemas.NewBifrostContext(existing, requestDeadline(ctx))
+			cancel = bifrostCtx.Cancel
 			startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
@@ -368,7 +399,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}()
 			_ = ctx.Done()
 		}()
-		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		bifrostCtx = schemas.NewBifrostContext(parent, requestDeadline(ctx))
+		cancel = bifrostCtx.Cancel
 		// Cancel the request when the client closes its socket while the handler
 		// is still waiting on core; fasthttp offers no per-request Done (#7035).
 		startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)

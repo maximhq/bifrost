@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Total Request Timeout** - The `x-bf-request-timeout` header (a duration such as `90s`, or seconds) caps the whole request, including retries, backoff and fallbacks. Once it passes no further attempt or fallback starts and the request ends with a 504 `request_timed_out`
 
 ## 🐞 Fixed
 

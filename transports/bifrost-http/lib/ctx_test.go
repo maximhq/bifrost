@@ -549,6 +549,54 @@ func TestConvertToBifrostContext_SessionTTLAndAffinityHeaders(t *testing.T) {
 	}
 }
 
+// TestConvertToBifrostContext_RequestTimeoutHeader pins that x-bf-request-timeout, a Go duration
+// or a whole number of seconds, becomes the deadline of the request's context, so it bounds every
+// retry, backoff and fallback core runs under it. A value that is neither, or is not positive, sets
+// no deadline.
+func TestConvertToBifrostContext_RequestTimeoutHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  time.Duration // 0: no deadline
+	}{
+		{"a duration", "90s", 90 * time.Second},
+		{"a fractional duration", "1.5m", 90 * time.Second},
+		{"whole seconds", " 45 ", 45 * time.Second},
+		{"zero seconds", "0", 0},
+		{"negative seconds", "-5", 0},
+		{"seconds that overflow a duration into a positive one", "18446744074", 0},
+		{"negative seconds that overflow a duration into a positive one", "-18446744073", 0},
+		{"seconds just past the largest duration", "9223372037", 0},
+		{"seconds beyond int64", "99999999999999999999", 0},
+		{"a negative duration", "-1m", 0},
+		{"neither a duration nor seconds", "soon", 0},
+		{"empty", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tc.value != "" {
+				ctx.Request.Header.Set("x-bf-request-timeout", tc.value)
+			}
+			before := time.Now()
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			deadline, ok := bifrostCtx.Deadline()
+			if tc.want == 0 {
+				if ok {
+					t.Fatalf("deadline = %s, want none", deadline)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("no deadline, want %s from now", tc.want)
+			}
+			if earliest, latest := before.Add(tc.want), time.Now().Add(tc.want); deadline.Before(earliest) || deadline.After(latest) {
+				t.Fatalf("deadline = %s, want %s from the request (between %s and %s)", deadline, tc.want, earliest, latest)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("baggage", "session-id=   ")
