@@ -867,6 +867,26 @@ func TestPromptCacheDispatch_InjectsForAliasWithOpaqueModelID(t *testing.T) {
 		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
 	})
 
+	t.Run("anthropic messages route", func(t *testing.T) {
+		// /anthropic/v1/messages converts the body to a Responses request and
+		// dispatches it through prepareResponsesRequest.
+		ctx := aliasCtx(claude)
+		var incoming anthropic.AnthropicMessageRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{
+			"model":"bedrock/`+profileID+`","max_tokens":128,
+			"messages":[{"role":"user","content":[{"type":"text","text":"stable prefix"}]}]
+		}`), &incoming))
+		req := incoming.ToBifrostResponsesRequest(ctx)
+
+		out, bifrostErr := prepareResponsesRequest(ctx, promptCacheOn(), stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+	})
+
 	t.Run("an alias without model_name still judges the opaque ID", func(t *testing.T) {
 		req := chatReqWithText("stable prefix")
 		req.Provider, req.Model = schemas.Bedrock, profileID
