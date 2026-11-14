@@ -201151,7 +201151,7 @@
     },
     {
       "name": "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)",
-      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
+      "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses. Case 162.14 is a chat completion on the fixture key's alias claude-app-profile, whose model_id is an application inference profile ARN (the fixture answers Converse for such ARNs); with x-bf-prompt-cache-auto-inject on (the fixture config sets prompt_cache.auto_inject false, so no other case changes) the Converse body must carry a cachePoint (#10026).",
       "item": [
         {
           "name": "162.1 bedrock passthrough InvokeAgent is signed, forwarded to agent-runtime and the event stream returns untouched (bedrock agents)",
@@ -201950,6 +201950,74 @@
                 "exec": [
                   "pm.test('the 4s Retrieve is cut off by the 3s request timeout, not streamed through', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.error, pm.response.text()).to.include('context deadline exceeded'); });",
                   "pm.test('it was refused before the 4s upstream finished', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3900); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "162.14 bedrock alias to an application inference profile ARN gets the prompt cache marker from auto_inject (bedrock alias prompt cache)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-prompt-cache-auto-inject",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/claude-app-profile\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a terse assistant. This system prompt is the stable prefix an agent loop replays every turn.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #10026: the alias's wire model is an opaque application inference profile ARN; only its model_name says Claude.",
+                  "// The prompt cache gate judged the ARN and injected nothing. It must judge the canonical model, and the wire model must stay the ARN.",
+                  "pm.test('the chat request is served', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+                  "  pm.test('exactly one Converse request reached bedrock-runtime', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+                  "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+                  "  pm.test('the wire model is the profile ARN, not the alias or model_name', function () { pm.expect(call.port).to.equal(8798); pm.expect(decodeURIComponent(call.path)).to.equal('/model/arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01/converse'); });",
+                  "  var body = {};",
+                  "  try { body = JSON.parse(call.body || '{}'); } catch (e) { body = {}; }",
+                  "  var wire = JSON.stringify(body);",
+                  "  pm.test('auto_inject put a cachePoint on the Converse body', function () { pm.expect(wire, wire.slice(0, 800)).to.include('\"cachePoint\"'); });",
+                  "});"
                 ]
               }
             }
