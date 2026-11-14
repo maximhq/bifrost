@@ -160,6 +160,62 @@ func TestBuildInputContentSummary(t *testing.T) {
 	assert.NotContains(t, summary, "It's sunny", "BuildInputContentSummary should not include output")
 }
 
+func TestBuildInputContentSummary_ToolLoopFallback(t *testing.T) {
+	system := "You are an agent."
+	toolResult := "25\nexit=0"
+	toolName := "AskUserQuestion"
+	callID := "call_1"
+	fcType := schemas.ResponsesMessageTypeFunctionCall
+	fcoType := schemas.ResponsesMessageTypeFunctionCallOutput
+	args := `{"q":"amend?"}`
+	output := "done"
+
+	cases := []struct {
+		name string
+		log  *Log
+		want string
+	}{
+		{
+			name: "chat tool result",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &toolResult}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID}},
+			}},
+			want: toolResult,
+		},
+		{
+			name: "chat assistant tool call",
+			log: &Log{InputHistoryParsed: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: args}},
+				}}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+			}},
+			want: toolName + "(" + args + ")",
+		},
+		{
+			name: "responses function call output",
+			log: &Log{ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+				{Type: &fcType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &toolName, Arguments: &args}},
+				{Type: &fcoType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output}}},
+			}},
+			want: output,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.log.BuildInputContentSummary())
+		})
+	}
+}
+
 func TestBuildTags(t *testing.T) {
 	vkID := "vk_123"
 	rrID := "rr_456"
