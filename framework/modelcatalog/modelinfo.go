@@ -70,6 +70,13 @@ func (mc *ModelCatalog) enrichModel(model *schemas.Model) {
 	if entry == nil && model.Alias != nil {
 		entry = mc.GetPricingEntryForModel(*model.Alias, provider)
 	}
+	if entry == nil {
+		// An alias's model_id can be an opaque provider ID (a Bedrock
+		// application inference profile); pricing resolves it by model_name.
+		if alias, ok := mc.keyconf.ResolveAlias(provider, modelName); ok && alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
+			entry = mc.GetPricingEntryForModel(*alias.Config.ModelName, provider)
+		}
+	}
 	ApplyModelInfo(model, entry)
 }
 
