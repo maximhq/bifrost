@@ -111,3 +111,13 @@ func TestGenerateRelayHash(t *testing.T) {
 	reordered.Routes = append([]schemas.RelayRouteConfig{{Method: "POST", Path: "/extract"}}, reordered.Routes...)
 	require.NotEqual(t, hash(ordered), hash(reordered), "reordering routes is a change")
 }
+
+func TestRapidMLXKeyHashIncludesURL(t *testing.T) {
+	key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")}}
+	first, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	key.RapidMLXKeyConfig.URL = *schemas.NewSecretVar("http://localhost:8001/v1")
+	second, err := generateKeyHash(key, nil)
+	require.NoError(t, err)
+	require.NotEqual(t, first, second)
+}

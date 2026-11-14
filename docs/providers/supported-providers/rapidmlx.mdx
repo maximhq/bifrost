@@ -1,0 +1,124 @@
+---
+title: "Rapid-MLX"
+description: "Configure Rapid-MLX for local Apple Silicon inference through Bifrost."
+icon: "server"
+---
+
+## Overview
+
+[Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) is an open-source local LLM inference server for Apple Silicon, built on MLX. Bifrost connects through its OpenAI-compatible API with per-key server URLs and optional bearer authentication.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Upstream endpoint |
+|-----------|---------------|-----------|-------------------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Speech (TTS) | ✅ | ❌ | `/v1/audio/speech` |
+| Transcriptions (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
+
+Responses requests use the native Responses endpoint. Chat, Responses, embeddings and audio reuse Bifrost's OpenAI converters. See the [OpenAI provider guide](/providers/supported-providers/openai) for Bifrost's request mapping.
+
+Embeddings require an embedding model. Audio requires the optional `rapid-mlx[audio]` package and a corresponding audio model; see [Rapid-MLX documentation](https://rapidmlx.com/docs/). This integration does not expose audio streaming, translations or voice listing.
+
+Legacy text completions, model retrieval, decisions, reranking, OCR, images, video, batches, files, token counting, compaction, containers, cached-content management and passthrough operations return `UnsupportedOperationError`.
+
+## Setup & Configuration
+
+Install and start Rapid-MLX on an Apple Silicon Mac:
+
+```bash
+brew install rapid-mlx
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
+```
+
+```bash
+curl http://localhost:8000/v1/models
+```
+
+Use the served model ID returned by `/v1/models`, such as `mlx-community/Qwen3.5-4B-MLX-4bit`.
+
+<Note>
+When `--port` is omitted, Rapid-MLX chooses the first free port in 8000–8009. The examples use an explicit port 8000. The base URL includes `/v1`.
+</Note>
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Open **Models** > **Model Providers**, click **Add New Provider**, and select **Rapid-MLX**.
+2. Add a server and give it a name.
+3. Set **Server URL** to `http://localhost:8000/v1` or the address reachable from Bifrost.
+4. Leave **API Key** empty for the default keyless server. For optional Rapid-MLX authentication, set the key value to the server's configured bearer token.
+5. Choose **All Models** or a model allowlist, then save.
+6. In the provider network settings, enable **Allow Private Network** for a local server.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "rapidmlx": {
+      "network_config": {
+        "allow_private_network": true
+      },
+      "keys": [
+        {
+          "name": "rapidmlx-local",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "rapidmlx_key_config": {
+            "url": "http://localhost:8000/v1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Use the [Provider Keys Management API](/api-reference/providers/create-a-key-for-a-provider) with provider `rapidmlx` and `rapidmlx_key_config.url`.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.RapidMLX:
+    return []schemas.Key{{
+        Name: "rapidmlx-local",
+        Models: []string{"*"},
+        Weight: 1.0,
+        RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{
+            URL: *schemas.NewSecretVar("http://localhost:8000/v1"),
+        },
+    }}, nil
+```
+
+Enable `NetworkConfig.AllowPrivateNetwork` in the provider configuration when connecting to a local server.
+
+</Tab>
+</Tabs>
+
+Each key can target a different server. List Models queries each configured key's URL. Key URLs are required when saving keys; direct provider calls can also use `network_config.base_url`, with `http://localhost:8000/v1` as the fallback.
+
+URL fields accept Bifrost environment references, for example `env.RAPID_MLX_URL`. The live Go test suite uses `RAPID_MLX_BASE_URL` and optional `RAPID_MLX_API_KEY`.
+
+## Send a Request
+
+Use the `rapidmlx/` provider prefix in Bifrost requests:
+
+```json
+{
+  "model": "rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "max_tokens": 64
+}
+```
+
+Set `stream: true` for streaming chat or Responses requests. If Bifrost runs in a container or on another machine, `localhost` refers to that environment; configure a reachable Rapid-MLX URL and enable private-network access as needed.

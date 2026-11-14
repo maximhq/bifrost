@@ -187,6 +187,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Azure,
 		schemas.Vertex,
 		schemas.Ollama,
+		schemas.RapidMLX,
 		schemas.Mistral,
 		schemas.Groq,
 		schemas.SGL,
@@ -718,6 +719,19 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 		}, nil
+	case schemas.RapidMLX:
+		// Keyless local Rapid-MLX; bearer token is picked up from RAPID_MLX_API_KEY when set.
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.RAPID_MLX_API_KEY"), // empty when the local instance has no auth
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: schemas.Ptr(true), // exercise fail-fast unsupported batch/file operations
+				RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{
+					URL: *schemas.NewSecretVar("env.RAPID_MLX_BASE_URL"),
+				},
+			},
+		}, nil
 	case schemas.VLLM:
 		apiKeyValue := *schemas.NewSecretVar("env.VLLM_API_KEY") // empty when the vLLM instance has no auth (e.g. local/unprotected)
 		keys := []schemas.Key{
@@ -901,6 +915,21 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				RetryBackoffInitial:            250 * time.Millisecond,
 				RetryBackoffMax:                4 * time.Second,
 				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.RapidMLX:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     8, // Local service, fewer retries needed
+				RetryBackoffInitial:            250 * time.Millisecond,
+				RetryBackoffMax:                4 * time.Second,
+				BaseURL:                        os.Getenv("RAPID_MLX_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -1635,6 +1664,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
+	},
+	{
+		Provider:  schemas.RapidMLX,
+		ChatModel: "mlx-community/Qwen3.5-4B-MLX-4bit",
+		Scenarios: TestScenarios{SimpleChat: true, CompletionStream: true, ListModels: true},
 	},
 	{
 		Provider:  schemas.Groq,

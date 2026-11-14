@@ -349,6 +349,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 			RoleARN:   secretPtr("arn:aws:iam::123456789012:role/sagemaker-current"),
 		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		RapidMLXKeyConfig:   &schemas.RapidMLXKeyConfig{URL: secret("http://localhost:8000/v1")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
 		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: secret("0123456789abcdef0123456789abcdef")},
@@ -374,6 +375,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 			RoleARN:   secretPtr(staleMaskValue("arn:", "rent")),
 		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		RapidMLXKeyConfig:   &schemas.RapidMLXKeyConfig{URL: staleMask("http", "0/v1")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
 		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: staleMask("0123", "cdef")},
@@ -395,6 +397,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"sagemaker secret key", merged.SageMakerKeyConfig.SecretKey.GetValue(), oldRaw.SageMakerKeyConfig.SecretKey.GetValue()},
 		{"sagemaker role arn", merged.SageMakerKeyConfig.RoleARN.GetValue(), oldRaw.SageMakerKeyConfig.RoleARN.GetValue()},
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
+		{"rapidmlx url", merged.RapidMLXKeyConfig.URL.GetValue(), oldRaw.RapidMLXKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
 		{"cloudflare account id", merged.CloudflareKeyConfig.AccountID.GetValue(), oldRaw.CloudflareKeyConfig.AccountID.GetValue()},
@@ -2014,4 +2017,27 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
 		}
 	})
+}
+
+func TestRapidMLXKeyURLs(t *testing.T) {
+	for _, tc := range []struct {
+		url      string
+		rejected bool
+	}{
+		{"http://localhost:8000/v1", false},
+		{"http://169.254.169.254/v1", true},
+		{"http://0.0.0.0:8000/v1", true},
+	} {
+		key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(tc.url)}}
+		err := validateProviderKeyServerURLs(key)
+		if (err != nil) != tc.rejected {
+			t.Errorf("URL %s: rejection = %v", tc.url, err)
+		}
+		if _, ok := keyDialTargets(key)["rapidmlx_key_config.url"]; !ok {
+			t.Fatal("missing Rapid-MLX dial target")
+		}
+	}
+	if err := validateProviderKeyURL(schemas.RapidMLX, schemas.Key{}); err == nil {
+		t.Fatal("missing URL accepted")
+	}
 }

@@ -7293,3 +7293,21 @@ func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
 	require.NotNil(t, moved.BusinessUnitID)
 	assert.Equal(t, other, *moved.BusinessUnitID)
 }
+
+func TestRapidMLXKeyRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{schemas.RapidMLX: {}}))
+	key := schemas.Key{ID: "rapidmlx-local", Name: "rapidmlx-local", Weight: 1,
+		RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")},
+	}
+	require.NoError(t, store.CreateProviderKey(ctx, schemas.RapidMLX, key))
+	stored, err := store.GetProviderKey(ctx, schemas.RapidMLX, key.ID)
+	require.NoError(t, err)
+	require.Equal(t, key.RapidMLXKeyConfig.URL.GetValue(), stored.RapidMLXKeyConfig.URL.GetValue())
+	key.RapidMLXKeyConfig.URL = *schemas.NewSecretVar("env.RAPID_MLX_URL")
+	require.NoError(t, store.UpdateProviderKey(ctx, schemas.RapidMLX, key.ID, key))
+	stored, err = store.GetProviderKey(ctx, schemas.RapidMLX, key.ID)
+	require.NoError(t, err)
+	require.Equal(t, key.RapidMLXKeyConfig.URL, stored.RapidMLXKeyConfig.URL)
+}
