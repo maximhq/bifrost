@@ -1,0 +1,139 @@
+name: Realtime Tests
+
+# The Gemini, Vertex, ElevenLabs and Soniox slice of the realtime e2e suite (tests/realtime) against a gateway
+# built from the checkout. It runs nightly and on demand, never on pull requests: the fake upstreams (Gemini,
+# ElevenLabs and Soniox; Vertex has none) need no provider keys, the real providers use the repository's
+# provider secrets, and the long job holds Google's sessions across their 11-minute connection limit.
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: realtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  realtime-fake:
+    name: Realtime (fake upstreams)
+    runs-on: builder-8-32
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Run the realtime e2e tests
+        run: |
+          chmod +x .github/workflows/scripts/test-realtime.sh
+          ./.github/workflows/scripts/test-realtime.sh fake
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: realtime-fake-test-report
+          path: |
+            test-reports/realtime.xml
+            tmp/realtime-gateway.log
+
+  realtime-real:
+    name: Realtime (real providers)
+    runs-on: builder-8-32
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Run the realtime e2e tests
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
+        run: |
+          chmod +x .github/workflows/scripts/test-realtime.sh
+          ./.github/workflows/scripts/test-realtime.sh real
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: realtime-real-test-report
+          path: |
+            test-reports/realtime.xml
+            tmp/realtime-gateway.log
+
+  realtime-long:
+    name: Realtime (long sessions, real providers)
+    runs-on: builder-8-32
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+
+      - name: Run the long Live sessions
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
+        run: |
+          chmod +x .github/workflows/scripts/test-realtime.sh
+          ./.github/workflows/scripts/test-realtime.sh long
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: realtime-long-test-report
+          path: |
+            test-reports/realtime-long.xml
+            tmp/realtime-gateway.log

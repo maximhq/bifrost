@@ -581,12 +581,12 @@ complexity-suggestions:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List phrase suggestions
     description: |
-      Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the complexity analyzer config.
+      Lists stored phrase suggestions for the semantic complexity router, largest cluster first, with how many there are per status, the last run, and when the next scheduled run is. Suggestions are written by runs over a sample of routed traffic; see the suggestions block of the model router config.
     tags:
       - Routing
     security:
@@ -623,7 +623,7 @@ complexity-suggestions:
           minimum: 0
     responses:
       '404':
-        description: The model router does not exist
+        description: The model router is not saved
         content:
           application/json:
             schema:
@@ -640,8 +640,14 @@ complexity-suggestions:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestions could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -656,7 +662,7 @@ complexity-suggestion:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a phrase suggestion with its examples
@@ -687,13 +693,19 @@ complexity-suggestion:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionDetail'
       '404':
-        description: Suggestion not found
+        description: The model router is not saved, or it has no suggestion with this id
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion or its examples could not be read
         content:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -708,12 +720,12 @@ complexity-suggestion-status:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Accept, dismiss or reopen a phrase suggestion
     description: |
-      Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank (staged and saved with the complexity analyzer config). Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.
+      Records the user's call on a suggestion. An open suggestion can be accepted or dismissed; either can be reopened. Accepting only records the decision: it does not change the phrase bank, so its phrases are served only once they are added to the bank, with POST /api/routing/model-routers/{router_id}/phrases or a router update. Later runs leave accepted and dismissed suggestions as they are and spend no model call on them, so the call sticks. Superseded is set by runs and cannot be changed here.
     tags:
       - Routing
     security:
@@ -751,7 +763,7 @@ complexity-suggestion-status:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '404':
-        description: Suggestion not found
+        description: The model router is not saved, or it has no suggestion with this id
         content:
           application/json:
             schema:
@@ -762,8 +774,14 @@ complexity-suggestion-status:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion could not be read or updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -778,7 +796,7 @@ complexity-suggestion-test:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Test phrases against routed requests
@@ -816,7 +834,13 @@ complexity-suggestion-test:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '404':
-        description: Suggestion not found
+        description: The model router is not saved, or the suggestion_id sent is not one of its suggestions
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The suggestion or the example logs could not be read
         content:
           application/json:
             schema:
@@ -828,7 +852,7 @@ complexity-suggestion-test:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -843,7 +867,7 @@ complexity-suggestion-runs:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List phrase suggestion runs
@@ -871,7 +895,7 @@ complexity-suggestion-runs:
           default: 20
     responses:
       '404':
-        description: The model router does not exist
+        description: The model router is not saved
         content:
           application/json:
             schema:
@@ -896,8 +920,14 @@ complexity-suggestion-runs:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The runs could not be read
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -910,7 +940,7 @@ complexity-suggestion-runs:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Start a phrase suggestion run now
@@ -937,7 +967,7 @@ complexity-suggestion-runs:
           type: string
     responses:
       '404':
-        description: The model router does not exist
+        description: The model router is not saved
         content:
           application/json:
             schema:
@@ -963,8 +993,14 @@ complexity-suggestion-runs:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be started
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the semantic router has no warmed phrase bank to suggest against yet
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or it has no warmed phrase bank to suggest against yet
         content:
           application/json:
             schema:
@@ -979,7 +1015,7 @@ complexity-suggestion-run-estimate:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Estimate a phrase suggestion run
@@ -1018,7 +1054,7 @@ complexity-suggestion-run-estimate:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '404':
-        description: The model router does not exist
+        description: The model router is not saved
         content:
           application/json:
             schema:
@@ -1029,8 +1065,14 @@ complexity-suggestion-run-estimate:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be estimated
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: The router has no warmed phrase bank, or suggestions are not available
+        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -1045,11 +1087,11 @@ model-routers:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List model routers
-    description: Returns every model router, oldest first. The list is empty until a router is created.
+    description: Returns every model router, oldest first. The list is empty until a router is created. A router stored in a form this version cannot read is left out of the list.
     tags:
       - Routing
     security:
@@ -1073,7 +1115,7 @@ model-routers:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create a model router
@@ -1120,7 +1162,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a model router
@@ -1140,7 +1182,11 @@ model-routers-by-id:
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
+        description: The router is stored in a form this version cannot read; save or reset it
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -1152,7 +1198,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a model router
@@ -1180,7 +1226,11 @@ model-routers-by-id:
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
+        description: Another router has this name, or the stored router is in a form this version cannot read and the body sends no classifier settings to replace it; save or reset it
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -1192,7 +1242,7 @@ model-routers-by-id:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Delete` | RBAC role or API key scope |
+        | `Routers:Delete` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a model router
@@ -1205,6 +1255,10 @@ model-routers-by-id:
     responses:
       '200':
         description: Model router deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
@@ -1226,7 +1280,7 @@ model-router-reset:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Reset a model router
@@ -1257,7 +1311,7 @@ model-router-defaults:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get model router defaults
@@ -1291,7 +1345,7 @@ model-router-targets:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Set a model router's targets
@@ -1337,7 +1391,7 @@ model-router-routing:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a model router's routing
@@ -1386,7 +1440,7 @@ model-router-status:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a model router's classifier status
@@ -1404,9 +1458,17 @@ model-router-status:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
       '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+        description: The model router is saved but not loaded (the message says why), or the routing plugin could not report its status
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
 
 model-router-status-retry:
   parameters:
@@ -1424,7 +1486,7 @@ model-router-status-retry:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Retry a model router's failed warmup
@@ -1442,11 +1504,23 @@ model-router-status-retry:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
       '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
+        description: The model router is not saved
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
+        description: The router's semantic classifier warmup is not currently failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+        description: The model router is saved but not loaded (the message says why), or the routing plugin could not retry its warmup
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
 
 model-router-classify:
   parameters:
@@ -1464,7 +1538,7 @@ model-router-classify:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
+        | `Routers:Create` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Classify statements with a model router
@@ -1505,13 +1579,17 @@ model-router-classify:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '503':
-        description: Classification is not available on this deployment, the routing plugin is not loaded, or classifying failed for another reason; the message says which.
+        description: The model router is not saved
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '503':
+        description: Classification is not available on this deployment, the routing plugin is not loaded, the model router is saved but not loaded, or classifying failed for another reason; the message says which.
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
 
 complexity-suggestion-run-cancel:
   post:
@@ -1522,7 +1600,7 @@ complexity-suggestion-run-cancel:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Cancel a phrase suggestion run
@@ -1553,7 +1631,7 @@ complexity-suggestion-run-cancel:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ComplexitySuggestionRun'
       '404':
-        description: The model router, or a run of it with this id, does not exist
+        description: The model router is not saved, or it has no run with this id
         content:
           application/json:
             schema:
@@ -1564,8 +1642,14 @@ complexity-suggestion-run-cancel:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The run could not be cancelled
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded)
+        description: Phrase suggestions are not available (no log store, or the routing plugin is not loaded), or the model router is saved but not loaded
         content:
           application/json:
             schema:
@@ -1580,7 +1664,7 @@ complexity-suggestion-impact:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
+        | `Routers:View` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check what phrases would do to recent traffic
@@ -1627,13 +1711,19 @@ complexity-suggestion-impact:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '404':
-        description: The model router does not exist
+        description: The model router is not saved
         content:
           application/json:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '409':
-        description: Suggestions are off for this router
+        description: Suggestions are off for this router, or the stored router is in a form this version cannot read; save or reset it
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/schemas/BifrostError'
+      '500':
+        description: The stored router could not be read
         content:
           application/json:
             schema:
@@ -1645,7 +1735,7 @@ complexity-suggestion-impact:
             schema:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '503':
-        description: The router has no warmed phrase bank, or suggestions are not available
+        description: The router has no warmed phrase bank, phrase suggestions are not available (no log store, or the routing plugin is not loaded), the model router is saved but not loaded, or the config store is not available
         content:
           application/json:
             schema:
@@ -1660,7 +1750,7 @@ model-router-phrases:
 
         | Permission | Granted via |
         | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
+        | `Routers:Update` | RBAC role or API key scope |
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add phrases to a model router

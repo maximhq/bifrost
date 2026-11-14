@@ -741,6 +741,9 @@ type Estimate struct {
 	// from their logs, because they came before the router captured them; they
 	// are counted in Requests.
 	Backfill int `json:"backfill,omitempty"`
+	// BackfillUnknown is true when what the run would embed from logs could
+	// not be planned; Requests then counts only what is captured.
+	BackfillUnknown bool `json:"backfill_unknown,omitempty"`
 }
 
 // EstimateRun sizes a run of these settings over requests requests. The
@@ -788,15 +791,19 @@ func ClusterFloor(minRequests int, share float64, requests int) int {
 // FitSuggestions is what a run keeps of what the model wrote, in one pass in
 // the order the clusters were asked (heaviest first). Each phrase stays with
 // the first kept suggestion written it; a lighter suggestion left with no
-// phrase of its own is covered by that one. A suggestion whose new phrases do
-// not fit the room left in the phrase bank is dropped and counted, and
-// reserves nothing, so a lighter one written one of its phrases can still
+// phrase of its own is covered by that one when that one has the same tier.
+// When a phrase it was written went to another tier, the two clusters
+// disagree rather than one covering the other, so it is left out of the run,
+// keeping the stored suggestion its cluster matches as it was (reconcile
+// leaves a matched row it is not given untouched). A suggestion whose new
+// phrases do not fit the room left in the phrase bank is dropped and counted,
+// and reserves nothing, so a lighter one written one of its phrases can still
 // keep it. Non-actionable outcomes, and actionable ones without phrases of
 // their own (a misrouted cluster whose phrase repeats a live one), add no
 // phrases and are always kept, so reconciliation still sees them. A negative
 // room means no bound.
 func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) []suggest.Suggestion {
-	seen := map[string]bool{}
+	seen := map[string]string{} // phrase key -> the tier of the suggestion that kept it
 	kept := suggestions[:0]
 	used := 0
 	for _, sg := range suggestions {
@@ -806,9 +813,14 @@ func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) 
 		}
 		var unique, keys []string
 		mine := map[string]bool{}
+		conflict := false
 		for _, phrase := range sg.Phrases {
 			key := strings.ToLower(strings.TrimSpace(phrase))
-			if key == "" || seen[key] || mine[key] {
+			if key == "" || mine[key] {
+				continue
+			}
+			if tier, taken := seen[key]; taken {
+				conflict = conflict || tier != sg.Tier
 				continue
 			}
 			mine[key] = true
@@ -816,6 +828,9 @@ func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) 
 			keys = append(keys, key)
 		}
 		if len(unique) == 0 {
+			if conflict {
+				continue
+			}
 			sg.Phrases = []string{}
 			sg.Category = suggest.CategoryCovered
 			kept = append(kept, sg)
@@ -827,7 +842,7 @@ func FitSuggestions(suggestions []suggest.Suggestion, room int, dropped *int64) 
 		}
 		used += len(unique)
 		for _, key := range keys {
-			seen[key] = true
+			seen[key] = sg.Tier
 		}
 		sg.Phrases = unique
 		kept = append(kept, sg)

@@ -61,6 +61,7 @@ type client struct {
 	subprotocol string            // what the gateway answered the upgrade with
 	frames      chan gjson.Result // closed when the gateway closes the connection
 	closeCode   atomic.Int64      // the close code the gateway sent, once frames is closed
+	closeText   atomic.Value      // the close reason, a string, once frames is closed
 	writeMu     sync.Mutex
 }
 
@@ -92,6 +93,12 @@ func refused(t *testing.T, d dial) (int, gjson.Result) {
 	return resp.StatusCode, gjson.Parse(responseBody(resp))
 }
 
+// closeReason is the reason the gateway gave when it closed the connection, once frames is closed.
+func (c *client) closeReason() string {
+	reason, _ := c.closeText.Load().(string)
+	return reason
+}
+
 func (c *client) read() {
 	defer close(c.frames)
 	for {
@@ -100,6 +107,7 @@ func (c *client) read() {
 			code := int64(websocket.CloseAbnormalClosure)
 			if closeErr, ok := err.(*websocket.CloseError); ok {
 				code = int64(closeErr.Code)
+				c.closeText.Store(closeErr.Text)
 			}
 			c.closeCode.Store(code)
 			return
@@ -265,8 +273,9 @@ const (
 
 // streamAudio plays a WAV recording into the session at real-time pace, then keeps sending silence
 // like an open microphone, until the test ends. Nova Sonic needs audio flowing for the whole
-// session, and server VAD needs the silence to notice the user has finished.
-func (c *client) streamAudio(wavPath string) {
+// session, and server VAD needs the silence to notice the user has finished. The returned channel closes once
+// the last sample of the recording has been written.
+func (c *client) streamAudio(wavPath string) <-chan struct{} {
 	c.t.Helper()
 	var pcm []byte
 	if wavPath != "" {
@@ -276,10 +285,17 @@ func (c *client) streamAudio(wavPath string) {
 		require.Positive(c.t, dataAt, "%s has no data chunk", wavPath)
 		pcm = wav[dataAt+8:]
 	}
+	sent := make(chan struct{})
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		clipSent := false
+		defer func() {
+			if !clipSent {
+				close(sent)
+			}
+		}()
 		ticker := time.NewTicker(audioChunk)
 		defer ticker.Stop()
 		silence := make([]byte, audioChunkLen)
@@ -292,6 +308,10 @@ func (c *client) streamAudio(wavPath string) {
 			if c.write(websocket.TextMessage, raw) != nil {
 				return
 			}
+			if !clipSent && offset+audioChunkLen >= len(pcm) {
+				clipSent = true
+				close(sent)
+			}
 			select {
 			case <-stop:
 				return
@@ -303,6 +323,7 @@ func (c *client) streamAudio(wavPath string) {
 		close(stop)
 		<-done
 	})
+	return sent
 }
 
 // session is one realtime session through the gateway.

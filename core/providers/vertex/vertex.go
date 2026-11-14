@@ -869,11 +869,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 	}
 
 	// If auth query is set, add it to the URL
@@ -1327,12 +1323,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
-
-		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
-			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
-		} else {
-			req.Header.Del(anthropic.AnthropicBetaHeader)
-		}
+		provider.setAnthropicBetaHeader(ctx, req)
 
 		// Getting oauth2 token
 		tokenSource, err := provider.getAuthTokenSource(key)
@@ -4666,6 +4657,15 @@ func stripVertexCountTokensUnsupportedFields(jsonBody []byte) []byte {
 	return out
 }
 
+// setAnthropicBetaHeader sends the filtered betas as anthropic-beta, the only place Vertex reads them.
+func (provider *VertexProvider) setAnthropicBetaHeader(ctx *schemas.BifrostContext, req *fasthttp.Request) {
+	if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+}
+
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
@@ -4767,6 +4767,9 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		provider.setAnthropicBetaHeader(ctx, req)
+	}
 
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)

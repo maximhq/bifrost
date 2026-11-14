@@ -759,6 +759,9 @@ export interface SuggestionRunEstimate {
 	// logs, because they came before the router captured them; counted in
 	// requests.
 	backfill?: number;
+	// True when what a run would embed from logs could not be worked out;
+	// requests then counts only what is captured.
+	backfill_unknown?: boolean;
 }
 
 /** One model for one tier of a model router. Omitting provider or model keeps the request's value. */

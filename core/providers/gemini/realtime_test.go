@@ -86,13 +86,13 @@ func TestGeminiNewRealtimeTranslator(t *testing.T) {
 	t.Parallel()
 	provider := newLiveTestProvider(schemas.ProviderConfig{})
 
-	translator, bifrostErr := provider.NewRealtimeTranslator(schemas.Key{}, "gemini-3.8-live")
+	translator, bifrostErr := provider.NewRealtimeTranslator(nil, schemas.Key{}, "gemini-3.8-live")
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, translator)
-	other, _ := provider.NewRealtimeTranslator(schemas.Key{}, "gemini-3.8-live")
+	other, _ := provider.NewRealtimeTranslator(nil, schemas.Key{}, "gemini-3.8-live")
 	require.NotSame(t, translator, other, "every connection needs its own translator, it holds the session's state")
 
-	_, bifrostErr = provider.NewRealtimeTranslator(schemas.Key{}, "  ")
+	_, bifrostErr = provider.NewRealtimeTranslator(nil, schemas.Key{}, "  ")
 	require.NotNil(t, bifrostErr)
 }
 
@@ -170,17 +170,23 @@ func TestLiveSetupHelpers(t *testing.T) {
 		`{"setup":{"model":"models/gemini-3.8-live"}}`:        "gemini-3.8-live",
 		`{"setup":{"model":"models/gemini/gemini-3.8-live"}}`: "gemini/gemini-3.8-live",
 		`{"setup":{"model":" gemini-3.8-live "}}`:             "gemini-3.8-live",
+
+		// Vertex AI clients name the model by its resource path, which carries the client's own project and location.
+		`{"setup":{"model":"projects/p1/locations/us/publishers/google/models/gemini-3.8-live"}}`: "gemini-3.8-live",
+		`{"setup":{"model":"publishers/google/models/gemini-3.8-live"}}`:                          "gemini-3.8-live",
+		`{"setup":{"model":"models/vertex/gemini-3.8-live"}}`:                                     "vertex/gemini-3.8-live",
+		`{"setup":{"model":"vertex/gemini-3.8-live"}}`:                                            "vertex/gemini-3.8-live",
 	} {
 		model, err := LiveSetupModel([]byte(frame))
 		require.NoError(t, err, frame)
 		require.Equal(t, want, model, frame)
 	}
-	for _, frame := range []string{`{"realtimeInput":{"text":"hi"}}`, `{"setup":{}}`, `{"setup":{"model":"models/"}}`, ``} {
+	for _, frame := range []string{`{"realtimeInput":{"text":"hi"}}`, `{"setup":{}}`, `{"setup":{"model":"models/"}}`, `{"setup":{"model":"projects/p1/locations/us/publishers/google/models/"}}`, ``} {
 		_, err := LiveSetupModel([]byte(frame))
 		require.Error(t, err, "%q is not a setup naming a model", frame)
 	}
 
-	rewritten, err := LiveSetupWithModel([]byte(`{"setup":{"model":"models/gemini/alias","generationConfig":{"responseModalities":["AUDIO"]}}}`), "gemini-3.8-live")
+	rewritten, err := LiveSetupWithModelPath([]byte(`{"setup":{"model":"models/gemini/alias","generationConfig":{"responseModalities":["AUDIO"]}}}`), "models/gemini-3.8-live")
 	require.NoError(t, err)
 	require.JSONEq(t, `{"setup":{"model":"models/gemini-3.8-live","generationConfig":{"responseModalities":["AUDIO"]}}}`, string(rewritten),
 		"only the model changes, every other setting reaches Live as the client wrote it")
