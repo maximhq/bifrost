@@ -112,7 +112,11 @@ function formatToolCall(name?: string, args?: string): string {
 
 function formatToolCalls(toolCalls?: ChatMessage["tool_calls"]): string {
 	return (toolCalls || [])
-		.map((toolCall) => formatToolCall(toolCall?.function?.name, toolCall?.function?.arguments))
+		.map((toolCall) =>
+			toolCall?.function?.name
+				? formatToolCall(toolCall.function.name, toolCall.function.arguments)
+				: formatToolCall(toolCall?.custom?.name, toolCall?.custom?.input),
+		)
 		.filter(Boolean)
 		.join("\n");
 }
