@@ -9,3 +9,4 @@
 - fix: gemini - skip null entries in `parts` and `functionDeclarations` on Gemini and Vertex requests and responses instead of panicking
 - fix: recover panics on provider stream goroutines and in plugin post-hooks; the stream ends with one terminal 500 error chunk, and the remaining post-hooks still run
 - fix: anthropic - Messages requests whose history holds mcp_tool_use / mcp_tool_result blocks (or server-tool blocks such as web_search) no longer send a roleless message to chat-only (OpenAI-compatible) providers; Responses items with no chat equivalent (mcp_call, mcp_list_tools, mcp approvals, web_search_call, item_reference, ...) are dropped on the Responses-to-Chat fallback (thanks [@1AbdullahButt](https://github.com/1AbdullahButt)!)
+- fix: bedrock - `/converse-stream` ends a guardrail-blocked turn with `stopReason: "guardrail_intervened"` instead of `content_filtered`, matching Bedrock ConverseStream and non-streaming `/converse`
