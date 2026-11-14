@@ -3,6 +3,7 @@ package integrations
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -3072,4 +3074,180 @@ func TestHeldStreamFirstTokenDeadline(t *testing.T) {
 			require.Equal(t, tc.wantFallback, fallbackHits.Load())
 		})
 	}
+}
+
+// TestPassthroughGzipWireBody checks both real HTTP connections, including the raw response bytes.
+func TestPassthroughGzipWireBody(t *testing.T) {
+	plain := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n")
+	for _, tc := range []struct {
+		name    string
+		encoded bool
+		delay   time.Duration
+	}{
+		{"identity", false, 0},
+		{"gzip", true, 0},
+		{"gzip_idle", true, 2 * lib.DefaultSSEHeartbeatInterval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded := tc.encoded
+			wire := plain
+			if encoded {
+				var compressed bytes.Buffer
+				gz := gzip.NewWriter(&compressed)
+				_, err := gz.Write(plain)
+				require.NoError(t, err)
+				require.NoError(t, gz.Close())
+				wire = compressed.Bytes()
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if encoded {
+					w.Header().Set("Content-Encoding", "gzip")
+				}
+				_, err := w.Write(wire[:len(wire)/2])
+				if err != nil {
+					t.Error(err)
+				}
+				w.(http.Flusher).Flush()
+				if tc.delay > 0 {
+					time.Sleep(tc.delay)
+				}
+				_, err = w.Write(wire[len(wire)/2:])
+				if err != nil {
+					t.Error(err)
+				}
+			}))
+			defer upstream.Close()
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) {
+				bfCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				g.handlePassthroughStream(ctx, bfCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+					Method: "POST", Path: "/v1/responses", UpstreamURL: upstream.URL,
+					Body:        []byte(`{"model":"test-model","input":[],"stream":true}`),
+					SafeHeaders: map[string]string{"Content-Type": "application/json", "Accept-Encoding": "identity"},
+				})
+			}}
+			stopped := make(chan error, 1)
+			go func() { stopped <- server.Serve(listener) }()
+			defer func() { require.NoError(t, server.Shutdown()); require.NoError(t, <-stopped) }()
+			transport := &http.Transport{DisableCompression: true}
+			defer transport.CloseIdleConnections()
+			httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+			response, err := httpClient.Get("http://" + listener.Addr().String() + "/probe")
+			require.NoError(t, err)
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.Equal(t, 200, response.StatusCode)
+			wantEncoding := ""
+			if encoded {
+				wantEncoding = "gzip"
+			}
+			assert.Equal(t, wantEncoding, response.Header.Get("Content-Encoding"))
+			assert.Equal(t, wire, body, "passthrough must preserve the upstream body")
+			t.Logf("upstream_bytes=%d downstream_bytes=%d encoding=%q synthetic_failure=%t", len(wire), len(body), response.Header.Get("Content-Encoding"), bytes.Contains(body, []byte("response.failed")))
+		})
+	}
+}
+
+// BenchmarkPassthroughWireEncoding measures plain and encoded streams through the HTTP router.
+func BenchmarkPassthroughWireEncoding(b *testing.B) {
+	for _, encoding := range []string{"", "identity", "gzip"} {
+		name := encoding
+		if name == "" {
+			name = "absent"
+		}
+		b.Run(name, func(b *testing.B) {
+			wire := []byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+			if encoding == "gzip" {
+				var compressed bytes.Buffer
+				gz := gzip.NewWriter(&compressed)
+				_, err := gz.Write(wire)
+				require.NoError(b, err)
+				require.NoError(b, gz.Close())
+				wire = compressed.Bytes()
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if encoding != "" {
+					w.Header().Set("Content-Encoding", encoding)
+				}
+				_, err := w.Write(wire)
+				if err != nil {
+					b.Error(err)
+				}
+			}))
+			defer upstream.Close()
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(b, err)
+			defer client.Shutdown()
+			g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/responses", UpstreamURL: upstream.URL, Body: []byte(`{"model":"test-model","stream":true}`)}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var ctx fasthttp.RequestCtx
+				bfCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				g.handlePassthroughStream(&ctx, bfCtx, cancel, schemas.OpenAI, req)
+				_, err := io.Copy(io.Discard, ctx.Response.BodyStream())
+				require.NoError(b, err)
+				require.NoError(b, ctx.Response.CloseBodyStream())
+			}
+		})
+	}
+}
+
+// TestPassthroughGzipReadError checks an upstream close before the first body byte.
+func TestPassthroughGzipReadError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		_, err = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Encoding: gzip\r\nContent-Length: 100\r\nX-Request-ID: encoding-error-fixture\r\nConnection: close\r\n\r\n")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err = rw.Flush(); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer upstream.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) {
+		bfCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		g.handlePassthroughStream(ctx, bfCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+			Method: "POST", Path: "/v1/responses", UpstreamURL: upstream.URL,
+			Body: []byte(`{"model":"test-model","input":[],"stream":true}`),
+		})
+	}}
+	stopped := make(chan error, 1)
+	go func() { stopped <- server.Serve(listener) }()
+	defer func() { require.NoError(t, server.Shutdown()); require.NoError(t, <-stopped) }()
+	transport := &http.Transport{DisableCompression: true}
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Transport: transport, Timeout: 5 * time.Second}).Get("http://" + listener.Addr().String() + "/probe")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, response.StatusCode)
+	assert.Equal(t, "application/json", response.Header.Get("Content-Type"))
+	assert.Empty(t, response.Header.Get("Content-Encoding"))
+	assert.Equal(t, "encoding-error-fixture", response.Header.Get("X-Request-ID"))
+	assert.True(t, sonic.Valid(body), "body=%s", body)
+	t.Logf("status=%d encoding=%q body=%s", response.StatusCode, response.Header.Get("Content-Encoding"), body)
 }

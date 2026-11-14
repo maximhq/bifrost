@@ -8738,6 +8738,13 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
+	// This path forwards encoded bytes unchanged; buffered Passthrough decodes them.
+	if encoding := resp.Header.ContentEncoding(); len(encoding) > 0 {
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["Content-Encoding"] = string(encoding)
+	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	rawBodyStream := resp.BodyStream()
