@@ -186,6 +186,7 @@ bifrost:
     mcpCodeModeBindingLevel: "server"
     mcpToolSyncInterval: 60
     hideDeletedVirtualKeysInFilters: true
+    mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json"
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -218,6 +219,7 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
+assert_field_value 'client.mcp_client_metadata_url' '.client.mcp_client_metadata_url' '"https://public.example.com/bifrost/client.json"'
 
 ###############################################################################
 # 1b. Server Config

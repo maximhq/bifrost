@@ -636,18 +636,25 @@ func (p *RoutingPlugin) EstimateComplexitySuggestionRun(ctx context.Context, rou
 	if err != nil {
 		return suggestrun.Estimate{}, err
 	}
-	// What a run would first embed from logs, as it would plan it.
+	// What a run would first embed from logs, as it would plan it. A plan
+	// that fails leaves the backfill unknown rather than failing the
+	// estimate: the run plans again, and the dialog starts a run only on an
+	// estimate.
 	var backfill int
+	backfillUnknown := false
 	if deps := p.suggestionDeps(); deps != nil && router.capture != nil {
 		logs, _ := deps.store.(ComplexitySuggestionRouterLogs)
 		plan, err := p.planBackfill(ctx, router, space, logs, now.Add(-window), now, backfillLimit(router))
 		if err != nil {
-			return suggestrun.Estimate{}, err
+			p.logger.Warn("[Routing] phrase suggestion estimate for router %s: backfill unknown: %v", routerID, err)
+			backfillUnknown = true
+		} else {
+			backfill = min(plan.missing, backfillLimit(router))
 		}
-		backfill = min(plan.missing, backfillLimit(router))
 	}
 	estimate := suggestrun.EstimateRun(count+backfill, settings)
 	estimate.Backfill = backfill
+	estimate.BackfillUnknown = backfillUnknown
 	return estimate, nil
 }
 
@@ -803,6 +810,14 @@ func (p *RoutingPlugin) startComplexitySuggestionRun(ctx context.Context, meta c
 	return true, nil
 }
 
+// suggestionCancelSettleWait bounds how long a cancel waits for a running
+// run's handler to record that it stopped, polling every
+// suggestionCancelSettlePoll; past it, the record is returned as it stands.
+var (
+	suggestionCancelSettleWait = 3 * time.Second
+	suggestionCancelSettlePoll = 25 * time.Millisecond
+)
+
 // ErrUnknownComplexitySuggestionRun is a cancel for a run the router does not
 // have.
 var ErrUnknownComplexitySuggestionRun = errors.New("no such phrase suggestion run")
@@ -835,25 +850,27 @@ func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, route
 	if run.Status != logstore.ComplexitySuggestionRunQueued && run.Status != logstore.ComplexitySuggestionRunRunning {
 		return run, ErrComplexitySuggestionRunEnded
 	}
-	// Whether a handler is still there to record the outcome itself.
+	// Whether a handler is still there to record the outcome itself. An
+	// inline run on this node is stopped directly, whether or not the job
+	// runner is wired now: one started before it was (at start-up, say) has
+	// no job to cancel.
 	handlerRecords := false
-	if jobs := cs.jobs.Load(); jobs != nil {
+	cs.inlineMu.Lock()
+	if stop, ok := cs.inlineCancels[runID]; ok {
+		cs.cancelled[runID] = true
+		stop()
+		handlerRecords = true
+	}
+	cs.inlineMu.Unlock()
+	if jobs := cs.jobs.Load(); jobs != nil && !handlerRecords {
 		stopped, err := jobs.queue.Cancel(ctx, runID)
 		if err != nil {
 			return run, fmt.Errorf("cancel the suggestion run: %w", err)
 		}
 		handlerRecords = stopped && run.Status == logstore.ComplexitySuggestionRunRunning
-	} else {
-		cs.inlineMu.Lock()
-		if stop, ok := cs.inlineCancels[runID]; ok {
-			cs.cancelled[runID] = true
-			stop()
-			handlerRecords = true
-		}
-		cs.inlineMu.Unlock()
 	}
 	if handlerRecords {
-		return run, nil
+		return awaitSuggestionRunEnd(ctx, store, routerID, run), nil
 	}
 	// Written on a context of its own: the job is already cancelled, so a
 	// caller that went away must not leave the run reading queued. The write
@@ -883,6 +900,34 @@ func (p *RoutingPlugin) CancelComplexitySuggestionRun(ctx context.Context, route
 		return run, ErrComplexitySuggestionRunEnded
 	}
 	return run, nil
+}
+
+// awaitSuggestionRunEnd waits, up to suggestionCancelSettleWait, for a
+// cancelled run's handler to record that it stopped, and returns the record:
+// the handler's outcome once written, or the latest progress read when the
+// wait or the caller's context runs out first.
+func awaitSuggestionRunEnd(ctx context.Context, store suggestrun.Store, routerID string, run logstore.ComplexitySuggestionRun) logstore.ComplexitySuggestionRun {
+	// The reads share the bound, so a stalled one cannot hold the cancel past
+	// it when the caller set no deadline.
+	ctx, cancel := context.WithTimeout(ctx, suggestionCancelSettleWait)
+	defer cancel()
+	poll := time.NewTicker(suggestionCancelSettlePoll)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return run
+		case <-poll.C:
+		}
+		runs, err := store.ListComplexitySuggestionRuns(ctx, logstore.ComplexitySuggestionRunFilter{RouterID: routerID, IDs: []string{run.ID}}, 1)
+		if err != nil || len(runs) == 0 {
+			continue
+		}
+		run = runs[0]
+		if run.Status != logstore.ComplexitySuggestionRunQueued && run.Status != logstore.ComplexitySuggestionRunRunning {
+			return run
+		}
+	}
 }
 
 // suggestionRunCancelled reports whether a user cancelled a run: through
