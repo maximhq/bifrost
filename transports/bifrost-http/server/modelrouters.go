@@ -10,13 +10,22 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 )
 
+// storedModelRouter reads a router as it is stored, to serve it. The caller's
+// context can carry a user whose data access control hides the router, as
+// when they have just moved its routing out of their own scope, and the
+// gateway serves what is saved, not what the editor can see, so the read does
+// not carry the caller.
+func (s *BifrostHTTPServer) storedModelRouter(id string) (*configstore.ModelRouter, error) {
+	return s.Config.ConfigStore.GetModelRouter(context.Background(), id)
+}
+
 // ReloadModelRouter serves a saved model router from the config store.
-func (s *BifrostHTTPServer) ReloadModelRouter(ctx context.Context, id string) error {
+func (s *BifrostHTTPServer) ReloadModelRouter(_ context.Context, id string) error {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	router, err := s.Config.ConfigStore.GetModelRouter(ctx, id)
+	router, err := s.storedModelRouter(id)
 	if err != nil {
 		return fmt.Errorf("failed to get model router from config store: %w", err)
 	}
@@ -26,12 +35,12 @@ func (s *BifrostHTTPServer) ReloadModelRouter(ctx context.Context, id string) er
 // ReloadModelRouterTargets serves a saved router's targets from the config
 // store without reconfiguring its classifiers, so changing which model a tier
 // gets never restarts a semantic warmup.
-func (s *BifrostHTTPServer) ReloadModelRouterTargets(ctx context.Context, id string) error {
+func (s *BifrostHTTPServer) ReloadModelRouterTargets(_ context.Context, id string) error {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	router, err := s.Config.ConfigStore.GetModelRouter(ctx, id)
+	router, err := s.storedModelRouter(id)
 	if err != nil {
 		return fmt.Errorf("failed to get model router from config store: %w", err)
 	}
@@ -40,12 +49,12 @@ func (s *BifrostHTTPServer) ReloadModelRouterTargets(ctx context.Context, id str
 
 // ReloadModelRouterRouting serves a saved router's routing from the config
 // store, leaving its classifiers and targets as they are.
-func (s *BifrostHTTPServer) ReloadModelRouterRouting(ctx context.Context, id string) error {
+func (s *BifrostHTTPServer) ReloadModelRouterRouting(_ context.Context, id string) error {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	router, err := s.Config.ConfigStore.GetModelRouter(ctx, id)
+	router, err := s.storedModelRouter(id)
 	if err != nil {
 		return fmt.Errorf("failed to get model router from config store: %w", err)
 	}

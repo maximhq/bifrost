@@ -1752,6 +1752,86 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 	}
 }
 
+// listToolFiles names a server only where it runs in code mode: a slug override counts on that
+// server's own /mcp/<slug> and nowhere else.
+func TestListToolFilesFollowsServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+	}
+	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
+	list := func(ctx context.Context) string {
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("tool-call-1")})
+		return instructionsToolResponse(t, msg, err)
+	}
+	onSlug := func(name string) context.Context {
+		return context.WithValue(context.Background(), schemas.BifrostContextKeyMCPGatewayClient, name)
+	}
+
+	onMCP := list(context.Background())
+	if !strings.Contains(onMCP, "codey") || strings.Contains(onMCP, "direct") {
+		t.Fatalf("/mcp must list codey and not direct, got:\n%s", onMCP)
+	}
+	if got := list(onSlug("codey")); strings.Contains(got, "codey") {
+		t.Fatalf("codey's own slug serves it directly, so it must not be listed, got:\n%s", got)
+	}
+	if got := list(onSlug("direct")); !strings.Contains(got, "direct") {
+		t.Fatalf("direct's own slug runs it in code mode, so it must be listed, got:\n%s", got)
+	}
+}
+
+// A server served directly on its own slug has no stub, docs or binding there; /mcp still has all three.
+func TestStubsDocsAndBindingsFollowServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	onCodeySlug := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	onCodeySlug.SetValue(schemas.BifrostContextKeyMCPGatewayClient, "codey")
+	onMCP := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := func(msg *schemas.ChatMessage, err error) string {
+		if err != nil {
+			return err.Error()
+		}
+		if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			return ""
+		}
+		return *msg.Content.ContentStr
+	}
+	stub := func(ctx context.Context) string {
+		return text(mode.handleReadToolFile(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+		}))
+	}
+	docs := func(ctx context.Context) string {
+		return text(mode.handleGetToolDocs(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+		}))
+	}
+
+	if got := stub(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's stub, got:\n%s", got)
+	}
+	if got := stub(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no stub there, got:\n%s", got)
+	}
+	if got := docs(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's docs, got:\n%s", got)
+	}
+	if got := docs(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no docs there, got:\n%s", got)
+	}
+	if keys := mode.executeCode(onMCP, "result = 1").Environment.ServerKeys; !slices.Contains(keys, "codey") {
+		t.Fatalf("/mcp must bind codey in the sandbox, got %v", keys)
+	}
+	if keys := mode.executeCode(onCodeySlug, "result = 1").Environment.ServerKeys; slices.Contains(keys, "codey") {
+		t.Fatalf("codey is direct on its own slug, so the sandbox must not bind it there, got %v", keys)
+	}
+}
+
 // The stub carries the instructions from the caller's own discovery, the same one its tools
 // come from, not a text shared by every caller of the server.
 func TestReadToolFileCarriesTheCallersOwnInstructions(t *testing.T) {

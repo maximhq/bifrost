@@ -4053,7 +4053,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 	})
 
 	t.Run("strips_sampling_fields_for_gpt6", func(t *testing.T) {
-		include := []string{"message.output_text.logprobs", "reasoning.encrypted_content"}
+		include := []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}
 		params := &schemas.ResponsesParameters{
 			Temperature: schemas.Ptr(0.2),
 			TopP:        schemas.Ptr(0.9),
@@ -4067,7 +4067,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 			require.Nil(t, req.TopLogProbs, provider)
 			require.Equal(t, []string{"reasoning.encrypted_content"}, req.Include, provider)
 		}
-		require.Equal(t, []string{"message.output_text.logprobs", "reasoning.encrypted_content"}, params.Include,
+		require.Equal(t, []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}, params.Include,
 			"caller's include must not be mutated")
 	})
 
@@ -4083,6 +4083,68 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 
 		req = convert(schemas.OpenAI, "gpt-5.5", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
 		require.Nil(t, req.Temperature, "gpt-5.5 defaults to medium")
+	})
+
+	t.Run("mantle_follows_effort_conditions", func(t *testing.T) {
+		const model = "openai.gpt-6-luna"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			DefaultReasoningEffort:   schemas.Ptr(schemas.ReasoningEffortMedium),
+			SupportsReasoningDisable: new(true),
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+				schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+				schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+				schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+			},
+		})
+		params := func(effort string) *schemas.ResponsesParameters {
+			p := &schemas.ResponsesParameters{
+				Temperature: schemas.Ptr(0.5),
+				TopLogProbs: schemas.Ptr(2),
+				Include:     []string{schemas.ResponsesIncludeOutputTextLogProbs},
+			}
+			if effort != "" {
+				p.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(effort)}
+			}
+			return p
+		}
+		// The Bedrock provider serves the same models from Mantle without renaming the provider.
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			for _, effort := range []string{"low", ""} {
+				req := convert(provider, model, params(effort))
+				require.Nil(t, req.Temperature, "%s effort %q", provider, effort)
+				require.Nil(t, req.TopLogProbs, "%s effort %q", provider, effort)
+				require.Empty(t, req.Include, "%s effort %q", provider, effort)
+			}
+			req := convert(provider, model, params("none"))
+			require.NotNil(t, req.Temperature, provider)
+			require.NotNil(t, req.TopLogProbs, provider)
+			require.Equal(t, []string{schemas.ResponsesIncludeOutputTextLogProbs}, req.Include, provider)
+		}
+	})
+
+	t.Run("mantle_non_openai_keeps_sampling", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			for _, model := range []string{"qwen.qwen3-32b", "google.gemma-4-31b", "moonshotai.kimi-k2-thinking"} {
+				req := convert(provider, model, &schemas.ResponsesParameters{
+					Temperature: schemas.Ptr(0.2),
+					TopP:        schemas.Ptr(0.9),
+					Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")},
+				})
+				require.NotNil(t, req.Temperature, "%s %s", provider, model)
+				require.NotNil(t, req.TopP, "%s %s", provider, model)
+			}
+		}
+	})
+
+	t.Run("mantle_gpt_oss_keeps_temperature", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			req := convert(provider, "openai.gpt-oss-120b", &schemas.ResponsesParameters{
+				Temperature: schemas.Ptr(0.2),
+				Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")},
+			})
+			require.NotNil(t, req.Temperature, provider)
+		}
 	})
 
 	t.Run("third_party_gpt_oss_keeps_temperature", func(t *testing.T) {

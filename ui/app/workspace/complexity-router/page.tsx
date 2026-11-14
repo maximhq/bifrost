@@ -103,7 +103,7 @@ export default function ComplexityRouterPage() {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
-	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
+	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const { data, isLoading, isFetching, error, refetch } = useGetComplexityAnalyzerConfigQuery(undefined, {
 		refetchOnMountOrArgChange: true,
 	});

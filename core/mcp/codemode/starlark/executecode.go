@@ -312,7 +312,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	bindings := map[string][]string{}
 	for clientName, tools := range s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx)) {
 		client := s.clientManager.GetClientByName(clientName)
-		if client == nil || !client.ExecutionConfig.IsCodeModeClient {
+		if client == nil || !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		for _, tool := range tools {
