@@ -165,15 +165,85 @@ var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
 // commits the stream (forwarding it after the buffered prefix) or, under a
 // TTFT deadline, ends the attempt.
 func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int) bool {
-	if len(buffer.chunks)+1 >= maxStreamPreambleChunks {
-		return false
-	}
-	encoded, err := MarshalSorted(chunk)
-	if err != nil || len(encoded) >= maxBytes-buffer.bytes {
+	size, ok := fitStreamPreamble(len(buffer.chunks), buffer.bytes, chunk, maxBytes)
+	if !ok {
 		return false
 	}
 	buffer.chunks = append(buffer.chunks, chunk)
-	buffer.bytes += len(encoded)
+	buffer.bytes += size
+	return true
+}
+
+// fitStreamPreamble reports whether chunk fits the startup buffer, and its encoded size.
+func fitStreamPreamble(count, bytes int, chunk *schemas.BifrostStreamChunk, maxBytes int) (int, bool) {
+	if count+1 >= maxStreamPreambleChunks {
+		return 0, false
+	}
+	encoded, err := MarshalSorted(chunk)
+	if err != nil || len(encoded) >= maxBytes-bytes {
+		return 0, false
+	}
+	return len(encoded), true
+}
+
+// isStreamStartupError reports whether err fails a stream attempt not yet committed to the client.
+func isStreamStartupError(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil &&
+		(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil)
+}
+
+// StreamStartupState tracks whether the retry reader will hold an attempt's
+// startup events or release its output. Only the attempt's producer uses it;
+// it stores counters, never chunks, and needs no synchronization.
+type StreamStartupState struct {
+	isPreamble    func(*schemas.BifrostStreamChunk) bool
+	maxBytes      int
+	underDeadline bool
+	count         int
+	bytes         int
+	committed     bool
+	ended         bool
+}
+
+// NewStreamStartupState tracks one attempt; isPreamble is nil when only the first chunk is checked.
+func NewStreamStartupState(isPreamble func(*schemas.BifrostStreamChunk) bool, underDeadline bool) *StreamStartupState {
+	maxBytes := maxStreamPreambleBytes
+	if underDeadline {
+		maxBytes = maxStreamPreambleBytesUnderDeadline
+	}
+	return &StreamStartupState{isPreamble: isPreamble, maxBytes: maxBytes, underDeadline: underDeadline}
+}
+
+// IsStartupError reports whether the retry reader will reject err before
+// returning the stream to the caller. Retry eligibility is decided separately.
+func (c *StreamStartupState) IsStartupError(err *schemas.BifrostError) bool {
+	return !c.committed && isStreamStartupError(err)
+}
+
+// ObserveResult records a post-hook result as ProcessAndSendResponse and
+// ProcessAndSendBifrostError would send it. It reports true only for the
+// result that commits the attempt.
+func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.BifrostResponse, err *schemas.BifrostError) bool {
+	if c.committed || c.ended || isStreamControlSkip(err) {
+		return false
+	}
+	chunk := BuildClientStreamChunk(ctx, resp, err)
+	if isStreamStartupError(chunk.BifrostError) {
+		return false
+	}
+	if c.isPreamble != nil && c.isPreamble(chunk) {
+		if size, ok := fitStreamPreamble(c.count, c.bytes, chunk, c.maxBytes); ok {
+			c.count++
+			c.bytes += size
+			return false
+		}
+		if c.underDeadline {
+			// The checker ends this attempt rather than committing it.
+			c.ended = true
+			return false
+		}
+	}
+	c.committed = true
 	return true
 }
 
@@ -230,6 +300,9 @@ func replayStreamPreamble(
 			case chunk, ok := <-key.source:
 				if !ok {
 					return
+				}
+				if schemas.IsStreamCommitMarker(chunk) {
+					continue
 				}
 				if !send(chunk) {
 					return
@@ -308,9 +381,17 @@ func CheckStreamPreambleForError(
 			if chunk == nil {
 				continue
 			}
-			if err := chunk.BifrostError; err != nil && err.Error != nil &&
-				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
-				return nil, drain(), err
+			if schemas.IsStreamCommitMarker(chunk) {
+				// A plugin holds output the upstream already produced: the stream has
+				// started, so commit it without waiting for the held chunks.
+				if !abort.Disarm() {
+					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
+				}
+				wrapped, done := replayStreamPreamble(ctx, key, buffer, nil)
+				return wrapped, done, nil
+			}
+			if isStreamStartupError(chunk.BifrostError) {
+				return nil, drain(), chunk.BifrostError
 			}
 			if isPreamble(chunk) {
 				if abort == nil {
@@ -438,8 +519,7 @@ func CheckFirstStreamChunkForError(
 	}
 
 	// Check if first chunk is an error
-	if firstChunk.BifrostError != nil && firstChunk.BifrostError.Error != nil &&
-		(firstChunk.BifrostError.Error.Message != "" || firstChunk.BifrostError.Error.Code != nil || firstChunk.BifrostError.Error.Type != nil) {
+	if isStreamStartupError(firstChunk.BifrostError) {
 		// Drain source channel to let the provider goroutine exit cleanly
 		return nil, drainInBackground(stream), firstChunk.BifrostError
 	}
@@ -449,14 +529,21 @@ func CheckFirstStreamChunkForError(
 		return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
 	}
 
-	// First chunk is valid data — wrap channel to re-inject it
+	// First chunk is valid data — wrap channel to re-inject it. A commit marker means a
+	// plugin holds valid output (see schemas.StreamCommitMarker); it is consumed here and
+	// never re-injected, nor forwarded if a late copy follows a real chunk.
 	done := make(chan struct{})
 	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(stream), 1))
-	wrapped <- firstChunk
+	if !schemas.IsStreamCommitMarker(firstChunk) {
+		wrapped <- firstChunk
+	}
 	go func() {
 		defer close(done)
 		defer close(wrapped)
 		for chunk := range stream {
+			if schemas.IsStreamCommitMarker(chunk) {
+				continue
+			}
 			select {
 			case wrapped <- chunk:
 			case <-ctx.Done():

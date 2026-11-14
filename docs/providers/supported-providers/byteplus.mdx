@@ -1,0 +1,274 @@
+---
+title: "BytePlus"
+description: "BytePlus ModelArk conversion guide for Seed chat, streaming, tool calling, reasoning, the Responses API, multimodal embeddings, Seedream image generation and editing, and Seedance video generation"
+icon: "b"
+---
+
+## Overview
+
+BytePlus ModelArk (Ark) is ByteDance's model platform for international customers. Its chat, Responses and image APIs follow the OpenAI shape with extra fields, and video generation runs as async tasks. Bifrost has its own BytePlus implementation that reuses the shared OpenAI converters where the wire format matches. Key characteristics:
+
+- **OpenAI-compatible chat.** Chat Completions use `/api/v3/chat/completions`.
+- **Native Responses API.** Requests go to Ark's own `/api/v3/responses`.
+- **Reasoning.** Reasoning models think by default. Bifrost maps `reasoning_effort` onto Ark's `thinking` switch and returns `reasoning_content` as the message's `reasoning`.
+- **Tool calling and vision.** Function tools and `image_url` parts use the OpenAI schema. Vision depends on the model.
+- **Embeddings.** Served by the multimodal embedding endpoint, one upstream call per input item.
+- **Image generation and editing.** Seedream models through `/api/v3/images/generations`.
+- **Video generation.** Seedance models as async tasks through `/api/v3/contents/generations/tasks`.
+
+Text-to-speech and speech recognition are a separate BytePlus product with its own key and host, so the BytePlus provider doesn't cover them.
+
+### Supported operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/api/v3/chat/completions` |
+| Responses API | ✅ | ✅ | `/api/v3/responses` |
+| Embeddings | ✅ | - | `/api/v3/embeddings/multimodal` |
+| List Models | ✅ | - | from key configuration |
+| Image Generation | ✅ | ✅ | `/api/v3/images/generations` |
+| Image Edit | ✅ | ✅ | `/api/v3/images/generations` |
+| Video Generation | ✅ | - | `/api/v3/contents/generations/tasks` |
+| Video Retrieve | ✅ | - | `GET /api/v3/contents/generations/tasks/{id}` |
+| Video List | ✅ | - | `GET /api/v3/contents/generations/tasks` |
+| Video Download | ✅ | - | signed URL from the task |
+| Video Delete | ✅ | - | `DELETE /api/v3/contents/generations/tasks/{id}` |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS), Transcriptions (STT) | ❌ | ❌ | - |
+| Files, Batch, Count Tokens | ❌ | ❌ | - |
+
+## Setup and configuration
+
+Bifrost calls `https://ark.ap-southeast.bytepluses.com` by default and sends the Ark API key as a bearer token. API keys belong to one region, so to use another region set `network_config.base_url` to that region's host, for example `https://ark.eu-west.bytepluses.com`. The same provider also works against Volcengine Ark in mainland China with `https://ark.cn-beijing.volces.com` and a Volcengine key. Bifrost appends the `/api/v3/...` paths itself, so the base URL is the host only.
+
+Ark only serves models you have activated in the ModelArk console. A request for any other model fails with a 404 whose error code is `ModelNotOpen`. The `model` field takes either a model ID such as `deepseek-v4-flash-260425` or an endpoint ID such as `ep-20260101000000-abcde`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **BytePlus** under **Configured Providers**. If it is missing, click **Add New Provider** and select **BytePlus**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your Ark API key directly or use an environment variable (for example, `env.BYTEPLUS_API_KEY`).
+5. Under **Allowed Models**, list the model or endpoint IDs this key should serve. Ark has no model list endpoint, so these are also the models Bifrost lists for the provider.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "byteplus": {
+      "keys": [
+        {
+          "name": "byteplus-key-1",
+          "value": "env.BYTEPLUS_API_KEY",
+          "models": [
+            "deepseek-v4-flash-260425",
+            "skylark-embedding-vision-251215",
+            "dola-seedream-5-0-pro-260628",
+            "dreamina-seedance-2-5-260628"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.BytePlus:
+    return []schemas.Key{{
+        Name:   "byteplus-key-1",
+        Value:  *schemas.NewSecretVar("env.BYTEPLUS_API_KEY"),
+        Models: []string{"deepseek-v4-flash-260425", "dola-seedream-5-0-pro-260628"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request parameters
+
+BytePlus supports the OpenAI chat parameters Ark documents, including `max_completion_tokens`, `temperature`, `top_p`, `tools`, `tool_choice`, `response_format`, `stream` and `stream_options`. For the full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Ark hosts ByteDance's Seed models alongside third-party models such as DeepSeek (`deepseek-v4-flash-260425`), GLM and `gpt-oss-120b`. The ModelArk console lists what your account can activate. Some chat models, including `deepseek-v4-flash`, take text only and reject `image_url` parts with a 400.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/deepseek-v4-flash-260425",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Reasoning
+
+Reasoning models such as Seed and DeepSeek V4 think unless told not to. Ark returns the thinking as `reasoning_content`, which Bifrost exposes as the message's `reasoning`. `reasoning_effort` maps onto Ark's values like this:
+
+| Bifrost value | Sent to Ark |
+|---------------|-------------|
+| `minimal`, `low`, `medium`, `high` | unchanged |
+| `xhigh`, `max` | `high`, the top of Ark's range |
+| `none` | `thinking: {"type": "disabled"}` and no `reasoning_effort` |
+| any effort with `extra_params.thinking.type: "disabled"` | `thinking` only, because Ark rejects `reasoning_effort` when thinking is off |
+
+### Extra parameters
+
+Extra parameters pass through, so Ark-only fields such as `thinking`, `service_tier` or `repetition_penalty` reach the API unchanged.
+
+### Errors
+
+Ark returns OpenAI-shaped errors. Bifrost keeps Ark's string error code, for example `ModelNotOpen`, `InvalidEndpointOrModel.NotFound` or `RateLimitExceeded.EndpointTPMExceeded`, in `error.code`.
+
+---
+
+# 2. Responses API
+
+Responses requests go to Ark's native `/api/v3/responses`, streamed or not. Ark-only fields such as `thinking`, `caching` and `expire_at` can be sent through extra params.
+
+---
+
+# 3. Embeddings
+
+BytePlus serves embeddings through the multimodal model `skylark-embedding-vision-251215` on `/api/v3/embeddings/multimodal`. That endpoint fuses every part of a request into one vector, so Bifrost sends each input item as its own call, up to 8 at a time, and returns the vectors in input order with usage added up. An item can mix text, image and video parts, and comes back as one vector.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/skylark-embedding-vision-251215",
+    "input": ["first document", "second document"],
+    "dimensions": 1024
+  }'
+```
+
+| Bifrost parameter | Ark field | Notes |
+|-------------------|-----------|-------|
+| text part | `input[]` item with `type: text` | |
+| image part | `input[]` item with `type: image_url` | URL, or a base64 data URI built from `data` and `mime_type` |
+| video part | `input[]` item with `type: video_url` | |
+| `dimensions` | `dimensions` | 1024 or 2048 |
+| `encoding_format` | - | Only `float` is supported. Other values are rejected with a 400. |
+
+Per-item `dimensions` override the request-level value, since every item is a separate call. `task_type` and `title` are not forwarded to BytePlus. Token-ID inputs aren't supported.
+
+---
+
+# 4. List Models
+
+Ark has no model list endpoint on its API-key surface, so Bifrost lists the models and aliases configured on each key, the same way it does for Fireworks.
+
+---
+
+# 5. Image Generation and Editing
+
+Seedream generates and edits images through the same endpoint. An edit request sends its source images as Seedream reference images.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/dola-seedream-5-0-pro-260628",
+    "prompt": "A lighthouse at dusk, oil painting",
+    "size": "2048x2048",
+    "n": 2
+  }'
+```
+
+| Bifrost parameter | Ark field | Notes |
+|-------------------|-----------|-------|
+| `prompt` | `prompt` | Required |
+| `size` | `size` | `WIDTHxHEIGHT`, or a tier such as `2K` |
+| `n` | `sequential_image_generation: auto` and `sequential_image_generation_options.max_images` | Seedream returns several images through group generation. Capped at 15. |
+| `input_images` (generation), `image[]` (edit) | `image` | URLs or base64 data URIs. Masks aren't supported. |
+| `response_format` | `response_format` | `url` (default) or `b64_json`. Image URLs expire after 24 hours. |
+| `seed`, `output_format` | `seed`, `output_format` | |
+| `extra_params.watermark` | `watermark` | |
+| `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | same fields | Override the values derived from `n` |
+
+Any other extra params, such as `background`, `layer_decomposition` or `optimize_prompt_options`, are sent to Ark unchanged. When content safety blocks some images in a group, Bifrost returns the rest. When it blocks all of them, the request fails with a 400 carrying Ark's error code.
+
+## Streaming
+
+Set `stream: true` to get each image as soon as Seedream finishes it. Ark streams on Seedream 5.0 lite, 4.5 and 4.0 only. Seedream 5.0 pro and flash reject the request with a 400.
+
+```bash
+curl -N -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/seedream-4-5-251128",
+    "prompt": "The same lighthouse in spring, summer, autumn and winter",
+    "n": 4,
+    "stream": true
+  }'
+```
+
+Each image arrives whole, so every image is one `image_generation.partial_image` event (`image_edit.partial_image` for edits) carrying its `url` or `b64_json`. The stream ends with one `image_generation.completed` event that carries the usage and repeats the last image. An image blocked by content safety is skipped and the rest keep coming. The stream ends with an error if Ark reports an internal error, or if every image is blocked.
+
+---
+
+# 6. Video Generation
+
+Seedance video generation is asynchronous. Create a task, poll it, then download the result.
+
+```bash
+curl -X POST http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/dreamina-seedance-2-5-260628",
+    "prompt": "A paper boat drifting down a rainy street",
+    "seconds": "5",
+    "size": "1280x720"
+  }'
+```
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Create | `POST /v1/videos` | Returns a queued job ID |
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed`. Ark keeps task records for 7 days. |
+| List | `GET /v1/videos` | `limit` sets the page size. Ark pages by number, so an `after` cursor is rejected with a 400. |
+| Download content | `GET /v1/videos/{id}/content` | Fetches the MP4 from the task's signed URL, which expires after 24 hours |
+| Cancel or delete | `DELETE /v1/videos/{id}` | Cancels a queued task or deletes a finished one's record |
+
+## Parameter mapping
+
+| Bifrost parameter | Ark field | Notes |
+|-------------------|-----------|-------|
+| `prompt` | `content[]` text item | Required |
+| `input_reference` | `content[]` image item with role `first_frame` | Image to video |
+| `video_uri` | `content[]` video item with role `reference_video` | Models that accept reference video only |
+| `output_format` | `output_format` | `mp4` (default) or `mov`. Seedance 2.5 only. |
+| `seconds` | `duration` | Rounded to whole seconds |
+| `size` | `resolution` + `ratio` | The short side picks `480p`, `720p` or `1080p`, and the shape picks the closest ratio |
+| `seed` | `seed` | |
+| `audio` | `generate_audio` | Models with audio output only |
+| `extra_params.resolution`, `extra_params.ratio` | `resolution`, `ratio` | Override the values derived from `size`. `ratio` also accepts `adaptive`. |
+| `extra_params.last_frame` | `content[]` image item with role `last_frame` | |
+| `extra_params.reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
+| `extra_params.reference_audios` | `content[]` audio items with role `reference_audio` | `wav` or `mp3`. Seedance 2.5 and 2.0 only. |
+| `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
+| `extra_params.callback_url` | `callback_url` | |
+
+Image references, and the first and last frames, also accept the `asset://<ASSET_ID>` form for media in your Ark asset library.
+
+Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_frame`, `service_tier`, `priority`, `execution_expires_after`, `omni_reference_task_type`, `camera_fixed`, `frames`, `watermark` and `safety_identifier`. A task created with `return_last_frame: true` lists the final frame as a second `videos[]` entry with `content_type: image/jpeg`, after the video, so `GET /v1/videos/{id}/content` still downloads the video. A `mov` output comes back with `content_type: video/quicktime`.
+
+To work from a draft, create a task with `draft: true` at `480p`, then create a second task with `extra_params.draft_task_id` set to the draft's ID as Bifrost returned it. Drafts are valid for 7 days.
+
+Failed, cancelled and expired tasks all come back as `status: failed`, with Ark's error code when it gives one. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.

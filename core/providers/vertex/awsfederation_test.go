@@ -393,6 +393,7 @@ func TestAWSSubjectTokenSupplier_AssumeRoleHop(t *testing.T) {
 }
 
 func TestGetAuthTokenSource_AWSWorkloadIdentityPrecedenceAndCache(t *testing.T) {
+	provider := &VertexProvider{}
 	isolateAWSEnvironment(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIASTATIC")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
@@ -403,26 +404,26 @@ func TestGetAuthTokenSource_AWSWorkloadIdentityPrecedenceAndCache(t *testing.T) 
 	key := wifKey(wifConfig(testWIFAudience, ""), `{"type":"service_account"}`)
 	other := wifKey(wifConfig(testWIFAudience+"-other", ""), "")
 	t.Cleanup(func() {
-		removeVertexClient(key)
-		removeVertexClient(other)
+		provider.removeVertexClient(key)
+		provider.removeVertexClient(other)
 	})
 
-	first, err := getAuthTokenSource(key)
+	first, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	token, err := first.Token()
 	require.NoError(t, err)
 	assert.Equal(t, "federated-token", token.AccessToken)
 
-	second, err := getAuthTokenSource(key)
+	second, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	assert.Same(t, first, second, "identical federation config must share one cached token source")
 
-	otherSource, err := getAuthTokenSource(other)
+	otherSource, err := provider.getAuthTokenSource(other)
 	require.NoError(t, err)
 	assert.NotSame(t, first, otherSource, "a different audience must get its own token source")
 
-	removeVertexClient(key)
-	third, err := getAuthTokenSource(key)
+	provider.removeVertexClient(key)
+	third, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	assert.NotSame(t, first, third, "eviction must force a fresh token source")
 }
@@ -533,12 +534,13 @@ func TestIsAWSExternalAccountJSON(t *testing.T) {
 // the SDK chain (IRSA here) instead of Google's env-var/IMDS lookup, which the dead IMDS in the
 // JSON would have made fail.
 func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
+	provider := &VertexProvider{}
 	awsSTS := setIRSAEnvironment(t)
 	gcp := newFakeGCP(t)
 	key := wifKey(nil, awsExternalAccountJSON(t, gcp, testWIFSAEmail))
-	t.Cleanup(func() { removeVertexClient(key) })
+	t.Cleanup(func() { provider.removeVertexClient(key) })
 
-	ts, err := getAuthTokenSource(key)
+	ts, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	token, err := ts.Token()
 	require.NoError(t, err)
@@ -551,8 +553,8 @@ func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
 
 	// aws2 is rejected explicitly instead of being misread as aws1.
 	bad := wifKey(nil, strings.Replace(awsExternalAccountJSON(t, gcp, ""), `"aws1"`, `"aws2"`, 1))
-	t.Cleanup(func() { removeVertexClient(bad) })
-	_, err = getAuthTokenSource(bad)
+	t.Cleanup(func() { provider.removeVertexClient(bad) })
+	_, err = provider.getAuthTokenSource(bad)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "aws2")
 }
@@ -560,6 +562,7 @@ func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
 // TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount covers the other way the gcloud file is
 // deployed: GOOGLE_APPLICATION_CREDENTIALS naming it, with auth_credentials left empty.
 func TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount(t *testing.T) {
+	provider := &VertexProvider{}
 	setIRSAEnvironment(t)
 	gcp := newFakeGCP(t)
 	credFile := filepath.Join(t.TempDir(), "creds.json")
@@ -567,8 +570,8 @@ func TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
 
 	key := wifKey(nil, "")
-	t.Cleanup(func() { removeVertexClient(key) })
-	ts, err := getAuthTokenSource(key)
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+	ts, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	token, err := ts.Token()
 	require.NoError(t, err)
@@ -579,6 +582,7 @@ func TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount(t *testing.T) {
 // TestGetAuthTokenSource_FileExternalAccountUnchanged is the regression guard for every other
 // external_account shape: a projected-token file source still goes through Google's library.
 func TestGetAuthTokenSource_FileExternalAccountUnchanged(t *testing.T) {
+	provider := &VertexProvider{}
 	isolateAWSEnvironment(t)
 	gcp := newFakeGCP(t)
 	tokenFile := filepath.Join(t.TempDir(), "gcp-token")
@@ -592,8 +596,8 @@ func TestGetAuthTokenSource_FileExternalAccountUnchanged(t *testing.T) {
 	}`, testWIFAudience, gcp.server.URL+"/v1/token", tokenFile)
 
 	key := wifKey(nil, credJSON)
-	t.Cleanup(func() { removeVertexClient(key) })
-	ts, err := getAuthTokenSource(key)
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+	ts, err := provider.getAuthTokenSource(key)
 	require.NoError(t, err)
 	token, err := ts.Token()
 	require.NoError(t, err)
@@ -661,4 +665,62 @@ func TestAWSSubjectTokenSupplier_AssumeRoleHopUsesConfiguredRegion(t *testing.T)
 	// The SDK signs the AssumeRole call with the client's region; an empty region here is exactly
 	// what makes the real endpoint resolution fail with "missing region" outside this fake.
 	assert.Contains(t, awsSTS.auth(), "/eu-west-1/sts/aws4_request", "AssumeRole must be signed for the configured region, got %q", awsSTS.auth())
+}
+
+// recordingTransport records the path of every request it carries, standing in for
+// the proxy-aware authHTTPClient so a test can see which calls went through it.
+type recordingTransport struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.paths = append(r.paths, req.URL.Path)
+	r.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func (r *recordingTransport) sawSuffix(suffix string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range r.paths {
+		if strings.HasSuffix(p, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGetAuthTokenSource_AWSFederationUsesAuthHTTPClient pins that both AWS federation
+// routes send the GCP STS token exchange and the service-account impersonation call
+// through provider.authHTTPClient, the client that carries proxy_config. A token source
+// built on context.Background() would fall back to http.DefaultClient and skip the proxy.
+func TestGetAuthTokenSource_AWSFederationUsesAuthHTTPClient(t *testing.T) {
+	routes := []struct {
+		name string
+		key  func(gcp *fakeGCP) schemas.Key
+	}{
+		{"aws_workload_identity config", func(*fakeGCP) schemas.Key { return wifKey(wifConfig(testWIFAudience, testWIFSAEmail), "") }},
+		{"external_account json", func(gcp *fakeGCP) schemas.Key { return wifKey(nil, awsExternalAccountJSON(t, gcp, testWIFSAEmail)) }},
+	}
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			setIRSAEnvironment(t)
+			gcp := newFakeGCP(t)
+			recorder := &recordingTransport{}
+			provider := &VertexProvider{authHTTPClient: &http.Client{Transport: recorder}}
+			key := route.key(gcp)
+			t.Cleanup(func() { provider.removeVertexClient(key) })
+
+			ts, err := provider.getAuthTokenSource(key)
+			require.NoError(t, err)
+			token, err := ts.Token()
+			require.NoError(t, err)
+			assert.Equal(t, "sa-token", token.AccessToken)
+
+			assert.True(t, recorder.sawSuffix("/v1/token"), "the GCP STS exchange bypassed authHTTPClient; saw %v", recorder.paths)
+			assert.True(t, recorder.sawSuffix(":generateAccessToken"), "the impersonation call bypassed authHTTPClient; saw %v", recorder.paths)
+		})
+	}
 }

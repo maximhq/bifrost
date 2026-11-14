@@ -87,9 +87,9 @@ func TestComplexitySemanticConfigTimeoutDecoding(t *testing.T) {
 	}
 }
 
-// TestComplexityJevConfigDefaults verifies the default user-history window and timeout.
-func TestComplexityJevConfigDefaults(t *testing.T) {
-	config := (&ComplexityJevConfig{}).normalized()
+// TestComplexityDecisionConfigDefaults verifies the default user-history window and timeout.
+func TestComplexityDecisionConfigDefaults(t *testing.T) {
+	config := (&ComplexityDecisionConfig{}).normalized()
 	require.NotNil(t, config.PreviousMessageCount)
 	assert.Equal(t, 1, *config.PreviousMessageCount)
 	assert.Equal(t, 1500*time.Millisecond, config.Timeout)
@@ -965,123 +965,173 @@ func TestGetComplexityConfigNeedsSemanticRow(t *testing.T) {
 	assert.Nil(t, applyComplexitySemanticConfigRow(decoded, nil))
 }
 
-// testJevAnalyzerConfig selects Jev as the primary classifier with no semantic block.
-func testJevAnalyzerConfig() *ComplexityAnalyzerConfig {
+// testDecisionAnalyzerConfig selects the decision model as the primary classifier with no semantic block.
+func testDecisionAnalyzerConfig() *ComplexityAnalyzerConfig {
 	cfg := testComplexityAnalyzerConfig()
-	cfg.Classifier = ComplexityClassifierJev
+	cfg.Classifier = ComplexityClassifierDecision
 	return cfg
 }
 
-// TestComplexityJevConfigDecoding pins the accepted Jev JSON shapes: a
+// TestComplexityDecisionConfigDecoding pins the accepted decision-model JSON shapes: a
 // duration string or milliseconds for the timeout, and no unknown fields, so
 // a typo in config.json fails loudly instead of silently using defaults.
-func TestComplexityJevConfigDecoding(t *testing.T) {
-	var cfg ComplexityJevConfig
+func TestComplexityDecisionConfigDecoding(t *testing.T) {
+	var cfg ComplexityDecisionConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":3,"timeout":"2s"}`), &cfg))
 	require.NotNil(t, cfg.PreviousMessageCount)
 	assert.Equal(t, 3, *cfg.PreviousMessageCount)
 	assert.Equal(t, 2*time.Second, cfg.Timeout)
 
-	cfg = ComplexityJevConfig{}
+	cfg = ComplexityDecisionConfig{}
 	require.NoError(t, json.Unmarshal([]byte(`{"timeout":750}`), &cfg))
 	assert.Equal(t, 750*time.Millisecond, cfg.Timeout)
 	assert.Nil(t, cfg.PreviousMessageCount, "an omitted count must stay distinguishable from an explicit 0")
 
-	cfg = ComplexityJevConfig{}
+	cfg = ComplexityDecisionConfig{}
 	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":0}`), &cfg))
 	require.NotNil(t, cfg.PreviousMessageCount)
 	assert.Equal(t, 0, *cfg.PreviousMessageCount)
 	assert.Equal(t, 0, *cfg.normalized().PreviousMessageCount, "an explicit 0 must not be replaced by the default")
 
 	for name, raw := range map[string]string{
-		"unknown field":     `{"model":"jev-1.13.0"}`,
+		"unknown field":     `{"api_key":"sk-test"}`,
 		"negative timeout":  `{"timeout":"-1s"}`,
 		"negative millis":   `{"timeout":-5}`,
 		"malformed timeout": `{"timeout":"soon"}`,
 		"boolean timeout":   `{"timeout":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			var cfg ComplexityJevConfig
+			var cfg ComplexityDecisionConfig
 			require.Error(t, json.Unmarshal([]byte(raw), &cfg))
 		})
 	}
 }
 
-// TestComplexityJevConfigMarshalRoundTrip checks that a saved Jev block reads back unchanged.
-func TestComplexityJevConfigMarshalRoundTrip(t *testing.T) {
+// TestComplexityDecisionConfigMarshalRoundTrip checks that a saved decision-model block reads back unchanged.
+func TestComplexityDecisionConfigMarshalRoundTrip(t *testing.T) {
 	count := 4
-	original := ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
+	original := ComplexityDecisionConfig{Provider: "nimble", Model: "nimble-latest", PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"previous_message_count":4,"timeout":"1.2s"}`, string(data))
+	assert.JSONEq(t, `{"provider":"nimble","model":"nimble-latest","previous_message_count":4,"timeout":"1.2s"}`, string(data))
 
-	var decoded ComplexityJevConfig
+	var decoded ComplexityDecisionConfig
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, original, decoded)
 }
 
-// TestComplexityJevConfigValidation pins the history-window bounds shared with the UI.
-func TestComplexityJevConfigValidation(t *testing.T) {
-	for _, count := range []int{0, 1, MaxComplexityJevPreviousMessageCount} {
-		value := count
-		assert.NoError(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "count %d", count)
-	}
-	for _, count := range []int{-1, MaxComplexityJevPreviousMessageCount + 1} {
-		value := count
-		assert.ErrorContains(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "previous_message_count", "count %d", count)
-	}
-	assert.Error(t, (&ComplexityJevConfig{Timeout: -time.Millisecond}).Validate())
+// TestComplexityDecisionConfigModelSelection pins how the decision model is chosen:
+// both fields empty selects the Typesafe Jev default, a custom provider keeps its
+// exact name, a built-in provider is lowercased, and half a selection is rejected.
+func TestComplexityDecisionConfigModelSelection(t *testing.T) {
+	var cfg ComplexityDecisionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":" Laya ","model":" english "}`), &cfg))
+	normalized := cfg.normalized()
+	assert.Equal(t, schemas.ModelProvider("Laya"), normalized.Provider, "a custom provider is looked up under its exact name")
+	assert.Equal(t, "english", normalized.Model)
+	require.NoError(t, normalized.Validate())
 
-	cfg := testJevAnalyzerConfig()
-	outOfRange := MaxComplexityJevPreviousMessageCount + 1
-	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &outOfRange}
-	normalized := cfg.Normalized()
-	assert.ErrorContains(t, normalized.Validate(), "previous_message_count", "an analyzer config must reject an invalid jev block")
+	defaulted := (&ComplexityDecisionConfig{}).normalized()
+	assert.Equal(t, DefaultComplexityDecisionProvider, defaulted.Provider)
+	assert.Equal(t, DefaultComplexityDecisionModel, defaulted.Model)
+
+	builtin := (&ComplexityDecisionConfig{Provider: "TypeSafe", Model: "jev-1.13.0"}).normalized()
+	assert.Equal(t, schemas.Typesafe, builtin.Provider)
+
+	for name, partial := range map[string]ComplexityDecisionConfig{
+		"provider only": {Provider: "nimble"},
+		"model only":    {Model: "nimble-latest"},
+		"blank model":   {Provider: "nimble", Model: "  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.ErrorContains(t, partial.Validate(), "set together")
+		})
+	}
 }
 
-// TestComplexityAnalyzerConfigNormalizedJev pins when a Jev block exists at
-// runtime: it is defaulted whenever Jev can run (primary or semantic
+// TestComplexityDecisionConfigValidation pins the history-window bounds shared with the UI.
+func TestComplexityDecisionConfigValidation(t *testing.T) {
+	for _, count := range []int{0, 1, MaxComplexityDecisionPreviousMessageCount} {
+		value := count
+		assert.NoError(t, (&ComplexityDecisionConfig{PreviousMessageCount: &value}).Validate(), "count %d", count)
+	}
+	for _, count := range []int{-1, MaxComplexityDecisionPreviousMessageCount + 1} {
+		value := count
+		assert.ErrorContains(t, (&ComplexityDecisionConfig{PreviousMessageCount: &value}).Validate(), "previous_message_count", "count %d", count)
+	}
+	assert.Error(t, (&ComplexityDecisionConfig{Timeout: -time.Millisecond}).Validate())
+
+	cfg := testDecisionAnalyzerConfig()
+	outOfRange := MaxComplexityDecisionPreviousMessageCount + 1
+	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &outOfRange}
+	normalized := cfg.Normalized()
+	assert.ErrorContains(t, normalized.Validate(), "previous_message_count", "an analyzer config must reject an invalid decision block")
+}
+
+// TestComplexityAnalyzerConfigNormalizedDecision pins when a decision-model block exists at
+// runtime: it is defaulted whenever the decision model can run (primary or semantic
 // fallback) and left absent otherwise, and the classifier name is canonical.
-func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
-	t.Run("jev primary without block gets defaults", func(t *testing.T) {
-		normalized := testJevAnalyzerConfig().Normalized()
-		require.NotNil(t, normalized.Jev)
-		assert.Equal(t, DefaultComplexityJevPreviousMessageCount, *normalized.Jev.PreviousMessageCount)
-		assert.Equal(t, DefaultComplexityJevTimeout, normalized.Jev.Timeout)
+func TestComplexityAnalyzerConfigNormalizedDecision(t *testing.T) {
+	t.Run("decision primary without block gets defaults", func(t *testing.T) {
+		normalized := testDecisionAnalyzerConfig().Normalized()
+		require.NotNil(t, normalized.Decision)
+		assert.Equal(t, DefaultComplexityDecisionPreviousMessageCount, *normalized.Decision.PreviousMessageCount)
+		assert.Equal(t, DefaultComplexityDecisionTimeout, normalized.Decision.Timeout)
 		require.NoError(t, normalized.Validate())
 	})
 
-	t.Run("semantic fallback jev without block gets defaults", func(t *testing.T) {
+	t.Run("semantic fallback decision without block gets defaults", func(t *testing.T) {
 		cfg := testSemanticAnalyzerConfig()
-		cfg.Semantic.Fallback = ComplexitySemanticFallbackJev
+		cfg.Semantic.Fallback = ComplexitySemanticFallbackDecision
 		normalized := cfg.Normalized()
-		require.NotNil(t, normalized.Jev)
+		require.NotNil(t, normalized.Decision)
 		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier)
 	})
 
-	t.Run("semantic without jev fallback has no block", func(t *testing.T) {
+	t.Run("semantic without decision fallback has no block", func(t *testing.T) {
 		normalized := testSemanticAnalyzerConfig().Normalized()
-		assert.Nil(t, normalized.Jev)
+		assert.Nil(t, normalized.Decision)
 		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier, "an omitted classifier defaults to semantic")
 	})
 
 	t.Run("classifier name is canonicalized", func(t *testing.T) {
-		cfg := testJevAnalyzerConfig()
-		cfg.Classifier = "  JEV "
+		cfg := testDecisionAnalyzerConfig()
+		cfg.Classifier = "  DECISION "
 		normalized := cfg.Normalized()
-		assert.Equal(t, ComplexityClassifierJev, normalized.Classifier)
+		assert.Equal(t, ComplexityClassifierDecision, normalized.Classifier)
 		require.NoError(t, normalized.Validate())
 	})
 
 	t.Run("unknown classifier is rejected", func(t *testing.T) {
 		cfg := testComplexityAnalyzerConfig()
-		cfg.Classifier = "llm"
+		cfg.Classifier = "lexical"
 		normalized := cfg.Normalized()
 		assert.ErrorContains(t, normalized.Validate(), "complexity classifier must be")
 	})
 
-	t.Run("jev session needs no semantic block", func(t *testing.T) {
-		cfg := testJevAnalyzerConfig()
+	t.Run("llm classifier needs an llm block", func(t *testing.T) {
+		cfg := testComplexityAnalyzerConfig()
+		cfg.Classifier = ComplexityClassifierLLM
+		normalized := cfg.Normalized()
+		assert.ErrorContains(t, normalized.Validate(), `complexity classifier "llm" requires an llm config block`)
+
+		cfg.LLM = testLLMConfig()
+		normalized = cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+		assert.Equal(t, ComplexityClassifierLLM, normalized.Classifier)
+		assert.Nil(t, normalized.Decision, "an llm router gets no decision block")
+	})
+
+	t.Run("llm session needs no semantic block", func(t *testing.T) {
+		cfg := testComplexityAnalyzerConfig()
+		cfg.Classifier, cfg.LLM = ComplexityClassifierLLM, testLLMConfig()
+		cfg.Session = &ComplexitySessionConfig{Enabled: true}
+		normalized := cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("decision session needs no semantic block", func(t *testing.T) {
+		cfg := testDecisionAnalyzerConfig()
 		cfg.Session = &ComplexitySessionConfig{Enabled: true}
 		normalized := cfg.Normalized()
 		require.NoError(t, normalized.Validate())
@@ -1092,17 +1142,17 @@ func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
 	})
 }
 
-// TestRDBConfigStore_ComplexityJevPersistence checks that the classifier
-// choice and Jev block survive a save and reload, including a UI-style save
+// TestRDBConfigStore_ComplexityDecisionPersistence checks that the classifier
+// choice and decision-model block survive a save and reload, including a UI-style save
 // that carries no hashes, and that switching back to semantic sticks.
-func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
+func TestRDBConfigStore_ComplexityDecisionPersistence(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
 	count := 3
-	cfg := testJevAnalyzerConfig()
+	cfg := testDecisionAnalyzerConfig()
 	cfg.Semantic = testSemanticConfig()
-	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
 	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
 	require.NoError(t, err)
 	cfg.ConfigHashes = hashes
@@ -1110,23 +1160,23 @@ func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
 
 	got, err := store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, ComplexityClassifierJev, got.Classifier)
-	require.NotNil(t, got.Jev)
-	assert.Equal(t, 3, *got.Jev.PreviousMessageCount)
-	assert.Equal(t, 900*time.Millisecond, got.Jev.Timeout)
+	assert.Equal(t, ComplexityClassifierDecision, got.Classifier)
+	require.NotNil(t, got.Decision)
+	assert.Equal(t, 3, *got.Decision.PreviousMessageCount)
+	assert.Equal(t, 900*time.Millisecond, got.Decision.Timeout)
 	require.NotNil(t, got.Semantic, "the dormant semantic block must be kept for switching back")
 	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
-	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+	assert.Equal(t, hashes.DecisionSettings, got.ConfigHashes.DecisionSettings)
 
 	// A UI save omits hashes; the file-sync hashes must be carried over.
-	uiUpdate := testJevAnalyzerConfig()
+	uiUpdate := testDecisionAnalyzerConfig()
 	uiUpdate.Semantic = testSemanticConfig()
-	uiUpdate.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	uiUpdate.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, uiUpdate))
 	got, err = store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
-	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+	assert.Equal(t, hashes.DecisionSettings, got.ConfigHashes.DecisionSettings)
 
 	switched := testSemanticAnalyzerConfig()
 	switched.Classifier = ComplexityClassifierSemantic
@@ -1142,58 +1192,496 @@ func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
 	assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
 }
 
-// TestMergeComplexityAnalyzerConfigByHashesJev pins config.json sync for the
-// classifier choice and Jev block: an unchanged file keeps UI edits, a
+// TestMergeComplexityAnalyzerConfigByHashesDecision pins config.json sync for the
+// classifier choice and decision-model block: an unchanged file keeps UI edits, a
 // changed file wins, and a file that says nothing keeps the DB choice.
-func TestMergeComplexityAnalyzerConfigByHashesJev(t *testing.T) {
+func TestMergeComplexityAnalyzerConfigByHashesDecision(t *testing.T) {
 	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
 		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
 		require.NoError(t, err)
 		cfg.ConfigHashes = hashes
 		return cfg
 	}
-	jevFile := func(count int) *ComplexityAnalyzerConfig {
-		cfg := testJevAnalyzerConfig()
+	decisionFile := func(count int) *ComplexityAnalyzerConfig {
+		cfg := testDecisionAnalyzerConfig()
 		cfg.Semantic = testSemanticConfig()
-		cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count}
+		cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count}
 		return withHashes(cfg)
 	}
 
-	t.Run("file switches a semantic DB to jev", func(t *testing.T) {
+	t.Run("file switches a semantic DB to decision", func(t *testing.T) {
 		base := withHashes(testSemanticAnalyzerConfig())
-		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, decisionFile(2))
 		require.NoError(t, err)
-		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
-		require.NotNil(t, merged.Jev)
-		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, ComplexityClassifierDecision, merged.Classifier)
+		require.NotNil(t, merged.Decision)
+		assert.Equal(t, 2, *merged.Decision.PreviousMessageCount)
 	})
 
 	t.Run("unchanged file keeps UI edits", func(t *testing.T) {
-		base := jevFile(2)
+		base := decisionFile(2)
 		// Simulate UI edits persisted after the last file sync.
 		base.Classifier = ComplexityClassifierSemantic
 		edited := 4
-		base.Jev.PreviousMessageCount = &edited
+		base.Decision.PreviousMessageCount = &edited
 
-		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, decisionFile(2))
 		require.NoError(t, err)
 		assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
-		assert.Equal(t, 4, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, 4, *merged.Decision.PreviousMessageCount)
 	})
 
-	t.Run("changed jev block replaces the DB block", func(t *testing.T) {
-		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), jevFile(5))
+	t.Run("changed decision block replaces the DB block", func(t *testing.T) {
+		merged, err := MergeComplexityAnalyzerConfigByHashes(decisionFile(2), decisionFile(5))
 		require.NoError(t, err)
-		assert.Equal(t, 5, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, 5, *merged.Decision.PreviousMessageCount)
 	})
 
 	t.Run("file without classifier keeps DB choice", func(t *testing.T) {
 		file := withHashes(testSemanticAnalyzerConfig())
 		file.Classifier = ""
-		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), file)
+		merged, err := MergeComplexityAnalyzerConfigByHashes(decisionFile(2), file)
 		require.NoError(t, err)
-		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
-		require.NotNil(t, merged.Jev)
-		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, ComplexityClassifierDecision, merged.Classifier)
+		require.NotNil(t, merged.Decision)
+		assert.Equal(t, 2, *merged.Decision.PreviousMessageCount)
 	})
+}
+
+// TestComplexityDecisionConfigMinConfidence pins the decode, normalize, and
+// validation path of decision.min_confidence, including that leaving it unset
+// changes neither the JSON nor the section hash of an existing config.
+func TestComplexityDecisionConfigMinConfidence(t *testing.T) {
+	var cfg ComplexityDecisionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"min_confidence":0.75}`), &cfg))
+	assert.Equal(t, 0.75, cfg.MinConfidence)
+	assert.Equal(t, 0.75, cfg.normalized().MinConfidence, "normalizing must not drop the threshold")
+
+	unset, err := json.Marshal(ComplexityDecisionConfig{Model: "jev-latest"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(unset), "min_confidence")
+	unsetHash, err := hashComplexityValue(ComplexityDecisionConfig{Model: "jev-latest"})
+	require.NoError(t, err)
+	setHash, err := hashComplexityValue(ComplexityDecisionConfig{Model: "jev-latest", MinConfidence: 0.75})
+	require.NoError(t, err)
+	assert.NotEqual(t, unsetHash, setHash, "changing the threshold must register as a decision settings change")
+
+	for _, value := range []float64{0, 0.5, 1} {
+		assert.NoError(t, (&ComplexityDecisionConfig{MinConfidence: value}).Validate(), "value %v", value)
+	}
+	for _, value := range []float64{-0.1, 1.1, math.NaN()} {
+		assert.ErrorContains(t, (&ComplexityDecisionConfig{MinConfidence: value}).Validate(), "min_confidence", "value %v", value)
+	}
+}
+
+// TestComplexitySemanticRowDecisionMinConfidenceRollback pins the storage shape:
+// the threshold round-trips through the row, but never inside the decision
+// block, whose released decoder rejects any field it does not know.
+func TestComplexitySemanticRowDecisionMinConfidenceRollback(t *testing.T) {
+	config := testDecisionAnalyzerConfig()
+	config.Decision = &ComplexityDecisionConfig{Provider: "typesafe", Model: "jev-latest", MinConfidence: 0.6}
+
+	row, err := encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.Equal(t, 0.6, config.Decision.MinConfidence, "encoding must not mutate the live config")
+
+	var stored struct {
+		Decision              map[string]json.RawMessage `json:"decision"`
+		DecisionMinConfidence float64                    `json:"decision_min_confidence"`
+	}
+	require.NoError(t, json.Unmarshal(row, &stored))
+	assert.NotContains(t, stored.Decision, "min_confidence", "a released binary would mark the whole row unreadable")
+	for field := range stored.Decision {
+		assert.Contains(t, []string{"provider", "model", "previous_message_count", "timeout", "criteria"}, field, "a released binary rejects this field")
+	}
+	assert.Equal(t, 0.6, stored.DecisionMinConfidence)
+
+	decoded, err := decodeComplexitySemanticConfigRow(row)
+	require.NoError(t, err)
+	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{}, decoded)
+	require.NotNil(t, combined.Decision)
+	assert.Equal(t, 0.6, combined.Decision.MinConfidence)
+
+	config.Decision.MinConfidence = 0
+	row, err = encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(row), "min_confidence", "an unset threshold must leave the row byte-compatible")
+}
+
+// TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence pins the
+// threshold through a real save and load.
+func TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := testDecisionAnalyzerConfig()
+	cfg.Decision = &ComplexityDecisionConfig{MinConfidence: 0.8}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Decision)
+	assert.Equal(t, 0.8, got.Decision.MinConfidence)
+}
+
+func testSuggestionsAnalyzerConfig() *ComplexityAnalyzerConfig {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.25, LookbackDays: 14, Provider: "openai", Model: "gpt-5"}
+	return cfg
+}
+
+func TestComplexitySuggestionsConfigDecoding(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":0.5,"lookback_days":3}`), &cfg))
+	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true, SampleRate: 0.5, LookbackDays: 3}, cfg)
+
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"samplerate":0.5}`), &cfg), `unknown complexity suggestions field "samplerate"`)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"sample_rate":0.5}`), &cfg), "requires enabled")
+
+	// An explicit zero is out of range, not a request for the default: the
+	// schema rejects it, and quietly defaulting it would capture at a rate
+	// nobody asked for.
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":0}`), &cfg), "sample_rate")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"lookback_days":0}`), &cfg), "lookback_days")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"sample_rate":null}`), &cfg), "sample_rate")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"max_clustered_requests":0}`), &cfg), "max_clustered_requests")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"min_cluster_requests":0}`), &cfg), "min_cluster_requests")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"min_cluster_requests":null}`), &cfg), "min_cluster_requests")
+
+	// Omitted fields still take the defaults.
+	cfg = ComplexitySuggestionsConfig{}
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true}`), &cfg))
+	assert.Equal(t, ComplexitySuggestionsConfig{Enabled: true}, cfg)
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = testLLMConfig() // the suggestion model when the block names none
+	analyzer.Suggestions = &cfg
+	normalized := analyzer.Normalized()
+	require.NoError(t, normalized.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsSampleRate, normalized.Suggestions.SampleRate)
+	assert.Equal(t, DefaultComplexitySuggestionsLookbackDays, normalized.Suggestions.LookbackDays)
+}
+
+func TestComplexitySuggestionsConfigDefaultsAndValidation(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.LLM = testLLMConfig() // the suggestion model when the block names none
+	cfg.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	normalized := cfg.Normalized()
+	require.NoError(t, normalized.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsSampleRate, normalized.Suggestions.SampleRate)
+	assert.Equal(t, DefaultComplexitySuggestionsLookbackDays, normalized.Suggestions.LookbackDays)
+	assert.True(t, normalized.SuggestionsEnabled())
+
+	for _, bad := range []ComplexitySuggestionsConfig{
+		{Enabled: true, SampleRate: 1.5},
+		{Enabled: true, SampleRate: -0.1},
+		{Enabled: true, LookbackDays: MaxComplexitySuggestionsLookbackDays + 1},
+		{Enabled: true, LookbackDays: -1},
+	} {
+		cfg.Suggestions = &bad
+		n := cfg.Normalized()
+		assert.Error(t, n.Validate(), "%+v should be rejected", bad)
+	}
+
+	cfg.Suggestions = nil
+	n := cfg.Normalized()
+	assert.False(t, n.SuggestionsEnabled())
+	require.NoError(t, n.Validate())
+}
+
+// The run settings decode strictly, take their defaults when omitted, and are
+// refused out of range.
+func TestComplexitySuggestionsRunSettings(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"every":"1w","start_at":"2026-11-06T04:30:00Z"},`+
+		`"max_clustered_requests":5000,"min_cluster_requests":10,"provider":"openai","model":"gpt-5","instructions":"be brief"}`), &cfg))
+	start := time.Date(2026, time.November, 6, 4, 30, 0, 0, time.UTC)
+	assert.Equal(t, ComplexitySuggestionsConfig{
+		Enabled:              true,
+		Schedule:             &ComplexitySuggestionsSchedule{Every: "1w", StartAt: &start},
+		MaxClusteredRequests: 5000, MinClusterRequests: 10, Provider: "openai", Model: "gpt-5", Instructions: "be brief",
+	}, cfg)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"schedule":{"cron":"0 3 * * *"}}`), &cfg), `unknown complexity suggestions schedule field "cron"`)
+
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = testLLMConfig() // the suggestion model when the block names none
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Instructions: "   "}
+	n := analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, n.Suggestions.MaxClusteredRequests)
+	assert.Equal(t, DefaultComplexitySuggestionsMinClusterRequests, n.Suggestions.MinClusterRequests)
+	assert.Equal(t, &ComplexitySuggestionsSchedule{Every: "1d"}, n.Suggestions.Schedule, "a missing start stays missing; the default anchor is applied when slots are read")
+	assert.Empty(t, n.Suggestions.Instructions, "blank instructions use the shipped ones")
+
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: " OpenAI ", Model: "gpt-5"}
+	n = analyzer.Normalized()
+	assert.Equal(t, schemas.OpenAI, n.Suggestions.Provider, "standard provider names are lowercased like the other blocks'")
+	assert.Equal(t, ComplexitySuggestionsSchedule{Every: "1d"}, (*ComplexitySuggestionsConfig)(nil).EffectiveSchedule())
+	assert.True(t, (*ComplexitySuggestionsConfig)(nil).EffectiveSchedule().Start().Equal(DefaultComplexitySuggestionsStartAt), "daily at 03:00 UTC by default")
+
+	for name, bad := range map[string]ComplexitySuggestionsConfig{
+		"budget too small":       {Enabled: true, MaxClusteredRequests: 10},
+		"budget too large":       {Enabled: true, MaxClusteredRequests: MaxComplexitySuggestionsMaxClusteredRequests + 1},
+		"cluster minimum of one": {Enabled: true, MinClusterRequests: 1},
+		"provider without model": {Enabled: true, Provider: "openai"},
+		"model without provider": {Enabled: true, Model: "gpt-5"},
+		"instructions too long":  {Enabled: true, Instructions: strings.Repeat("x", MaxComplexitySuggestionsInstructionsChars+1)},
+		"hours past a day":       {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "24h"}},
+		"interval too long":      {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "31d"}},
+		"bad unit":               {Enabled: true, Schedule: &ComplexitySuggestionsSchedule{Every: "1m"}},
+	} {
+		analyzer.Suggestions = &bad
+		n := analyzer.Normalized()
+		assert.Error(t, n.Validate(), name)
+	}
+}
+
+// Enabled suggestions capture the semantic classifier's vectors and ask a
+// model, so they need the semantic classifier as primary and a model: their
+// own provider and model, or the llm block's. Disabled, they need neither.
+func TestComplexitySuggestionsRequireSemanticClassifierAndModel(t *testing.T) {
+	validate := func(mutate func(*ComplexityAnalyzerConfig)) error {
+		cfg := testSemanticAnalyzerConfig()
+		mutate(cfg)
+		n := cfg.Normalized()
+		return n.Validate()
+	}
+	own := func() *ComplexitySuggestionsConfig {
+		return &ComplexitySuggestionsConfig{Enabled: true, Provider: "openai", Model: "gpt-5"}
+	}
+
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = own() }), "their own model")
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions, c.LLM = &ComplexitySuggestionsConfig{Enabled: true}, testLLMConfig()
+	}), "the llm block's model")
+
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	}), "need a model")
+	for name, partial := range map[string]*ComplexitySuggestionsConfig{
+		"provider only": {Enabled: true, Provider: "openai"},
+		"model only":    {Enabled: true, Model: "gpt-5"},
+	} {
+		assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) { c.Suggestions = partial }), "set together", name)
+	}
+
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Semantic, c.Suggestions = nil, own()
+	}), "require the semantic classifier", "no semantic block")
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Classifier, c.Decision, c.Suggestions = ComplexityClassifierDecision, &ComplexityDecisionConfig{}, own()
+	}), "require the semantic classifier", "decision primary")
+	assert.ErrorContains(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Classifier, c.LLM, c.Suggestions = ComplexityClassifierLLM, testLLMConfig(), own()
+	}), "require the semantic classifier", "llm primary")
+
+	// Disabled suggestions keep their settings without either.
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Semantic, c.Suggestions = nil, &ComplexitySuggestionsConfig{Enabled: false}
+	}))
+	require.NoError(t, validate(func(c *ComplexityAnalyzerConfig) {
+		c.Suggestions = &ComplexitySuggestionsConfig{Enabled: false}
+	}))
+}
+
+// The tier block decodes strictly, defaults to the llm classifier, and every
+// model a run will use is filled in and shown: the phrase model from the llm
+// block, an llm tier from the phrase model, a decision tier from the decision
+// block or the shipped decision default. Models a block names are kept.
+func TestComplexitySuggestionsTierSettings(t *testing.T) {
+	var cfg ComplexitySuggestionsConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","provider":"typesafe","model":"jev-latest","instructions":"judge the work"}}`), &cfg))
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: "typesafe", Model: "jev-latest", Instructions: "judge the work"}, cfg.Tier)
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"mode":"llm"}}`), &cfg), `unknown complexity suggestions tier field "mode"`)
+
+	analyzer := testSemanticAnalyzerConfig()
+	analyzer.LLM = &ComplexityLLMConfig{Provider: schemas.OpenAI, Model: "gpt-4.1-mini"}
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true}
+	n := analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, schemas.OpenAI, n.Suggestions.Provider)
+	assert.Equal(t, "gpt-4.1-mini", n.Suggestions.Model, "the phrase model is filled from the llm block")
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: schemas.OpenAI, Model: "gpt-4.1-mini"}, n.Suggestions.Tier,
+		"no tier block decides tiers with the phrase model")
+
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.Anthropic, Model: "claude-haiku-4-5", Tier: &ComplexitySuggestionsTierConfig{Classifier: " Decision "}}
+	n = analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, "claude-haiku-4-5", n.Suggestions.Model, "a named phrase model is kept")
+	assert.Equal(t, &ComplexitySuggestionsTierConfig{Classifier: "decision", Provider: DefaultComplexityDecisionProvider, Model: DefaultComplexityDecisionModel}, n.Suggestions.Tier,
+		"a decision tier without a model takes the shipped decision default")
+
+	analyzer.Decision = &ComplexityDecisionConfig{Provider: schemas.OpenAI, Model: "gpt-5-mini"}
+	n = analyzer.Normalized()
+	assert.Equal(t, "gpt-5-mini", n.Suggestions.Tier.Model, "a decision tier takes the router's decision model")
+
+	analyzer.Suggestions.Tier = &ComplexitySuggestionsTierConfig{Classifier: "llm", Provider: schemas.OpenAI, Model: "gpt-5"}
+	n = analyzer.Normalized()
+	assert.Equal(t, "gpt-5", n.Suggestions.Tier.Model, "a named tier model is kept")
+
+	// The editable text: an llm prompt and, for a decision model, the question
+	// and per-tier criteria. Blank text means generated; criteria keep order
+	// and case, lose blanks and duplicates, and an emptied list stays empty.
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","prompt":"Refunds are SIMPLE.",`+
+		`"instructions":"Which tier?","criteria":{"simple":{"definition":" One short answer. ","signals":["a lookup"," a lookup ",""],"examples":[]}}}}`), &cfg))
+	analyzer.Suggestions = &cfg
+	n = analyzer.Normalized()
+	require.NoError(t, n.Validate())
+	assert.Equal(t, "Refunds are SIMPLE.", n.Suggestions.Tier.Prompt)
+	assert.Equal(t, "Which tier?", n.Suggestions.Tier.Instructions)
+	assert.Equal(t, map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "One short answer.", Signals: []string{"a lookup"}}}, n.Suggestions.Tier.Criteria)
+	analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Tier: &ComplexitySuggestionsTierConfig{Classifier: "llm", Prompt: "   "}}
+	n = analyzer.Normalized()
+	assert.Empty(t, n.Suggestions.Tier.Prompt, "a blank prompt is generated, not sent blank")
+	require.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"tier":{"classifier":"decision","criteria":{"SIMPLE":{"definiton":"x"}}}}`), &cfg), "definiton")
+
+	tooMany := make([]string, MaxComplexityDecisionCriteriaItems+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("example %d", i)
+	}
+	for name, bad := range map[string]*ComplexitySuggestionsTierConfig{
+		"prompt too long":               {Classifier: "llm", Prompt: strings.Repeat("x", MaxComplexitySuggestionsTierPromptChars+1)},
+		"criteria for an unknown tier":  {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"HARD": {Definition: "x"}}},
+		"criteria without a definition": {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Examples: []string{"hi"}}}},
+		"too many examples":             {Classifier: "decision", Criteria: map[string]ComplexityDecisionTierCriteria{"SIMPLE": {Definition: "x", Examples: tooMany}}},
+		"unknown classifier":            {Classifier: "lexical"},
+		"provider without model":        {Classifier: "llm", Provider: "openai"},
+		"model without provider":        {Classifier: "decision", Model: "gpt-5"},
+		"instructions too long":         {Classifier: "llm", Instructions: strings.Repeat("x", MaxComplexitySuggestionsInstructionsChars+1)},
+	} {
+		analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.OpenAI, Model: "gpt-5", Tier: bad}
+		n := analyzer.Normalized()
+		assert.Error(t, n.Validate(), name)
+	}
+
+	// Two names for one tier are refused rather than left to map order to
+	// pick between; repeated, since map order changes from run to run.
+	for _, names := range [][2]string{{"simple", "SIMPLE"}, {" Simple ", "simple"}} {
+		for range 20 {
+			analyzer.Suggestions = &ComplexitySuggestionsConfig{Enabled: true, Provider: schemas.OpenAI, Model: "gpt-5", Tier: &ComplexitySuggestionsTierConfig{
+				Classifier: "decision",
+				Criteria: map[string]ComplexityDecisionTierCriteria{
+					names[0]: {Definition: "one short answer"},
+					names[1]: {Definition: "a quick lookup"},
+				},
+			}}
+			n := analyzer.Normalized()
+			require.ErrorContains(t, n.Validate(), "SIMPLE more than once", "%q and %q", names[0], names[1])
+		}
+	}
+}
+
+// The suggestions block rides the semantic row as a top-level key, which the
+// row record decodes leniently; it must never land inside the strictly
+// decoded semantic block, or a rolled-back binary loses the whole row.
+func TestComplexitySuggestionsPersistOutsideTheStrictSemanticBlock(t *testing.T) {
+	cfg := testSuggestionsAnalyzerConfig()
+	data, err := encodeComplexitySemanticConfigRow(cfg.Normalized())
+	require.NoError(t, err)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	require.Contains(t, raw, "suggestions")
+	var semantic map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["semantic"], &semantic))
+	assert.NotContains(t, semantic, "suggestions")
+
+	// A binary predating suggestions decodes the row with this exact record
+	// minus the field; unknown top-level keys must not fail it.
+	type preSuggestionsRecord struct {
+		Keywords ComplexityEditableKeywordConfig `json:"keywords"`
+		Semantic *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	}
+	var old preSuggestionsRecord
+	require.NoError(t, json.Unmarshal(data, &old))
+	require.NotNil(t, old.Semantic)
+
+	row, err := decodeComplexitySemanticConfigRow(data)
+	require.NoError(t, err)
+	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{TierBoundaries: cfg.TierBoundaries}, row)
+	assert.Equal(t, cfg.Normalized().Suggestions, combined.Suggestions)
+}
+
+func TestGenerateComplexityAnalyzerConfigHashesSuggestions(t *testing.T) {
+	on, err := GenerateComplexityAnalyzerConfigHashes(testSuggestionsAnalyzerConfig())
+	require.NoError(t, err)
+	require.NotEmpty(t, on.SuggestionsSettings)
+
+	changed := testSuggestionsAnalyzerConfig()
+	changed.Suggestions.SampleRate = 0.5
+	changedHashes, err := GenerateComplexityAnalyzerConfigHashes(changed)
+	require.NoError(t, err)
+	assert.NotEqual(t, on.SuggestionsSettings, changedHashes.SuggestionsSettings)
+	assert.Equal(t, on.SemanticSettings, changedHashes.SemanticSettings)
+
+	none, err := GenerateComplexityAnalyzerConfigHashes(testSemanticAnalyzerConfig())
+	require.NoError(t, err)
+	assert.Empty(t, none.SuggestionsSettings)
+}
+
+func TestMergeComplexityAnalyzerConfigByHashesSuggestions(t *testing.T) {
+	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
+		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+		require.NoError(t, err)
+		cfg.ConfigHashes = hashes
+		return cfg
+	}
+
+	t.Run("file omission preserves persisted suggestions", func(t *testing.T) {
+		base := withHashes(testSuggestionsAnalyzerConfig())
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, withHashes(testSemanticAnalyzerConfig()))
+		require.NoError(t, err)
+		require.NotNil(t, merged.Suggestions)
+		assert.Equal(t, 0.25, merged.Suggestions.SampleRate)
+	})
+
+	t.Run("changed file section overrides", func(t *testing.T) {
+		base := withHashes(testSuggestionsAnalyzerConfig())
+		file := testSuggestionsAnalyzerConfig()
+		file.Suggestions.Enabled = false
+		withHashes(file)
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		assert.False(t, merged.Suggestions.Enabled)
+		assert.Equal(t, file.ConfigHashes.SuggestionsSettings, merged.ConfigHashes.SuggestionsSettings)
+	})
+
+	t.Run("unchanged file section keeps a UI edit", func(t *testing.T) {
+		file := withHashes(testSuggestionsAnalyzerConfig())
+		base := testSuggestionsAnalyzerConfig()
+		base.Suggestions.SampleRate = 0.9 // edited in the UI after config.json was applied
+		base.ConfigHashes = file.ConfigHashes
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		assert.Equal(t, 0.9, merged.Suggestions.SampleRate)
+	})
+}
+
+func TestRDBConfigStore_ComplexitySuggestionsPersistenceAndReset(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := testSuggestionsAnalyzerConfig()
+	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+	require.NoError(t, err)
+	cfg.ConfigHashes = hashes
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got.Suggestions)
+	assert.Equal(t, *testSuggestionsAnalyzerConfig().Normalized().Suggestions, *got.Suggestions, "stored with defaults filled in")
+	assert.Equal(t, DefaultComplexitySuggestionsMaxClusteredRequests, got.Suggestions.MaxClusteredRequests)
+	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
+
+	// A UI-style update omits hashes; the carry-over keeps them with the block.
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testSuggestionsAnalyzerConfig()))
+	got, err = store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, hashes.SuggestionsSettings, got.ConfigHashes.SuggestionsSettings)
+
+	// Resetting phrases and boundaries leaves suggestions as they were.
+	restored, err := store.ResetComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig())
+	require.NoError(t, err)
+	require.NotNil(t, restored.Suggestions)
+	assert.True(t, restored.Suggestions.Enabled)
 }

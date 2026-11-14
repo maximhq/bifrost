@@ -8,15 +8,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMistral(t *testing.T) {
@@ -90,9 +93,9 @@ func TestMistralContentArray(t *testing.T) {
 		wantToolCall  bool
 	}{
 		{
-			name:      "ThinkingOnly",
-			deltas:    []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`},
-			wantError: true,
+			name:          "ThinkingOnly",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`},
+			wantReasoning: "Compute 17 times 23.",
 		},
 		{
 			name:     "TextArray",
@@ -110,12 +113,28 @@ func TestMistralContentArray(t *testing.T) {
 				`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`,
 				`{"content":[{"type":"text","text":"The answer "},{"type":"text","text":"is 391."}]}`,
 			},
-			wantError: true,
+			wantText:      "The answer is 391.",
+			wantReasoning: "Compute 17 times 23.",
 		},
 		{
-			name:      "MixedThinkingBeforeText",
-			deltas:    []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute 17 times 23."}]},{"type":"text","text":"391"}]}`},
-			wantError: true,
+			name:          "MixedThinkingBeforeText",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute 17 times 23."}]},{"type":"text","text":"391"}]}`},
+			wantText:      "391",
+			wantReasoning: "Compute 17 times 23.",
+		},
+		{
+			// zai-glm-5-3 shape: empty string deltas around closed thinking bursts, first answer text shares the last thinking frame.
+			name: "ClosedThinkingWithEmptyDeltas",
+			deltas: []string{
+				`{"role":"assistant","content":""}`,
+				`{"role":"assistant","index":0,"content":""}`,
+				`{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"The user"}],"closed":true}]}`,
+				`{"index":0,"content":""}`,
+				`{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":" wants hello."}],"closed":true},{"type":"text","text":"hello"}]}`,
+				`{"index":0,"content":" there"}`,
+			},
+			wantText:      "hello there",
+			wantReasoning: "The user wants hello.",
 		},
 		{
 			name:      "MixedTextBeforeThinking",
@@ -124,7 +143,7 @@ func TestMistralContentArray(t *testing.T) {
 		},
 		{
 			name:      "InvalidSecondChoice",
-			choices:   `[{"index":0,"delta":{"content":[{"type":"text","text":"must not leak"}]},"finish_reason":null},{"index":1,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]},"finish_reason":null}]`,
+			choices:   `[{"index":0,"delta":{"content":[{"type":"text","text":"must not leak"}]},"finish_reason":null},{"index":1,"delta":{"content":[{"type":"future_chunk","payload":"not text"}]},"finish_reason":null}]`,
 			wantError: true,
 		},
 		{
@@ -160,10 +179,20 @@ func TestMistralContentArray(t *testing.T) {
 			customAlias: true,
 		},
 		{
-			name:        "ThinkingRawDisabled",
-			deltas:      []string{`{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]}`},
-			wantError:   true,
-			rawDisabled: true,
+			name:          "ThinkingRawDisabled",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]}`},
+			wantReasoning: "Compute.",
+			rawDisabled:   true,
+		},
+		{
+			name:      "MalformedThinkingBlock",
+			deltas:    []string{`{"content":[{"type":"thinking","thinking":"Compute."}]}`},
+			wantError: true,
+		},
+		{
+			name:      "NontextThinkingChunk",
+			deltas:    []string{`{"content":[{"type":"thinking","thinking":[{"type":"image_url","image_url":"https://example.invalid/image.png"}]}]}`},
+			wantError: true,
 		},
 		{
 			name:      "NontextArray",
@@ -605,4 +634,57 @@ func (l mistralContentArrayLogger) SetLevel(schemas.LogLevel)              {}
 func (l mistralContentArrayLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (l mistralContentArrayLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+// A retrieve must land on /v1/models/{model} with the key's bearer token, map Mistral's
+// model card onto the Bifrost shape, surface an upstream 404, and refuse a path-shaping id.
+func TestMistralModelRetrieve(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotPath, gotMethod, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		mu.Unlock()
+		if r.URL.Path == "/v1/models/nope" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"object":"error","message":"Invalid model: nope","type":"invalid_model","code":"1500"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"mistral-large-2411","object":"model","created":1731974400,"owned_by":"mistralai","name":"Mistral Large","description":"Top-tier reasoning model","max_context_length":131072,"aliases":["mistral-large-latest"],"capabilities":{"completion_chat":true,"function_calling":true},"type":"base"}`))
+	}))
+	defer server.Close()
+
+	provider := mistral.NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("mistral-test")}
+
+	// Retrieving an alias returns the concrete model it points at.
+	response, bifrostErr := provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "mistral-large-latest"})
+	require.Nil(t, bifrostErr)
+
+	mu.Lock()
+	path, method, auth := gotPath, gotMethod, gotAuth
+	mu.Unlock()
+	require.Equal(t, "/v1/models/mistral-large-latest", path)
+	require.Equal(t, http.MethodGet, method)
+	require.Equal(t, "Bearer mistral-test", auth)
+
+	require.Equal(t, "mistral/mistral-large-2411", response.ID)
+	require.Equal(t, schemas.Ptr("Mistral Large"), response.Name)
+	require.Equal(t, schemas.Ptr(131072), response.ContextLength)
+	require.Equal(t, schemas.Ptr(int64(1731974400)), response.Created)
+	require.Equal(t, schemas.Ptr("mistralai"), response.OwnedBy)
+
+	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "nope"})
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusNotFound), bifrostErr.StatusCode)
+
+	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
 }

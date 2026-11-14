@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 // The pieces of the summary row that sits above the logs table and the adaptive routing
 // timeline: one surface split by hairline dividers, each segment a title, a figure and a
@@ -46,10 +47,12 @@ export function MetricStripCard({
 
 /**
  * One segment of the strip. A segment with onClick is a button onto a detail view; hover
- * callbacks let a caller show a readout for the whole segment.
+ * callbacks let a caller show a readout for the whole segment. An aside sits at the
+ * right of the title row, e.g. the window the figure covers.
  */
 export function MetricSegment({
 	title,
+	aside,
 	children,
 	footer,
 	state = "ready",
@@ -59,6 +62,7 @@ export function MetricSegment({
 	testId,
 }: {
 	title: string;
+	aside?: ReactNode;
 	children: ReactNode;
 	footer: ReactNode;
 	state?: MetricSegmentState;
@@ -67,6 +71,7 @@ export function MetricSegment({
 	onMouseLeave?: (event: MouseEvent<HTMLDivElement>) => void;
 	testId?: string;
 }) {
+	const { t } = useTranslation("observability");
 	// The footer is derived from the same figures as the value, so it goes with them
 	// rather than rendering a flat line beside an "N/A".
 	const ready = state === "ready";
@@ -94,7 +99,14 @@ export function MetricSegment({
 			onMouseLeave={onMouseLeave}
 			data-testid={testId}
 		>
-			<div className="text-muted-foreground truncate text-[11.5px] tracking-[0.06em] uppercase">{title}</div>
+			{aside === undefined ? (
+				<div className="text-muted-foreground truncate text-[11.5px] tracking-[0.06em] uppercase">{title}</div>
+			) : (
+				<div className="text-muted-foreground flex min-w-0 items-baseline justify-between gap-3 text-[11.5px]">
+					<span className="truncate tracking-[0.06em] uppercase">{title}</span>
+					<span className="shrink-0">{aside}</span>
+				</div>
+			)}
 			{/* NumberFlow reserves 0.25em above and below its digits for the mask that
 			    fades a rolling number in and out, which left 16px of dead space in a
 			    row whose line-height is already the type size. A shorter mask still
@@ -110,7 +122,7 @@ export function MetricSegment({
 					"[--number-flow-mask-height:0.15em]",
 					ready ? "text-foreground" : "text-muted-foreground",
 				)}
-				title={state === "unavailable" ? "These statistics could not be loaded" : undefined}
+				title={state === "unavailable" ? t("logs.stats.unavailable") : undefined}
 			>
 				{ready ? children : placeholder[state]}
 			</div>

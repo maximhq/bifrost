@@ -157,7 +157,7 @@ func getRequestTraceTool() Tool {
 				return nil, fmt.Errorf("could not load log %s: %w", id, err)
 			}
 			if entry == nil {
-				return nil, fmt.Errorf("no log found with id %s", id)
+				return nil, logNotFound(id, deps.scope)
 			}
 
 			root := entry
@@ -172,7 +172,7 @@ func getRequestTraceTool() Tool {
 					return nil, fmt.Errorf("could not load root request %s: %w", rootID, err)
 				}
 				if root == nil {
-					return nil, fmt.Errorf("no log found with id %s", rootID)
+					return nil, logNotFound(rootID, deps.scope)
 				}
 			}
 

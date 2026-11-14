@@ -211,6 +211,62 @@ func TestWarpAgentRunsToolThenAnswers(t *testing.T) {
 	require.Equal(t, 2, events[4].Iterations)
 }
 
+// A model call the deployment's own governance refused is not the provider
+// failing. Filed under upstream_error it read as an outage - "Warp's model could
+// not be reached" - and a signed-in user with no model access was told a
+// credential had been revoked, with nothing saying what to ask for.
+func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
+	refused := func(decision string, kind schemas.ErrorType, reason string) *schemas.BifrostError {
+		return &schemas.BifrostError{
+			Type:        &decision,
+			Error:       &schemas.ErrorField{Message: reason},
+			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: kind},
+		}
+	}
+	run := func(err *schemas.BifrostError) Event {
+		events := collectEvents(t, newTestAgent(&scriptedModel{err: err}, &fakeLogReader{}, 8), context.Background())
+		last := events[len(events)-1]
+		require.Equal(t, EventError, last.Type)
+		return last
+	}
+
+	t.Run("no access for the person asking", func(t *testing.T) {
+		last := run(refused("access_not_found", schemas.ErrorTypePolicyAccessDenied, "access not found. The provided credential does not exist or has been revoked."))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "no model access")
+		require.Contains(t, last.Message, "access profile")
+		require.Contains(t, last.Message, "access not found", "the deployment's own reason is kept for whoever has to fix it")
+	})
+
+	// A spent budget filed under access_denied was headlined "Your account doesn't
+	// have access to Warp's model" to someone who has access and simply used it
+	// up. Each kind of refusal gets its own code so the headline says which.
+	t.Run("every other policy refusal names its kind and keeps its reason", func(t *testing.T) {
+		for kind, code := range map[schemas.ErrorType]string{
+			schemas.ErrorTypePolicyBudgetExceeded:  ErrBudgetExceeded,
+			schemas.ErrorTypePolicyRateLimited:     ErrRateLimited,
+			schemas.ErrorTypePolicyModelBlocked:    ErrModelBlocked,
+			schemas.ErrorTypePolicyProviderBlocked: ErrModelBlocked,
+		} {
+			last := run(refused("blocked", kind, "user budget exceeded: 0.0600 >= 0.0500 dollars"))
+			require.Equal(t, code, last.Code, kind)
+			require.Contains(t, last.Message, "user budget exceeded: 0.0600 >= 0.0500 dollars", kind)
+			require.NotContains(t, last.Message, "access profile", kind)
+		}
+	})
+
+	t.Run("an access refusal that is not a missing credential is still access_denied", func(t *testing.T) {
+		last := run(refused("access_blocked", schemas.ErrorTypePolicyAccessDenied, "virtual key is inactive"))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "virtual key is inactive")
+	})
+
+	t.Run("a provider failure is still an upstream error", func(t *testing.T) {
+		last := run(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider exploded"}})
+		require.Equal(t, ErrUpstream, last.Code)
+	})
+}
+
 // An error frame is terminal. A client keyed on `done` would otherwise read a
 // failed request as a successful one with a short answer.
 func TestWarpAgentErrorFrameIsTerminal(t *testing.T) {
@@ -1046,11 +1102,13 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	// Two question shapes, each with exactly one sample, whichever way the
 	// deployment is set up. A topic question ("did anyone ask about refunds")
 	// goes to semantic search when there is one and to a content_search sample
-	// otherwise. A survey question ("what kinds of tasks was Rohan doing") takes
-	// the query_logs include_content sample in both setups: asked to embed a
-	// description of someone's activity, semantic search scored nothing above
-	// the threshold twice, and the hint then forbade the sample that would have
-	// answered, so Warp told a person with 42k requests that nothing matched.
+	// otherwise. A survey question ("what kinds of tasks was Rohan doing") goes
+	// to list_topics, and with no topics built takes the query_logs
+	// include_content sample in both setups - never semantic search first: asked
+	// to embed a description of someone's activity, semantic search scored
+	// nothing above the threshold twice, and the hint then forbade the sample
+	// that would have answered, so Warp told a person with 42k requests that
+	// nothing matched.
 	withSemantic := systemInstructions(&schemas.WarpConfig{}, true)
 	withoutSemantic := systemInstructions(&schemas.WarpConfig{}, false)
 	for _, prompt := range []string{withSemantic, withoutSemantic} {
@@ -1061,7 +1119,7 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	}
 	require.Contains(t, withSemantic, "do not also call query_logs for the same question",
 		"a topic question takes one sample, the semantic one")
-	require.Contains(t, withSemantic, "takes the query_logs sample described above first",
+	require.Contains(t, withSemantic, "never first to semantic_search_logs",
 		"a survey question does not start with semantic search")
 	require.Contains(t, withoutSemantic, "content_search",
 		"without semantic search a topic question still has a sample to take")
@@ -1370,13 +1428,59 @@ func TestWarpSystemPromptAllowsSortedTopNRegardlessOfCount(t *testing.T) {
 // Relative offsets ("-7d") cannot express a specific calendar date ("on sept
 // 3rd"), so a blanket "do not compute absolute dates" leaves the model with no
 // legal way to answer a dated question. The prompt has to say when each form
-// applies rather than banning one of them outright.
+// applies rather than banning one of them outright. A named day is passed as
+// the day, never as a UTC timestamp the model converted itself: the tool owns
+// the zone arithmetic (see parseTimeBound).
 func TestWarpSystemPromptAllowsAbsoluteDatesForNamedDays(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 
 	require.Contains(t, content, "relative offsets like -24h, -7d or -30m")
 	require.Contains(t, content, "a named date")
-	require.Contains(t, content, "RFC3339 timestamps")
+	require.Contains(t, content, "start_time and end_time both that date, written 2026-09-03")
+	require.Contains(t, content, "Never convert a date or a local time to UTC yourself")
+	// A weaker model read end_time as exclusive and passed the day after: for
+	// "yesterday" that is yesterday plus all of today so far.
+	require.Contains(t, content, "end_time is inclusive")
+	require.NotContains(t, content, "work out that specific date's own UTC offset")
+}
+
+// The clock is read once per turn, and in the asker's zone. Two tool calls in
+// one turn then agree on what "-7d" covers, and "today" starts at the asker's
+// midnight rather than the gateway's.
+func TestWarpAgentPinsOneClockPerTurn(t *testing.T) {
+	clock := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	original := Now
+	Now = func() time.Time { return clock }
+	defer func() { Now = original }()
+
+	fake := &fakeLogReader{}
+	var starts []time.Time
+	calls := 0
+	agent := newTestAgent(&scriptedModel{}, fake, 8)
+	agent.timezone = "Asia/Kolkata"
+	agent.chat = func(_ context.Context, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		calls++
+		if fake.searchFilters != nil {
+			starts = append(starts, *fake.searchFilters.StartTime)
+		}
+		// The gateway's clock moves on between the model's steps.
+		clock = clock.Add(30 * time.Second)
+		switch calls {
+		case 1:
+			return ToolTurn("c-1", "query_logs", `{"filters":{"start_time":"-7d"}}`), nil
+		case 2:
+			return ToolTurn("c-2", "query_logs", `{"filters":{"start_time":"-7d","models":["gpt-4o"]}}`), nil
+		case 3:
+			return ToolTurn("c-3", "query_logs", `{"filters":{"start_time":"today"}}`), nil
+		default:
+			return TextTurn("done"), nil
+		}
+	}
+	collectEvents(t, agent, context.Background())
+
+	require.Len(t, starts, 3)
+	require.Equal(t, starts[0], starts[1], "both -7d calls must cover the same window")
+	require.Equal(t, time.Date(2026, 10, 4, 18, 30, 0, 0, time.UTC), starts[2], "today starts at midnight in Kolkata")
 }
 
 // "Yesterday" is not "the last 24 hours" - a rolling window and a calendar day
@@ -1426,7 +1530,7 @@ func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
 
 	t.Run("positive offset shifts the local time and is labeled", func(t *testing.T) {
 		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330}) // IST, UTC+05:30
-		require.Contains(t, content, "2026-08-17 15:00:00 (UTC+05:30)")
+		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
 	})
 
 	t.Run("negative offset shifts the local time and is labeled", func(t *testing.T) {
@@ -1450,9 +1554,26 @@ func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
 		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
 	})
 
-	t.Run("a valid time zone is named so a dated query can work out its own offset", func(t *testing.T) {
+	t.Run("a valid time zone is named", func(t *testing.T) {
 		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330, timezone: "Asia/Kolkata"})
 		require.Contains(t, content, "The asker's time zone is Asia/Kolkata.")
+	})
+
+	// The tools resolve "today" in the named zone, so the time the prompt
+	// states has to come from the same place. Read from the offset alone, a
+	// client that sent a zone and a stale or missing offset was told one time
+	// and had its dates resolved against another.
+	t.Run("a valid time zone decides the stated time, not the offset beside it", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{timezone: "Asia/Kolkata"})
+		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
+
+		content = systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: -480, timezone: "Asia/Kolkata"})
+		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
+	})
+
+	t.Run("an unrecognized time zone falls back to the offset", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330, timezone: "Not/AZone"})
+		require.Contains(t, content, "2026-08-17 15:00:00 (UTC+05:30)")
 	})
 
 	t.Run("an unrecognized time zone is not trusted", func(t *testing.T) {
@@ -1502,6 +1623,49 @@ func TestWarpSystemPromptNamesItsOwnTrafficInAggregates(t *testing.T) {
 
 	require.Contains(t, content, `app "Warp"`)
 	require.Contains(t, content, "semantic_search_logs does not")
+}
+
+// Warp's model calls run as the person asking, so its logged queries carry
+// that person's user and the teams, customer and business unit they are
+// attributed to. Told nothing about it, Warp said in a team breakdown that its
+// own queries had no team - while they made up both of the team rows it showed.
+// The inheritance only goes as far as the asker's own attribution, though: a
+// caller nobody identified, or one with no team, has none to pass on, and an
+// unconditional "never say they have no owner" made Warp deny a correct
+// reading of its own Unassigned rows.
+func TestWarpSystemPromptSaysItsOwnTrafficIsAttributedToTheAsker(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "logged as the person asking")
+	require.NotContains(t, content, "never say they have no team or owner")
+	require.Contains(t, content, "has none to inherit")
+	require.Contains(t, content, "land in Unassigned")
+}
+
+// A total without Warp was built by filtering apps to every other app
+// describe_filter_space listed. That list is never provably the window's whole
+// traffic: it is capped at 50, reads only the last 30 days, and leaves out
+// requests with no app label - which an apps filter then drops too. Subtracting
+// Warp's own app row over the same window is exact, so that is the method, and
+// a ranking that cuts Warp off means the number cannot be established.
+func TestWarpSystemPromptLeavesItsOwnTrafficOutBySubtraction(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "subtract its requests, cost and tokens from the total")
+	require.Contains(t, content, "never filter apps to leave Warp out")
+	require.Contains(t, content, "cannot be established")
+	require.NotContains(t, content, "name every app in it but Warp")
+}
+
+// No tool reports what a deployment has configured, only what traffic it
+// carried, so "configured" is never something Warp can know. Asked about a
+// model with no traffic, it answered correctly and then offered an ask_user
+// option calling that model "configured", which nothing supported.
+func TestWarpSystemPromptForbidsClaimingConfiguration(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "never describe a model, provider or key as configured, enabled or available")
+	require.Contains(t, content, "including in ask_user options")
 }
 
 // The loop allows up to four tool calls per step (MaxToolCallsPerTurn), but
@@ -1994,6 +2158,8 @@ func TestWarpSystemPromptStatesWhatItCanAndCannotDo(t *testing.T) {
 	require.Contains(t, content, `one query_metrics call with interval "hour" or "day" returns the whole series`)
 	require.Contains(t, content, "You only read")
 	require.Contains(t, content, "Nothing carries over between conversations")
+	// "Remember my team" got "I'll use it in this conversation" and no link.
+	require.Contains(t, content, "saying you will use it here does not replace the link")
 	require.Contains(t, content, "Describe your own limits, not Bifrost's")
 	require.Contains(t, content, "Never point to a place in the dashboard")
 }
@@ -2122,3 +2288,11 @@ func TestWarpSystemPromptKnowsItCannotSeeItsOwnPastConversations(t *testing.T) {
 	require.Contains(t, content, "never search the logs for them")
 	require.Contains(t, content, "conversation history in the Warp panel")
 }
+
+// NewAgent's signature is what released callers compile against; topic-aware
+// callers use NewAgentWithTopics instead. Changing either line is a breaking
+// change, and this stops it compiling.
+var (
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, ...*SemanticSearcher) *Agent              = NewAgent
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, TopicLister, ...*SemanticSearcher) *Agent = NewAgentWithTopics
+)

@@ -22,6 +22,7 @@ Ollama is a **local-first, OpenAI-compatible inference engine** for running larg
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | List Models | ✅ | - | `/v1/models` |
+| Decisions | ✅ | - | `/v1/systemone` |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
@@ -97,6 +98,33 @@ Response returns embedding vectors with token usage.
 # 5. List Models
 
 Lists models currently loaded in Ollama with capabilities and context information.
+
+---
+
+# 6. Decisions
+
+Ollama can run System One decision models locally: `nimble`, `tev1`, `clef`, `clef-flash`, and `laya`, with or without a tag (`tev1:0.8b`). Pull the model in Ollama, then call [`/v1/decisions`](/quickstart/gateway/decisions). Each model needs a minimum Ollama server version: `nimble` and `tev1` need 0.35 or later, `clef` and `clef-flash` need 0.35.1 or later, and `laya` needs 0.40.0 or later.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ollama/nimble",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ],
+    "keep_alive": "10m"
+  }'
+```
+
+Bifrost calls Ollama's `/v1/systemone`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Ollama-specific behavior:
+
+- **Images** must be base64 data URLs. All images in the request go into one list that every question sees, so their position relative to the text is not kept. An `https` URL is passed through and returns Ollama's error.
+- **`keep_alive`** sets how long the model stays loaded after the request: a duration such as `"5m"`, or a number of seconds. `0` unloads it right away; a negative value keeps it loaded. It works without the passthrough header.
+- **No key needed** for a local server. If the key has a value, it is sent as a bearer token.
+
+A model that is not pulled, or cannot answer decisions, returns Ollama's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) lists the System One models you have pulled.
 
 ---
 

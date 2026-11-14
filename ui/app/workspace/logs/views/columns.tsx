@@ -1,3 +1,4 @@
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +14,7 @@ import {
 	mapUserAgentToApp,
 	ProviderName,
 	RequestTypeColors,
-	RequestTypeLabels,
+	getRequestTypeLabel,
 	Status,
 	StatusBarColors,
 } from "@/lib/constants/logs";
@@ -21,9 +22,14 @@ import { ChatMessageContent, DisplayLogEntry, LLMUsage, LogEntry, ResponsesMessa
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
+import { showsPassthroughTag } from "../sheets/logDetailView.utils";
+import { PassthroughIcon } from "./passthroughTag";
 import { format, formatDistanceToNow } from "date-fns";
-import { ArrowUpDown, ChevronRight, CornerDownRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { type ReactNode, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 
 // Passed to useReactTable({ meta }) by the logs page so the expander column can
 // read/toggle chain expansion without threading props through column factories.
@@ -45,7 +51,7 @@ function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage
 	if (entries.length === 0) {
 		return null;
 	}
-	const model = entries.length === 1 ? entries[0].model : "mixed";
+	const model = entries.length === 1 ? entries[0].model : i18n.t("logs.batchMixedModel", { ns: "observability" });
 	const usage: LLMUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 	for (const entry of entries) {
 		usage.prompt_tokens = (usage.prompt_tokens ?? 0) + (entry.usage?.prompt_tokens ?? 0);
@@ -59,12 +65,13 @@ function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage
 }
 
 function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
+	const { t } = useTranslation("observability");
 	const [isOpen, setIsOpen] = useState(false);
 
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("logs.logActions")} className="h-7 w-7">
 					<MoreHorizontal className="h-4 w-4" />
 				</Button>
 			</DropdownMenuTrigger>
@@ -80,7 +87,7 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 					}}
 				>
 					<Trash2 className="h-4 w-4" />
-					Delete
+					{t("labels.delete")}
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -148,15 +155,21 @@ export function getRealtimeTurnMessages(log?: LogEntry): {
 
 export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
-		return "N/A";
+		return i18n.t("labels.nA", { ns: "observability" });
+	}
+	// A metadata lookup has no message body; keep the error summary when it failed.
+	if (log?.object === "model_retrieve") {
+		return log.content_summary || "N/A";
 	}
 	if (log?.object === "realtime.turn") {
 		const messages = getRealtimeTurnMessages(log);
 		const parts = [
-			messages.tool ? `Tool Result: ${messages.tool}` : "",
-			messages.user ? `User: ${messages.user}` : "",
-			messages.assistantToolCall ? `Assistant Tool Call: ${messages.assistantToolCall}` : "",
-			messages.assistant ? `Assistant: ${messages.assistant}` : "",
+			messages.tool ? i18n.t("logs.realtime.toolResult", { ns: "observability", message: messages.tool }) : "",
+			messages.user ? i18n.t("logs.realtime.user", { ns: "observability", message: messages.user }) : "",
+			messages.assistantToolCall
+				? i18n.t("logs.realtime.assistantToolCall", { ns: "observability", message: messages.assistantToolCall })
+				: "",
+			messages.assistant ? i18n.t("logs.realtime.assistant", { ns: "observability", message: messages.assistant }) : "",
 		].filter(Boolean);
 		if (parts.length > 0) {
 			return parts.join("\n");
@@ -198,13 +211,13 @@ export function getMessage(log?: LogEntry) {
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
-		return "Audio file";
+		return i18n.t("logs.audioFile", { ns: "observability" });
 	} else if (log?.image_generation_input?.prompt) {
 		return log.image_generation_input.prompt;
 	}
 	const obj = log?.object as string | undefined;
 	if (obj === "image_edit" || obj === "image_edit_stream" || obj === "image_variation") {
-		return "Image file";
+		return i18n.t("logs.imageFile", { ns: "observability" });
 	}
 	if (log?.content_summary) {
 		return log.content_summary;
@@ -222,6 +235,7 @@ export function LogMessageCell({
 	/** Table rows are a fixed height, so a realtime turn's lines tighten to fit two of them instead of being cut mid-line. */
 	compact?: boolean;
 }) {
+	const { t } = useTranslation("observability");
 	const input = getMessage(log);
 	const isLargePayload = log.is_large_payload_request || log.is_large_payload_response;
 	const realtimeMessages = log.object === "realtime.turn" ? getRealtimeTurnMessages(log) : null;
@@ -231,7 +245,7 @@ export function LogMessageCell({
 			{isLargePayload && (
 				<span
 					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
-					title="Large payload - streamed directly to provider"
+					title={t("logs.largePayloadTitle")}
 				>
 					LP
 				</span>
@@ -245,21 +259,206 @@ export function LogMessageCell({
 						compact ? "max-h-[30px] overflow-hidden text-[11px] leading-[15px]" : "text-sm leading-5",
 					)}
 				>
-					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
-					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
-					{realtimeMessages.assistantToolCall ? (
-						<div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div>
+					{realtimeMessages.tool ? (
+						<div className="truncate">{t("logs.realtime.toolResult", { message: realtimeMessages.tool })}</div>
 					) : null}
-					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
+					{realtimeMessages.user ? <div className="truncate">{t("logs.realtime.user", { message: realtimeMessages.user })}</div> : null}
+					{realtimeMessages.assistantToolCall ? (
+						<div className="truncate">{t("logs.realtime.assistantToolCall", { message: realtimeMessages.assistantToolCall })}</div>
+					) : null}
+					{realtimeMessages.assistant ? (
+						<div className="truncate">{t("logs.realtime.assistant", { message: realtimeMessages.assistant })}</div>
+					) : null}
 				</div>
 			) : (
 				<div className={cn(contentClassName, "truncate font-mono text-[12px] font-normal")}>
 					{input ||
 						(isLargePayload
-							? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+							? log.is_large_payload_request && log.is_large_payload_response
+								? t("logs.largePayloadRequestResponse")
+								: log.is_large_payload_request
+									? t("logs.largePayloadRequest")
+									: t("logs.largePayloadResponse")
 							: "-")}
 				</div>
 			)}
+		</div>
+	);
+}
+
+// The grouped view's first column says what each group is in words, since the
+// two groupings look alike but mean different things: a session is separate
+// requests sharing a session_id (counted as turns), a chain is one request's
+// fallback attempts linked by parent_request_id. A settled batch or video nests
+// its cost row the same way, so a chain under one is "linked", not "fallbacks".
+function chainSummary(log: LogEntry, count: number, t: TFunction<"observability">): string {
+	if (log.batch_debug || log.video_debug) return t("logs.tree.linkedCount", { count });
+	return t("logs.tree.fallbackCount", { count });
+}
+
+function nestedRowLabel(log: DisplayLogEntry, t: TFunction<"observability">): string {
+	if (log.__rowKind === "session-member") {
+		return log.__turn != null ? t("logs.tree.turnNumber", { turn: log.__turn }) : t("logs.tree.turn");
+	}
+	if (log.batch_debug?.accounting || log.video_debug?.accounting) return t("logs.tree.settledCostRow");
+	return log.fallback_index > 0 ? t("logs.tree.fallbackIndex", { index: log.fallback_index }) : t("logs.tree.linked");
+}
+
+// Tree geometry, in px from the cell's left edge. The trunk sits under the
+// top-level chevron; a session member's own chain hangs from a second trunk
+// under that member's chevron.
+const TREE_TRUNK_X = [11, 22] as const;
+
+// Draws the branch for a nested row: the trunk at its depth (cut at the middle
+// on the last sibling), a tick out to the label, and, under a session member
+// that is not last, the outer trunk carried through. Positioned against the
+// cell, which the logs table makes relative, so lines meet across rows.
+function TreeBranch({ log, opensChildren }: { log: DisplayLogEntry; opensChildren: boolean }) {
+	const depth = log.__depth ?? 1;
+	const x = TREE_TRUNK_X[depth - 1];
+	const line = "bg-border absolute";
+	return (
+		<>
+			{depth === 2 && !log.__parentIsLast && <span className={cn(line, "inset-y-0 w-px")} style={{ left: TREE_TRUNK_X[0] }} />}
+			<span className={cn(line, "top-0 w-px", log.__isLast ? "h-1/2" : "bottom-0")} style={{ left: x }} />
+			<span className={cn(line, "top-1/2 h-px w-1.5")} style={{ left: x }} />
+			{opensChildren && <span className={cn(line, "bottom-0 w-px")} style={{ left: TREE_TRUNK_X[1], top: "calc(50% + 9px)" }} />}
+		</>
+	);
+}
+
+function GroupToggle({
+	testId,
+	label,
+	ariaLabel,
+	tooltip,
+	isExpanded,
+	isLoading,
+	onToggle,
+	className,
+	stubX,
+}: {
+	stubX?: number;
+	testId: string;
+	label: ReactNode;
+	ariaLabel: string;
+	tooltip: string;
+	isExpanded: boolean;
+	isLoading: boolean;
+	onToggle: () => void;
+	className?: string;
+}) {
+	return (
+		<>
+			{/* Stub from under a top-level chevron down to its first child's branch. */}
+			{stubX != null && isExpanded && !isLoading && (
+				<span className="bg-border absolute bottom-0 w-px" style={{ left: stubX, top: "calc(50% + 9px)" }} />
+			)}
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<button
+						type="button"
+						data-testid={testId}
+						aria-label={ariaLabel}
+						aria-expanded={isExpanded}
+						className={cn(
+							"hover:text-foreground relative flex h-full w-full cursor-pointer items-center gap-1 overflow-hidden text-[11px] whitespace-nowrap transition-colors",
+							isExpanded ? "text-foreground" : "text-muted-foreground",
+							className,
+						)}
+						onClick={(event) => {
+							event.stopPropagation();
+							onToggle();
+						}}
+					>
+						{isLoading ? (
+							<Loader2 className="size-3.5 shrink-0 animate-spin" />
+						) : (
+							<ChevronRight className={cn("size-3.5 shrink-0 transition-transform duration-150", isExpanded && "rotate-90")} />
+						)}
+						{label}
+					</button>
+				</TooltipTrigger>
+				<TooltipContent>{tooltip}</TooltipContent>
+			</Tooltip>
+		</>
+	);
+}
+
+// Cells shared with the other log tables (relay, MCP) so a latency, cost, time or
+// app value reads the same wherever it appears. Keep them pure presentational.
+
+export function LogTimeCell({ timestamp, testId = "logs-row-open-btn" }: { timestamp?: string | null; testId?: string }) {
+	const { t } = useTranslation("observability");
+	const date = timestamp ? new Date(timestamp) : null;
+	const isValid = date && date.toString() !== "Invalid Date";
+	if (!isValid) {
+		return <div className="truncate text-xs">{t("labels.nA")}</div>;
+	}
+	// The row opens the detail sheet on click, which a keyboard can't do. This
+	// button is that entry point: it has no handler of its own, so Enter and
+	// Space fire a click that bubbles to the cell's onRowClick.
+	return (
+		<button
+			type="button"
+			data-testid={testId}
+			aria-label={t("logs.tree.openLogDetails", {
+				time: format(date, "MMM dd HH:mm:ss", { locale: dateFnsLocale(i18n.resolvedLanguage) }),
+				relative: formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(i18n.resolvedLanguage) }),
+			})}
+			className="focus-visible:ring-ring flex cursor-pointer flex-col rounded-sm text-left leading-tight focus-visible:ring-2 focus-visible:outline-none"
+		>
+			<span className="font-mono text-xs tabular-nums">
+				{format(date, "MMM dd  HH:mm:ss", { locale: dateFnsLocale(i18n.resolvedLanguage) })}
+			</span>
+			<span className="text-muted-foreground text-[10.5px] tabular-nums">
+				{formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(i18n.resolvedLanguage) })}
+			</span>
+		</button>
+	);
+}
+
+export function LogLatencyCell({ latency }: { latency?: number | null }) {
+	const { t } = useTranslation("observability");
+	if (latency === undefined || latency === null) {
+		return <div className="pl-4 font-mono text-xs">{t("labels.nA")}</div>;
+	}
+	const tone = latency >= 5000 ? "bg-chart-error" : latency >= 2000 ? "bg-chart-warning" : "bg-chart-success";
+	const pct = Math.min(100, (latency / 5000) * 100);
+	return (
+		<div className="flex items-center gap-2 pl-4">
+			<span className="font-mono text-[12px] tabular-nums">{formatLatency(latency)}</span>
+			<div className="relative h-1.5 w-[56px] overflow-hidden rounded-sm bg-zinc-200 dark:bg-zinc-700">
+				<div className={cn("absolute inset-y-0 left-0 rounded-sm opacity-85", tone)} style={{ width: `${pct}%` }} />
+			</div>
+		</div>
+	);
+}
+
+export function LogCostCell({ cost, format = formatCost }: { cost?: number | null; format?: (cost: number) => string }) {
+	const { t } = useTranslation("observability");
+	if (cost == null) {
+		return <div className="pl-4 font-mono text-[12px]">{t("labels.nA")}</div>;
+	}
+	return <div className="pl-4 font-mono text-sm tabular-nums">{format(cost)}</div>;
+}
+
+export function LogAppCell({
+	app,
+	userAgent,
+	customAppIcons,
+}: {
+	app?: string | null;
+	userAgent?: string | null;
+	customAppIcons: Record<string, string>;
+}) {
+	const clientApp = app ? mapAppToClientApp(app) : mapUserAgentToApp(userAgent ?? undefined);
+	const icon = app ? customAppIcons[app] || clientApp.icon : clientApp.icon;
+	const label = logAppDisplayName(clientApp, userAgent ?? undefined);
+	return (
+		<div className="flex min-w-0 items-center gap-2" title={userAgent || undefined}>
+			{icon ? <img className="rounded-sm" src={icon} alt={label} width={20} height={20} loading="lazy" decoding="async" /> : null}
+			<span className="truncate text-[12px]">{label}</span>
 		</div>
 	);
 }
@@ -271,86 +470,113 @@ export const createColumns = (
 	customAppIcons: Record<string, string> = {},
 	groupedView = false,
 	onFilterBySessionId?: (sessionId: string) => void,
+	t: TFunction<"observability"> = i18n.getFixedT(null, "observability"),
 ): ColumnDef<LogEntry>[] => {
 	// Expander for the grouped view. The control fills the cell, and the cell
 	// itself toggles rather than opening the sheet (see the logs page's
-	// onRowClick), so the whole column reads as one hit target. Child rows get a
-	// corner connector instead so the hierarchy stays readable in any column order.
+	// onRowClick), so the whole column reads as one hit target.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
 				{
 					id: "expand",
 					header: "",
-					size: 52,
+					size: 90,
 					cell: ({ row, table }) => {
 						const meta = table.options.meta as LogsTableMeta | undefined;
 						const log = row.original as DisplayLogEntry;
-						// A session member keeps its own chain chevron, so the tree can be
-						// walked a level deeper. Every other nested row is a leaf.
-						if (log.__chainChild && !(log.__rowKind === "session-member" && (log.child_count ?? 0) > 0)) {
+						if (log.__chainChild) {
+							const isSessionMember = log.__rowKind === "session-member";
+							const kindTestId = isSessionMember ? "log-row-kind-session" : "log-row-kind-chain";
+							const childCount = log.child_count ?? 0;
+							// A session member keeps its own chain toggle, so the tree can be
+							// walked a level deeper. Every other nested row is a leaf.
+							if (isSessionMember && childCount > 0 && meta) {
+								const isExpanded = meta.expandedChainIds.has(log.id);
+								return (
+									<div data-testid={kindTestId} className="h-full w-full">
+										<TreeBranch log={log} opensChildren={isExpanded && !meta.loadingChainIds.has(log.id)} />
+										<GroupToggle
+											testId="log-chain-expand-btn"
+											className="pl-[15px]"
+											label={
+												<span className="truncate">
+													{nestedRowLabel(log, t)}
+													<span className="text-muted-foreground/70 ml-1 tabular-nums">+{childCount}</span>
+												</span>
+											}
+											ariaLabel={
+												isExpanded
+													? t("logs.collapseFallbackChain")
+													: t("logs.tree.expandTurnChain", { summary: chainSummary(log, childCount, t) })
+											}
+											tooltip={t("logs.tree.turnChainTooltip", {
+												label: nestedRowLabel(log, t),
+												summary: chainSummary(log, childCount, t),
+											})}
+											isExpanded={isExpanded}
+											isLoading={meta.loadingChainIds.has(log.id)}
+											onToggle={() => meta.onToggleChain(log)}
+										/>
+									</div>
+								);
+							}
+							const depth = log.__depth ?? 1;
 							return (
-								<div className="flex h-full w-full items-center justify-center">
-									<CornerDownRight className="text-muted-foreground/70 size-3.5 shrink-0" />
+								<div
+									data-testid={kindTestId}
+									className="text-muted-foreground flex h-full w-full items-center overflow-hidden text-[11px] whitespace-nowrap"
+									style={{ paddingLeft: TREE_TRUNK_X[depth - 1] + 8 }}
+								>
+									<TreeBranch log={log} opensChildren={false} />
+									<span className="truncate">{nestedRowLabel(log, t)}</span>
 								</div>
 							);
 						}
-						// Session grouping wins on a top-level row: the session chevron
+						if (!meta) return null;
+						// Session grouping wins on a top-level row: the session toggle
 						// lists the session's other requests and this row's own attempts
 						// together, so nothing becomes unreachable by taking this branch.
 						const sessionCount = log.session_child_count ?? 0;
-						if (!log.__chainChild && sessionCount > 0 && meta) {
+						if (sessionCount > 0) {
 							const isExpanded = meta.expandedSessionIds.has(log.id);
-							const isLoading = meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id);
+							const others = t("logs.tree.moreRequests", { count: sessionCount });
 							return (
-								<button
-									type="button"
-									data-testid="log-session-expand-btn"
-									aria-label={
-										isExpanded
-											? "Collapse this session"
-											: `Expand ${sessionCount} more request${sessionCount === 1 ? "" : "s"} in this session`
-									}
-									aria-expanded={isExpanded}
-									className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
-									onClick={(event) => {
-										event.stopPropagation();
-										meta.onToggleSession(log);
-									}}
-								>
-									{isLoading ? (
-										<Loader2 className="size-3.5 shrink-0 animate-spin" />
-									) : (
-										<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
-									)}
-									<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{sessionCount}</span>
-								</button>
+								<GroupToggle
+									testId="log-session-expand-btn"
+									className="pl-1"
+									stubX={TREE_TRUNK_X[0]}
+									label={<span className="truncate tabular-nums">{t("logs.tree.sessionTurns", { count: sessionCount + 1 })}</span>}
+									ariaLabel={isExpanded ? t("logs.tree.collapseSession") : t("logs.tree.expandSession", { others })}
+									tooltip={t("logs.tree.sessionTooltip", {
+										total: sessionCount + 1,
+										others: t("logs.tree.otherRequests", { count: sessionCount }),
+									})}
+									isExpanded={isExpanded}
+									isLoading={meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id)}
+									onToggle={() => meta.onToggleSession(log)}
+								/>
 							);
 						}
 						const childCount = log.child_count ?? 0;
-						if (!childCount || !meta) return null;
+						if (!childCount) return null;
 						const isExpanded = meta.expandedChainIds.has(log.id);
-						const isLoading = meta.loadingChainIds.has(log.id);
+						const summary = chainSummary(log, childCount, t);
 						return (
-							<button
-								type="button"
-								data-testid="log-chain-expand-btn"
-								// Not always a fallback chain: a settled async job nests its cost row
-								// here too, and calling that an "attempt" misreads what it is.
-								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
-								aria-expanded={isExpanded}
-								className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
-								onClick={(event) => {
-									event.stopPropagation();
-									meta.onToggleChain(log);
-								}}
-							>
-								{isLoading ? (
-									<Loader2 className="size-3.5 shrink-0 animate-spin" />
-								) : (
-									<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
-								)}
-								<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{childCount}</span>
-							</button>
+							<GroupToggle
+								testId="log-chain-expand-btn"
+								className="pl-1"
+								stubX={TREE_TRUNK_X[0]}
+								label={<span className="truncate tabular-nums">{summary}</span>}
+								ariaLabel={isExpanded ? t("logs.collapseFallbackChain") : t("logs.tree.expandSummary", { summary })}
+								tooltip={
+									log.batch_debug || log.video_debug
+										? t("logs.tree.settledRowTooltip", { summary, count: childCount })
+										: t("logs.tree.chainTooltip", { summary })
+								}
+								isExpanded={isExpanded}
+								isLoading={meta.loadingChainIds.has(log.id)}
+								onToggle={() => meta.onToggleChain(log)}
+							/>
 						);
 					},
 				},
@@ -372,38 +598,17 @@ export const createColumns = (
 			accessorKey: "timestamp",
 			header: ({ column }) => (
 				<Button variant="ghost" data-testid="logs-time-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Time
+					{t("labels.time")}
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 150,
-			cell: ({ row }) => {
-				const timestamp = row.original.timestamp;
-				const date = timestamp ? new Date(timestamp) : null;
-				const isValid = date && date.toString() !== "Invalid Date";
-				if (!isValid) {
-					return <div className="truncate text-xs">N/A</div>;
-				}
-				// The row opens the detail sheet on click, which a keyboard can't do. This
-				// button is that entry point: it has no handler of its own, so Enter and
-				// Space fire a click that bubbles to the cell's onRowClick.
-				return (
-					<button
-						type="button"
-						data-testid="logs-row-open-btn"
-						aria-label={`${format(date, "MMM dd HH:mm:ss")} ${formatDistanceToNow(date, { addSuffix: true })}, open log details`}
-						className="focus-visible:ring-ring flex cursor-pointer flex-col rounded-sm text-left leading-tight focus-visible:ring-2 focus-visible:outline-none"
-					>
-						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
-						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
-					</button>
-				);
-			},
+			cell: ({ row }) => <LogTimeCell timestamp={row.original.timestamp} />,
 		},
 		{
 			id: "request_type",
-			header: "Type",
-			size: 150,
+			header: t("labels.type"),
+			size: 180,
 			cell: ({ row }) => {
 				return (
 					<Badge
@@ -413,20 +618,21 @@ export const createColumns = (
 							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
 						)}
 					>
-						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+						{showsPassthroughTag(row.original) && <PassthroughIcon testId="logs-table-passthrough-tag" />}
+						{getRequestTypeLabel(row.original.object, t)}
 					</Badge>
 				);
 			},
 		},
 		{
 			accessorKey: "input",
-			header: "Message",
+			header: t("labels.message"),
 			size: 350,
 			cell: ({ row }) => <LogMessageCell log={row.original} compact />,
 		},
 		{
 			accessorKey: "model",
-			header: "Model",
+			header: t("labels.model"),
 			size: 280,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
@@ -438,9 +644,9 @@ export const createColumns = (
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
 							<TruncatedLabel truncateFrom="start" className="font-mono text-[12px]">
-								{modelLabel || "N/A"}
+								{modelLabel || t("labels.nA")}
 							</TruncatedLabel>
-							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
+							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : t("labels.nA")}</span>
 						</div>
 					</div>
 				);
@@ -449,17 +655,21 @@ export const createColumns = (
 		{
 			id: "app",
 			accessorKey: "app",
-			header: "App",
+			header: t("labels.app"),
 			size: 140,
+			cell: ({ row }) => <LogAppCell app={row.original.app} userAgent={row.original.user_agent} customAppIcons={customAppIcons} />,
+		},
+		{
+			id: "client_ip",
+			header: t("labels.clientIp"),
+			size: 150,
 			cell: ({ row }) => {
-				const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
-				const icon = row.original.app ? customAppIcons[row.original.app] || app.icon : app.icon;
-				const label = logAppDisplayName(app, row.original.user_agent);
+				const clientIp = row.original.client_ip;
+				if (!clientIp) return <div className="font-mono text-xs">-</div>;
 				return (
-					<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
-						{icon ? <img className="rounded-sm" src={icon} alt={label} width={20} height={20} loading="lazy" decoding="async" /> : null}
-						<span className="truncate text-[12px]">{label}</span>
-					</div>
+					<TruncatedLabel className="font-mono text-xs" data-testid="logs-client-ip-cell">
+						{clientIp}
+					</TruncatedLabel>
 				);
 			},
 		},
@@ -467,33 +677,18 @@ export const createColumns = (
 			accessorKey: "latency",
 			header: ({ column }) => (
 				<Button variant="ghost" data-testid="logs-latency-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Latency
+					{t("labels.latency")}
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 170,
-			cell: ({ row }) => {
-				const latency = row.original.latency;
-				if (latency === undefined || latency === null) {
-					return <div className="pl-4 font-mono text-xs">N/A</div>;
-				}
-				const tone = latency >= 5000 ? "bg-chart-error" : latency >= 2000 ? "bg-chart-warning" : "bg-chart-success";
-				const pct = Math.min(100, (latency / 5000) * 100);
-				return (
-					<div className="flex items-center gap-2 pl-4">
-						<span className="font-mono text-[12px] tabular-nums">{formatLatency(latency)}</span>
-						<div className="relative h-1.5 w-[56px] overflow-hidden rounded-sm bg-zinc-200 dark:bg-zinc-700">
-							<div className={cn("absolute inset-y-0 left-0 rounded-sm opacity-85", tone)} style={{ width: `${pct}%` }} />
-						</div>
-					</div>
-				);
-			},
+			cell: ({ row }) => <LogLatencyCell latency={row.original.latency} />,
 		},
 		{
 			accessorKey: "tokens",
 			header: ({ column }) => (
 				<Button variant="ghost" data-testid="logs-tokens-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Tokens
+					{t("labels.tokens")}
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
@@ -509,16 +704,18 @@ export const createColumns = (
 							<TooltipTrigger asChild>
 								<div className="flex flex-col items-start gap-0.5 pl-4 leading-tight">
 									<span className="font-mono text-[12px] tabular-nums">{formatCompactNumber(row.original.session_total_tokens ?? 0)}</span>
-									<span className="text-muted-foreground font-mono text-[10.5px] tabular-nums">{sessionCount + 1} requests</span>
+									<span className="text-muted-foreground font-mono text-[10.5px] tabular-nums">
+										{t("logs.tree.sessionRequests", { count: sessionCount + 1 })}
+									</span>
 								</div>
 							</TooltipTrigger>
-							<TooltipContent>Total across {sessionCount + 1} requests in this session. Expand the row to see them.</TooltipContent>
+							<TooltipContent>{t("logs.tree.sessionTotalTooltip", { count: sessionCount + 1 })}</TooltipContent>
 						</Tooltip>
 					);
 				}
 				const tokenUsage = row.original.token_usage ?? batchAccountingDisplay(row.original)?.usage;
 				if (!tokenUsage) {
-					return <div className="pl-4 font-mono text-xs">N/A</div>;
+					return <div className="pl-4 font-mono text-xs">{t("labels.nA")}</div>;
 				}
 				const prompt = tokenUsage.prompt_tokens ?? 0;
 				const completion = tokenUsage.completion_tokens ?? 0;
@@ -552,7 +749,7 @@ export const createColumns = (
 			accessorKey: "cost",
 			header: ({ column }) => (
 				<Button variant="ghost" data-testid="logs-cost-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Cost
+					{t("labels.cost")}
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
@@ -567,7 +764,7 @@ export const createColumns = (
 							<TooltipTrigger asChild>
 								<div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.session_total_cost ?? 0)}</div>
 							</TooltipTrigger>
-							<TooltipContent>Total across {sessionCount + 1} requests in this session. Expand the row to see them.</TooltipContent>
+							<TooltipContent>{t("logs.tree.sessionTotalTooltip", { count: sessionCount + 1 })}</TooltipContent>
 						</Tooltip>
 					);
 				}
@@ -579,7 +776,7 @@ export const createColumns = (
 								<TooltipTrigger asChild>
 									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(batchCost)}</div>
 								</TooltipTrigger>
-								<TooltipContent>Settled cost of this batch, billed once.</TooltipContent>
+								<TooltipContent>{t("logs.settledBatchCost")}</TooltipContent>
 							</Tooltip>
 						);
 					}
@@ -595,17 +792,13 @@ export const createColumns = (
 								</TooltipTrigger>
 								{/* The expand chevron only exists in the grouped view, so pointing at
 								    it anywhere else sends people looking for a control that is not there. */}
-								<TooltipContent>
-									{groupedView
-										? "Settled after this request completed. Expand the row to see it."
-										: "Settled after this request completed, on its own row."}
-								</TooltipContent>
+								<TooltipContent>{groupedView ? t("logs.settledTooltipGrouped") : t("logs.settledTooltipFlat")}</TooltipContent>
 							</Tooltip>
 						);
 					}
-					return <div className="pl-4 font-mono text-[12px]">N/A</div>;
+					return <LogCostCell cost={null} />;
 				}
-				return <div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.cost)}</div>;
+				return <LogCostCell cost={row.original.cost} />;
 			},
 		},
 	];
@@ -613,7 +806,7 @@ export const createColumns = (
 	const attributionColumns: ColumnDef<LogEntry>[] = [
 		{
 			id: "session",
-			header: "Session",
+			header: t("labels.session"),
 			size: 170,
 			cell: ({ row }) => {
 				const sessionId = row.original.session_id;
@@ -638,7 +831,7 @@ export const createColumns = (
 		},
 		{
 			id: "service_tier",
-			header: "Service Tier",
+			header: t("labels.serviceTier"),
 			size: 130,
 			cell: ({ row }) => {
 				const tier = row.original.service_tier;
@@ -654,19 +847,19 @@ export const createColumns = (
 		},
 		{
 			id: "virtual_key",
-			header: "Virtual Key",
+			header: t("labels.virtualKey"),
 			size: 170,
 			cell: ({ row }) => <AttributionCell name={row.original.virtual_key_name} id={row.original.virtual_key_id} />,
 		},
 		{
 			id: "routing_rule",
-			header: "Routing Rule",
+			header: t("labels.routingRule"),
 			size: 170,
 			cell: ({ row }) => <AttributionCell name={row.original.routing_rule_name} id={row.original.routing_rule_id} />,
 		},
 		{
 			id: "team",
-			header: "Team",
+			header: t("labels.team"),
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell
@@ -679,7 +872,7 @@ export const createColumns = (
 		},
 		{
 			id: "customer",
-			header: "Customer",
+			header: t("labels.customer"),
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell
@@ -692,13 +885,13 @@ export const createColumns = (
 		},
 		{
 			id: "user",
-			header: "User",
+			header: t("labels.user"),
 			size: 150,
 			cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} />,
 		},
 		{
 			id: "business_unit",
-			header: "Business Unit",
+			header: t("labels.businessUnit"),
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell
@@ -711,7 +904,7 @@ export const createColumns = (
 		},
 		{
 			id: "project",
-			header: "Project",
+			header: t("labels.project"),
 			size: 150,
 			cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 		},
@@ -720,10 +913,13 @@ export const createColumns = (
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
-		size: 126,
+		// Fit the header text, since keys like warp-conversation-id overflow a fixed width.
+		size: Math.min(280, Math.max(160, key.length * 8 + 48)),
 		cell: ({ row }) => {
 			const value = row.original.metadata?.[key];
-			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+			// Metadata can contain nested JSON, including realtime input associations.
+			const label = value == null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value);
+			return <TruncatedLabel className="block font-mono text-xs">{label}</TruncatedLabel>;
 		},
 	}));
 

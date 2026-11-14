@@ -89,12 +89,14 @@ func (c ModelCaps) Model() string { return c.model }
 // Record returns the underlying datasheet record, or nil when none was found.
 func (c ModelCaps) Record() *ModelCapabilities { return c.record }
 
-// SupportsFastMode returns true if the model supports speed:"fast" (research
-// preview). Supported on Opus 4.6, Opus 4.7, Opus 4.8, and Opus 5; requests
-// carrying speed:"fast" to any other model are rejected with 400.
-// Beta header: fast-mode-2026-02-01.
+// SupportsFastMode returns true if the model supports speed:"fast". On the
+// Claude API that is Opus 4.6, 4.7, 4.8 and 5 (beta header fast-mode-2026-02-01);
+// on Vertex it is Claude Fable 5.2 with no beta header. Requests carrying
+// speed:"fast" to any other model are rejected with 400.
 //
-// Source: https://platform.claude.com/docs/en/build-with-claude/fast-mode
+// Sources:
+//   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
+//   - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fast-mode
 //
 // Prefers the datasheet's supports_speed boolean when set, falling back to
 // name detection when no record is registered.
@@ -260,6 +262,15 @@ func (c ModelCaps) SupportsSystemMessages(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDeveloperRole reports whether the model accepts role "developer".
+// Models that do not are sent developer messages as system instead.
+func (c ModelCaps) SupportsDeveloperRole(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDeveloperRole != nil {
+		return *c.record.SupportsDeveloperRole
+	}
+	return fallback
+}
+
 // SupportsAssistantPrefill reports whether a trailing assistant message may be
 // sent for the model to continue. Models without it need it trimmed.
 func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {
@@ -292,6 +303,15 @@ func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
 func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAsyncTools != nil {
 		return *c.record.SupportsAsyncTools
+	}
+	return fallback
+}
+
+// SupportsCustomTools reports whether the model accepts OpenAI custom (freeform)
+// tools. Models that do not are sent each custom tool as a function tool instead.
+func (c ModelCaps) SupportsCustomTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsCustomTools != nil {
+		return *c.record.SupportsCustomTools
 	}
 	return fallback
 }
@@ -359,6 +379,19 @@ func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDecisions reports whether the model is served on its provider's
+// native decisions endpoint, such as OpenAI's POST /v1/decisions. A model
+// without it answers decision requests through emulation on its chat API. A
+// datasheet row decides in either direction, so a new decisions model needs
+// only a row; with no row the caller's fallback (DefaultSupportsDecisions)
+// applies.
+func (c ModelCaps) SupportsDecisions(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDecisions != nil {
+		return *c.record.SupportsDecisions
+	}
+	return fallback
+}
+
 // SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
 // prompt_cache_breakpoint on input_text blocks in place of cache_control.
 func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {
@@ -420,6 +453,16 @@ func (c ModelCaps) SupportsMultimodalToolOutput(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNativeStructuredOutput reports whether the model takes a JSON schema
+// natively (Bedrock Converse outputConfig.textFormat) rather than through the
+// synthetic bf_so_* tool.
+func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeStructuredOutput != nil {
+		return *c.record.SupportsNativeStructuredOutput
+	}
+	return fallback
+}
+
 // SupportsResponseSchemaWithTools reports whether the model accepts a JSON
 // response format alongside function declarations. Models without it reject the
 // pairing, so the response-format hint is dropped to keep tool calling working.
@@ -456,6 +499,16 @@ func (c ModelCaps) SupportsNativeEffort(fallback bool) bool {
 func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMidConversationSystem != nil {
 		return *c.record.SupportsMidConversationSystem
+	}
+	return fallback
+}
+
+// SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
+// on a role:"system" message inside messages (per-message effort). The record is keyed per
+// (provider, model), so it decides for both the provider and the model when set.
+func (c ModelCaps) SupportsMidConvOutputConfig(fallback bool) bool {
+	if c.record != nil && c.record.SupportsMidConvOutputConfig != nil {
+		return *c.record.SupportsMidConvOutputConfig
 	}
 	return fallback
 }
@@ -555,6 +608,43 @@ func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
 	if c.record != nil && len(c.record.ReservedToolNamespaces) > 0 {
 		return c.record.ReservedToolNamespaces
 
+	}
+	return fallback
+}
+
+// SupportsRegexLookaround reports whether the model accepts lookaround assertions in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexLookaround(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexLookaround != nil {
+		return *c.record.SupportsRegexLookaround
+	}
+	return fallback
+}
+
+// SupportsRegexNULEscape reports whether the model accepts the `\0` escape in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexNULEscape(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexNULEscape != nil {
+		return *c.record.SupportsRegexNULEscape
+	}
+	return fallback
+}
+
+// SupportsSchemaPattern reports whether the model accepts the `pattern` keyword in
+// tool schemas at all. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsSchemaPattern(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSchemaPattern != nil {
+		return *c.record.SupportsSchemaPattern
+	}
+	return fallback
+}
+
+// SupportedSchemaFormats returns the string `format` values the model accepts in tool
+// schemas. A non-empty row replaces fallback; absent or empty returns it. A nil result
+// means every format is accepted.
+func (c ModelCaps) SupportedSchemaFormats(fallback []string) []string {
+	if c.record != nil && len(c.record.SupportedSchemaFormats) > 0 {
+		return c.record.SupportedSchemaFormats
 	}
 	return fallback
 }
@@ -702,6 +792,16 @@ func (c ModelCaps) BedrockAPIs() []BedrockAPI {
 func (c ModelCaps) MinOutputTokens(fallback int) int {
 	if c.record != nil && c.record.MinOutputTokens != nil {
 		return *c.record.MinOutputTokens
+	}
+	return fallback
+}
+
+// MaxOutputTokens returns the ceiling the model enforces on max_output_tokens.
+// A row with a positive max_output_tokens wins; absent or non-positive returns
+// fallback. Zero means no ceiling, so callers clamp only above zero.
+func (c ModelCaps) MaxOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MaxOutputTokens != nil && *c.record.MaxOutputTokens > 0 {
+		return *c.record.MaxOutputTokens
 	}
 	return fallback
 }

@@ -18,6 +18,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -33,7 +35,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpproxy"
+	"golang.org/x/net/http/httpproxy"
 )
 
 // ThoughtSignatureSeparator delimits a tool call's base ID from a provider reasoning
@@ -285,6 +287,41 @@ func GetJSONSubtree(data []byte, path string) []byte {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	return out
+}
+
+// MergeJSONObjects lays patch over base the way OpenAI applies a session.update: a key the patch leaves
+// out keeps its value, an object is merged key by key, and anything else, an array or a null included,
+// replaces the value, since a null can be a setting. An empty patch returns base and an empty base
+// returns patch, both as they came; a merge returns its keys sorted. The error is the decoder's, for the
+// caller to name the document it was reading.
+func MergeJSONObjects(base, patch []byte) ([]byte, error) {
+	if len(patch) == 0 {
+		return base, nil
+	}
+	if len(base) == 0 {
+		return patch, nil
+	}
+	var merged, overlay map[string]json.RawMessage
+	if err := schemas.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	if err := schemas.Unmarshal(patch, &overlay); err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = make(map[string]json.RawMessage, len(overlay))
+	}
+	for key, value := range overlay {
+		if previous, ok := merged[key]; ok && gjson.ParseBytes(previous).IsObject() && gjson.ParseBytes(value).IsObject() {
+			nested, err := MergeJSONObjects(previous, value)
+			if err != nil {
+				return nil, err
+			}
+			value = nested
+		}
+		merged[key] = value
+	}
+	return MarshalSorted(merged)
 }
 
 // UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
@@ -590,6 +627,25 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
+	// A factory client forwards each request to an inner client that already carries
+	// the factory's proxy, dialer and retry policy; it is left as it is.
+	if network.IsLiveFasthttpClient(client) {
+		return client
+	}
+
+	return configureDialer(client, allowPrivateNetwork, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, network, host)
+	}, (*net.Dialer).Dial)
+}
+
+// configureDialer allows tests to control DNS resolution and TCP dialing without
+// changing global network state. The dial callback receives the configured dialer.
+func configureDialer(
+	client *fasthttp.Client,
+	allowPrivateNetwork bool,
+	lookupIP func(context.Context, string, string) ([]net.IP, error),
+	dial func(*net.Dialer, string, string) (net.Conn, error),
+) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -612,11 +668,24 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		var conn net.Conn
 		var err error
 
-		switch {
-		case existingDial != nil:
+		viaExistingDial := existingDial != nil
+		bypassed := false
+		if viaExistingDial {
 			// Proxy or custom dial function is set — use it, then enable keepalive
 			conn, err = existingDial(addr)
-		case existingDialTimeout != nil:
+			// A no_proxy match on the proxy dialer: connect directly instead,
+			// through the same checked path as a client with no proxy at all.
+			if errors.Is(err, errBypassProxy) {
+				viaExistingDial = false
+				bypassed = true
+				conn, err = nil, nil
+			}
+		}
+
+		switch {
+		case viaExistingDial:
+		case existingDialTimeout != nil && !bypassed:
+			// A bypassed target never takes this callback: it has no IP checks.
 			// Preserve dial-timeout behavior
 			conn, err = existingDialTimeout(addr, client.ReadTimeout)
 		default:
@@ -634,7 +703,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
 				defer cancel()
 			}
-			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			ips, resolveErr := lookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -655,7 +724,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
 					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
 				}
-				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				conn, err = dial(dialer, "tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					break
 				}
@@ -686,15 +755,43 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 // It supports HTTP, SOCKS5, and environment-based proxy configurations.
 // Returns the configured client or the original client if proxy configuration is invalid.
 func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger) *fasthttp.Client {
+	return configureProxy(client, proxyConfig, logger, nil)
+}
+
+// configureProxy is ConfigureProxy with schemeFor, which tells the environment dialer a
+// target's scheme (nil chooses it by port, see envProxyDialFunc).
+func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, logger schemas.Logger, schemeFor func(addr string) string) *fasthttp.Client {
 	if proxyConfig == nil {
 		return client
 	}
 
+	if proxyConfig.Type == schemas.NoProxy {
+		return client
+	}
+
+	// The proxy CA is trusted for TLS through the proxy (a TLS-inspecting proxy re-signs
+	// targets with it) and, for an https:// proxy URL, for the TLS session with the proxy
+	// itself. skip_tls_verify covers only that proxy session: targets are verified.
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+		getLogger().Error(errMsg)
+		client.Dial = dialErrorFunc(errMsg)
+		return client
+	}
+	var caTLS *tls.Config
+	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
+		if err != nil {
+			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
+		} else {
+			caTLS = tlsConfig
+		}
+	}
+	proxyTLS := proxyHopTLS(caTLS, proxyConfig.SkipTLSVerify)
+
 	var dialFunc fasthttp.DialFunc
 	// Create the appropriate proxy based on type
 	switch proxyConfig.Type {
-	case schemas.NoProxy:
-		return client
 	case schemas.HTTPProxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
 			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
@@ -707,6 +804,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			getLogger().Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
+		proxyURLValue = proxyURLWithScheme(proxyURLValue, "http")
 		proxyURL := proxyURLValue
 		proxyUsername := proxyConfig.Username.GetValue()
 		proxyPassword := proxyConfig.Password.GetValue()
@@ -720,7 +818,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
-		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
+		dialFunc = proxyDialFunc(proxyURL, "http", proxyTLS)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
 			errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
@@ -733,6 +831,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			getLogger().Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
+		proxyURLValue = proxyURLWithScheme(proxyURLValue, "socks5")
 		proxyURL := proxyURLValue
 		// Add authentication if provided
 		proxyUsername := proxyConfig.Username.GetValue()
@@ -747,95 +846,434 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 			proxyURL = parsedURL.String()
 		}
-		dialFunc = fasthttpproxy.FasthttpSocksDialer(proxyURL)
+		dialFunc = proxyDialFunc(proxyURL, "socks5", proxyTLS)
 	case schemas.EnvProxy:
 		// Use environment variables for proxy configuration
-		dialFunc = fasthttpproxy.FasthttpProxyHTTPDialer()
+		dialFunc = envProxyDialFunc(proxyTLS, schemeFor)
 	default:
 		getLogger().Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 		return client
 	}
 
 	if dialFunc != nil {
+		if noProxy := proxyConfig.NoProxy; noProxy != "" {
+			proxyDial := dialFunc
+			dialFunc = func(addr string) (net.Conn, error) {
+				if network.MatchesNoProxy(network.DialAddrHost(addr), noProxy) {
+					// ConfigureDialer turns this into its own direct dial, so a
+					// bypassed host still gets the private-network checks.
+					return nil, errBypassProxy
+				}
+				return proxyDial(addr)
+			}
+		}
 		client.Dial = dialFunc
 	}
 
-	// Configure custom CA certificate if provided
-	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
-		errMsg := fmt.Sprintf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
-		getLogger().Error(errMsg)
-		client.Dial = dialErrorFunc(errMsg)
-		return client
-	}
-	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
-	if proxyCACertPEM != "" {
-		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
-		if err != nil {
-			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
-		} else {
-			client.TLSConfig = tlsConfig
-		}
+	if caTLS != nil {
+		// The dialers above use proxyTLS for the hop to an https:// proxy; the client's
+		// TLS to its targets trusts the proxy CA and never skips verification.
+		client.TLSConfig = caTLS
 	}
 
 	return client
 }
 
-// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer based on the provided configuration.
-// It supports HTTP, SOCKS5, and environment-based proxy configurations, mirroring ConfigureProxy above.
-// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
-// client that's built once and reused silently), this returns an error directly: callers resolve proxy
-// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+// NetHTTPProxy resolves a ProxyConfig into what a net/http transport needs: the
+// Proxy func and, when the proxy carries a CA, a TLS config that trusts it. It is
+// the net/http counterpart of ConfigureProxy, so every stack a provider uses reads
+// proxy_config by the same rules.
 //
-// ws.Dialer.Proxy dispatches on the resolved proxy URL's scheme internally (HTTP CONNECT tunneling for
-// "http", golang.org/x/net/proxy.FromURL — which handles "socks5" — for everything else), so unlike the
-// fasthttp path there is no need for separate HTTP vs SOCKS5 dialer constructors.
-func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+// A nil config, type "none", or an http/socks5 config with no URL returns a nil
+// Proxy func: the caller keeps its own default. The UI saves "none" when the proxy
+// form is left alone, so "none" must mean "not configured", not "force direct".
+//
+// net/http dispatches on the proxy URL's scheme (HTTP CONNECT for "http", SOCKS5
+// for "socks5"), so both types share one path.
+func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.URL, error), *tls.Config, error) {
+	proxy, targetTLS, _, err := NetHTTPProxyWithHopTLS(proxyConfig)
+	return proxy, targetTLS, err
+}
+
+// NetHTTPProxyWithHopTLS is NetHTTPProxy that also returns hopTLS, the TLS config for
+// the connection to an https:// proxy itself: its CA and skip_tls_verify. targetTLS
+// trusts the same CA (a TLS-inspecting proxy re-signs targets with it) and always
+// verifies, so the skip never reaches a target. hopTLS is a separate copy.
+func NetHTTPProxyWithHopTLS(proxyConfig *schemas.ProxyConfig) (proxy func(*http.Request) (*url.URL, error), targetTLS, hopTLS *tls.Config, err error) {
 	if proxyConfig == nil {
-		return dialer, nil
+		return nil, nil, nil, nil
 	}
 
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
-		return dialer, nil
+		return nil, nil, nil, nil
 	case schemas.HTTPProxy, schemas.Socks5Proxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
-			return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
 		}
 		proxyURLValue := proxyConfig.URL.GetValue()
 		if proxyURLValue == "" {
-			getLogger().Warn("Warning: proxy URL is required for setting up WebSocket proxy")
-			return dialer, nil
+			getLogger().Warn("Warning: proxy URL is required for setting up proxy")
+			return nil, nil, nil, nil
 		}
-		parsedURL, err := url.Parse(proxyURLValue)
+		defaultScheme := "http"
+		if proxyConfig.Type == schemas.Socks5Proxy {
+			defaultScheme = "socks5"
+		}
+		parsedURL, err := url.Parse(proxyURLWithScheme(proxyURLValue, defaultScheme))
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
 		}
 		proxyUsername := proxyConfig.Username.GetValue()
 		proxyPassword := proxyConfig.Password.GetValue()
 		if proxyUsername != "" && proxyPassword != "" {
 			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
 		}
-		dialer.Proxy = http.ProxyURL(parsedURL)
+		proxy = http.ProxyURL(parsedURL)
 	case schemas.EnvProxy:
-		dialer.Proxy = http.ProxyFromEnvironment
+		proxy = EnvProxyFunc()
 	default:
-		return nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+		return nil, nil, nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 	}
-
-	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
-		return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
-	}
-	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
-	if proxyCACertPEM != "" {
-		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
-		if err != nil {
-			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
-		} else {
-			dialer.TLSClientConfig = tlsConfig
+	if noProxy := proxyConfig.NoProxy; noProxy != "" {
+		configured := proxy
+		proxy = func(req *http.Request) (*url.URL, error) {
+			if network.MatchesNoProxy(req.URL.Hostname(), noProxy) {
+				return nil, nil
+			}
+			return configured(req)
 		}
 	}
 
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		return nil, nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+	}
+	var tlsConfig *tls.Config
+	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
+		var err error
+		tlsConfig, err = createTLSConfigWithCA(proxyCACertPEM)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
+		}
+	}
+
+	// targetTLS trusts the proxy CA and never skips verification; skip_tls_verify covers
+	// only hopTLS, the https:// proxy's own certificate (see DialHTTPSProxyWithHopTLS).
+	return proxy, tlsConfig, proxyHopTLS(tlsConfig, proxyConfig.SkipTLSVerify), nil
+}
+
+// proxyHopTLS is the TLS config for the hop to an https:// proxy: a copy of caTLS (the
+// proxy CA on the system roots, or nil for the system roots), with verification off when
+// skip is set. nil when there is neither a CA nor a skip. caTLS is never modified.
+func proxyHopTLS(caTLS *tls.Config, skip bool) *tls.Config {
+	var hop *tls.Config
+	if caTLS != nil {
+		hop = caTLS.Clone()
+	}
+	return withProxySkipVerify(hop, skip)
+}
+
+// withProxySkipVerify turns certificate verification off on the proxy TLS config when
+// skip is set (an inherited global proxy with skip_tls_verify), creating one if needed.
+func withProxySkipVerify(tlsConfig *tls.Config, skip bool) *tls.Config {
+	if !skip {
+		return tlsConfig
+	}
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	tlsConfig.InsecureSkipVerify = true
+	return tlsConfig
+}
+
+// EnvProxyFunc returns a net/http Proxy func for HTTP_PROXY, HTTPS_PROXY and
+// NO_PROXY (upper- or lower-case), read when EnvProxyFunc is called.
+//
+// http.ProxyFromEnvironment reads the environment once per process and caches it,
+// while fasthttp's env dialer (envProxyDialFunc, used by
+// ConfigureProxy for type "environment") reads it each time a client is built.
+// Reading at client build here keeps a provider's net/http and fasthttp stacks on
+// the same values across provider rebuilds.
+//
+// Like http.ProxyFromEnvironment it picks the variable by request scheme (https ->
+// HTTPS_PROXY, http -> HTTP_PROXY) and never proxies localhost or loopback targets.
+// One difference: when both spellings of a variable are set, golang.org/x/net's
+// httpproxy (used here and by fasthttpproxy) prefers the lowercase one, while the
+// copy vendored in net/http prefers the uppercase one. Using x/net everywhere keeps
+// every provider stack on the same answer.
+func EnvProxyFunc() func(*http.Request) (*url.URL, error) {
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	return func(req *http.Request) (*url.URL, error) {
+		return proxyFunc(req.URL)
+	}
+}
+
+// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer from the provider's
+// proxy configuration, using the same rules as NetHTTPProxy.
+// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
+// client that's built once and reused silently), this returns an error directly: callers resolve proxy
+// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+	proxy, tlsConfig, hopTLS, err := NetHTTPProxyWithHopTLS(proxyConfig)
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig != nil {
+		dialer.TLSClientConfig = tlsConfig
+	}
+	if proxy == nil {
+		return dialer, nil
+	}
+	// The websocket library's own proxy support knows http and socks5 but not https
+	// proxies, so the dialer reaches the proxy through network.DialViaProxyTLS, as
+	// every other provider stack does. The library calls NetDialTLSContext only for
+	// wss:// and then skips its own TLS, and NetDialContext for ws://, so the scheme
+	// the proxy is chosen by is still the request's.
+	dialer.Proxy = nil
+	dialer.NetDialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return dialWebSocketUpstream(ctx, proxy, "http", addr, hopTLS)
+	}
+	dialer.NetDialTLSContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		conn, err := dialWebSocketUpstream(ctx, proxy, "https", addr, hopTLS)
+		if err != nil {
+			return nil, err
+		}
+		cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if dialer.TLSClientConfig != nil {
+			cfg = dialer.TLSClientConfig.Clone()
+		}
+		if cfg.ServerName == "" {
+			cfg.ServerName = network.DialAddrHost(addr)
+		}
+		// The upgrade is an HTTP/1.1 request: never let the upstream pick h2.
+		cfg.NextProtos = []string{"http/1.1"}
+		tlsConn := tls.Client(conn, cfg)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
 	return dialer, nil
+}
+
+// DialHTTPSProxyWithHopTLS makes transport reach an https:// proxy with hopTLS (see
+// NetHTTPProxyWithHopTLS) instead of TLSClientConfig; see network.DialHTTPSProxyWithHopTLS.
+func DialHTTPSProxyWithHopTLS(transport *http.Transport, hopTLS *tls.Config) {
+	network.DialHTTPSProxyWithHopTLS(transport, hopTLS)
+}
+
+// dialWebSocketUpstream opens the TCP stream to a WebSocket upstream: through the proxy
+// that proxy picks for scheme://addr, or directly when it picks none.
+func dialWebSocketUpstream(ctx context.Context, proxy func(*http.Request) (*url.URL, error), scheme, addr string, proxyTLS *tls.Config) (net.Conn, error) {
+	proxyURL, err := proxy(&http.Request{URL: &url.URL{Scheme: scheme, Host: addr}})
+	if err != nil {
+		return nil, err
+	}
+	if proxyURL == nil {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
+	return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
+}
+
+// NewProviderHTTPClient builds the *http.Client a provider hands to libraries that
+// only accept one, for calls that do not go to its inference endpoint: OAuth token
+// exchange and refresh (golang.org/x/oauth2 for Vertex and Databricks, azidentity for
+// Azure). Only the API is net/http. Requests run on fasthttp through
+// fasthttpRoundTripper, over a client whose proxy comes from the same ConfigureProxy
+// the inference clients use, so there is one proxy implementation for every
+// provider call except Bedrock's HTTP/2 runtime client.
+//
+// When proxy_config names a proxy, it is used. Otherwise the client proxies from the
+// environment (HTTP_PROXY, HTTPS_PROXY, NO_PROXY), as http.DefaultTransport did for
+// these calls before, so a deployment that relied on HTTPS_PROXY sees no change.
+//
+// Local and instance-metadata targets always connect directly (see
+// network.IsLocalOrMetadataHost), and direct connections are not held to ConfigureDialer's
+// private-network rules: managed identity must reach IMDS at 169.254.169.254, and a
+// token endpoint behind private link resolves to a private address. That is the
+// reach these calls had on http.DefaultTransport.
+//
+// TLS follows network_config (custom CA, insecure_skip_verify) layered on the proxy's
+// CA, via ConfigureTLS. An invalid proxy or TLS config does not fail provider
+// construction: every request returns the configuration error instead.
+func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schemas.NetworkConfig, logger schemas.Logger) *http.Client {
+	timeout := time.Duration(networkConfig.DefaultRequestTimeoutInSeconds) * time.Second
+	client := &fasthttp.Client{
+		ReadTimeout:              timeout,
+		WriteTimeout:             timeout,
+		MaxIdleConnDuration:      30 * time.Second,
+		MaxResponseBodySize:      maxAuthResponseBytes,
+		NoDefaultUserAgentHeader: true,
+	}
+	effective := proxyConfig
+	if !namesProxy(proxyConfig) {
+		effective = &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	}
+	schemes := &sync.Map{} // dial address -> request scheme, for the environment dialer
+	client = configureProxy(client, effective, logger, func(addr string) string {
+		if scheme, ok := schemes.Load(addr); ok {
+			return scheme.(string)
+		}
+		return ""
+	})
+	client = ConfigureTLS(client, networkConfig, logger)
+	client.Dial = directForLocalTargets(client.Dial, timeout)
+	client.Transport = NewContextTransport()
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client, schemes: schemes}, Timeout: timeout}
+}
+
+// NewHTTPClientOn returns an *http.Client that sends its requests on client, for a call that
+// must keep the inference client's ConfigureProxy, ConfigureDialer and ConfigureTLS setup but
+// goes through a library or helper that only takes an *http.Client.
+func NewHTTPClientOn(client *fasthttp.Client, timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}, Timeout: timeout}
+}
+
+// namesProxy reports whether proxyConfig names a proxy. nil, an empty type and the
+// UI's default "none" all mean "not configured".
+func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
+	return proxyConfig != nil && proxyConfig.Type != "" && proxyConfig.Type != schemas.NoProxy
+}
+
+// directForLocalTargets wraps a proxy dialer for the auth client. Local and
+// instance-metadata targets, no_proxy matches (errBypassProxy) and a client with no
+// proxy dialer at all connect directly with a plain dial.
+func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) fasthttp.DialFunc {
+	dialer := &net.Dialer{Timeout: timeout}
+	direct := func(addr string) (net.Conn, error) {
+		return dialer.Dial("tcp", addr)
+	}
+	if proxyDial == nil {
+		return direct
+	}
+	return func(addr string) (net.Conn, error) {
+		if network.IsLocalOrMetadataHost(network.DialAddrHost(addr)) {
+			return direct(addr)
+		}
+		conn, err := proxyDial(addr)
+		if errors.Is(err, errBypassProxy) {
+			return direct(addr)
+		}
+		return conn, err
+	}
+}
+
+// fasthttpRoundTripper implements http.RoundTripper on a fasthttp.Client, so
+// libraries that require an *http.Client run on the same dialer, proxy and TLS
+// setup as the rest of the provider. http.Client calls RoundTrip once per redirect
+// hop, so redirect handling and CheckRedirect keep working above it.
+//
+// The response body is buffered: these calls (token exchange, bounded URL fetches)
+// are small, and fasthttp returns the body in a pooled buffer that must be copied
+// out before the response is released anyway.
+//
+// The request context is honoured the way net/http honours it: the context
+// transport (NewContextTransport) closes the socket once the request is on the
+// wire, and RoundTrip itself returns ctx.Err() as soon as the context ends, even
+// while fasthttp is still dialing, which fasthttp cannot interrupt.
+type fasthttpRoundTripper struct {
+	client  *fasthttp.Client
+	schemes *sync.Map // non-nil: record each request's scheme under its dial address
+}
+
+// maxAuthResponseBytes caps a token or credential response on the auth client:
+// fasthttpRoundTripper buffers the whole body, so an unbounded one would be held twice.
+const maxAuthResponseBytes = 4 << 20
+
+// dialAddr is the host:port fasthttp dials for u, the port defaulted by scheme.
+func dialAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil && req.Body != http.NoBody {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	freq := fasthttp.AcquireRequest()
+	fresp := fasthttp.AcquireResponse()
+	release := func() {
+		fasthttp.ReleaseRequest(freq)
+		fasthttp.ReleaseResponse(fresp)
+	}
+	if rt.schemes != nil {
+		rt.schemes.Store(dialAddr(req.URL), req.URL.Scheme)
+	}
+	freq.SetRequestURI(req.URL.String())
+	freq.Header.SetMethod(req.Method)
+	for name, values := range req.Header {
+		for _, value := range values {
+			freq.Header.Add(name, value)
+		}
+	}
+	if req.Host != "" && req.Host != req.URL.Host {
+		freq.UseHostHeader = true
+		freq.Header.SetHost(req.Host)
+	}
+	if body != nil {
+		freq.SetBody(body)
+	}
+
+	ctx := req.Context()
+	unbind := bindRequestContext(freq, ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.client.Do(freq, fresp)
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+		unbind()
+	case <-ctx.Done():
+		// fasthttp may still be dialing; let it finish in the background and
+		// release the pooled objects only once it has.
+		go func() {
+			<-done
+			unbind()
+			release()
+		}()
+		return nil, ctx.Err()
+	}
+	defer release()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, err
+	}
+
+	statusCode := fresp.StatusCode()
+	resp := &http.Response{
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		StatusCode: statusCode,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Request:    req,
+	}
+	for name, value := range fresp.Header.All() {
+		resp.Header.Add(string(name), string(value))
+	}
+	respBody := append([]byte(nil), fresp.Body()...)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	resp.ContentLength = int64(len(respBody))
+	return resp, nil
 }
 
 // createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
@@ -862,19 +1300,30 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
-	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
-		errMsg := fmt.Sprintf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
-		logger.Error(errMsg)
-		client.Dial = dialErrorFunc(errMsg)
+	tlsConfig, err := networkTLSConfig(client.TLSConfig, networkConfig, logger)
+	if err != nil {
+		logger.Error(err.Error())
+		client.Dial = dialErrorFunc(err.Error())
 		return client
+	}
+	client.TLSConfig = tlsConfig
+	return client
+}
+
+// networkTLSConfig layers NetworkConfig's TLS settings (insecure_skip_verify, a
+// custom CA) onto base, which may already trust a proxy CA. base is returned
+// unchanged when neither setting is present, and never mutated otherwise.
+func networkTLSConfig(base *tls.Config, networkConfig schemas.NetworkConfig, logger schemas.Logger) (*tls.Config, error) {
+	if networkConfig.CACertPEM != nil && networkConfig.CACertPEM.IsFromSecret() && networkConfig.CACertPEM.GetValue() == "" {
+		return nil, fmt.Errorf("invalid provider configuration: %s references %q but it resolved to an empty value", "network_config.ca_cert_pem", networkConfig.CACertPEM.GetRawRef())
 	}
 
 	caCertPEM := networkConfig.CACertPEM.GetValue()
 	if !networkConfig.InsecureSkipVerify && caCertPEM == "" {
-		return client
+		return base, nil
 	}
 
-	tlsConfig := client.TLSConfig
+	tlsConfig := base
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	} else {
@@ -903,9 +1352,90 @@ func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, 
 		}
 	}
 
-	client.TLSConfig = tlsConfig
-	return client
+	return tlsConfig, nil
 }
+
+// proxyDialFunc returns a fasthttp dialer that reaches each target through rawURL with
+// network.DialViaProxy: dual-stack, and bounded by network.ProxyHandshakeTimeout for the
+// dial and the CONNECT or SOCKS5 handshake. fasthttp calls a Dial func without any
+// deadline, and fasthttpproxy's dialers wait for the handshake indefinitely, so a proxy
+// that accepts connections and never answers used to hang every request. A URL without
+// a scheme takes defaultScheme. proxyTLS verifies an https:// proxy (nil: system roots).
+func proxyDialFunc(rawURL, defaultScheme string, proxyTLS *tls.Config) fasthttp.DialFunc {
+	proxyURL, err := url.Parse(proxyURLWithScheme(rawURL, defaultScheme))
+	if err != nil {
+		return dialErrorFunc("invalid proxy configuration: invalid proxy URL")
+	}
+	return func(addr string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), proxyHandshakeTimeout)
+		defer cancel()
+		return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
+	}
+}
+
+// proxyURLWithScheme prefixes a proxy URL written without a scheme (host:port) with
+// defaultScheme, the scheme of its proxy type. It must run before url.Parse, which reads
+// "proxy.corp:3128" as scheme "proxy.corp" and refuses "127.0.0.1:3128", so every stack
+// (fasthttp, net/http, WebSocket) reads a bare proxy_config URL the same way.
+func proxyURLWithScheme(rawURL, defaultScheme string) string {
+	if strings.Contains(rawURL, "://") {
+		return rawURL
+	}
+	return defaultScheme + "://" + rawURL
+}
+
+// proxyHandshakeTimeout bounds the dial and handshake of provider proxy dialers. A
+// variable so tests can shorten it.
+var proxyHandshakeTimeout = network.ProxyHandshakeTimeout
+
+// envProxyDialFunc is the fasthttp dialer for proxy_config type "environment". It
+// reads HTTP_PROXY, HTTPS_PROXY and NO_PROXY (either case) once, when the client is
+// built, and reaches each proxy through network.DialViaProxy (dual-stack, bounded
+// handshake).
+//
+// It replaces fasthttpproxy.FasthttpProxyHTTPDialer. That dialer connects to the proxy
+// over tcp4 only, waits for the handshake indefinitely, and for a target it should not
+// proxy (a NO_PROXY match, localhost, no variable set) dials the target itself, which
+// skips the checks the caller's direct dial applies: ConfigureDialer's private-network
+// rules for inference, the SSRF dialer for URL fetches. This one returns errBypassProxy
+// instead, so every direct connection goes through the caller.
+//
+// A fasthttp dialer sees only host:port, not the scheme. schemeFor supplies it when the
+// caller knows it (the auth client records each request's scheme); with nil, or when it
+// returns "", the variable is chosen by port the way fasthttpproxy chooses it: 443 uses
+// HTTPS_PROXY, any other port uses HTTP_PROXY.
+// proxyTLS verifies an https:// proxy the variables name (nil: system roots).
+func envProxyDialFunc(proxyTLS *tls.Config, schemeFor func(addr string) string) fasthttp.DialFunc {
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	return func(addr string) (net.Conn, error) {
+		scheme := ""
+		if schemeFor != nil {
+			scheme = schemeFor(addr)
+		}
+		if scheme == "" {
+			scheme = "http"
+			if strings.HasSuffix(addr, ":443") {
+				scheme = "https"
+			}
+		}
+		proxyURL, err := proxyFunc(&url.URL{Scheme: scheme, Host: addr})
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: %w", err)
+		}
+		if proxyURL == nil {
+			return nil, errBypassProxy
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), proxyHandshakeTimeout)
+		defer cancel()
+		return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
+	}
+}
+
+// errBypassProxy is returned by the proxy dialers ConfigureProxy installs when the
+// target should not be proxied (a no_proxy or NO_PROXY match, or no environment
+// proxy for it). The caller's direct dial catches it: ConfigureDialer for inference
+// clients, the SSRF dialer for URL fetches, directForLocalTargets for auth clients.
+var errBypassProxy = errors.New("target matches no_proxy: dial directly")
 
 func dialErrorFunc(message string) fasthttp.DialFunc {
 	return func(_ string) (net.Conn, error) {
@@ -1017,11 +1547,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// content-type, which the passthrough response must retain. A content-type the upstream did
+// not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
@@ -1061,12 +1593,35 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 	return headers
 }
 
+// ExtractPassthroughProviderResponseHeadersFromHTTP is the net/http twin of
+// ExtractPassthroughProviderResponseHeaders: a passthrough caller decodes the body by the upstream
+// Content-Type, so it is kept even though the generic provider-header filter drops it.
+func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	for k, values := range resp.Header {
+		kLower := strings.ToLower(k)
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+			continue
+		}
+		if len(values) > 0 {
+			headers[k] = strings.Join(values, ", ")
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
 // SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -1076,7 +1631,7 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 	// Give priority to extra headers in the context
@@ -1352,8 +1907,6 @@ func CheckAndGetRawRequestBody(ctx context.Context, request RequestBodyGetter) (
 type RequestBodyWithExtraParams interface {
 	GetExtraParams() map[string]interface{}
 }
-
-type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
 // prepared an upstream body reader in context.
@@ -2106,69 +2659,115 @@ func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tra
 	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
 }
 
-// CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
-func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
+// CheckContextAndGetRequestBody returns the raw request body when the context asks for it,
+// and otherwise converts the request with requestConverter and marshals the result.
+//
+// The converter returns its concrete body pointer (P), not the RequestBodyWithExtraParams
+// interface. Converters return nil for a request they cannot build, and a nil pointer
+// returned as the interface is a non-nil interface value: it would pass a nil check and
+// then panic in MarshalJSON on the nil receiver. Keeping the pointer type makes the nil
+// check a plain pointer comparison, enforced at every call site by the compiler. Every
+// pointer type shares one GC shape, so this is a single instantiation, and passing the
+// pointer on as an interface does not allocate.
+func CheckContextAndGetRequestBody[B any, P interface {
+	*B
+	RequestBodyWithExtraParams
+}](ctx context.Context, request RequestBodyGetter, requestConverter func() (P, error)) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
-
-	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
-	if !ok {
-		// The converting path splits into two non-overlapping overhead phases so their
-		// costs are attributed separately (and never double-counted): "convertor" for
-		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
-		// encode. The raw-body passthrough branch does neither.
-		ct, chdl := startPhaseSpan(ctx, "convertor")
-		convertedBody, err := requestConverter()
-		if err != nil {
-			if ct != nil {
-				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
-			}
-			// Caller-fault refusals carry their own 400; everything else is a conversion
-			// bug on our side and keeps the 500 default.
-			if badRequest, ok := AsBifrostBadRequestError(err); ok {
-				return nil, badRequest
-			}
-			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
-		}
-		if ct != nil {
-			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
-		}
-		if convertedBody == nil {
-			return nil, NewBifrostOperationError("request body is not provided", nil)
-		}
-
-		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
-		// Indenting is removed to reduce data on wire
-		jsonBody, err := MarshalProviderRequest(convertedBody)
-		if err != nil {
-			if mt != nil {
-				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-			}
-			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := convertedBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use order-preserving merge to avoid destroying key ordering in
-				// tool schemas and other order-sensitive JSON structures.
-				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					if mt != nil {
-						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-					}
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		if mt != nil {
-			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
-		}
-		return jsonBody, nil
-	} else {
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
 		return rawBody, nil
 	}
+	// The converting path splits into two non-overlapping overhead phases so their costs are
+	// attributed separately (and never double-counted): "convertor" for the Bifrost->provider
+	// format conversion, then "request-marshal" for the JSON encode. The raw-body passthrough
+	// branch does neither.
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// CheckContextAndGetRequestBodyFromInterface is CheckContextAndGetRequestBody for a
+// converter that can return more than one concrete body type, such as the custom request
+// converters the OpenAI-compatible handlers accept, so its result can only be the
+// interface. Its nil check sees an untyped nil only: a converter used here must return a
+// literal nil, never a nil concrete pointer, when it has no body. Prefer the generic
+// CheckContextAndGetRequestBody wherever the converter has a single concrete type.
+func CheckContextAndGetRequestBodyFromInterface(ctx context.Context, request RequestBodyGetter, requestConverter func() (RequestBodyWithExtraParams, error)) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
+		return rawBody, nil
+	}
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// endConvertorPhase closes the "convertor" phase span and maps a converter error to the
+// client error: caller-fault refusals carry their own 400, everything else is a
+// conversion bug on our side and keeps the 500 default.
+func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *schemas.BifrostError {
+	if err != nil {
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+		}
+		if badRequest, ok := AsBifrostBadRequestError(err); ok {
+			return badRequest
+		}
+		return NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+	}
+	if ct != nil {
+		ct.EndSpan(chdl, schemas.SpanStatusOk, "")
+	}
+	return nil
+}
+
+// marshalConvertedRequestBody encodes a converted, non-nil body under the
+// "request-marshal" phase and merges its extra params when passthrough is enabled.
+func marshalConvertedRequestBody(ctx context.Context, convertedBody RequestBodyWithExtraParams) ([]byte, *schemas.BifrostError) {
+	mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+	// Indenting is removed to reduce data on wire
+	jsonBody, err := MarshalProviderRequest(convertedBody)
+	if err != nil {
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+		}
+		return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	// Merge ExtraParams into the JSON if passthrough is enabled
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			// Use order-preserving merge to avoid destroying key ordering in
+			// tool schemas and other order-sensitive JSON structures.
+			jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				if mt != nil {
+					mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+				}
+				return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+	}
+	if mt != nil {
+		mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
+	}
+	return jsonBody, nil
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
@@ -2176,7 +2775,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -2186,7 +2785,7 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 
@@ -2957,6 +3556,18 @@ func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse b
 	return defaultSendBackRawResponse
 }
 
+// ResponsesStreamRawIndex picks the one response of a provider event's Responses expansion that carries the event's
+// raw payload: the response streaming the event's text or arguments (its delta), so the raw text travels with the
+// normalized text it backs and is never sent ahead of it, otherwise fallback.
+func ResponsesStreamRawIndex(responses []*schemas.BifrostResponsesStreamResponse, fallback int) int {
+	for i := len(responses) - 1; i >= 0; i-- {
+		if responses[i] != nil && responses[i].Delta != nil {
+			return i
+		}
+	}
+	return fallback
+}
+
 // SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.
 func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, startTime time.Time, responseChan chan *schemas.BifrostStreamChunk, postHookSpanFinalizer func(context.Context)) {
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
@@ -3142,9 +3753,11 @@ func GateSendChunk(ctx *schemas.BifrostContext, chunk *schemas.BifrostStreamChun
 // pause/resume gate when one has been engaged for this stream. If gating is
 // active, the close blocks on the tracer's WaitForFlusher so any chunks
 // buffered while paused (including a terminal chunk that arrived during
-// pause) reach the consumer before EOS. For non-gated streams (the common
-// case), this is a single map read on the context — identical cost to a
-// bare close.
+// pause) reach the consumer before EOS.
+//
+// It also completes a deferred LLM span the terminal path left open, before the
+// close: once the channel closes, the retry loop may register the next attempt's
+// span under the same trace ID, so a provider goroutine does no span work after it.
 //
 // Provider streaming goroutines should `defer providerUtils.CloseStream(ctx,
 // responseChan)` instead of `defer close(responseChan)`.
@@ -3159,7 +3772,32 @@ func CloseStream(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChun
 			}
 		}
 	}
+	completeUnfinishedStreamSpan(ctx)
 	close(ch)
+}
+
+// completeUnfinishedStreamSpan completes a deferred span the stream's terminal path
+// left open, so a goroutine that died before completing it cannot leak the span, or
+// the accumulated response it pins. The stream-end indicator sets the status: an
+// unended stream is marked failed, an ended one (its final send failed) keeps OK.
+// An unended stream that produced no chunk is left to the retry loop, which ends an
+// empty stream's span itself. A noop when the terminal path already cleared it.
+func completeUnfinishedStreamSpan(ctx *schemas.BifrostContext) {
+	var streamErr *schemas.BifrostError
+	if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+		tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+		if tracer == nil || traceID == "" {
+			return
+		}
+		if _, _, chunks := tracer.GetAccumulatedChunks(traceID); chunks == 0 {
+			return
+		}
+		streamErr = &schemas.BifrostError{
+			Error: &schemas.ErrorField{Message: "stream ended before completion"},
+		}
+	}
+	completeDeferredSpan(ctx, nil, streamErr, nil)
 }
 
 // ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
@@ -3199,6 +3837,7 @@ func ProcessAndSendResponse(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3217,6 +3856,7 @@ func ProcessAndSendResponse(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
@@ -3242,6 +3882,7 @@ func ProcessAndSendBifrostError(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3255,9 +3896,97 @@ func ProcessAndSendBifrostError(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
+}
+
+// ErrStreamPanicMessage is the client-facing message of the terminal error chunk a
+// provider stream emits after RecoverStreamPanic catches a panic on its goroutine.
+const ErrStreamPanicMessage = "internal error while streaming the provider response"
+
+// streamTerminalHandledKey marks, on a provider stream's context, that its final chunk
+// went through a send helper: delivered to the client, or deliberately dropped by a
+// plugin's stream-control skip. StreamEndIndicator cannot carry this: providers set it
+// before the final chunk is traced and post-hooked, so a panic there would otherwise
+// look like a stream that already ended.
+type streamTerminalHandledKey struct{}
+
+// markStreamTerminalHandled records that the client's final chunk was handled. While a
+// provider-injected tool loop has another turn pending, this stream's final chunk is not
+// the client's (the loop sets the flag before handing the chunk back as a skip), so the
+// marker is left unset for the turn that really ends the client stream.
+func markStreamTerminalHandled(ctx *schemas.BifrostContext) {
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
+	ctx.SetValue(streamTerminalHandledKey{}, true)
+}
+
+func streamTerminalHandled(ctx *schemas.BifrostContext) bool {
+	handled, _ := ctx.Value(streamTerminalHandledKey{}).(bool)
+	return handled
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// Runtime errors keep their message (runtime-generated, no request data); any other
+// value is reduced to its type, since a panic value can wrap request content or secrets.
+func PanicSummary(r any) string {
+	if rerr, ok := r.(runtime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("%T", r)
+}
+
+// RecoverStreamPanic is deferred by every provider streaming goroutine, directly after
+// the defer that closes responseChan, so it runs first while the channel is still open.
+// Nothing above that goroutine can catch a panic in it (a chunk converter, a decoder, or
+// the post-hook runner), so without this a single bad chunk ends the whole process.
+//
+// It logs the panic and, unless the stream is already cancelled or its final chunk was
+// already handled by a send helper (see streamTerminalHandledKey), sends one terminal 500 error chunk through the post-hooks, the same path
+// HandleStreamCancellation uses, so logging and billing record the failure and the client
+// sees an error instead of a silently truncated stream. A second panic while sending is
+// logged and dropped; the close defer that runs next still ends the stream.
+func RecoverStreamPanic(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = getLogger()
+	}
+	logger.Error("recovered from panic in provider stream goroutine: %s\n%s", PanicSummary(r), debug.Stack())
+	// A cancelled or timed-out stream gets its terminal chunk from the cancellation defer.
+	if ctx == nil || ctx.Err() != nil || postHookRunner == nil {
+		return
+	}
+	if streamTerminalHandled(ctx) {
+		return // the final chunk already went out
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	defer func() {
+		if r2 := recover(); r2 != nil {
+			logger.Error("recovered from panic while sending the stream panic error: %s", PanicSummary(r2))
+		}
+	}()
+	panicErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Message: ErrStreamPanicMessage,
+			Type:    schemas.Ptr("server_error"),
+		},
+	}
+	attachBilledUsageFromContext(ctx, panicErr)
+	ProcessAndSendBifrostError(ctx, postHookRunner, panicErr, responseChan, logger, postHookSpanFinalizer)
 }
 
 // EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
@@ -3273,12 +4002,8 @@ func ProcessAndSendBifrostError(
 // path — e.g. a panic mid-stream — which would otherwise leak the plugin
 // pipeline back-reference held by the finalizer closure.
 //
-// It also completes any deferred LLM span still parked for this trace so a
-// goroutine that died before completing it cannot leak the span — and the
-// accumulated response it pins. The stream-end indicator sets the status: an
-// unended stream is marked failed, an ended one keeps its success status.
-// completeDeferredSpan is idempotent (nil-handle guard), so this is a noop when
-// the terminal path already cleared it.
+// A span the terminal path left open is completed by CloseStream, which runs
+// before this: after the close, the trace's deferred span may be the next attempt's.
 //
 // Panics inside the finalizer are recovered and logged so they never mask an
 // in-flight panic that triggered the defer.
@@ -3288,18 +4013,6 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
 		}
 	}()
-
-	// Complete any span the terminal path left parked. Unended = died mid-flight
-	// (mark failed); ended = delivery failed after success (keep the OK status).
-	if bfCtx, ok := ctx.(*schemas.BifrostContext); ok {
-		var streamErr *schemas.BifrostError
-		if ended, _ := bfCtx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
-			streamErr = &schemas.BifrostError{
-				Error: &schemas.ErrorField{Message: "stream ended before completion"},
-			}
-		}
-		completeDeferredSpan(bfCtx, nil, streamErr, finalizer)
-	}
 
 	if finalizer == nil {
 		return
@@ -3674,6 +4387,7 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		costCopy := *usage.Cost
 		usageCopy.Cost = &costCopy
 	}
+	usageCopy.Iterations = slices.Clone(usage.Iterations)
 	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
@@ -3779,6 +4493,11 @@ func ProcessAndSendError(
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			// A classified reader error (a Bedrock InvokeModel exception frame) bills
+			// the reported usage too; usage it already carries is kept.
+			if typed.ExtraFields.BilledUsage == nil {
+				attachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -3791,6 +4510,9 @@ func ProcessAndSendError(
 			Error:   err,
 		},
 	}
+	// A read error (an idle timeout, a dropped connection) ends the stream like a
+	// cancel does, so it bills the usage the provider already reported.
+	attachBilledUsageFromContext(ctx, bifrostError)
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
@@ -3810,6 +4532,9 @@ func ProcessAndSendError(
 	}
 
 	GateSendChunk(ctx, streamResponse, responseChan)
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		markStreamTerminalHandled(ctx)
+	}
 }
 
 // SendStreamTruncatedError surfaces an upstream stream that ended without a
@@ -3911,16 +4636,19 @@ func CreateBifrostChatCompletionChunkResponse(
 
 // HandleStreamControlSkip checks if the stream control should be skipped.
 func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
-	if bifrostErr == nil || bifrostErr.StreamControl == nil {
+	if !isStreamControlSkip(bifrostErr) {
 		return false
 	}
-	if bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream {
-		if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
-			getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
-		}
-		return true
+	if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
+		getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
 	}
-	return false
+	return true
+}
+
+// isStreamControlSkip reports whether a plugin asked for this chunk to be dropped from the stream.
+func isStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
+	return bifrostErr != nil && bifrostErr.StreamControl != nil &&
+		bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream
 }
 
 // GetProviderName extracts the provider name from custom provider configuration.
@@ -4395,6 +5123,12 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	if ctx == nil {
 		return
 	}
+	// A provider-injected tool loop chains several upstream streams into one client
+	// stream. While another turn will follow, this stream's end is not the request's,
+	// so the request's single LLM span stays open for the final turn to complete.
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
 
 	// Get the trace ID from context (this IS available in the provider's goroutine)
 	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
@@ -4455,18 +5189,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
-	// Finalize aggregated post-hook spans before ending the LLM span
-	// This creates one span per plugin with average execution time
-	// We need to set the llm.call span ID in context so post-hook spans become its children
+	// End the per-plugin post-hook spans (opened under this span) before the span itself.
 	if postHookSpanFinalizer != nil {
-		// Get the deferred span ID (the llm.call span) to set as parent for post-hook spans
-		spanID := tracer.GetDeferredSpanID(traceID)
-		if spanID != "" {
-			finalizerCtx := context.WithValue(ctx, schemas.BifrostContextKeySpanID, spanID)
-			postHookSpanFinalizer(finalizerCtx)
-		} else {
-			postHookSpanFinalizer(ctx)
-		}
+		postHookSpanFinalizer(ctx)
 	}
 
 	// Error attributes are stamped by PopulateLLMResponseAttributes above.
@@ -4517,7 +5242,7 @@ const jsonSchemaPatternKey = "pattern"
 // Go's own regexp accepts `\0` as a one-digit octal escape, and OpenAI, Anthropic
 // and Gemini accept it unchanged. `\x00` is accepted by every backend tested, so
 // the rewrite is lossless; which models receive it is decided by the caller (see
-// toolSchemaPatternRewriter in core), not here.
+// toolSchemaPolicy in core), not here.
 //
 // Only a `\0` that is not the start of a legacy octal escape is rewritten, so
 // `\012` is left alone, and escape pairs are consumed two at a time so the `0` in
@@ -4547,32 +5272,117 @@ func NormalizeRegexNULEscape(pattern string) string {
 	return b.String()
 }
 
+// jsonSchemaFormatKey is the JSON Schema keyword naming a value's format.
+const jsonSchemaFormatKey = "format"
+
+// ToolSchemaPolicy is the tool-schema subset a model's validator accepts. The zero
+// value accepts everything, and callers skip the walk for it.
+type ToolSchemaPolicy struct {
+	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
+	StripLookaround    bool     // remove lookaround assertions from patterns
+	DropPattern        bool     // remove the pattern keyword outright
+	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
+}
+
+// IsZero reports whether the policy leaves every schema untouched.
+func (p ToolSchemaPolicy) IsZero() bool {
+	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil
+}
+
+// rewritePattern applies the policy's regex rewrites, returning pattern unchanged
+// when none applies.
+func (p ToolSchemaPolicy) rewritePattern(pattern string) string {
+	if p.NormalizeNULEscape {
+		pattern = NormalizeRegexNULEscape(pattern)
+	}
+	if p.StripLookaround {
+		pattern = StripRegexLookaround(pattern)
+	}
+	return pattern
+}
+
+// dropsFormat reports whether a schema of type typ must lose its format. Formats on
+// numeric types pass every validator tested, so only string and untyped schemas are
+// filtered.
+func (p ToolSchemaPolicy) dropsFormat(format string, typ any) bool {
+	return p.StringFormats != nil && !slices.Contains(p.StringFormats, format) && !isNumericSchemaType(typ)
+}
+
+// isNumericSchemaType reports whether a JSON Schema `type` admits only numbers,
+// optionally alongside null.
+func isNumericSchemaType(typ any) bool {
+	switch t := typ.(type) {
+	case string:
+		return t == "integer" || t == "number"
+	case []any:
+		numeric := false
+		for _, v := range t {
+			switch v {
+			case "null":
+			case "integer", "number":
+				numeric = true
+			default:
+				return false
+			}
+		}
+		return numeric
+	}
+	return false
+}
+
+// normalizeSchemaEntry normalizes one member of a schema object. names marks a map
+// keyed by property or definition names rather than keywords, and typ is the
+// enclosing schema's `type`. remove reports that the member must be deleted.
+func normalizeSchemaEntry(key string, value, typ any, p ToolSchemaPolicy, names bool) (normalized any, changed, remove bool) {
+	if !names {
+		switch key {
+		case jsonSchemaPatternKey:
+			if pattern, ok := value.(string); ok {
+				if p.DropPattern {
+					return value, false, true
+				}
+				if rewritten := p.rewritePattern(pattern); rewritten != pattern {
+					return rewritten, true, false
+				}
+				return value, false, false
+			}
+		case jsonSchemaFormatKey:
+			if format, ok := value.(string); ok {
+				return value, false, p.dropsFormat(format, typ)
+			}
+		case "enum", "const", "default", "examples":
+			// Instance data, not schema: a "format" key inside is the caller's value.
+			return value, false, false
+		case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+			normalized, changed = normalizeSchemaValue(value, p, true)
+			return normalized, changed, false
+		}
+	}
+	normalized, changed = normalizeSchemaValue(value, p, false)
+	return normalized, changed, false
+}
+
 // normalizeSchemaValue normalizes any nested JSON Schema value. It returns the
 // input untouched, and reports false, when nothing changed -- the common case,
-// which must not allocate.
-func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
+// which must not allocate, so no-change paths hand back value itself: re-boxing a
+// slice into any would allocate.
+func normalizeSchemaValue(value any, p ToolSchemaPolicy, names bool) (any, bool) {
 	switch typed := value.(type) {
 	case *schemas.OrderedMap:
-		return normalizeSchemaMap(typed, rewrite)
+		return normalizeSchemaMap(typed, p, names)
 	case map[string]any:
 		// Nested schemas built in code arrive as plain maps (BuildDecisionSchema
 		// stores each question's schema this way inside an OrderedMap), so they
-		// need the same pattern handling. Copy-on-write like the other cases: the
-		// map is duplicated only when a value changes.
+		// need the same handling. Copy-on-write like the other cases: the map is
+		// duplicated only when a value changes.
+		var typ any
+		if !names {
+			typ = typed["type"]
+		}
 		var updated map[string]any
 		for key, nested := range typed {
-			normalized, changed := nested, false
-			if key == jsonSchemaPatternKey {
-				if pattern, ok := nested.(string); ok {
-					if rewritten := rewrite(pattern); rewritten != pattern {
-						normalized, changed = rewritten, true
-					}
-				}
-			}
-			if !changed {
-				normalized, changed = normalizeSchemaValue(nested, rewrite)
-			}
-			if !changed {
+			normalized, changed, remove := normalizeSchemaEntry(key, nested, typ, p, names)
+			if !changed && !remove {
 				continue
 			}
 			if updated == nil {
@@ -4581,16 +5391,20 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 					updated[k] = v
 				}
 			}
-			updated[key] = normalized
+			if remove {
+				delete(updated, key)
+			} else {
+				updated[key] = normalized
+			}
 		}
 		if updated == nil {
-			return typed, false
+			return value, false
 		}
 		return updated, true
 	case []any:
 		var updated []any
 		for i := range typed {
-			normalized, changed := normalizeSchemaValue(typed[i], rewrite)
+			normalized, changed := normalizeSchemaValue(typed[i], p, false)
 			if !changed {
 				continue
 			}
@@ -4601,7 +5415,7 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 			updated[i] = normalized
 		}
 		if updated == nil {
-			return typed, false
+			return value, false
 		}
 		return updated, true
 	}
@@ -4610,74 +5424,83 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 
 // normalizeSchemaMap walks one schema object. OrderedMap.Clone is shallow, so a
 // clone is taken only when this level actually changes and untouched subtrees stay
-// shared with the caller's schema. Set replaces a value without disturbing key
-// order, which the prompt cache depends on.
-func normalizeSchemaMap(schema *schemas.OrderedMap, rewrite PatternRewriter) (*schemas.OrderedMap, bool) {
+// shared with the caller's schema. Set and Delete leave the remaining key order
+// alone, which the prompt cache depends on.
+func normalizeSchemaMap(schema *schemas.OrderedMap, p ToolSchemaPolicy, names bool) (*schemas.OrderedMap, bool) {
 	if schema == nil || schema.Len() == 0 {
 		return schema, false
 	}
+	var typ any
+	if !names {
+		typ, _ = schema.Get("type")
+	}
+	// Range, not Keys: Keys copies the key slice on every visit, and an unchanged
+	// schema must not allocate. Edits go to the clone, never the map being ranged.
 	var updated *schemas.OrderedMap
-	for _, key := range schema.Keys() {
-		value, _ := schema.Get(key)
-
-		normalized, changed := value, false
-		if key == jsonSchemaPatternKey {
-			if pattern, ok := value.(string); ok {
-				if rewritten := rewrite(pattern); rewritten != pattern {
-					normalized, changed = rewritten, true
-				}
-			}
-		}
-		if !changed {
-			normalized, changed = normalizeSchemaValue(value, rewrite)
-		}
-		if !changed {
-			continue
+	schema.Range(func(key string, value any) bool {
+		normalized, changed, remove := normalizeSchemaEntry(key, value, typ, p, names)
+		if !changed && !remove {
+			return true
 		}
 		if updated == nil {
 			updated = schema.Clone()
 		}
-		updated.Set(key, normalized)
-	}
+		if remove {
+			updated.Delete(key)
+		} else {
+			updated.Set(key, normalized)
+		}
+		return true
+	})
 	if updated == nil {
 		return schema, false
 	}
 	return updated, true
 }
 
-// RewriteToolSchemaPatterns applies rewrite to every regex `pattern` in the tool
-// parameter schema, copy-on-write: a schema with nothing to rewrite is returned
-// as-is and allocates nothing.
-func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite PatternRewriter) (*schemas.ToolFunctionParameters, bool) {
+// ApplyToolSchemaPolicy applies p to a tool parameter schema, copy-on-write: a schema
+// with nothing to change is returned as-is and allocates nothing.
+func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaPolicy) (*schemas.ToolFunctionParameters, bool) {
 	if params == nil {
 		return params, false
 	}
 
-	// Struct assignment carries the unexported keyOrder and explicitEmptyObject
-	// fields across, so a rewritten schema still serializes in the client's key
-	// order and an explicit `{}` stays `{}`.
-	updated := *params
-	changed := false
+	// The struct is copied on the first change only, so an unchanged schema does not
+	// allocate. Struct assignment carries the unexported keyOrder and
+	// explicitEmptyObject fields across, so a rewritten schema still serializes in
+	// the client's key order and an explicit `{}` stays `{}`.
+	var updated *schemas.ToolFunctionParameters
+	edit := func() *schemas.ToolFunctionParameters {
+		if updated == nil {
+			cp := *params
+			updated = &cp
+		}
+		return updated
+	}
 
 	if params.Pattern != nil {
-		if rewritten := rewrite(*params.Pattern); rewritten != *params.Pattern {
-			updated.Pattern = &rewritten
-			changed = true
+		if p.DropPattern {
+			edit().Pattern = nil
+		} else if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
+			edit().Pattern = &rewritten
 		}
+	}
+	if params.Format != nil && p.dropsFormat(*params.Format, params.Type) {
+		edit().Format = nil
 	}
 
 	for _, field := range []struct {
 		value  *schemas.OrderedMap
-		assign func(*schemas.OrderedMap)
+		names  bool
+		assign func(*schemas.ToolFunctionParameters, *schemas.OrderedMap)
 	}{
-		{params.Properties, func(m *schemas.OrderedMap) { updated.Properties = m }},
-		{params.Items, func(m *schemas.OrderedMap) { updated.Items = m }},
-		{params.Defs, func(m *schemas.OrderedMap) { updated.Defs = m }},
-		{params.Definitions, func(m *schemas.OrderedMap) { updated.Definitions = m }},
+		{params.Properties, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Properties = m }},
+		{params.Items, false, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Items = m }},
+		{params.Defs, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Defs = m }},
+		{params.Definitions, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Definitions = m }},
 	} {
-		if normalized, fieldChanged := normalizeSchemaMap(field.value, rewrite); fieldChanged {
-			field.assign(normalized)
-			changed = true
+		if normalized, fieldChanged := normalizeSchemaMap(field.value, p, field.names); fieldChanged {
+			field.assign(edit(), normalized)
 		}
 	}
 
@@ -4685,25 +5508,24 @@ func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite P
 	// pattern under it must be rewritten too. The struct is copied only when its
 	// map changes; the boolean variant is carried through untouched.
 	if additional := params.AdditionalProperties; additional != nil && additional.AdditionalPropertiesMap != nil {
-		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, rewrite); fieldChanged {
+		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, p, false); fieldChanged {
 			additionalCopy := *additional
 			additionalCopy.AdditionalPropertiesMap = normalized
-			updated.AdditionalProperties = &additionalCopy
-			changed = true
+			edit().AdditionalProperties = &additionalCopy
 		}
 	}
 
 	for _, composition := range []struct {
 		value  []schemas.OrderedMap
-		assign func([]schemas.OrderedMap)
+		assign func(*schemas.ToolFunctionParameters, []schemas.OrderedMap)
 	}{
-		{params.AnyOf, func(s []schemas.OrderedMap) { updated.AnyOf = s }},
-		{params.OneOf, func(s []schemas.OrderedMap) { updated.OneOf = s }},
-		{params.AllOf, func(s []schemas.OrderedMap) { updated.AllOf = s }},
+		{params.AnyOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.AnyOf = s }},
+		{params.OneOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.OneOf = s }},
+		{params.AllOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.AllOf = s }},
 	} {
 		var rewritten []schemas.OrderedMap
 		for i := range composition.value {
-			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], rewrite)
+			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], p, false)
 			if !elementChanged {
 				continue
 			}
@@ -4714,29 +5536,40 @@ func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite P
 			rewritten[i] = *normalized
 		}
 		if rewritten != nil {
-			composition.assign(rewritten)
-			changed = true
+			composition.assign(edit(), rewritten)
 		}
 	}
 
-	if !changed {
+	if updated == nil {
 		return params, false
 	}
-	return &updated, true
+	return updated, true
 }
 
-// RewriteResponsesToolSchemas applies rewrite to the regex patterns in every
-// Responses tool's parameter schema, copy-on-write. Tools with nothing to rewrite
-// are shared with the caller's slice rather than copied, and ResponsesToolFunction
-// is embedded by pointer, so a rewritten one is replaced rather than written
-// through.
-func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternRewriter) ([]schemas.ResponsesTool, bool) {
+// ApplyResponsesToolSchemaPolicy applies p to every Responses tool's parameter
+// schema, including the members of namespace tools, copy-on-write. Tools with
+// nothing to change are shared with the caller's slice rather than copied, and
+// ResponsesToolFunction and ResponsesToolNamespace are embedded by pointer, so a
+// changed one is replaced rather than written through.
+func ApplyResponsesToolSchemaPolicy(tools []schemas.ResponsesTool, p ToolSchemaPolicy) ([]schemas.ResponsesTool, bool) {
 	var updated []schemas.ResponsesTool
 	for i := range tools {
-		if tools[i].ResponsesToolFunction == nil || tools[i].ResponsesToolFunction.Parameters == nil {
-			continue
+		function, namespace := tools[i].ResponsesToolFunction, tools[i].ResponsesToolNamespace
+		changed := false
+		if function != nil && function.Parameters != nil {
+			if normalized, ok := ApplyToolSchemaPolicy(function.Parameters, p); ok {
+				cp := *function
+				cp.Parameters = normalized
+				function, changed = &cp, true
+			}
 		}
-		normalized, changed := RewriteToolSchemaPatterns(tools[i].ResponsesToolFunction.Parameters, rewrite)
+		if namespace != nil {
+			if members, ok := ApplyResponsesToolSchemaPolicy(namespace.Tools, p); ok {
+				cp := *namespace
+				cp.Tools = members
+				namespace, changed = &cp, true
+			}
+		}
 		if !changed {
 			continue
 		}
@@ -4744,9 +5577,7 @@ func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternR
 			updated = make([]schemas.ResponsesTool, len(tools))
 			copy(updated, tools)
 		}
-		function := *tools[i].ResponsesToolFunction
-		function.Parameters = normalized
-		updated[i].ResponsesToolFunction = &function
+		updated[i].ResponsesToolFunction, updated[i].ResponsesToolNamespace = function, namespace
 	}
 	if updated == nil {
 		return tools, false
@@ -4754,19 +5585,30 @@ func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternR
 	return updated, true
 }
 
-// PatternRewriter rewrites one regex `pattern` value. It must return its input
-// unchanged when it has nothing to do, so callers can detect a no-op by equality
-// and keep the original schema bytes.
-type PatternRewriter func(pattern string) string
-
-// ComposePatternRewriters applies rewriters left to right.
-func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
-	return func(pattern string) string {
-		for _, rewrite := range rewriters {
-			pattern = rewrite(pattern)
+// ApplyChatToolSchemaPolicy is the Chat Completions parallel of
+// ApplyResponsesToolSchemaPolicy, with the same copy-on-write guarantee.
+func ApplyChatToolSchemaPolicy(tools []schemas.ChatTool, p ToolSchemaPolicy) ([]schemas.ChatTool, bool) {
+	var updated []schemas.ChatTool
+	for i := range tools {
+		if tools[i].Function == nil || tools[i].Function.Parameters == nil {
+			continue
 		}
-		return pattern
+		normalized, changed := ApplyToolSchemaPolicy(tools[i].Function.Parameters, p)
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = make([]schemas.ChatTool, len(tools))
+			copy(updated, tools)
+		}
+		function := *tools[i].Function
+		function.Parameters = normalized
+		updated[i].Function = &function
 	}
+	if updated == nil {
+		return tools, false
+	}
+	return updated, true
 }
 
 // StripRegexLookaround removes every zero-width lookaround assertion, `(?=...)`,
@@ -4778,7 +5620,7 @@ func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
 // stream, and Claude Code's ArtifactData tool ships four such patterns, so every
 // Claude Code request to kimi-k3 died. OpenAI and Anthropic accept lookaround,
 // and for them the assertion is real guidance, so the rewrite is gated to models
-// outside those families (see regexLookaroundSupported in core).
+// outside those families (see toolSchemaPolicy in core).
 //
 // Removing a zero-width assertion can only widen what the pattern matches, never
 // narrow it, so the result is always a valid relaxation of the original: the
@@ -4921,4 +5763,134 @@ func regexGroupEnd(pattern string, start int) int {
 		}
 	}
 	return -1
+}
+
+// DecisionImageURLItem is an image in a decision state array, as Perplexity and OpenRouter
+// read it: {"type":"image_url","image_url":{"url":...,"detail":...}}.
+type DecisionImageURLItem struct {
+	Type     string               `json:"type"` // always "image_url"
+	ImageURL DecisionImageURLBody `json:"image_url"`
+}
+
+// DecisionImageURLBody is the image of a DecisionImageURLItem.
+type DecisionImageURLBody struct {
+	URL    string  `json:"url"`
+	Detail *string `json:"detail,omitempty"`
+}
+
+// ExtractDecisionImages lays out a decision input that carries images for providers whose
+// state is not a message list but an array of plain-string text items and
+// {"type":"image_url"} image items (Perplexity, OpenRouter). Any other object in that array
+// reaches the model as JSON text, so a message object next to an image skews the answer
+// (gpt-6-luna on OpenRouter reads a red image as 0.03 red that way, and as 1.0 with plain
+// strings). Each message contributes its text and images in their original order; roles are
+// dropped, since the format has no place for them. A tool call or output has no place in it
+// either, so it is sent as its JSON text, which keeps the call an output answers.
+//
+// It returns the input without images, which the Typesafe converter validates as usual
+// (rejecting any other part type), and the state to send. state is nil when the input
+// carries no images, so the caller keeps the state it already builds. Only a missing
+// image_url is rejected here; whether a URL or detail is accepted is the provider's call.
+// The input is not modified.
+func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.DecisionInput, state interface{}, err error) {
+	if !hasDecisionImage(input.Messages) {
+		return input, nil, nil
+	}
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	items := make([]interface{}, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			switch {
+			case message.Content.Text != nil:
+				items = append(items, *message.Content.Text)
+			case message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage:
+				item, err := schemas.Marshal(message)
+				if err != nil {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input item could not be encoded as text: %v", err)
+				}
+				items = append(items, string(item))
+			}
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			switch part.Type {
+			case schemas.DecisionInputPartTypeImage:
+				if part.ImageURL == nil || *part.ImageURL == "" {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+				}
+				items = append(items, DecisionImageURLItem{
+					Type:     "image_url",
+					ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
+				})
+				continue
+			case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeOutputText:
+				if part.Text != nil {
+					items = append(items, *part.Text)
+				}
+			case schemas.DecisionInputPartTypeRefusal:
+				if part.Refusal != nil {
+					items = append(items, *part.Refusal)
+				}
+			case schemas.DecisionInputPartTypeJSON:
+				if part.Data.Structured != nil {
+					items = append(items, renderStructuredText(part.Data.Structured))
+				}
+			}
+			parts = append(parts, part)
+		}
+		if len(parts) > 0 {
+			message.Content.Parts = parts
+			messages = append(messages, message)
+		}
+	}
+	return schemas.DecisionInput{Messages: messages}, items, nil
+}
+
+// SplitDecisionImages removes the input's image parts and returns them, in order, for a
+// provider whose request carries one top-level images array shared by every question
+// (vLLM, SGLang). URLs are sent as given, so the server decides whether the model reads
+// them. A message left with no parts is dropped. Text and structured inputs are returned
+// unchanged. The input is not modified.
+func SplitDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, error) {
+	if !hasDecisionImage(input.Messages) {
+		return input, nil, nil
+	}
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	var images []string
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			if part.Type != schemas.DecisionInputPartTypeImage {
+				parts = append(parts, part)
+				continue
+			}
+			if part.ImageURL == nil || *part.ImageURL == "" {
+				return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+			}
+			images = append(images, *part.ImageURL)
+		}
+		if len(parts) > 0 {
+			message.Content.Parts = parts
+			messages = append(messages, message)
+		}
+	}
+	return schemas.DecisionInput{Messages: messages}, images, nil
+}
+
+// hasDecisionImage reports whether any message carries an input_image part.
+func hasDecisionImage(messages []schemas.DecisionInputMessage) bool {
+	for _, message := range messages {
+		for _, part := range message.Content.Parts {
+			if part.Type == schemas.DecisionInputPartTypeImage {
+				return true
+			}
+		}
+	}
+	return false
 }

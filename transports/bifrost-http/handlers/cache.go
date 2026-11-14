@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"net/url"
+
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -55,6 +57,7 @@ func (h *CacheHandler) clearCache(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear cache")
 		return
 	}
+	lib.RecordAuditChange(ctx, "cache.cleared", "cache", cacheID, cacheID, nil, map[string]any{"cache_id": cacheID})
 
 	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",
@@ -67,15 +70,23 @@ func (h *CacheHandler) clearCacheByKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "semantic_cache plugin is not loaded")
 		return
 	}
-	cacheKey, ok := ctx.UserValue("cacheKey").(string)
+	rawKey, ok := ctx.UserValue("cacheKey").(string)
 	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid cache key")
+		return
+	}
+	// The router matches on the raw (percent-encoded) path, so a key containing spaces, colons
+	// or slashes arrives still encoded and would match no stored entry.
+	cacheKey, err := url.PathUnescape(rawKey)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid cache key encoding")
 		return
 	}
 	if err := plugin.ClearCacheForKey(cacheKey); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear cache")
 		return
 	}
+	lib.RecordAuditChange(ctx, "cache.cleared", "cache", cacheKey, cacheKey, nil, map[string]any{"cache_key": cacheKey})
 
 	SendJSON(ctx, map[string]any{
 		"message": "Cache cleared successfully",

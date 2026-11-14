@@ -90,7 +90,8 @@ func (provider *GroqProvider) ModelRetrieve(ctx *schemas.BifrostContext, key sch
 	if request == nil || request.Model == "" {
 		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
 	}
-	escapedModel, idErr := providerUtils.EscapeResourceID(request.Model, "model")
+	// Groq namespaces most models ("openai/gpt-oss-120b"), so each segment is escaped separately.
+	escapedModel, idErr := providerUtils.EscapeResourcePath(request.Model, "model")
 	if idErr != nil {
 		return nil, idErr
 	}

@@ -2,7 +2,6 @@ package databricks
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +38,20 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 //
 // This lives in the package's own test binary so it can point the token exchange at a stub
 // without exposing a test hook on the public API.
+//
+// The scoped case pins the fix for a service principal secret created with scopes: Databricks
+// refuses a token request naming any scope the secret lacks, so a key that sets scopes must
+// send exactly those and never the all-apis default.
 func TestOAuthM2M(t *testing.T) {
+	t.Run("default scope", func(t *testing.T) {
+		runOAuthM2M(t, nil, oauthScope)
+	})
+	t.Run("configured scopes replace all-apis", func(t *testing.T) {
+		runOAuthM2M(t, []string{"model-serving-inference", "model-serving"}, "model-serving-inference model-serving")
+	})
+}
+
+func runOAuthM2M(t *testing.T, scopes []string, wantScope string) {
 	var mu sync.Mutex
 	var tokenMints int
 	var gotGrantType, gotScope, gotBasicUser, gotBasicPass, gotAuth string
@@ -70,11 +82,8 @@ func TestOAuthM2M(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// The oauth2 client-credentials flow uses its own HTTP client, which must be told to
-	// trust the test server's certificate.
-	oauthHTTPClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	defer func() { oauthHTTPClient = nil }()
-
+	// The token exchange runs on the provider's auth client, which takes insecure_skip_verify
+	// from network_config below, so it trusts the test server's certificate too.
 	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			DefaultRequestTimeoutInSeconds: 10,
@@ -97,6 +106,7 @@ func TestOAuthM2M(t *testing.T) {
 			WorkspaceURL: *schemas.NewSecretVar(u.Host),
 			ClientID:     schemas.NewSecretVar("sp-client-id"),
 			ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+			Scopes:       scopes,
 		},
 	}
 	request := &schemas.BifrostChatRequest{
@@ -120,8 +130,8 @@ func TestOAuthM2M(t *testing.T) {
 	if gotGrantType != "client_credentials" {
 		t.Errorf("grant_type: got %q, want %q", gotGrantType, "client_credentials")
 	}
-	if gotScope != oauthScope {
-		t.Errorf("scope: got %q, want %q", gotScope, oauthScope)
+	if gotScope != wantScope {
+		t.Errorf("scope: got %q, want %q", gotScope, wantScope)
 	}
 	if gotBasicUser != "sp-client-id" || gotBasicPass != "sp-client-secret" {
 		t.Errorf("basic auth: got %q/%q, want the service principal credentials", gotBasicUser, gotBasicPass)
@@ -174,11 +184,12 @@ func TestChatStreamOptionsFixup(t *testing.T) {
 // then the workspace REST error_code/message pair, then a status-bearing generic.
 func TestParseDatabricksError(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		status  int
-		body    string
-		message string
-		code    string
+		name        string
+		status      int
+		contentType string
+		body        string
+		message     string
+		code        string
 	}{
 		{
 			name:    "workspace rest shape",
@@ -207,12 +218,31 @@ func TestParseDatabricksError(t *testing.T) {
 			body:    `{"something_else":true}`,
 			message: "provider API error (status 418)",
 		},
+		{
+			// As a live workspace answers a token whose scopes do not cover the path.
+			name:        "a plain-text scope error sent as text/html keeps its text",
+			status:      403,
+			contentType: "text/html; charset=utf-8",
+			body:        "Invalid scope, required scopes: model-serving",
+			message:     "Invalid scope, required scopes: model-serving",
+		},
+		{
+			name:        "a real html page keeps the generic html message",
+			status:      502,
+			contentType: "text/html; charset=utf-8",
+			body:        "<html><head><title>Bad Gateway</title></head><body><h1>Bad Gateway</h1></body></html>",
+			message:     schemas.ErrProviderResponseHTML,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := fasthttp.AcquireResponse()
 			defer fasthttp.ReleaseResponse(resp)
 			resp.SetStatusCode(tc.status)
-			resp.Header.SetContentType("application/json")
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			resp.Header.SetContentType(contentType)
 			resp.SetBodyString(tc.body)
 
 			bErr := parseDatabricksError(resp)
@@ -229,5 +259,79 @@ func TestParseDatabricksError(t *testing.T) {
 				t.Errorf("code: got %q, want %q", *bErr.Error.Code, tc.code)
 			}
 		})
+	}
+}
+
+// TestDatabricksOAuthTokenGoesThroughProxyConfig pins that the OAuth M2M token exchange
+// leaves through the provider's proxy_config. It used to run on http.DefaultClient, so
+// behind a proxy-only egress every service-principal request failed at token minting.
+// The test proxy records the CONNECT target and refuses the tunnel: only where the
+// token request goes is under test.
+func TestDatabricksOAuthTokenGoesThroughProxyConfig(t *testing.T) {
+	var mu sync.Mutex
+	var connectTargets []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			mu.Lock()
+			connectTargets = append(connectTargets, r.Host)
+			mu.Unlock()
+		}
+		http.Error(w, "tunnel refused by test proxy", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)},
+	}, testLogger{})
+	if err != nil {
+		t.Fatalf("NewDatabricksProvider: %v", err)
+	}
+	key := schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+		WorkspaceURL: *schemas.NewSecretVar("dbc-test.cloud.databricks.com"),
+		ClientID:     schemas.NewSecretVar("sp-client-id"),
+		ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+	}}
+	if _, bErr := provider.authHeader(context.Background(), key); bErr == nil {
+		t.Fatal("expected token minting to fail against the refusing test proxy")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(connectTargets) != 1 || connectTargets[0] != "dbc-test.cloud.databricks.com:443" {
+		t.Fatalf("proxy saw CONNECT %v, want exactly [dbc-test.cloud.databricks.com:443]", connectTargets)
+	}
+}
+
+// BenchmarkAuthHeaderWarm is the per-request cost of the OAuth M2M path once a token is cached:
+// deriving the common OAuth config, hashing the cache key and the cache lookup. The PAT path
+// is one comparison and the header map.
+func BenchmarkAuthHeaderWarm(b *testing.B) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer server.Close()
+	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10, InsecureSkipVerify: true, AllowPrivateNetwork: true},
+	}, testLogger{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	u, _ := url.Parse(server.URL)
+	key := schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+		WorkspaceURL: *schemas.NewSecretVar(u.Host),
+		ClientID:     schemas.NewSecretVar("sp-client-id"),
+		ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+	}}
+	if _, bErr := provider.authHeader(context.Background(), key); bErr != nil {
+		b.Fatal(bErr)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := provider.authHeader(context.Background(), key); bErr != nil {
+			b.Fatal(bErr)
+		}
 	}
 }

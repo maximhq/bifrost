@@ -459,7 +459,7 @@ func TestWarpSaveConfigKeepsStoredCustomEmbeddingSettings(t *testing.T) {
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
 		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
 		EmbeddingDimension: 1536, LogVectorStoreNamespace: "CustomWarpLogs",
-		SemanticSearchThreshold: 0.6, SemanticSearchLimit: 20,
+		SemanticSearchThreshold: 0.6, SemanticSearchLimit: 20, TopicDiscoveryMinRequests: 40,
 	}}
 
 	_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
@@ -472,6 +472,7 @@ func TestWarpSaveConfigKeepsStoredCustomEmbeddingSettings(t *testing.T) {
 	require.Equal(t, "CustomWarpLogs", saved.LogVectorStoreNamespace, "a custom namespace must not be reset to the default")
 	require.InDelta(t, 0.6, saved.SemanticSearchThreshold, 1e-9)
 	require.Equal(t, 20, saved.SemanticSearchLimit)
+	require.Equal(t, 40, saved.TopicDiscoveryMinRequests)
 	require.Equal(t, "gpt-4o-mini", saved.Model, "the field that was supplied still changes")
 }
 
@@ -791,4 +792,35 @@ func TestWarpConfigIgnoresUnreadableAdditionalModels(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, config.AdditionalModels)
 	require.Equal(t, "gpt-4o", config.Model)
+}
+
+// How many requests that matched no topic start a discovery is the operator's
+// choice: a quiet deployment may want new topics from a few dozen, a busy one
+// only from thousands. Omitted means the default; the bounds keep it where a
+// discovery can still find a topic and the pool can still reach it.
+func TestWarpTopicDiscoveryMinRequestsIsConfigurable(t *testing.T) {
+	input := validWarpConfigInput()
+	require.NoError(t, ValidateConfigInput(input))
+	require.Equal(t, schemas.WarpDefaultTopicDiscoveryMinRequests, input.TopicDiscoveryMinRequests, "omitted is the default")
+	for _, bad := range []int{-1, schemas.WarpMinTopicDiscoveryMinRequests - 1, schemas.WarpMaxTopicDiscoveryMinRequests + 1} {
+		input := validWarpConfigInput()
+		input.TopicDiscoveryMinRequests = bad
+		require.ErrorIs(t, ValidateConfigInput(input), ErrInvalidConfig, "%d", bad)
+	}
+
+	store := &recordingStore{}
+	service := newTestService(store)
+	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{
+		"enabled": true, "provider": "openai", "model": "gpt-4o",
+		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536,
+		"topic_discovery_min_requests": 40
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, 40, view.TopicDiscoveryMinRequests)
+	require.Equal(t, 40, store.upserted[0].TopicDiscoveryMinRequests)
+	require.Equal(t, 40, configFromRow(store.row).EffectiveTopicDiscoveryMinRequests())
+
+	unset, err := newTestService(&recordingStore{}).ConfigView(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, schemas.WarpDefaultTopicDiscoveryMinRequests, unset.TopicDiscoveryMinRequests)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +12,75 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+func TestToOpenAIResponsesRequest_PreservesNamedOutputWithoutCallID(t *testing.T) {
+	const body = `{"model":"gpt-6.1-sol","input":[{"role":"user","content":"Hello"},{"type":"function_call_output","name":"aaaaaa","output":"hi"}]}`
+	var request OpenAIResponsesRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+	bifrostRequest := request.ToBifrostResponsesRequest(nil)
+	bifrostRequest.Provider = schemas.OpenAI
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+	converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+	wire, err := sonic.Marshal(converted)
+	require.NoError(t, err)
+	var payload struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	require.NoError(t, sonic.Unmarshal(wire, &payload))
+	require.Len(t, payload.Input, 2)
+	require.JSONEq(t, `{"type":"function_call_output","name":"aaaaaa","output":"hi"}`, string(payload.Input[1]))
+	require.Equal(t, "aaaaaa", *bifrostRequest.Input[1].Name)
+}
+
+func TestToOpenAIResponsesRequest_NamedOutputCallIDVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		item string
+		want string
+	}{
+		{"null call ID", `{"type":"function_call_output","name":"notify","call_id":null,"output":"hi"}`, `{"type":"function_call_output","name":"notify","output":"hi"}`},
+		{"empty call ID", `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`, `{"type":"function_call_output","name":"notify","call_id":"","output":"hi"}`},
+		{"paired output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`, `{"type":"function_call_output","call_id":"call_123","output":"hi"}`},
+		{"no name", `{"type":"function_call_output","output":"hi"}`, `{"type":"function_call_output","output":"hi"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			before, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			converted := ToOpenAIResponsesRequest(nil, bifrostRequest)
+			wire, err := schemas.MarshalSorted(converted.Input.OpenAIResponsesRequestInputArray[0])
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, string(wire))
+			after, err := schemas.MarshalSorted(bifrostRequest)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "conversion must not mutate the caller's input")
+		})
+	}
+}
+
+func BenchmarkToOpenAIResponsesRequestNamedOutput(b *testing.B) {
+	for _, tc := range []struct{ name, item string }{
+		{"ordinary-message", `{"role":"user","content":"Hello"}`},
+		{"paired-output", `{"type":"function_call_output","name":"notify","call_id":"call_123","output":"hi"}`},
+		{"unpaired-output", `{"type":"function_call_output","name":"notify","output":"hi"}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var request OpenAIResponsesRequest
+			if err := sonic.Unmarshal([]byte(`{"model":"gpt-6.1-sol","input":[`+tc.item+`]}`), &request); err != nil {
+				b.Fatal(err)
+			}
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, bifrostRequest)
+			}
+		})
+	}
+}
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
@@ -427,6 +497,147 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 			t.Fatalf("expected gpt-oss to keep both reasoning blocks, got %#v", c)
 		}
 	})
+}
+
+// TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent pins that a replayed
+// Anthropic thinking block (summary [] + one reasoning_text block) reaches vLLM's
+// Responses endpoint with its content intact, whatever the model name. vLLM reads a
+// reasoning item's content back into the prompt; dropping it hid the model's own
+// earlier reasoning from it on the next turn.
+func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T) {
+	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.VLLM,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(thinking),
+					Signature: schemas.Ptr("sig-123"),
+				}},
+			},
+		}},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1, "the reasoning item must be replayed to vLLM")
+	c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+	require.NotNil(t, c)
+	require.Len(t, c.ContentBlocks, 1)
+	require.Equal(t, thinking, *c.ContentBlocks[0].Text)
+	require.Nil(t, c.ContentBlocks[0].Signature, "the Anthropic signature must not reach the Responses wire")
+
+	// The OpenAI-hosted path for the same name still drops the reasoning-only item.
+	bifrostReq.Provider = schemas.OpenAI
+	result = ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Empty(t, result.Input.OpenAIResponsesRequestInputArray)
+}
+
+// TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray pins that a
+// summary-only reasoning item (history from an OpenAI model) rewritten as content blocks
+// for vLLM or gpt-oss still carries summary: []. vLLM validates against OpenAI's
+// ResponseReasoningItem, where summary is required; without it the item matches no input
+// variant and the request fails with "203 validation errors".
+func TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{{schemas.VLLM, "glm-4.7-flash"}, {schemas.VLLM, "gpt-oss-20b"}, {schemas.OpenAI, "gpt-oss-120b"}} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr("rs_x"),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{
+						{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "I choose the code word ZUCCHINI-9."},
+					}},
+				}},
+			})
+			require.NotNil(t, result)
+			wire, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			var payload struct {
+				Input []struct {
+					Summary *[]json.RawMessage `json:"summary"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 1, "wire: %s", wire)
+			item := payload.Input[0]
+			require.Len(t, item.Content, 1, "summary not rewritten as content: %s", wire)
+			require.Equal(t, "I choose the code word ZUCCHINI-9.", item.Content[0].Text)
+			require.NotNil(t, item.Summary, "summary missing from the rewritten item: %s", wire)
+			require.Empty(t, *item.Summary)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks pins that vLLM receives a reasoning
+// item's text as one content block. vLLM's general reader keeps only content[0] (or
+// summary[0]), so a second thinking block or summary part never reached the model. Every
+// part is kept, in order, joined with "\n" as vLLM's own harmony reader does. Other hosts
+// read every block and keep receiving them separately.
+func TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks(t *testing.T) {
+	blocks := func() *schemas.ResponsesMessageContent {
+		return &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("The code word begins with PAMPLE."), Signature: schemas.Ptr("sig-1")},
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("It ends with MOUSSE-47.")},
+		}}
+	}
+	summaries := []schemas.ResponsesReasoningSummary{
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "The code word begins with PAMPLE."},
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "It ends with MOUSSE-47."},
+	}
+	const joined = "The code word begins with PAMPLE.\nIt ends with MOUSSE-47."
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		input     schemas.ResponsesMessage
+		wantTexts []string
+	}{
+		{"vllm content blocks", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{joined}},
+		{"vllm summaries rewritten as content", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: summaries}},
+			[]string{joined}},
+		{"other gpt-oss host keeps separate blocks", schemas.BedrockMantle, "openai.gpt-oss-120b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{"The code word begins with PAMPLE.", "It ends with MOUSSE-47."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.input.ID = schemas.Ptr("msg_rs_1")
+			tc.input.Type = schemas.Ptr(schemas.ResponsesMessageTypeReasoning)
+			original := tc.input.Content
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{tc.input}})
+			require.NotNil(t, result)
+			require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1)
+			c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+			require.NotNil(t, c)
+			var texts []string
+			for _, b := range c.ContentBlocks {
+				require.Equal(t, schemas.ResponsesOutputMessageContentTypeReasoning, b.Type)
+				require.Nil(t, b.Signature, "signatures must not reach the Responses wire")
+				texts = append(texts, *b.Text)
+			}
+			require.Equal(t, tc.wantTexts, texts)
+			if original != nil {
+				require.Len(t, original.ContentBlocks, 2, "the caller's input was mutated")
+			}
+		})
+	}
 }
 
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
@@ -963,17 +1174,18 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved.
-				// Note: Status is stripped by the sanitizer for all item types,
-				// including message types, since OpenAI rejects status on input.
+				// Verify that original message fields are preserved. An assistant message
+				// that keeps its id is a ResponseOutputMessageParam, so its status is
+				// required and kept alongside the id (#8593).
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if resultMsg.Status != nil {
-					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
+				if tt.message.ID != nil && tt.message.Status != nil &&
+					(resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
+					t.Errorf("Expected Status to be preserved with the ID on an assistant output message")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -2778,6 +2990,32 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// An assistant message with an id is a ResponseOutputMessageParam, where id and
+			// status are both required. Keeping the id while dropping the status leaves an
+			// item that matches neither input shape, which strict validators reject (#8593).
+			name: "status kept on assistant output message with id",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_replayed"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"msg_replayed"` {
+					t.Errorf("id: got %s, want \"msg_replayed\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\" (id without status is not a valid input item)", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "status stripped from reasoning",
 			input: schemas.ResponsesMessage{
 				Type:   &reasoningType,
@@ -2886,6 +3124,80 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 				}
 				if _, ok := item["status"]; ok {
 					t.Error("status present in wire request for web_search_call")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A web_search_call with a native OpenAI "ws_" id and a valid status is replayed
+			// as is: OpenAI rejects it without status ("Missing required parameter:
+			// input[N].status") and Codex-style backends without id (#8382).
+			name: "native web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// OpenAI defines "incomplete" for an interrupted web search, and requires
+			// status on a replayed web_search_call just like the other values.
+			name: "native incomplete web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"incomplete"` {
+					t.Errorf("status: got %s, want \"incomplete\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// Gemini synthesizes "ws_<n>" for an ID-less search call and marks it completed.
+			// OpenAI does not know that id and answers 400 "Item with id ... not found".
+			name: "gemini synthetic ws_<n> web_search_call stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_0"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A "ws_" id with a status OpenAI does not define is not a native item.
+			name: "web_search_call with ws_ id and foreign status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("pending"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
 				}
 			},
 			origMutable: true,
@@ -3090,13 +3402,18 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Store original pointers to verify immutability
-			origStatus := tc.input.Status
-			origID := tc.input.ID
-
 			req := &schemas.BifrostResponsesRequest{
 				Model: "gpt-4o",
 				Input: []schemas.ResponsesMessage{tc.input},
+			}
+			// Snapshot the request's own item, since tc.input is only copied into it
+			origStatus, origID := req.Input[0].Status, req.Input[0].ID
+			var origStatusVal, origIDVal string
+			if origStatus != nil {
+				origStatusVal = *origStatus
+			}
+			if origID != nil {
+				origIDVal = *origID
 			}
 
 			converted := ToOpenAIResponsesRequest(nil, req)
@@ -3129,10 +3446,10 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 			// Verify caller's input is unmutated
 			if tc.origMutable {
-				if tc.input.Status != origStatus {
+				if req.Input[0].Status != origStatus || (origStatus != nil && *origStatus != origStatusVal) {
 					t.Error("original input status was mutated")
 				}
-				if tc.input.ID != origID {
+				if req.Input[0].ID != origID || (origID != nil && *origID != origIDVal) {
 					t.Error("original input ID was mutated")
 				}
 			} else {
@@ -3144,6 +3461,53 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+// Mantle requires an id on a replayed reasoning item and accepts any value, including the
+// msg_ ids it mints itself, so the non-rs_ strip must not reach it. OpenAI keeps the strip.
+func TestToOpenAIResponsesRequest_ReasoningIDOnMantle(t *testing.T) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		wantID   bool
+	}{
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, true},
+		{schemas.OpenAI, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type: &reasoningType,
+					ID:   schemas.Ptr("msg_b742cb8249a3aff3"),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("run ls")},
+					}},
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, req))
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+				t.Fatalf("unmarshal wire request: %v (%s)", err, wire)
+			}
+			id, has := payload.Input[0]["id"]
+			if tc.wantID && string(id) != `"msg_b742cb8249a3aff3"` {
+				t.Errorf("id = %s, want the replayed msg_ id kept", id)
+			}
+			if !tc.wantID && has {
+				t.Errorf("id = %s, want it stripped", id)
 			}
 		})
 	}
@@ -3217,6 +3581,110 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	if original.Detail != nil {
 		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
 	}
+}
+
+// TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail verifies an input_image
+// returned by a tool (inside function_call_output.output) gets the same "auto"
+// default as one in a message's own content. vLLM rejects the whole request with
+// "detail: Field required" otherwise, and the image stays in history so every later
+// turn fails too.
+func TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	toolOutput := func(callType schemas.ResponsesMessageType, detail *string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(callType),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("here is the file"),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+								Detail:   detail,
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		message    schemas.ResponsesMessage
+		wantDetail string
+	}{
+		{"function_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, nil), "auto"},
+		{"custom_tool_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeCustomToolCallOutput, nil), "auto"},
+		{"explicit detail preserved", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, schemas.Ptr("low")), "low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{Model: "gpt-4o", Input: []schemas.ResponsesMessage{tt.message}}
+
+			req := ToOpenAIResponsesRequest(nil, bifrostReq)
+			require.NotNil(t, req)
+			blocks := req.Input.OpenAIResponsesRequestInputArray[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+			require.Len(t, blocks, 2)
+			require.NotNil(t, blocks[1].ResponsesInputMessageContentBlockImage.Detail, "tool output image left without detail")
+			require.Equal(t, tt.wantDetail, *blocks[1].ResponsesInputMessageContentBlockImage.Detail)
+
+			data, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Contains(t, string(data), `"detail":"`+tt.wantDetail+`"`, "wire JSON: %s", data)
+
+			// Caller's input must remain untouched.
+			original := tt.message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[1].ResponsesInputMessageContentBlockImage
+			if tt.wantDetail == "auto" {
+				require.Nil(t, original.Detail, "caller's input was mutated")
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_ChatIngressToolImageDetail drives a /v1/chat/completions
+// tool message carrying an image through the chat→Responses bridge: the image lands
+// in function_call_output.output and must leave with detail "auto".
+func TestToOpenAIResponsesRequest_ChatIngressToolImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	chatReq := &schemas.BifrostChatRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read /tmp/img.png")}},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       schemas.Ptr("call_1"),
+						Type:     schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read_file"), Arguments: `{"path":"/tmp/img.png"}`},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: imageURL},
+				}}},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, chatReq.ToResponsesRequest())
+	require.NotNil(t, req)
+	data, err := sonic.Marshal(req)
+	require.NoError(t, err)
+	wire := string(data)
+	require.Contains(t, wire, `"type":"function_call_output"`, "wire JSON: %s", wire)
+	require.Contains(t, wire, `"input_image"`, "wire JSON: %s", wire)
+	require.Equal(t, strings.Count(wire, `"input_image"`), strings.Count(wire, `"detail":"auto"`), "every input_image needs detail: %s", wire)
 }
 
 // TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
@@ -3517,6 +3985,18 @@ func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 			require.False(t, samplingParamUnsupported(caps, field, model, "none"))
 			require.True(t, samplingParamUnsupported(caps, field, model, "low"), "rejected once reasoning is on")
 		}
+	})
+
+	t.Run("default_reasoning_effort_row_drives_omitted_effort", func(t *testing.T) {
+		const sol = "gpt-5.6-sol"
+		installCapabilityRecord(t, sol, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortNone)})
+		require.False(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, sol), schemas.FieldTemperature, sol, ""),
+			"a row defaulting to none keeps sampling fields when effort is omitted")
+
+		const g54 = "gpt-5.4"
+		installCapabilityRecord(t, g54, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortMedium)})
+		require.True(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, g54), schemas.FieldTemperature, g54, ""),
+			"a row defaulting to medium strips them")
 	})
 
 	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
@@ -4181,6 +4661,1023 @@ func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.
 			}
 			require.NoError(t, sonic.Unmarshal(wire, &payload))
 			require.JSONEq(t, tc.wantInput, string(payload.Input), "wire input for %s: %s", tc.name, payload.Input)
+		})
+	}
+}
+
+// TestFilterUnsupportedToolsKeepsShell locks the shell tool into the OpenAI
+// allow list. Before this it was dropped before the request left Bifrost, so the
+// model never saw the tool it was asked to use.
+func TestFilterUnsupportedToolsKeepsShell(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeShell,
+					ResponsesToolShell: &schemas.ResponsesToolShell{
+						Environment: &schemas.ResponsesToolShellEnvironment{Type: "local"},
+					},
+				},
+			},
+		},
+	}
+
+	req.filterUnsupportedTools(true, schemas.OpenAI)
+
+	if len(req.Tools) != 1 || req.Tools[0].Type != schemas.ResponsesToolTypeShell {
+		t.Fatalf("shell tool must survive the filter; got %+v", req.Tools)
+	}
+	if req.Tools[0].ResponsesToolShell == nil || req.Tools[0].ResponsesToolShell.Environment == nil {
+		t.Fatalf("shell environment must survive the filter; got %+v", req.Tools[0])
+	}
+}
+
+// TestShellToolSerializesForOpenAI checks the whole request body a shell turn
+// produces: the tool definition, and a replayed shell_call / shell_call_output pair.
+func TestShellToolSerializesForOpenAI(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					ID:   schemas.Ptr("shc_1"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+								Commands:  []string{"echo hi"},
+								TimeoutMS: schemas.Ptr(5000),
+							},
+						},
+						ResponsesShellCall: &schemas.ResponsesShellCall{
+							Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+						},
+					},
+				},
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+								Stdout:  "hi\n",
+								Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+							}},
+						},
+						ResponsesShellCall: &schemas.ResponsesShellCall{MaxOutputLength: schemas.Ptr(1000)},
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:           schemas.ResponsesToolTypeShell,
+				AllowedCallers: []string{"direct"},
+				ResponsesToolShell: &schemas.ResponsesToolShell{
+					Environment: &schemas.ResponsesToolShellEnvironment{
+						Type:          "container_auto",
+						MemoryLimit:   schemas.Ptr("4g"),
+						NetworkPolicy: &schemas.ResponsesToolShellNetworkPolicy{Type: "allowlist", AllowedDomains: []string{"example.com"}},
+					},
+				},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	for _, want := range []string{
+		`"type":"shell"`,
+		`"allowed_callers":["direct"]`,
+		`"type":"container_auto"`,
+		`"memory_limit":"4g"`,
+		`"allowed_domains":["example.com"]`,
+		`"commands":["echo hi"]`,
+		`"timeout_ms":5000`,
+		`"shell_call_output"`,
+		`"exit_code":0`,
+		`"max_output_length":1000`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestOpenAIAllowedCallersTranslation covers the caller vocabulary map: Anthropic
+// names the sandbox caller by code execution tool version, OpenAI calls it
+// "programmatic", and both know "direct". Unknown values stay put so OpenAI can
+// reject them (it answers "Supported values are: 'direct' and 'programmatic'").
+func TestOpenAIAllowedCallersTranslation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "direct is shared", in: []string{"direct"}, want: []string{"direct"}},
+		{name: "programmatic passes through", in: []string{"programmatic"}, want: []string{"programmatic"}},
+		{name: "code execution caller", in: []string{"code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "older code execution caller", in: []string{"code_execution_20250825"}, want: []string{"programmatic"}},
+		{name: "newest code execution caller", in: []string{"code_execution_20260521"}, want: []string{"programmatic"}},
+		// Anthropic ships new code execution versions regularly; every one of them is
+		// "programmatic" to OpenAI, so they are matched by prefix rather than by list.
+		{name: "code execution version newer than we know of", in: []string{"code_execution_20270101"}, want: []string{"programmatic"}},
+		{name: "both callers", in: []string{"direct", "code_execution_20260120"}, want: []string{"direct", "programmatic"}},
+		{name: "collapses to one programmatic", in: []string{"code_execution_20250825", "code_execution_20260120"}, want: []string{"programmatic"}},
+		{name: "unknown value is left for OpenAI to reject", in: []string{"bogus_value"}, want: []string{"bogus_value"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := openAIAllowedCallers(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestShellToolAllowedCallersReachOpenAITranslated pins the translation to the wire.
+func TestShellToolAllowedCallersReachOpenAITranslated(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.2",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:               schemas.ResponsesToolTypeShell,
+				AllowedCallers:     []string{"direct", "code_execution_20260120"},
+				ResponsesToolShell: &schemas.ResponsesToolShell{},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"allowed_callers":["direct","programmatic"]`) {
+		t.Errorf("allowed_callers must reach OpenAI translated; raw=%s", raw)
+	}
+	if strings.Contains(raw, "code_execution") {
+		t.Errorf("Anthropic caller vocabulary must not reach OpenAI; raw=%s", raw)
+	}
+}
+
+// TestNamespaceAllowedCallersStripped pins that namespace does not carry
+// allowed_callers itself — OpenAI answers "Unknown parameter:
+// 'tools[0].allowed_callers'". Its nested tools carry them instead.
+func TestNamespaceAllowedCallersStripped(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:           schemas.ResponsesToolTypeNamespace,
+				Name:           schemas.Ptr("jobs"),
+				AllowedCallers: []string{"direct"},
+				ResponsesToolNamespace: &schemas.ResponsesToolNamespace{
+					Tools: []schemas.ResponsesTool{{
+						Type: schemas.ResponsesToolTypeFunction,
+						Name: schemas.Ptr("start"),
+					}},
+				},
+			}},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if raw := string(jsonBytes); strings.Contains(raw, "allowed_callers") {
+		t.Errorf("namespace must not carry allowed_callers to OpenAI; raw=%s", raw)
+	}
+}
+
+// TestFilterUnsupportedToolsKeepsBareOpenAITools locks the two bare tool types in
+// TestFilterUnsupportedToolsDropsShellOnBedrockMantle pins the drop. Mantle serves no
+// model that accepts the shell tool - its own error enumerates the types it takes and
+// omits shell - so forwarding it is always a 400.
+// The GA computer tool rejects a computer_call that carries action, alone or beside actions
+// ("must include exactly one of action or actions" on OpenAI and Azure, "use actions instead"
+// on Bedrock), so history replays the action as actions; computer_use_preview is left alone.
+func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
+	click := schemas.ResponsesComputerToolCallAction{Type: "click", X: schemas.Ptr(100), Y: schemas.Ptr(200), Button: schemas.Ptr("left")}
+	call := func(withActions bool) schemas.ResponsesMessage {
+		tm := &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &click},
+		}
+		if withActions {
+			tm.ResponsesComputerToolCall = &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{click}}
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	wireCall := func(t *testing.T, tool schemas.ResponsesTool, msg schemas.ResponsesMessage) map[string]any {
+		req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-sol",
+			Input:    []schemas.ResponsesMessage{msg},
+			Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool}},
+		})
+		wire, err := sonic.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var payload struct {
+			Input []map[string]any `json:"input"`
+		}
+		if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+			t.Fatalf("decode %s: %v", wire, err)
+		}
+		return payload.Input[0]
+	}
+	computer := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputer}
+
+	for name, msg := range map[string]schemas.ResponsesMessage{
+		"single action":         call(false),
+		"action beside actions": call(true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := wireCall(t, computer, msg)
+			if _, ok := got["action"]; ok {
+				t.Fatalf("action must not reach the GA computer tool: %v", got)
+			}
+			actions, _ := got["actions"].([]any)
+			if len(actions) != 1 || actions[0].(map[string]any)["type"] != "click" {
+				t.Fatalf("want the click as the only action, got %v", got)
+			}
+		})
+	}
+
+	t.Run("computer_use_preview keeps action", func(t *testing.T) {
+		preview := schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"},
+		}
+		got := wireCall(t, preview, call(false))
+		if _, ok := got["action"]; !ok {
+			t.Fatalf("computer_use_preview history must keep action: %v", got)
+		}
+		if _, ok := got["actions"]; ok {
+			t.Fatalf("computer_use_preview history must not gain actions: %v", got)
+		}
+	})
+
+	// Anthropic's zoom has no OpenAI action, so every replayed entry becomes a screenshot
+	// and loses its region, whichever tool the request declares.
+	zoomCall := func() schemas.ResponsesMessage {
+		zoom := schemas.ResponsesComputerToolCallAction{Type: "zoom", Region: []int{0, 0, 512, 384}}
+		tm := &schemas.ResponsesToolMessage{
+			CallID:                    schemas.Ptr("call_zoom"),
+			Action:                    &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &zoom},
+			ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{Actions: []schemas.ResponsesComputerToolCallAction{zoom}},
+		}
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: tm}
+	}
+	assertScreenshot := func(t *testing.T, field string, v any) {
+		a, _ := v.(map[string]any)
+		if a == nil || a["type"] != "screenshot" || a["region"] != nil {
+			t.Fatalf("%s = %v, want a screenshot with no region", field, v)
+		}
+	}
+
+	t.Run("zoom history on the GA tool", func(t *testing.T) {
+		got := wireCall(t, computer, zoomCall())
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+	})
+
+	t.Run("zoom history on computer_use_preview", func(t *testing.T) {
+		preview := schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"},
+		}
+		msg := zoomCall()
+		got := wireCall(t, preview, msg)
+		assertScreenshot(t, "action", got["action"])
+		actions, _ := got["actions"].([]any)
+		if len(actions) != 1 {
+			t.Fatalf("want one action, got %v", got)
+		}
+		assertScreenshot(t, "actions[0]", actions[0])
+		if msg.ResponsesToolMessage.ResponsesComputerToolCall.Actions[0].Type != "zoom" || msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type != "zoom" {
+			t.Fatalf("the caller's zoom was rewritten in place: %+v", msg.ResponsesToolMessage)
+		}
+	})
+
+	t.Run("caller input is not mutated", func(t *testing.T) {
+		msg := call(false)
+		wireCall(t, computer, msg)
+		if msg.ResponsesToolMessage.Action == nil || msg.ResponsesToolMessage.ResponsesComputerToolCall != nil {
+			t.Fatalf("the caller's message was changed: %+v", msg.ResponsesToolMessage)
+		}
+	})
+}
+
+func TestFilterUnsupportedToolsDropsShellOnBedrockMantle(t *testing.T) {
+	shellTool := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeShell,
+		ResponsesToolShell: &schemas.ResponsesToolShell{
+			Environment: &schemas.ResponsesToolShellEnvironment{Type: "local"},
+		},
+	}
+	applyPatchTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeApplyPatch}
+	functionTool := schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("get_price"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+
+	newReq := func() *OpenAIResponsesRequest {
+		return &OpenAIResponsesRequest{
+			ResponsesParameters: schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{shellTool, applyPatchTool, functionTool},
+			},
+		}
+	}
+
+	types := func(tools []schemas.ResponsesTool) []schemas.ResponsesToolType {
+		out := make([]schemas.ResponsesToolType, 0, len(tools))
+		for _, tool := range tools {
+			out = append(out, tool.Type)
+		}
+		return out
+	}
+
+	t.Run("dropped on bedrock_mantle", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.BedrockMantle)
+		got := types(req.Tools)
+		for _, toolType := range got {
+			if toolType == schemas.ResponsesToolTypeShell {
+				t.Fatalf("shell must not reach mantle; got %v", got)
+			}
+		}
+		// Only shell goes: apply_patch is accepted on every gpt-5.x/gpt-6 model there,
+		// so dropping it would break requests that work today.
+		if len(got) != 2 || got[0] != schemas.ResponsesToolTypeApplyPatch || got[1] != schemas.ResponsesToolTypeFunction {
+			t.Fatalf("only shell may be dropped; got %v", got)
+		}
+	})
+
+	t.Run("kept on openai", func(t *testing.T) {
+		req := newReq()
+		req.filterUnsupportedTools(true, schemas.OpenAI)
+		if got := types(req.Tools); len(got) != 3 || got[0] != schemas.ResponsesToolTypeShell {
+			t.Fatalf("shell must survive on openai; got %v", got)
+		}
+	})
+}
+
+// OpenAI's Tool union that carry no fields of their own. Both used to be stripped
+// before the request left Bifrost: apply_patch is accepted by OpenAI today, and
+// programmatic_tool_calling is what turns allowed_callers: ["programmatic"] on.
+// OpenAI requires status on apply_patch_call and apply_patch_call_output input items
+// ("Missing required parameter: 'input[N].status'"), and on the output it is the only
+// sign a patch without output text failed, so the input status strip must skip them.
+func TestApplyPatchReplayKeepsStatus(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function_call","call_id":"call_fn","name":"get_time","arguments":"{}","status":"completed"},
+		{"type":"apply_patch_call","call_id":"call_ap","status":"completed","operation":{"type":"create_file","path":"hello.txt","diff":"+hi\n"}},
+		{"type":"apply_patch_call_output","call_id":"call_ap","status":"failed"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5.3-codex", Input: input,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeApplyPatch}}},
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 3 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	if _, ok := payload.Input[0]["status"]; ok {
+		t.Fatalf("function_call status must still be stripped: %v", payload.Input[0])
+	}
+	if payload.Input[1]["status"] != "completed" {
+		t.Fatalf("apply_patch_call lost its status: %v", payload.Input[1])
+	}
+	if payload.Input[2]["status"] != "failed" {
+		t.Fatalf("apply_patch_call_output lost its failed status: %v", payload.Input[2])
+	}
+}
+
+func TestFilterUnsupportedToolsKeepsBareOpenAITools(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"programmatic"}},
+			},
+		},
+	}
+
+	req.filterUnsupportedTools(true, schemas.OpenAI)
+
+	if len(req.Tools) != 2 {
+		t.Fatalf("both bare tools must survive the filter; got %+v", req.Tools)
+	}
+	if req.Tools[0].Type != schemas.ResponsesToolTypeProgrammaticToolCalling ||
+		req.Tools[1].Type != schemas.ResponsesToolTypeApplyPatch {
+		t.Fatalf("tool types changed: %+v", req.Tools)
+	}
+}
+
+// TestBareOpenAIToolsSerialize checks the wire shape: a bare type emits just its
+// discriminator, and apply_patch keeps allowed_callers (OpenAI accepts it there).
+func TestBareOpenAIToolsSerialize(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-5.1",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"code_execution_20260120"}},
+				{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					AllowedCallers:               []string{"direct"},
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: "auto"},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	for _, want := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`{"type":"apply_patch","allowed_callers":["programmatic"]}`, // Anthropic's caller vocabulary is translated
+		`"type":"code_interpreter","allowed_callers":["direct"]`,    // allowed_callers is no longer stripped here
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("missing %s in request body; raw=%s", want, raw)
+		}
+	}
+}
+
+// TestResponsesToolBareTypesRoundTrip guards the codec for tool types that have no
+// embedded struct: the discriminator and the common fields must survive.
+func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
+	for _, input := range []string{
+		`{"type":"programmatic_tool_calling"}`,
+		`{"type":"apply_patch"}`,
+		`{"type":"apply_patch","allowed_callers":["direct"]}`,
+	} {
+		var tool schemas.ResponsesTool
+		if err := schemas.Unmarshal([]byte(input), &tool); err != nil {
+			t.Fatalf("unmarshal %s: %v", input, err)
+		}
+		encoded, err := schemas.Marshal(tool)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", input, err)
+		}
+		if string(encoded) != input {
+			t.Errorf("round trip changed %s -> %s", input, string(encoded))
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_ToolChangeBlocksDropped (#8207): Anthropic's mid-conversation
+// tool_addition / tool_removal blocks have no OpenAI equivalent and OpenAI rejects unknown
+// block types, so they are dropped from a system item on the OpenAI-shaped egress. Text
+// siblings survive; an item left with no blocks is skipped entirely.
+func TestToOpenAIResponsesRequest_ToolChangeBlocksDropped(t *testing.T) {
+	t.Parallel()
+	var input []schemas.ResponsesMessage
+	if err := schemas.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_removal","tool":{"type":"tool_reference","name":"get_weather"}},
+			{"type":"input_text","text":"Tool set updated."}
+		]},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"function","name":"get_weather"}}}
+		]}
+	]`), &input); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	out := ToOpenAIResponsesRequest(&schemas.BifrostContext{}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    input,
+	})
+	if out == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	items := out.Input.OpenAIResponsesRequestInputArray
+	raw, err := sonic.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wire := string(raw)
+	if strings.Contains(wire, "tool_addition") || strings.Contains(wire, "tool_removal") {
+		t.Fatalf("tool-change blocks must not reach an OpenAI-shaped wire: %s", wire)
+	}
+	if len(items) != 2 {
+		t.Fatalf("input items = %d, want 2 (user + the text-bearing system item; the tool-only item is skipped): %s", len(items), wire)
+	}
+	if !strings.Contains(wire, "Tool set updated.") {
+		t.Fatalf("text sibling of a dropped tool-change block must survive: %s", wire)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsMCPToolsetConfig: the Anthropic mcp_toolset configuration
+// carried on the neutral MCP tool (default_config / tool_configs) is not an OpenAI field and
+// must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsMCPToolsetConfig(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeMCP,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel:   "calendar",
+				ServerURL:     schemas.Ptr("https://mcp.example.com/calendar"),
+				DefaultConfig: &schemas.ResponsesToolMCPToolConfig{Enabled: schemas.Ptr(true)},
+				ToolConfigs:   map[string]*schemas.ResponsesToolMCPToolConfig{"delete_event": {Enabled: schemas.Ptr(false)}},
+			},
+		}}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	out := ToOpenAIResponsesRequest(ctx, req)
+	data, err := out.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leaked := range []string{`"default_config"`, `"tool_configs"`} {
+		if strings.Contains(string(data), leaked) {
+			t.Errorf("%s leaked onto the OpenAI wire: %s", leaked, data)
+		}
+	}
+	if !strings.Contains(string(data), `"server_label":"calendar"`) {
+		t.Errorf("mcp tool itself must still be forwarded: %s", data)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters: max_characters is an Anthropic
+// text_editor setting and must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolType("text_editor_20250728"), Name: schemas.Ptr("str_replace_based_edit_tool"), MaxCharacters: schemas.Ptr(10000)},
+			{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("echo"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	data, err := ToOpenAIResponsesRequest(ctx, req).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"max_characters"`) {
+		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
+	}
+}
+
+// The web_search_call branch and the image-detail default run for every input item, so the
+// benchmark covers a history without web searches or tool images (the common case), the same
+// history with one search per turn, and one with a tool returning an image per turn.
+func BenchmarkToOpenAIResponsesRequestInput(b *testing.B) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+	functionCallOutputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	history := func(withSearch, withToolImage bool) []schemas.ResponsesMessage {
+		var input []schemas.ResponsesMessage
+		for i := 0; i < 8; i++ {
+			input = append(input, schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("what is new in the news today?"),
+				},
+			})
+			if withToolImage {
+				input = append(input, schemas.ResponsesMessage{
+					Type: &functionCallOutputType,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_bench"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+								Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+							}},
+						},
+					},
+				})
+			}
+			if withSearch {
+				input = append(input, schemas.ResponsesMessage{
+					Type:   &webSearchCallType,
+					ID:     schemas.Ptr("ws_bench"),
+					Status: schemas.Ptr("completed"),
+				})
+			}
+			input = append(input, schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_bench"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("here is a summary")},
+					},
+				},
+			})
+		}
+		return input
+	}
+	for name, opts := range map[string]struct{ search, toolImage bool }{
+		"plain-history":      {},
+		"web-search-history": {search: true},
+		"tool-image-history": {toolImage: true},
+	} {
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    history(opts.search, opts.toolImage),
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet pins the Responses side of the
+// supports_mid_conversation_system_messages gate: system/developer items after the leading run
+// become <system-reminder> user items only when the datasheet row says false.
+func TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	msg := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	input := []schemas.ResponsesMessage{
+		msg(schemas.ResponsesInputMessageRoleDeveloper, "be brief"),
+		msg(schemas.ResponsesInputMessageRoleUser, "hi"),
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("answer in french")},
+			}},
+		},
+		msg(schemas.ResponsesInputMessageRoleSystem, "stay polite"),
+		msg(schemas.ResponsesInputMessageRoleUser, "how are you"),
+	}
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Input.OpenAIResponsesRequestInputArray, 5)
+		items := out.Input.OpenAIResponsesRequestInputArray
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *items[0].Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[2].Role)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[2].Content.ContentBlocks[0].Text)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
+		require.Equal(t, "<system-reminder>\nstay polite\n</system-reminder>\n", *items[3].Content.ContentStr)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[2].Role)
+		require.Equal(t, "answer in french", *req.Input[2].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+
+	t.Run("custom_provider_falls_back_to_base_row", func(t *testing.T) {
+		installProviderCapabilityRecords(t, model, map[schemas.ModelProvider]*schemas.ModelCapabilities{
+			schemas.Fireworks: {SupportsMidConversationSystem: schemas.Ptr(false)},
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Fireworks)
+		req := newReq()
+		req.Provider = "my-fireworks"
+		out := ToOpenAIResponsesRequest(ctx, req)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+}
+
+func developerResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			},
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Be brief.")},
+			},
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			},
+		},
+	}
+}
+
+func TestToOpenAIResponsesRequest_DeveloperRoleAsSystem(t *testing.T) {
+	stubDeveloperRoleDatasheet(t)
+	req := developerResponsesRequest(schemas.Fireworks, "glm-5")
+	result := ToOpenAIResponsesRequest(nil, req)
+	require.NotNil(t, result)
+	input := result.Input.OpenAIResponsesRequestInputArray
+	require.Len(t, input, 3)
+	require.Equal(t, schemas.ResponsesMessageTypeAdditionalTools, *input[0].Type)
+	require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *input[1].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *input[2].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[1].Role)
+
+	result = ToOpenAIResponsesRequest(nil, developerResponsesRequest(schemas.Fireworks, "qwen3-dev"))
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *result.Input.OpenAIResponsesRequestInputArray[1].Role)
+}
+
+// TestToOpenAIResponsesRequest_DeveloperRoleAndMidConversationSystem is the Responses side of
+// TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem.
+func TestToOpenAIResponsesRequest_DeveloperRoleAndMidConversationSystem(t *testing.T) {
+	const model = "test-model"
+	msg := func(role schemas.ResponsesMessageRoleType, s string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)},
+		}
+	}
+	const (
+		dev  = schemas.ResponsesInputMessageRoleDeveloper
+		sys  = schemas.ResponsesInputMessageRoleSystem
+		user = schemas.ResponsesInputMessageRoleUser
+	)
+	input := []schemas.ResponsesMessage{
+		msg(dev, "lead dev"),
+		msg(sys, "lead sys"),
+		msg(user, "hi"),
+		msg(dev, "mid dev"),
+		msg(sys, "mid sys"),
+		msg(user, "bye"),
+	}
+	tests := []struct {
+		name           string
+		developerRole  bool
+		midConvSystem  bool
+		wantRoles      []schemas.ResponsesMessageRoleType
+		wantMidInlined bool
+	}{
+		{"both_supported", true, true, []schemas.ResponsesMessageRoleType{dev, sys, user, dev, sys, user}, false},
+		{"developer_unsupported", false, true, []schemas.ResponsesMessageRoleType{sys, sys, user, sys, sys, user}, false},
+		{"mid_conversation_unsupported", true, false, []schemas.ResponsesMessageRoleType{dev, sys, user, user, user, user}, true},
+		{"both_unsupported", false, false, []schemas.ResponsesMessageRoleType{sys, sys, user, user, user, user}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+				SupportsDeveloperRole:         schemas.Ptr(tt.developerRole),
+				SupportsMidConversationSystem: schemas.Ptr(tt.midConvSystem),
+			})
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: model, Input: slices.Clone(input)}
+			out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			items := out.Input.OpenAIResponsesRequestInputArray
+			require.Len(t, items, len(tt.wantRoles))
+			for i, want := range tt.wantRoles {
+				require.Equal(t, want, *items[i].Role, "item %d", i)
+			}
+			require.Equal(t, "lead dev", *items[0].Content.ContentStr)
+			if tt.wantMidInlined {
+				require.Equal(t, "<system-reminder>\nmid dev\n</system-reminder>\n", *items[3].Content.ContentStr)
+				require.Equal(t, "<system-reminder>\nmid sys\n</system-reminder>\n", *items[4].Content.ContentStr)
+			} else {
+				require.Equal(t, "mid dev", *items[3].Content.ContentStr)
+			}
+			require.Equal(t, dev, *req.Input[0].Role)
+			require.Equal(t, dev, *req.Input[3].Role)
+		})
+	}
+}
+
+// TestInlineResponsesMidConversationSystem_NilContent is the Responses side of
+// TestInlineChatMidConversationSystem_NilContent.
+func TestInlineResponsesMidConversationSystem_NilContent(t *testing.T) {
+	out := inlineResponsesMidConversationSystem([]schemas.ResponsesMessage{
+		{Role: new(schemas.ResponsesInputMessageRoleSystem)},
+		{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: new(schemas.ResponsesInputMessageRoleDeveloper)},
+	})
+	require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *out[0].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *out[2].Role)
+	require.Nil(t, out[2].Content)
+}
+
+// TestToOpenAIResponsesRequest_MidConversationSystemSkipsMetadataItems pins that metadata-only
+// items (additional_tools, configuration_update) ahead of the opening instructions do not end the
+// leading run, so the opening developer message keeps its role while later ones are inlined.
+func TestToOpenAIResponsesRequest_MidConversationSystemSkipsMetadataItems(t *testing.T) {
+	const model = "test-model"
+	installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+	msg := func(role schemas.ResponsesMessageRoleType, s string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)},
+		}
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper)},
+			msg(schemas.ResponsesInputMessageRoleDeveloper, "be brief"),
+			msg(schemas.ResponsesInputMessageRoleUser, "hi"),
+			msg(schemas.ResponsesInputMessageRoleDeveloper, "answer in french"),
+		},
+	}
+	items := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req).Input.OpenAIResponsesRequestInputArray
+	require.Len(t, items, 4)
+	require.Equal(t, schemas.ResponsesMessageTypeAdditionalTools, *items[0].Type)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *items[1].Role)
+	require.Equal(t, "be brief", *items[1].Content.ContentStr)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
+	require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[3].Content.ContentStr)
+}
+
+// TestToOpenAIResponsesRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Fireworks,
+			Model:    "accounts/fireworks/models/qwen3p8-max",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIResponsesRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
+}
+
+// BenchmarkToOpenAIResponsesRequestReasoningReplay measures the replayed-reasoning id handling
+// on the OpenAI path (strips) and the Mantle path (keeps).
+func BenchmarkToOpenAIResponsesRequestReasoningReplay(b *testing.B) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		b.Run(string(provider), func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type:               &reasoningType,
+					ID:                 schemas.Ptr("msg_b742cb8249a3aff3"),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
+// Codex replays assistant message items carrying summary:null and encrypted_content.
+// Those fields decode into the embedded ResponsesReasoning, which used to route the
+// item through reasoning handling: content was stripped (OpenAI: "Missing required
+// parameter: 'input[N].content'") and summary was re-emitted (OpenAI rejects it on a
+// message), or, for non-reasoning models, the whole assistant turn was dropped.
+// OpenAI never mints encrypted_content on a message item and rejects any it receives
+// ("Encrypted content could not be decrypted or parsed"), even its own reasoning token;
+// forwarding it cost a failed call whose fail-soft retry also strips the genuine reasoning
+// items. So the message drops it for every model while separate reasoning items keep theirs.
+func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) {
+	const reasoning = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"gAAAA-reasoning"}`
+	const assistant = `{"type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`
+	tests := []struct {
+		name          string
+		model         string
+		withReasoning bool
+	}{
+		{name: "reasoning model drops encrypted_content from the message only", model: "gpt-5-mini", withReasoning: true},
+		{name: "non-reasoning model drops encrypted_content", model: "gpt-4o"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			history := assistant
+			if tt.withReasoning {
+				history = reasoning + "," + assistant
+			}
+			body := `{"model":"` + tt.model + `","input":[{"role":"user","content":"hi"},` + history + `,{"role":"user","content":"hi again"}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			var reasoningItems []map[string]json.RawMessage
+			for _, in := range payload.Input {
+				switch string(in["type"]) {
+				case `"message"`:
+					if string(in["role"]) == `"assistant"` {
+						item = in
+					}
+				case `"reasoning"`:
+					reasoningItems = append(reasoningItems, in)
+				}
+			}
+			require.NotNil(t, item, "assistant turn must not be dropped: %s", wire)
+			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
+			require.JSONEq(t, `"final_answer"`, string(item["phase"]))
+			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+			if tt.withReasoning {
+				require.Len(t, reasoningItems, 1, "the reasoning item must still be replayed: %s", wire)
+				require.JSONEq(t, `"gAAAA-reasoning"`, string(reasoningItems[0]["encrypted_content"]), "a separate reasoning item keeps its token: %s", wire)
+			}
 		})
 	}
 }

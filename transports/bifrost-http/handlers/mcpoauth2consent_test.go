@@ -80,12 +80,52 @@ func TestConsentFlowDetail(t *testing.T) {
 		ctx := consentCtx("flow-1", "")
 		h.flowDetail(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+		var destination map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &destination))
+		require.Equal(t, "http://127.0.0.1/cb", destination["redirect_uri"])
 
 		var resp consentFlowDetailResponse
 		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 		assert.Equal(t, "Test Client", resp.ClientName)
 		// A bare context carries no authenticated identity, so session is not offered.
 		assert.Equal(t, []consentFlowMode{consentFlowModeVK}, resp.AvailableModes)
+	})
+
+	// CIMD clients expose their document host; loopback-only redirects are flagged.
+	t.Run("client metadata document client shows where it is published", func(t *testing.T) {
+		store := newConsentStore()
+		host := newMetadataHost(t)
+		clientID := host.document("/client.json", map[string]any{"client_name": "Claude"}, nil)
+		seedPendingFlow(store, "flow-cimd", time.Now().Add(time.Minute))
+		store.authReqs["flow-cimd"].ClientID = clientID
+		store.authReqs["flow-cimd"].RedirectURI = "http://127.0.0.1:3000/callback"
+		h := newConsentHandler(store, nil, false)
+		h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+
+		// The document fetch uses ctx as its context.
+		var req fasthttp.Request
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", "flow-cimd")
+		h.flowDetail(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, "Claude", resp.ClientName)
+		assert.Equal(t, "127.0.0.1", resp.ClientHost)
+		assert.Equal(t, "127.0.0.1", resp.RedirectHost)
+		assert.True(t, resp.LocalhostOnly)
+	})
+
+	t.Run("registered client has no published host", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := consentCtx("flow-dcr", "")
+		h.flowDetail(ctx)
+		var resp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Empty(t, resp.ClientHost)
+		assert.Equal(t, "127.0.0.1", resp.RedirectHost)
 	})
 
 	t.Run("missing flow returns 404", func(t *testing.T) {
@@ -181,6 +221,20 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-inactive"}`)
 		h.flowSubmit(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	})
+
+	t.Run("an expired VK is rejected though still active", func(t *testing.T) {
+		past := time.Now().UTC().Add(-time.Second)
+		expiredVK := &configtables.TableVirtualKey{ID: "vk-row-4", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
+		store := newConsentStore()
+		store.vksByValue["sk-bf-expired"] = expiredVK
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-expired"}`)
+		h.flowSubmit(ctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		assert.Contains(t, string(ctx.Response.Body()), "virtual key has expired")
+		assert.NotEqual(t, configtables.OAuth2AuthorizeRequestStatusConsented, store.authReqs["flow-1"].Status, "no grant may be minted for an expired key")
 	})
 
 	t.Run("unknown VK is rejected", func(t *testing.T) {
@@ -419,4 +473,22 @@ func TestConsentSessionModeRequiresIdentity(t *testing.T) {
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		assert.Equal(t, "session", store.authReqs["flow-1"].BfMode)
 	})
+}
+
+func TestConsentRechecksCallbackPolicy(t *testing.T) {
+	store := newConsentStore()
+	seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+	store.authReqs["flow-1"].RedirectURI = "https://removed.example/cb"
+	h := newConsentHandler(store, nil, false)
+	for _, submit := range []bool{false, true} {
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-unused"}`)
+		if submit {
+			h.flowSubmit(ctx)
+		} else {
+			h.flowDetail(ctx)
+		}
+		require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.Contains(t, string(ctx.Response.Body()), "no longer approved")
+	}
+	require.Equal(t, configtables.OAuth2AuthorizeRequestStatusPending, store.authReqs["flow-1"].Status)
 }

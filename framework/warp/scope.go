@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -41,6 +42,64 @@ type Scope struct {
 	// Unrestricted reports that no row-level query scope applies to the caller,
 	// so everything they may see is the whole deployment.
 	Unrestricted bool
+	// Visibility says, in a few words, which slice a restricted caller may see
+	// ("their teams' traffic"). Empty when the caller is unrestricted or the
+	// deployment has no resolver to say.
+	Visibility string
+	// Visible is the row ownership a restricted caller's reads are narrowed
+	// to, when the deployment can say. Semantic search prefilters the index
+	// with it; nil leaves the search unfiltered, as it is for everyone else.
+	Visible *LogVisibility
+}
+
+// CallerRestriction is what the deployment's row-level access control says
+// about one caller.
+type CallerRestriction struct {
+	// Restricted reports that the store will narrow this caller's reads.
+	Restricted bool
+	// Visibility is a short phrase for what the caller may see, written to
+	// follow "the person asking may see ...". Optional.
+	Visibility string
+	// Logs is the row ownership the store grants the caller on log reads.
+	// Optional: it only sharpens semantic search (see LogVisibility).
+	Logs *LogVisibility
+}
+
+// CallerRestrictionResolver reports whether row-level access control narrows
+// the caller's reads.
+//
+// It exists because ScopeFromContext can only see a queryscope that is already
+// on the context, and a deployment whose store wrapper attaches the scope per
+// read - the enterprise one does - never puts it there. Warp then took every
+// caller for unrestricted: a team-scoped user's total was their team's rows,
+// correctly filtered by the store, and described as the whole deployment's.
+//
+// Like the scope itself this is precision, not access control. The resolver is
+// given the snapshotted context the tools run under, so it answers from the
+// same identity the store will.
+type CallerRestrictionResolver func(ctx context.Context) CallerRestriction
+
+// withCallerRestriction folds a resolver's answer into a context-derived scope.
+//
+// It only ever narrows: a caller the context already shows as restricted stays
+// restricted whatever the resolver says, so a resolver that knows nothing
+// cannot widen a default. The local admin is left alone - they bypass RBAC by
+// definition, and the store does not scope them either.
+func withCallerRestriction(ctx context.Context, scope Scope, resolve CallerRestrictionResolver) Scope {
+	if resolve == nil {
+		return scope
+	}
+	if isLocalAdmin, _ := ctx.Value(schemas.IsLocalAdminContextKey).(bool); isLocalAdmin {
+		return scope
+	}
+	restriction := resolve(ctx)
+	if !restriction.Restricted {
+		return scope
+	}
+	scope.Unrestricted = false
+	scope.Visibility = restriction.Visibility
+	scope.Visible = restriction.Logs
+	return scope
 }
 
 // ScopeFromContext derives the caller's scope.
@@ -157,6 +216,45 @@ func scopeNote(filters *logstore.SearchFilters, scope Scope) string {
 		// deployment.
 		return "all"
 	}
+}
+
+// noteCallerVisibility adds caller_can_see to a result whose scope tag does not
+// already say what a restricted caller's answer covers.
+//
+// describe_filter_space reports it once, but a turn that never calls that tool
+// had only the tag to go on, and "all" - everything the person may see - was
+// then written up as the whole deployment. "named" carries it as well: a team
+// outside the caller's view comes back empty exactly as a team with no traffic
+// does, and the model needs to know that an empty result is not evidence the
+// team is idle or the id wrong. "self" is the caller's own traffic and says so.
+//
+// Applied where every tool's result passes (see Agent.executeTool) rather than
+// in each tool, so a tool added later cannot leave it out.
+func noteCallerVisibility(result any, scope Scope) any {
+	if scope.Visibility == "" {
+		return result
+	}
+	out, ok := result.(map[string]any)
+	if !ok {
+		return result
+	}
+	if tag, _ := out["scope"].(string); tag == "all" || tag == "named" {
+		out["caller_can_see"] = scope.Visibility
+	}
+	return out
+}
+
+// logNotFound is the refusal for a log id that loaded nothing.
+//
+// For a restricted caller a row outside their view and a row that does not
+// exist look the same, and must: saying which would disclose that the row
+// exists. But "no such log" is then a claim the lookup cannot support, and the
+// model went on to call the id mistyped. The error says what was searched.
+func logNotFound(id string, scope Scope) error {
+	if scope.Visibility == "" {
+		return fmt.Errorf("no log found with id %s", id)
+	}
+	return fmt.Errorf("no log found with id %s among the rows the person asking may see (%s). A log outside that is not visible to them, so say their view is limited to it rather than that the id does not exist or is mistyped", id, scope.Visibility)
 }
 
 // keyPairLabels renders id/name pairs the way the model puts them in a

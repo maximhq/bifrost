@@ -87,7 +87,7 @@ Each server entry is a JSON object in the `servers` array.
 | `name` | `string` | yes | Human-readable display name. Bifrost derives the internal slug from this value. |
 | `description` | `string` | no | Short summary of what the server does. |
 | `category` | `string` | no | Grouping category used for filtering. Reuse an existing category when possible. |
-| `connection_type` | `string` | yes | One of `http`, `stdio`, `sse`, or `inprocess`. |
+| `connection_type` | `string` | yes | One of `http`, `stdio`, or `sse`. |
 | `connection_url` | `string` | for `http`/`sse` | The server endpoint URL. |
 | `stdio_config` | `object` | for `stdio` | Launch configuration. See [`stdio_config` fields](#stdio_config-fields). |
 | `auth_type` | `string` | no | One of `none`, `headers`, `oauth`, `per_user_oauth`, or `per_user_headers`. Defaults to `none` when omitted. |

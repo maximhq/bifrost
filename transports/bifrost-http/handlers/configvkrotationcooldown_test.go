@@ -25,7 +25,7 @@ func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) erro
 func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
 func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }
 func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool)                  {}
-func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, int, int) error {
+func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool, int, int, *schemas.MCPCodeModeLimits) error {
 	return nil
 }
 func (stubConfigManager) ReloadPlugin(context.Context, string, *string, any, *schemas.PluginPlacement, *int) error {
@@ -86,4 +86,103 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 		assert.Equal(t, time.Duration(0), persisted.VKRotationCooldown.D(), "an empty cooldown must persist 0")
 		assert.Equal(t, time.Duration(0), cfg.ClientConfig.VKRotationCooldown.D())
 	})
+}
+
+// PUT /api/config sets the global MCP max protocol version; omitting it keeps the stored cap, so a
+// caller unaware of the field never lifts the upgrade pin, and an unsupported value is rejected.
+func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPMaxProtocolVersion
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"2025-06-18",`))
+	assert.Equal(t, "2025-06-18", stored(t))
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, "2025-06-18", stored(t), "omitted keeps the cap")
+
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"mcp_max_protocol_version":"latest",`))
+	assert.Equal(t, "2025-06-18", stored(t))
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"auto",`))
+	assert.Equal(t, "auto", stored(t))
+}
+
+// tokenizerRecorder records the tokenizer families each post-save reload hands to the
+// running client. Like the server's reload, it reads the stored list.
+type tokenizerRecorder struct {
+	stubConfigManager
+	stored  func() []string
+	applied [][]string
+}
+
+func (r *tokenizerRecorder) ReloadClientConfigFromConfigStore(context.Context) error {
+	r.applied = append(r.applied, r.stored())
+	return nil
+}
+
+// PUT /api/config sets usage_estimation_tokenizers: names are normalized and persisted, and
+// the running client gets the stored list from the reload that follows a successful save.
+// Omitting the field keeps the stored list, and a rejected request applies nothing.
+func TestUpdateConfig_UsageEstimationTokenizers(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	recorder := &tokenizerRecorder{}
+	h := &ConfigHandler{store: cfg, configManager: recorder}
+	recorder.stored = func() []string {
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.UsageEstimationTokenizers
+	}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) []string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.UsageEstimationTokenizers
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"usage_estimation_tokenizers":[" Anthropic ","llama3","anthropic"],`))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t))
+	assert.Equal(t, []string{"anthropic", "llama3"}, cfg.ClientConfig.UsageEstimationTokenizers)
+	require.Len(t, recorder.applied, 1)
+	assert.Equal(t, []string{"anthropic", "llama3"}, recorder.applied[0])
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t), "omitted keeps the stored list")
+	require.Len(t, recorder.applied, 2)
+	assert.Equal(t, []string{"anthropic", "llama3"}, recorder.applied[1], "the reload re-applies the stored list")
+
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"usage_estimation_tokenizers":["gpt2"],`))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t))
+	assert.Len(t, recorder.applied, 2, "a rejected list is never applied")
+
+	// A valid list on a request that a later check rejects must not reach the runtime.
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"usage_estimation_tokenizers":["deepseek"],"mcp_code_mode_binding_level":"bogus",`))
+	assert.Equal(t, []string{"anthropic", "llama3"}, stored(t))
+	assert.Len(t, recorder.applied, 2, "a list on a rejected request is never applied")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"usage_estimation_tokenizers":[],`))
+	assert.Empty(t, stored(t), "an empty list returns to the base encodings")
+	require.Len(t, recorder.applied, 3)
+	assert.Empty(t, recorder.applied[2])
 }

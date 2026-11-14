@@ -19,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -31,6 +31,13 @@ type mockHandlerStore struct {
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
+	customProviders            map[schemas.ModelProvider]mockCustomProvider
+}
+
+// mockCustomProvider is what GetCustomProviderPassthrough reports for one custom provider.
+type mockCustomProvider struct {
+	base        schemas.ModelProvider
+	passthrough bool
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -69,6 +76,28 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {
+	return false
+}
+
+func (m *mockHandlerStore) ShouldCaptureClientIP() bool {
+	return false
+}
+
+func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {
+	for _, p := range m.availableProviders {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockHandlerStore) GetCustomProviderPassthrough(provider schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	custom, ok := m.customProviders[provider]
+	return custom.base, custom.passthrough, ok
+}
+
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 	return ""
 }
@@ -84,7 +113,7 @@ func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 
-func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T) {
+func TestGenericRouter_ModelCatalogMarksDeprecatedListModels(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
 		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
@@ -100,7 +129,7 @@ func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T)
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	router.markDeprecatedListModelsResponse(resp)
+	router.modelCatalog().EnrichListModelsResponse(resp)
 
 	// No models are removed; deprecated ones are flagged instead.
 	require.Len(t, resp.Data, 3)
@@ -541,7 +570,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 				}
 			},
 		},
-	}, stream, rec.cancel)
+	}, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)

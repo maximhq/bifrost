@@ -97,6 +97,7 @@ type TestScenarios struct {
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
+	SpeechSession                bool // Incremental speech session (text streams in over a WebSocket, audio streams back)
 	Compaction                   bool // Server-side compaction (context management)
 	ToolSearch                   bool // Anthropic server-side tool search + defer_loading (on Bedrock via InvokeModel routing)
 	ExternalCompaction           bool // OpenAI /v1/responses/compact endpoint
@@ -150,10 +151,12 @@ type ComprehensiveTestConfig struct {
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
 	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
+	WebSearchChatModel       string                     // Model for web search via chat completions tests; defaults to ChatModel when empty
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+	SpeechSessionModel       string                     // Model for the incremental speech session test
 
 	// SkipEmptyToolSchemas skips the empty/nil function-schema tool tests for providers that
 	// reject a function schema whose properties object is empty or absent (e.g. Runware, whose
@@ -179,6 +182,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Anthropic,
 		schemas.Bedrock,
 		schemas.BedrockMantle,
+		schemas.SageMaker,
 		schemas.Cohere,
 		schemas.Azure,
 		schemas.Vertex,
@@ -203,7 +207,12 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.MiniMax,
+		schemas.BytePlus,
+		schemas.Baseten,
+		schemas.Kimchi,
 		schemas.Databricks,
+		schemas.Cloudflare,
 		schemas.GithubCopilot,
 		schemas.Typesafe,
 		ProviderOpenAICustom,
@@ -284,7 +293,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "amazon.nova-2-sonic-v1:0"}, // Nova Sonic needs a key without an ARN: realtime streams to the ARN when one is set
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -303,7 +312,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
+				Models: []string{"cohere.embed-v4:0", "us.stability.stable-image-inpaint-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
@@ -332,6 +341,23 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				// filter so those requests reach the provider's unsupported-operation stub
 				// (the BatchUnsupported/FileUnsupported harness checks), as other non-batch
 				// providers (e.g. Cohere) do.
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.SageMaker:
+		// One key serves the endpoint in SAGEMAKER_ENDPOINT_NAME (the test passes it as the model).
+		// SageMaker has no models endpoint, so ListModels lists the allowlist: name the endpoint.
+		// Bifrost mints the bearer token from these AWS credentials.
+		return []schemas.Key{
+			{
+				Models: []string{getEnvWithDefault("SAGEMAKER_ENDPOINT_NAME", "*")},
+				Weight: 1.0,
+				SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("SAGEMAKER_REGION", getEnvWithDefault("AWS_REGION", "us-east-1"))),
+				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
@@ -406,6 +432,16 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				// The Live models are served from the "us" multi-region pool.
+				Models: []string{"gemini-3.8-live"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION_LIVE", "us")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
+				},
 			},
 			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
@@ -516,6 +552,43 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.MiniMax:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.MINIMAX_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.BytePlus:
+		// Ark has no Bearer /models endpoint, so the configured models are the catalog ListModels returns.
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.BYTEPLUS_API_KEY"),
+				Models:         []string{"deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "dreamina-seedance-2-5-260628"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Baseten:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.BASETEN_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
+	case schemas.Kimchi:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.KIMCHI_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
 	case schemas.Databricks:
 		return []schemas.Key{
 			{
@@ -531,20 +604,24 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Cloudflare:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.CLOUDFLARE_API_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+					AccountID: *schemas.NewSecretVar("env.CLOUDFLARE_ACCOUNT_ID"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
 	case schemas.GithubCopilot:
-		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
-		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
 				Models: []string{"*"},
 				Weight: 1.0,
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
-					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
-					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
-					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
-				},
 			},
 		}, nil
 	case schemas.Gemini:
@@ -615,16 +692,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Typesafe:
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
+				Value:          *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Fireworks:
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"accounts/fireworks/models/kimi-k2p7-code", "fireworks/qwen3-embedding-8b"},
+				Models:         []string{"accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/deepseek-v4p1-flash", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -668,6 +746,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
 			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
 			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+			{"VLLM_DECISION_BASE_URL", "VLLM_DECISION_MODEL"},
 		}
 		for _, instance := range secondaryVLLMInstances {
 			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
@@ -762,7 +841,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
-	case schemas.BedrockMantle:
+	case schemas.BedrockMantle, schemas.SageMaker:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -946,7 +1025,72 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.MiniMax:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Baseten:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.BytePlus:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Kimchi:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.Databricks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Cloudflare:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -962,6 +1106,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.GithubCopilot:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
+				// Only needed when GITHUB_COPILOT_API_KEY is a raw Copilot API token; a PAT or
+				// GitHub token has its host looked up.
+				BaseURL:                        os.Getenv("GITHUB_COPILOT_API_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
@@ -1527,8 +1674,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:       schemas.Fireworks,
-		ChatModel:      "accounts/fireworks/models/kimi-k2p7-code",
-		TextModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		ChatModel:      "accounts/fireworks/models/gpt-oss-120b",
+		TextModel:      "accounts/fireworks/models/deepseek-v4p1-flash",
 		EmbeddingModel: "fireworks/qwen3-embedding-8b",
 		Scenarios: TestScenarios{
 			TextCompletion:        true,

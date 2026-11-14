@@ -24,6 +24,7 @@ export const PROVIDER_KEYWORDS = {
   azure: ["azure", "deployments"],
   passthrough: ["_passthrough", "passthrough"],
   openrouter: ["openrouter"],
+  "github-copilot": ["github-copilot"],
   huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
@@ -36,8 +37,12 @@ export const PROVIDER_KEYWORDS = {
 export const MATCH_ORDER = [
   "passthrough",
   "openrouter",
+  "github-copilot",
   "huggingface",
   "replicate",
+  // After huggingface, whose router serves Baseten-hosted models; ahead of anthropic and
+  // openai, which Baseten rows name through the /anthropic route and OpenAI-only fields.
+  "baseten",
   "vertex",
   "azure",
   "bedrock_mantle",
@@ -45,6 +50,12 @@ export const MATCH_ORDER = [
   "gemini",
   "anthropic",
   "openai",
+  // Last, so a row that also names an earlier provider keeps its existing owner.
+  "groq",
+  "xai",
+  "mistral",
+  "cohere",
+  "deepseek",
 ];
 
 // Long base64 runs are media payloads, not searchable text; a 2-char keyword like

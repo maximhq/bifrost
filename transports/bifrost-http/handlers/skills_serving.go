@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -37,6 +38,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -63,12 +65,37 @@ const maxSkillGitRepoSize = 500 * 1024 * 1024 // 500 MB
 
 // skillURLClient is a dedicated HTTP client for fetching URL-sourced skill content.
 // Uses an SSRF-safe transport that blocks connections to non-public IPs, so an
-// admin-configured source_url cannot point at internal infrastructure.
+// admin-configured source_url cannot point at internal infrastructure. Once the
+// server installs its HTTP client factory (SetSkillFetchHTTPClientFactory), fetches
+// honour the global proxy for API traffic under the same SSRF policy.
 var skillURLClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: network.SSRFSafeDialContext(10 * time.Second),
-	},
+	Timeout:   15 * time.Second,
+	Transport: skillFetchTransport{},
+}
+
+// skillURLPolicy is the SSRF policy for skill fetches, direct or proxied.
+var skillURLPolicy = network.SSRFPolicyWithDialTimeout(10*time.Second, nil)
+
+// skillDirectTransport serves skill fetches before a factory is installed.
+var skillDirectTransport = &http.Transport{DialContext: network.SSRFSafeDialContext(10 * time.Second)}
+
+// skillHTTPClients is the server's HTTP client factory, once installed.
+var skillHTTPClients atomic.Pointer[network.HTTPClientFactory]
+
+// SetSkillFetchHTTPClientFactory routes URL-sourced skill fetches through factory, so
+// they honour the global proxy for API traffic. The server calls it at startup.
+func SetSkillFetchHTTPClientFactory(factory *network.HTTPClientFactory) {
+	skillHTTPClients.Store(factory)
+}
+
+// skillFetchTransport picks the factory's policy transport when one is installed.
+type skillFetchTransport struct{}
+
+func (skillFetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if factory := skillHTTPClients.Load(); factory != nil {
+		return factory.PolicyTransport(network.ClientPurposeAPI, skillURLPolicy).RoundTrip(req)
+	}
+	return skillDirectTransport.RoundTrip(req)
 }
 
 // fetchURLSafe fetches content from a URL with SSRF protection, timeout, and size cap.
@@ -115,6 +142,7 @@ func fetchURLSafe(ctx context.Context, rawURL string) ([]byte, error) {
 // composed SKILL.md files, individual file content, and zip archives.
 // All routes are public — intentionally NOT wrapped with auth middlewares.
 type SkillsServingHandler struct {
+	config       *lib.Config
 	store        configstore.ConfigStore
 	objectStore  objectstore.ObjectStore // nullable — may not be configured
 	gitAvailable bool
@@ -122,12 +150,12 @@ type SkillsServingHandler struct {
 }
 
 // NewSkillsServingHandler creates a new SkillsServingHandler.
-// Returns nil if store is nil.
-func NewSkillsServingHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore) *SkillsServingHandler {
-	if store == nil {
+// Returns nil if the store or live configuration is missing.
+func NewSkillsServingHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore, config *lib.Config) *SkillsServingHandler {
+	if store == nil || config == nil {
 		return nil
 	}
-	return &SkillsServingHandler{store: store, objectStore: objectStore, gitAvailable: CheckGitAvailability(), gitRepos: newSkillsGitRepoCache()}
+	return &SkillsServingHandler{config: config, store: store, objectStore: objectStore, gitAvailable: CheckGitAvailability(), gitRepos: newSkillsGitRepoCache()}
 }
 
 // Close removes every cached bare repository export. Call it on server shutdown.
@@ -147,16 +175,16 @@ func (h *SkillsServingHandler) RegisterRoutes(r *router.Router, middlewares ...s
 	if h.gitAvailable {
 		// Claude Code and Claude Desktop/Cowork marketplace
 		claudeMarketplaceBase := "/api/skills/serve/claude-code.git"
-		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", h.claudeCodeMarketplace)
-		r.GET(claudeMarketplaceBase+"/info/refs", h.claudeCodeMarketplaceGit())
-		r.POST(claudeMarketplaceBase+"/git-upload-pack", h.claudeCodeMarketplaceGit())
+		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", lib.ChainMiddlewares(h.claudeCodeMarketplace, h.requireMarketplaceURL))
+		r.GET(claudeMarketplaceBase+"/info/refs", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
+		r.POST(claudeMarketplaceBase+"/git-upload-pack", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
 
 		// Codex marketplace — Codex expects .agents/plugins/marketplace.json
-		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", h.codexMarketplace)
+		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", lib.ChainMiddlewares(h.codexMarketplace, h.requireMarketplaceURL))
 		// Codex marketplace git routes (Codex clones the marketplace URL itself)
 		codexMktBase := "/api/skills/serve/codex"
-		r.GET(codexMktBase+"/info/refs", h.codexMarketplaceGit())
-		r.POST(codexMktBase+"/git-upload-pack", h.codexMarketplaceGit())
+		r.GET(codexMktBase+"/info/refs", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
+		r.POST(codexMktBase+"/git-upload-pack", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
 
 		// Git smart HTTP serving (shared by both Claude Code and Codex)
 		for _, harness := range configstore.SkillHarnessNames {
@@ -195,6 +223,11 @@ func (h *SkillsServingHandler) claudeCodeMarketplace(ctx *fasthttp.RequestCtx) {
 
 // buildClaudeCodeMarketplaceJSON builds the Claude marketplace JSON bytes.
 func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
+	baseURL := h.config.GetSkillsExternalClientURL()
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+		return nil, errors.New("skills marketplace disabled")
+	}
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
 		return nil, err
@@ -212,7 +245,6 @@ func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.Requ
 		}
 	}
 
-	baseURL := h.resolveBaseURL(ctx)
 	plugins := make([]map[string]any, 0, len(skills)+1)
 	for _, skillSummary := range skills {
 		plugins = append(plugins, map[string]any{
@@ -263,6 +295,11 @@ func (h *SkillsServingHandler) codexMarketplace(ctx *fasthttp.RequestCtx) {
 // buildCodexMarketplaceJSON builds the Codex marketplace JSON bytes.
 // Shared by both the plain HTTP endpoint and the git-clone endpoint.
 func (h *SkillsServingHandler) buildCodexMarketplaceJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
+	baseURL := h.config.GetSkillsExternalClientURL()
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+		return nil, errors.New("skills marketplace disabled")
+	}
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
 		return nil, err
@@ -280,7 +317,6 @@ func (h *SkillsServingHandler) buildCodexMarketplaceJSON(ctx *fasthttp.RequestCt
 		}
 	}
 
-	baseURL := h.resolveBaseURL(ctx)
 	plugins := make([]map[string]any, 0, len(skills)+1)
 	for _, skillSummary := range skills {
 		plugins = append(plugins, map[string]any{
@@ -549,8 +585,8 @@ func assembleMarketplaceRepoSpec(marketplaceJSON []byte, harness string) *GitRep
 // registerGitRoutes registers Git smart HTTP routes for a given harness.
 func (h *SkillsServingHandler) registerGitRoutes(r *router.Router, harness string) {
 	base := "/api/skills/serve/" + harness + "/plugins/{skill-name}"
-	r.GET(base+"/info/refs", h.servePluginGit(harness))
-	r.POST(base+"/git-upload-pack", h.servePluginGit(harness))
+	r.GET(base+"/info/refs", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
+	r.POST(base+"/git-upload-pack", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
 }
 
 // servePluginGit handles git smart HTTP for per-plugin repos.
@@ -641,7 +677,7 @@ func (h *SkillsServingHandler) codexMarketplaceGit() fasthttp.RequestHandler {
 }
 
 // serveMarketplaceGitRepo serves an already-assembled marketplace spec. The
-// manifest embeds the request's base URL, so the cache key carries a digest of
+// manifest embeds the configured base URL, so the cache key carries a digest of
 // the manifest bytes; the corpus version is the fingerprint like elsewhere.
 func (h *SkillsServingHandler) serveMarketplaceGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string, marketplaceJSON []byte) {
 	workCtx, cancel := skillsServingWorkContext()
@@ -907,11 +943,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 		return
 	}
 
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", "--advertise-refs", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -939,11 +973,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 // serveUploadPack handles POST /git-upload-pack by piping the request body
 // into `git upload-pack --stateless-rpc` and streaming the output back.
 func serveUploadPack(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -1605,26 +1637,11 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
-// serving a skills request.
-const skillsServingWorkTimeout = 30 * time.Second
-
 // skillsServingWorkContext returns the context to hand to the config store, the object store
-// and outbound HTTP clients while serving a skills request.
-//
-// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
-// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
-// documented tradeoff, since allocating a channel per request is expensive). Whenever
-// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
-// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
-// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
-// unsynchronized write against a live reader: the data race seen under -race in
-// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
-//
-// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
-// per-request cancellation to propagate in the first place.
+// and outbound HTTP clients while serving a skills request. Background-rooted because these
+// paths read no request values; see RequestWorkContext for why the RequestCtx is never used.
 func skillsServingWorkContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+	return RequestWorkContext(context.Background(), RequestWorkTimeout)
 }
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
@@ -1683,21 +1700,13 @@ func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables
 	return skills, nil
 }
 
-// resolveBaseURL derives the base URL from the request's Host header and scheme.
-func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
-	scheme := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
-	if scheme == "" {
-		if ctx.IsTLS() {
-			scheme = "https"
-		} else {
-			scheme = "http"
+// requireMarketplaceURL disables marketplace routes without affecting management or downloads.
+func (h *SkillsServingHandler) requireMarketplaceURL(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if h.config == nil || h.config.GetSkillsExternalClientURL() == "" {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+			return
 		}
+		next(ctx)
 	}
-
-	host := string(ctx.Request.Header.Peek("X-Forwarded-Host"))
-	if host == "" {
-		host = string(ctx.Host())
-	}
-
-	return scheme + "://" + host
 }

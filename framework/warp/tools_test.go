@@ -565,22 +565,26 @@ func TestWarpRejectsUnknownFilterField(t *testing.T) {
 func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	filters, err := parseFilters(map[string]any{
-		"stop_reasons":    []any{"length", "content_filter"},
-		"objects":         []any{"embedding"},
-		"project_ids":     []any{"proj-1"},
-		"min_tokens":      float64(10),
-		"max_tokens":      float64(5000),
-		"cache_hit_types": []any{"semantic"},
+		"stop_reasons":       []any{"length", "content_filter"},
+		"objects":            []any{"embedding"},
+		"project_ids":        []any{"proj-1"},
+		"topic_ids":          []any{"topic-1"},
+		"min_tokens":         float64(10),
+		"max_tokens":         float64(5000),
+		"cache_hit_types":    []any{"semantic"},
+		"guardrail_outcomes": []any{"blocked", "detected"},
 	}, now)
 	require.NoError(t, err)
 	require.Equal(t, []string{"length", "content_filter"}, filters.StopReasons)
 	require.Equal(t, []string{"embedding"}, filters.Objects)
 	require.Equal(t, []string{"proj-1"}, filters.ProjectIDs)
+	require.Equal(t, []string{"topic-1"}, filters.TopicIDs)
 	require.NotNil(t, filters.MinTokens)
 	require.Equal(t, 10, *filters.MinTokens)
 	require.NotNil(t, filters.MaxTokens)
 	require.Equal(t, 5000, *filters.MaxTokens)
 	require.Equal(t, []string{"semantic"}, filters.CacheHitTypes)
+	require.Equal(t, []string{"blocked", "detected"}, filters.GuardrailOutcomes)
 }
 
 // A fractional or out-of-range token bound must be rejected rather than
@@ -743,6 +747,212 @@ func TestWarpTruncatesLongContent(t *testing.T) {
 	row := projectLog(entry, true, LogContentChars)
 	require.Contains(t, row.Content, "[truncated]")
 	require.Less(t, len(row.Content), LogContentChars*2)
+}
+
+// codexLog is a Codex request as the log store keeps it: the developer
+// instructions, then AGENTS.md and the environment as user turns of Codex's
+// own, then the person's task, then a later follow-up. The stored summary is
+// what the plain store builds - every message joined from the top.
+func codexLog(id string) logstore.Log {
+	developer, user := schemas.ResponsesInputMessageRoleDeveloper, schemas.ResponsesInputMessageRoleUser
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	agents := "# AGENTS.md instructions for /Users/dan/code/bifrost\n\n<INSTRUCTIONS>\n# AGENTS.md - Bifrost AI Gateway\nBifrost is a high-performance AI gateway that unifies 20+ LLM providers behind a single OpenAI-compatible API." +
+		strings.Repeat(" Provider integration notes.", 200) + "\n</INSTRUCTIONS>"
+	environment := "<environment_context>\n  <cwd>/Users/dan/code/bifrost</cwd>\n  <shell>zsh</shell>\n</environment_context>"
+	message := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(role), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	entry := logstore.Log{
+		ID:        id,
+		Timestamp: time.Now().UTC(),
+		Status:    "success",
+		UserAgent: schemas.Ptr("codex-tui/0.137.0 (Mac OS 14.1.0; arm64) iTerm.app/3.6.6"),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			message(developer, "<permissions instructions>Filesystem sandboxing defines which files can be read or written."+strings.Repeat(" Sandbox rules.", 100)+"</permissions instructions>"),
+			message(user, agents),
+			message(user, environment),
+			message(user, "Fix the flaky retry backoff test in core/bifrost.go"),
+			message(assistant, "I found the race in the backoff timer."),
+			message(user, "also add a benchmark for it"),
+		},
+		ResponsesOutputParsed: []schemas.ResponsesMessage{message(assistant, "Added BenchmarkRetryBackoff to core/bifrost_test.go.")},
+	}
+	entry.ContentSummary = entry.BuildContentSummary()
+	return entry
+}
+
+// A coding agent's request opens with its own setup - the system prompt, the
+// project's AGENTS.md, the environment. A preview cut from the front of every
+// message showed Warp only that, so it could not say what anyone worked on.
+// The preview is the person's turns with the agent's envelopes taken out.
+func TestWarpLogContentShowsTheTaskNotTheCodexSetup(t *testing.T) {
+	entry := codexLog("codex-row")
+	for _, limit := range []int{LogContentChars, DetailContentChars} {
+		content := projectLog(&entry, true, limit).Content
+		require.Contains(t, content, "Fix the flaky retry backoff test", "limit %d", limit)
+		require.Contains(t, content, "also add a benchmark for it", "limit %d", limit)
+		require.Contains(t, content, "BenchmarkRetryBackoff", "limit %d", limit)
+		require.NotContains(t, content, "AGENTS.md", "limit %d", limit)
+		require.NotContains(t, content, "environment_context", "limit %d", limit)
+		require.NotContains(t, content, "Sandbox rules", "limit %d", limit)
+	}
+}
+
+// The limit covers the whole preview: section labels, the newlines between
+// them and each truncation marker count against it, not only the text. With
+// every section long enough to be cut, the preview still fits, and each
+// section still shows it was cut.
+func TestWarpLogContentStaysWithinItsBudget(t *testing.T) {
+	user := schemas.ResponsesInputMessageRoleUser
+	message := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(user), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	reply := strings.Repeat("reply ", 1000)
+	entry := logstore.Log{
+		ID:        "long-sections",
+		Timestamp: time.Now().UTC(),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			message(strings.Repeat("first ", 1000)),
+			message(strings.Repeat("latest ", 1000)),
+		},
+		ResponsesOutputParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &reply},
+		}},
+	}
+	for _, limit := range []int{LogContentChars, DetailContentChars} {
+		content := projectLog(&entry, true, limit).Content
+		require.LessOrEqual(t, utf8.RuneCountInString(content), limit, "limit %d: %q", limit, content)
+		require.Equal(t, 3, strings.Count(content, "[truncated]"), "limit %d: %q", limit, content)
+		require.Contains(t, content, "user (first turn): first")
+		require.Contains(t, content, "user (latest turn): latest")
+		require.Contains(t, content, "assistant: reply")
+	}
+
+	// A row with no history falls back to the stored summary, within the same limit.
+	summary := logstore.Log{ID: "summary-only", Timestamp: time.Now().UTC(), ContentSummary: strings.Repeat("x", LogContentChars*3)}
+	require.LessOrEqual(t, utf8.RuneCountInString(projectLog(&summary, true, LogContentChars).Content), LogContentChars)
+}
+
+// The stored summary is capped, so it can end inside one of Codex's
+// envelopes, before the tag that closes it. In a summary the cap shortened,
+// what is left from the opening tag on is the envelope, and stays out of the
+// preview; a complete envelope comes out as before, keeping the person's words
+// after it.
+func TestWarpLogContentDropsACutCodexEnvelope(t *testing.T) {
+	codex := schemas.Ptr("codex-tui/0.137.0")
+	capped := func(text string) string {
+		return (text + strings.Repeat(" Provider integration notes.", 200))[:logstore.MaxContentSummaryBytes]
+	}
+	cut := logstore.Log{
+		ID: "cut-envelope", Timestamp: time.Now().UTC(), UserAgent: codex,
+		ContentSummary: capped("<environment_context>\n  <cwd>/Users/dan/code/bifrost</cwd>\n  <shell>zsh"),
+	}
+	require.Empty(t, projectLog(&cut, true, LogContentChars).Content)
+
+	cut.ContentSummary = capped("Fix the retry test # AGENTS.md instructions for /Users/dan/code/bifrost\n\n<INSTRUCTIONS>\nBifrost is a high-performance AI gateway")
+	require.Equal(t, "Fix the retry test", projectLog(&cut, true, LogContentChars).Content)
+
+	cut.ContentSummary = "<environment_context><cwd>/x</cwd></environment_context> Fix the retry test"
+	require.Equal(t, "Fix the retry test", projectLog(&cut, true, LogContentChars).Content)
+}
+
+// An unmatched tag is only an envelope cut short in a summary the cap
+// shortened. In a whole message it is the person's own text - a Codex user
+// debugging these very tags - and every reader keeps it: the preview, what is
+// embedded, and what a topic is named from.
+func TestWarpKeepsAnUnmatchedCodexTagInAWholeMessage(t *testing.T) {
+	codex := schemas.Ptr("codex-tui/0.137.0")
+	question := "Why does <skill> appear in the output? Fix the renderer."
+	turn := logstore.Log{
+		ID: "whole-turn", Object: string(schemas.ResponsesRequest), Status: "success", Timestamp: time.Now().UTC(), UserAgent: codex,
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &question},
+		}},
+	}
+	require.Equal(t, "user: "+question, projectLog(&turn, true, LogContentChars).Content)
+	item, ok := buildLogIndexItem(&turn)
+	require.True(t, ok)
+	require.Equal(t, "user: "+question, item.text)
+	require.Equal(t, question, logUserText(&turn))
+
+	// A summary short of the cap is a whole message too.
+	summary := logstore.Log{ID: "short-summary", Timestamp: time.Now().UTC(), UserAgent: codex, ContentSummary: question}
+	require.Equal(t, question, projectLog(&summary, true, LogContentChars).Content)
+}
+
+// A list row carries only the last element of a history, which for an agent
+// is usually the model's reply or a tool result, not the person's turn. With
+// no user turn to read, the preview falls back to the stored summary rather
+// than coming out empty.
+func TestWarpLogContentFallsBackFromAPartialListHistory(t *testing.T) {
+	entry := logstore.Log{
+		ID: "partial", Timestamp: time.Now().UTC(),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("I found the race in the backoff timer.")},
+		}},
+		ContentSummary: "Fix the flaky retry backoff test",
+	}
+	require.Contains(t, projectLog(&entry, true, LogContentChars).Content, "Fix the flaky retry backoff test")
+}
+
+// Codex's envelopes are recognised on Codex traffic only. A tag such as
+// <skill> in anyone else's message is what that person wrote.
+func TestWarpLogContentKeepsCodexLikeTagsFromOtherClients(t *testing.T) {
+	entry := logstore.Log{
+		ID:        "other-row",
+		Timestamp: time.Now().UTC(),
+		UserAgent: schemas.Ptr("python-requests/2.32"),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("rate this resume line: <skill>Go, Kubernetes</skill>")},
+		}},
+	}
+	require.Contains(t, projectLog(&entry, true, LogContentChars).Content, "<skill>Go, Kubernetes</skill>")
+}
+
+// hydratingLogReader is a log reader whose list rows carry only the stored
+// summary, as the log store's list query does, and whose full rows come from
+// GetLogsByIDs.
+type hydratingLogReader struct {
+	*fakeLogReader
+	full map[string]logstore.Log
+}
+
+func (r *hydratingLogReader) GetLogsByIDs(_ context.Context, ids []string) ([]logstore.Log, error) {
+	result := make([]logstore.Log, 0, len(ids))
+	for _, id := range ids {
+		if entry, ok := r.full[id]; ok {
+			result = append(result, entry)
+		}
+	}
+	return result, nil
+}
+
+// A list row has no message history, only the stored summary, which on the
+// plain store starts with the agent's setup. With content asked for,
+// query_logs reads the rows in full so the preview is the conversation.
+func TestWarpQueryLogsContentReadsTheFullRow(t *testing.T) {
+	full := codexLog("codex-row")
+	listRow := logstore.Log{ID: full.ID, Timestamp: full.Timestamp, Status: full.Status, UserAgent: full.UserAgent, ContentSummary: full.ContentSummary[:2048]}
+	reader := &hydratingLogReader{
+		fakeLogReader: &fakeLogReader{searchResult: &logstore.SearchResult{Logs: []logstore.Log{listRow}, Pagination: logstore.PaginationOptions{TotalCount: 1}}},
+		full:          map[string]logstore.Log{full.ID: full},
+	}
+	result, err := runTool(t, "query_logs", &ToolDeps{logManager: reader}, map[string]any{"filters": map[string]any{}, "include_content": true})
+	require.NoError(t, err)
+	rows := result.(map[string]any)["rows"].([]logRow)
+	require.Len(t, rows, 1)
+	require.Contains(t, rows[0].Content, "Fix the flaky retry backoff test")
+	require.NotContains(t, rows[0].Content, "Sandbox rules")
+
+	// Without content asked for, nothing is read beyond the list.
+	reader.full = nil
+	result, err = runTool(t, "query_logs", &ToolDeps{logManager: reader}, map[string]any{"filters": map[string]any{}})
+	require.NoError(t, err)
+	require.Empty(t, result.(map[string]any)["rows"].([]logRow)[0].Content)
 }
 
 // Token counts come from the denormalized columns, which survive object-storage
@@ -950,6 +1160,17 @@ func TestWarpMetricsRejectsTooManyBuckets(t *testing.T) {
 		"metrics": []any{"cost"},
 	})
 	require.NoError(t, err, "a 47h window is 47 hourly buckets and must be accepted")
+
+	// The adaptive bucket is counted the way the store cuts it, aligned to the
+	// epoch: exactly 200 thirty-day spans that start halfway through one touch
+	// 201 buckets.
+	month := int64(30 * 24 * 3600)
+	start := time.Unix(366*month+month/2, 0).UTC()
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": start.Format(time.RFC3339), "end_time": start.Add(time.Duration(200*month) * time.Second).Format(time.RFC3339)},
+		"metrics": []any{"cost"},
+	})
+	require.ErrorContains(t, err, "more than 200 buckets")
 
 	// The ceiling is about buckets, so it must not reach a request that builds
 	// none: a summary over the same over-long range is one aggregate query.
@@ -2297,10 +2518,13 @@ func TestWarpFiltersAcceptErrorTypeCodeAndStatus(t *testing.T) {
 // of seventeen. No link is better than one that is silently wider; each row
 // still carries its own.
 func TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink(t *testing.T) {
-	for _, field := range []string{"error_types", "error_codes", "status_codes"} {
+	for _, field := range []string{"error_types", "error_codes", "status_codes", "guardrail_outcomes"} {
 		value := []any{"invalid_request_error"}
-		if field == "status_codes" {
+		switch field {
+		case "status_codes":
 			value = []any{float64(400)}
+		case "guardrail_outcomes":
+			value = []any{"blocked"}
 		}
 		result, err := runTool(t, "count_logs", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
 			"filters": map[string]any{"start_time": "-7d", field: value},
@@ -2349,6 +2573,10 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	fields := reflect.TypeOf(logstore.SearchFilters{})
 	for i := range fields.NumField() {
 		name := strings.Split(fields.Field(i).Tag.Get("json"), ",")[0]
+		if name == "-" {
+			// Internal lookups (RealtimeInputItemID), never sent as a filter.
+			continue
+		}
 		if _, skip := notAnArgument[name]; skip {
 			continue
 		}
@@ -2360,10 +2588,12 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"routing_engine_used": []any{"loadbalancing"}, "complexity_tiers": []any{"COMPLEX"}, "complexity_mechanisms": []any{"semantic"},
 		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
 		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
-		"missing_cost_only": true,
+		"missing_cost_only": true, "agent_names": []any{"support-bot"}, "agent_correlation_id": "corr-1",
+		"model_router_ids": []any{"support"},
 	}, Now())
 	require.NoError(t, err)
 	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
+	require.Equal(t, []string{"support"}, filters.ModelRouterIDs)
 	require.Equal(t, []string{"key-1"}, filters.SelectedKeyIDs)
 	require.Equal(t, []string{"smart"}, filters.Aliases)
 	require.Equal(t, []string{"loadbalancing"}, filters.RoutingEngineUsed)
@@ -2371,11 +2601,13 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	require.Equal(t, []string{"semantic"}, filters.ComplexityMechanisms)
 	require.Equal(t, []string{"get_weather"}, filters.ToolCallNames)
 	require.Equal(t, []string{"curl/8"}, filters.UserAgents)
-	require.Equal(t, map[string]string{"env": "prod"}, filters.MetadataFilters)
+	require.Equal(t, logstore.MetadataFilterMap{"env": {"prod"}}, filters.MetadataFilters)
 	require.Equal(t, "sess-1", filters.SessionID)
 	require.Equal(t, "req-0", filters.ParentRequestID)
 	require.Equal(t, "req-1", filters.RequestID)
 	require.True(t, filters.MissingCostOnly)
+	require.Equal(t, []string{"support-bot"}, filters.AgentNames)
+	require.Equal(t, "corr-1", filters.AgentCorrelationID)
 
 	// Refused, not dropped.
 	for _, bad := range []map[string]any{
@@ -2550,6 +2782,18 @@ func TestWarpQueryMetricsIntervalReturnsBuckets(t *testing.T) {
 	})
 	require.ErrorContains(t, err, `interval "day"`, "720 hourly buckets is over the cap; the error names the way out")
 
+	// Buckets are aligned to the epoch and both end buckets count: exactly 200
+	// hours that start mid-hour touch 201 of them; 200 that start on the hour
+	// and stop short of the last touch 200.
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "2026-08-20T00:30:00Z", "end_time": "2026-08-28T08:30:00Z"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.ErrorContains(t, err, "more than 200 buckets")
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-28T07:59:59Z"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.NoError(t, err)
+
 	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
 		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"cost"}, "group_by": "provider", "interval": "day",
 	})
@@ -2630,4 +2874,136 @@ func TestWarpDescribeFilterSpaceSaysItsListsComeFromTraffic(t *testing.T) {
 	out = resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{"search": "warp-verify-budgeted"}))
 	require.Contains(t, out["guidance"], "A virtual key with no traffic is never listed here")
 	require.Contains(t, out["guidance"], "describe_virtual_key")
+}
+
+// A calendar day is resolved here, in the asker's zone, rather than by the
+// model. The model used to be handed the zone name and told to work out each
+// date's UTC offset itself - the same arithmetic relative offsets exist to
+// take away from it - so a wrong offset moved a day's boundary by hours and
+// the answer still read as "yesterday".
+func TestWarpParseFiltersResolvesCalendarDaysInTheAskersZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	require.NoError(t, err)
+	// 08:30 on Oct 5th in Kolkata, which is still 03:00 UTC.
+	now := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC).In(kolkata)
+	utc := func(year int, month time.Month, day, hour, minute int) time.Time {
+		return time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	}
+
+	t.Run("today starts at local midnight and ends now", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 4, 18, 30), *filters.StartTime)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("yesterday is the whole previous local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "Yesterday"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 3, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 10, 4, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a date names its whole local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-01", "end_time": "2026-09-03"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 8, 31, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 9, 3, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a day still in progress ends now, not at a midnight that has not happened", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("a time with no offset is the asker's wall clock", func(t *testing.T) {
+		for _, text := range []string{"2026-09-03T14:00", "2026-09-03 14:00", "2026-09-03T14:00:00"} {
+			filters, err := parseFilters(map[string]any{"start_time": text}, now)
+			require.NoError(t, err, text)
+			require.Equal(t, utc(2026, 9, 3, 8, 30), *filters.StartTime, text)
+		}
+	})
+
+	t.Run("an explicit offset is still taken as written", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-03T14:00:00Z"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 9, 3, 14, 0), *filters.StartTime)
+	})
+
+	t.Run("each date takes its own offset across a daylight saving change", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		// Clocks went forward on March 8th 2026, so that day is 23 hours long:
+		// it starts at UTC-5 and ends at UTC-4.
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08", "end_time": "2026-03-08"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 5, 0), *filters.StartTime)
+		require.Equal(t, utc(2026, 3, 9, 4, 0).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	// Clocks in New York went from 02:00 straight to 03:00 on March 8th 2026.
+	// Go reads a wall time inside that hour as a different, real one, so the
+	// bound would silently be an hour away from what was written.
+	t.Run("a local time that never happened is rejected", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		_, err = parseFilters(map[string]any{"start_time": "2026-03-08T02:30"}, now.In(newYork))
+		require.ErrorContains(t, err, "start_time")
+		require.ErrorContains(t, err, "does not exist")
+
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08T03:30"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 7, 30), *filters.StartTime)
+	})
+
+	t.Run("a rolling window is unaffected by the zone", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "-7d"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC().Add(-7*24*time.Hour), *filters.StartTime)
+	})
+
+	t.Run("a date that does not exist is rejected", func(t *testing.T) {
+		_, err := parseFilters(map[string]any{"start_time": "2026-02-30"}, now)
+		require.ErrorContains(t, err, "start_time")
+	})
+}
+
+// The schema is the one description every model reads at the moment it fills
+// the argument in, so it has to say which way end_time's day is counted.
+func TestWarpFilterSchemaSaysEndTimeIsInclusive(t *testing.T) {
+	require.Contains(t, FilterSchema, "end_time is inclusive")
+	require.Contains(t, FilterSchema, "never the day after")
+}
+
+// askerLocation is what puts the zone on the clock the tools read. The named
+// zone wins because only it knows a past date's offset; the bare offset is the
+// fallback for a client that sent no usable name.
+func TestWarpAskerLocation(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	hourIn := func(location *time.Location) int { return instant.In(location).Hour() }
+
+	// New York is UTC-5 in January even when the offset sent is July's UTC-4.
+	require.Equal(t, 7, hourIn(askerLocation("America/New_York", -240)))
+	require.Equal(t, 17, hourIn(askerLocation("", 330)), "with no zone name the current offset is all there is")
+	require.Equal(t, 17, hourIn(askerLocation("Not/AZone", 330)))
+	require.Equal(t, time.UTC, askerLocation("", 0))
+}
+
+// Every tool call in a turn measures from the same instant. Each used to read
+// the clock for itself, so "-7d" named a slightly different window per call and
+// a total and its breakdown, fetched seconds apart, covered different requests.
+func TestWarpToolsReadTheTurnsPinnedClock(t *testing.T) {
+	pinned := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	original := Now
+	Now = func() time.Time { return pinned.Add(42 * time.Second) }
+	defer func() { Now = original }()
+
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_logs", &ToolDeps{logManager: fake, clock: pinned}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, pinned.Add(-7*24*time.Hour), *fake.searchFilters.StartTime)
+	require.Equal(t, pinned, *fake.searchFilters.EndTime)
 }

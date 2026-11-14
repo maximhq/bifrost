@@ -176,6 +176,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		IsError   *bool           `json:"is_error,omitempty"`
 		Thinking  *string         `json:"thinking,omitempty"`
 		Signature *string         `json:"signature,omitempty"`
+		ToolName  *string         `json:"tool_name,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(b),
@@ -262,6 +263,11 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 			break
 		}
 		b.AnthropicToolSearchResult = res
+	case "tool_reference":
+		if aux.ToolName == nil {
+			return nil
+		}
+		b.AnthropicToolReference = aux.ToolName
 	case "thinking":
 		if aux.Thinking == nil {
 			return nil
@@ -280,7 +286,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 // normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
 // "content" field, which per Anthropic's API is either a plain string or an
 // array of content blocks. Array elements are decoded as []BedrockContentBlock,
-// so a nested image or tool_use inside a tool_result is normalized recursively
+// so a nested image, tool_use or tool_reference inside a tool_result is normalized recursively
 // via BedrockContentBlock.UnmarshalJSON above.
 func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
 	if len(raw) == 0 {
@@ -581,6 +587,14 @@ func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseReques
 	if r.OutputConfig != nil {
 		additionalFields.Set("output_config", r.OutputConfig)
 		hasAdditional = true
+	}
+
+	// Anthropic disable_parallel_tool_use has no typed Converse slot; this is the spelling Converse takes.
+	if choice, ok := r.ToolChoice.(map[string]interface{}); ok && converseReq.ToolConfig != nil && choice["type"] != "none" {
+		if disable, ok := choice["disable_parallel_tool_use"].(bool); ok {
+			additionalFields.Set("tool_choice", schemas.NewOrderedMapFromPairs(schemas.Pair{Key: "disable_parallel_tool_use", Value: disable}))
+			hasAdditional = true
+		}
 	}
 
 	// AI21-specific fields
@@ -1307,6 +1321,10 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		return nil
 	}
 
+	// The legacy opt-in is the fine-grained-tool-streaming beta alone, which
+	// applies to every custom tool; carry it as the per-tool flag.
+	fineGrained := r.hasAnthropicBetaPrefix(anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix)
+
 	var bedrockTools []BedrockTool
 	for _, toolIface := range toolsSlice {
 		toolMap, ok := toolIface.(map[string]interface{})
@@ -1357,8 +1375,16 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if strict, ok := toolMap["strict"].(bool); ok {
+			spec.Strict = new(strict)
+		}
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
+		}
+		if eager, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = new(eager)
+		} else if fineGrained {
+			spec.EagerInputStreaming = new(true)
 		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
@@ -1392,6 +1418,30 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	}
 
 	return toolConfig
+}
+
+// hasAnthropicBetaPrefix reports whether the body's anthropic_beta (a string
+// or an array of strings) lists a beta starting with prefix.
+func (r *BedrockInvokeRequest) hasAnthropicBetaPrefix(prefix string) bool {
+	var betas []string
+	switch v := r.AnthropicBeta.(type) {
+	case string:
+		betas = strings.Split(v, ",")
+	case []string:
+		betas = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				betas = append(betas, s)
+			}
+		}
+	}
+	for _, beta := range betas {
+		if strings.HasPrefix(strings.TrimSpace(beta), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // convertAnthropicToolChoice converts Anthropic-format tool_choice to Bedrock ToolChoice.
@@ -2095,6 +2145,24 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 	return ""
 }
 
+// anthropicInvokeStopReason maps a terminal event's StopReason to an Anthropic stop_reason.
+// The invoke stream can be served by any provider, so a reason Anthropic does not define
+// (e.g. a passed-through guardrail_intervened) must not reach message_delta as-is.
+func anthropicInvokeStopReason(reason string) string {
+	switch reason {
+	case "content_filter", "guardrail_intervened":
+		return string(anthropic.AnthropicStopReasonRefusal)
+	}
+	switch mapped := anthropic.ConvertBifrostFinishReasonToAnthropic(reason); mapped {
+	case anthropic.AnthropicStopReasonEndTurn, anthropic.AnthropicStopReasonMaxTokens,
+		anthropic.AnthropicStopReasonStopSequence, anthropic.AnthropicStopReasonToolUse,
+		anthropic.AnthropicStopReasonPauseTurn, anthropic.AnthropicStopReasonRefusal,
+		anthropic.AnthropicStopReasonModelContextWindowExceeded, anthropic.AnthropicStopReasonCompaction:
+		return string(mapped)
+	}
+	return string(anthropic.AnthropicStopReasonEndTurn)
+}
+
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
 // the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
 // Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
@@ -2336,6 +2404,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			default:
 				stopReason = resp.Response.IncompleteDetails.Reason
 			}
+		} else if resp.Response != nil && resp.Response.StopReason != nil {
+			// A completed turn carries its reason in StopReason (e.g. "tool_calls" when the
+			// model called a tool), matching the non-streaming converter's tool_use.
+			stopReason = anthropicInvokeStopReason(*resp.Response.StopReason)
 		}
 
 		// Build message_delta event

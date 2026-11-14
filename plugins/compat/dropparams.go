@@ -2,10 +2,23 @@ package compat
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// keepReasoningForResponses reports whether a chat request's reasoning must survive the
+// tools rewrite because core may serve it on the Responses API, where reasoning and tools
+// coexist. Core picks the wire at dispatch from the attempt's base provider, which is only
+// stamped after pre-hooks run, so a custom key (whose base may be OpenAI or Azure) is kept
+// and core reports reasoning.mode as dropped if its base turns out not to need Responses.
+func keepReasoningForResponses(reasoning *schemas.ChatReasoning, provider schemas.ModelProvider) bool {
+	if reasoning == nil || reasoning.Mode == nil {
+		return false
+	}
+	return schemas.ChatReasoningModeRequiresResponses(provider) || !slices.Contains(schemas.StandardProviders, provider)
+}
 
 // dropUnsupportedParams removes unsupported model parameters from a request in place.
 func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, supportedParams []string) []string {
@@ -76,7 +89,8 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			if !isSupported["reasoning"] {
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
-			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] &&
+				!keepReasoningForResponses(params.Reasoning, req.ChatRequest.Provider) && !isConvertedToResponses(ctx) {
 				// models like gpt-5.6 series models defaults to reasoning, even when
 				// reasoning_effort is not set.
 				if isSupported["supports_none_reasoning_effort"] {
@@ -87,9 +101,16 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 					dropped = append(dropped, "reasoning")
 				}
 			}
-		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx) {
 			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
 			dropped = append(dropped, "reasoning")
+		}
+		if params.Reasoning != nil && params.Reasoning.Summary != nil {
+			var droppedSummary bool
+			params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
+			if droppedSummary {
+				dropped = append(dropped, "reasoning.summary")
+			}
 		}
 		if params.ResponseFormat != nil && !isSupported["response_format"] {
 			params.ResponseFormat = nil
@@ -173,11 +194,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 				// Azure's Responses endpoint rejects reasoning.effort for DeepSeek.
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
-			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
-				schemas.IsAzureModelRouter(req.ResponsesRequest.Model) {
-				// model-router only supports "auto" summary
-				params.Reasoning.Summary = nil
-				dropped = append(dropped, "reasoning.summary")
+			} else {
+				var droppedSummary, droppedGenerate bool
+				params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
+				params.Reasoning.GenerateSummary, droppedGenerate = fitReasoningSummary(ctx, params.Reasoning.GenerateSummary, isSupported)
+				if droppedSummary || droppedGenerate {
+					dropped = append(dropped, "reasoning.summary")
+				}
 			}
 		}
 		if params.ServiceTier != nil && !isSupported["service_tier"] {
@@ -270,6 +293,31 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	return dropped
 }
 
+// fitReasoningSummary fits a reasoning.summary to the summary values the model
+// accepts: an unsupported "detailed"/"concise" becomes "auto" when the model accepts
+// "auto", and is dropped otherwise. Reports whether the summary was dropped.
+func fitReasoningSummary(ctx *schemas.BifrostContext, summary *string, isSupported map[string]bool) (*string, bool) {
+	if summary == nil {
+		return nil, false
+	}
+	switch *summary {
+	case "auto":
+		if !isSupported["reasoning_summary_auto"] {
+			return nil, true
+		}
+	case "detailed", "concise":
+		if isSupported["reasoning_summary_"+*summary] {
+			return summary, false
+		}
+		if !isSupported["reasoning_summary_auto"] {
+			return nil, true
+		}
+		ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted reasoning.summary %q to \"auto\" - the model does not accept %q", *summary, *summary))
+		return schemas.Ptr("auto"), false
+	}
+	return summary, false
+}
+
 // dropWebsearchToolCalls drops web search tool calls from the request
 func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
 	dropped := []string{}
@@ -284,4 +332,14 @@ func dropWebsearchToolCalls(req *schemas.BifrostRequest) []string {
 	}
 	req.ResponsesRequest.Params.Tools = kept
 	return dropped
+}
+
+// isConvertedToResponses reports whether an earlier hook already marked the request
+// for conversion to Responses.
+func isConvertedToResponses(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+	return ok && changeType == schemas.ResponsesRequest
 }

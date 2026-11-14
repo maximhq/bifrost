@@ -26,10 +26,11 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
-| List Models | ❌ | ❌ | - |
+| List Models | ✅ | - | `/v1/models` |
+| Decisions | ✅ | - | `/v1/decisions` |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, and List Models are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration
@@ -395,3 +396,36 @@ Same as Chat Completions with search results, citations, and extended usage trac
 ## Streaming
 
 Responses streaming uses the same OpenAI-compatible streaming as Chat Completions, with results adapted to Responses format.
+
+---
+
+# 3. Decisions
+
+Perplexity's decider models answer [`/v1/decisions`](/quickstart/gateway/decisions):
+
+| Model | Notes |
+|-------|-------|
+| `pplx-decider-v1.1-27b` | Current release |
+| `pplx-decider-v1-27b` | Previous release |
+
+Dated snapshots (for example `pplx-decider-v1.1-27b-20261006`) work too.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "perplexity/pplx-decider-v1.1-27b",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Bifrost calls Perplexity's `POST /v1/decisions`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Differences from TypeSafe:
+
+- **Images are supported.** `input_image` parts are sent in order with the message text. Perplexity decides which URLs it accepts; a remote URL it cannot fetch returns its own `400`.
+- **Score questions take 1-10 levels** (TypeSafe needs at least 2).
+- **The response `id`** comes from Perplexity's `x-request-id` header.
+
+A model Perplexity does not serve returns Perplexity's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use these models as its classifier; it starts on `pplx-decider-v1.1-27b`.

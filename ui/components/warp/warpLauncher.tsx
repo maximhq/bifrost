@@ -3,6 +3,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useWarp } from "@/lib/contexts/warpContext";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 // Same keycap as SheetNavigationButtons; min-w instead of a fixed size so "Ctrl" fits.
 const kbdClass =
@@ -15,6 +16,7 @@ function isAppleDevice(): boolean {
 }
 
 export default function WarpLauncher() {
+	const { t } = useTranslation("shell");
 	const warp = useWarp();
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	// Refocus only after a real close, not on first mount.
@@ -51,18 +53,18 @@ export default function WarpLauncher() {
 				<button
 					ref={buttonRef}
 					type="button"
-					aria-label="Ask Warp"
+					aria-label={t("warp.ask")}
 					aria-pressed={warp.isOpen}
 					data-state={warp.isOpen ? "open" : "closed"}
 					data-testid="topbar-warp-btn"
 					onClick={warp.toggle}
 					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 				>
-					<WarpIcon className="size-5" />
+					<WarpIcon className="size-4" strokeWidth={2} />
 				</button>
 			</TooltipTrigger>
 			<TooltipContent sideOffset={8} className="flex items-center gap-1.5 px-2 py-1 text-xs">
-				Ask Warp
+				{t("warp.ask")}
 				<span className="inline-flex items-center gap-1">
 					<kbd className={kbdClass}>{isAppleDevice() ? "⌘" : "Ctrl"}</kbd>
 					<kbd className={kbdClass}>I</kbd>

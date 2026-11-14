@@ -91,7 +91,13 @@ Update a plugin's placement and order using the update endpoint:
   Setting `path` on a non-builtin plugin loads native code into the gateway process, so it
   requires an authenticated admin session even if [dashboard authentication](/quickstart/gateway/setting-up-auth)
   is otherwise disabled. A remote (`http`/`https`) `path` is only fetched if it resolves to a
-  public address - loopback, private, and link-local destinations are refused.
+  public address - loopback, private, and link-local destinations are refused. The same rule
+  covers a built-in plugin's outbound endpoints (the OTEL `collector_url` and `metrics_endpoint`,
+  the telemetry `push_gateway_url`) and any `env.` or `vault.` reference in its config: setting or
+  changing one through the API needs an authenticated admin session, since the plugin resolves
+  such references from the gateway's own environment and sends the values to that endpoint.
+  Requests that keep the stored values, remove them, or edit other fields are not affected, and
+  neither is provisioning through `config.json`.
 </Note>
 
 ```bash

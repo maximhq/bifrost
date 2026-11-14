@@ -242,6 +242,69 @@ func TestUpsertProviderJobNextCheckAtTerminalHandling(t *testing.T) {
 	}
 }
 
+// TestUpsertProviderJobKeepsFailedInteractionDue pins that a failed or cancelled interaction stays
+// due: unlike a batch, a run that stopped can still owe for the work it did, so the sweeper must
+// still settle it if the inline settlement did not.
+func TestUpsertProviderJobKeepsFailedInteractionDue(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	next := time.Now().UTC().Add(time.Hour).UTC()
+	for _, status := range []string{"failed", "cancelled"} {
+		id := tables.ProviderJobID(tables.ProviderJobKindInteraction, "gemini", "int_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindInteraction,
+			Provider:         "gemini",
+			JobID:            "int_" + status,
+			AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			NextCheckAt:      &next,
+			ProviderStatus:   status,
+		}))
+		assert.NotNil(t, getBatchJob(t, store, id).NextCheckAt, "a %s interaction keeps next_check_at", status)
+	}
+}
+
+// TestUpsertProviderJobLeavesASettledInteractionAlone pins the update itself, not only the logging
+// guard in front of it. A read can load an interaction row while it is pending, the run can then be
+// settled by another request or the sweeper, and the read's upsert lands last. That upsert must not
+// rewrite the settled row's provider status, model or next check.
+func TestUpsertProviderJobLeavesASettledInteractionAlone(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	settledAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	for _, status := range []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable} {
+		id := tables.ProviderJobID(tables.ProviderJobKindInteraction, "gemini", "int_race_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindInteraction,
+			Provider:         "gemini",
+			JobID:            "int_race_" + status,
+			Model:            "deep-research-preview-04-2026",
+			ProviderStatus:   "completed",
+			AccountingStatus: status,
+			NextCheckAt:      &settledAt,
+		}))
+
+		later := time.Now().UTC().Add(time.Hour)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:             id,
+			Kind:           tables.ProviderJobKindInteraction,
+			Provider:       "gemini",
+			JobID:          "int_race_" + status,
+			Model:          "some-other-model",
+			ProviderStatus: "in_progress",
+			NextCheckAt:    &later,
+		}))
+
+		persisted := getBatchJob(t, store, id)
+		assert.Equal(t, "completed", persisted.ProviderStatus, "a stale read must not rewrite a %s run's status", status)
+		assert.Equal(t, "deep-research-preview-04-2026", persisted.Model, "a stale read must not rewrite a %s run's model", status)
+		require.NotNil(t, persisted.NextCheckAt)
+		assert.True(t, persisted.NextCheckAt.Equal(settledAt), "a stale read must not reschedule a %s run: %v", status, persisted.NextCheckAt)
+		assert.Equal(t, status, persisted.AccountingStatus)
+	}
+}
+
 func TestListDueProviderJobsFiltersByDueAndStatus(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
@@ -382,4 +445,45 @@ func TestUpsertProviderJobDefaultsKindToBatch(t *testing.T) {
 	job, err := store.GetProviderJob(ctx, tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-nokind"))
 	require.NoError(t, err)
 	assert.Equal(t, tables.ProviderJobKindBatch, job.Kind)
+}
+
+// A full Vertex resource name is also addressed by its last segment. The suffix lookup finds the
+// job by that segment alone, whole and at a path boundary, with LIKE metacharacters taken
+// literally, among the named kind and provider only.
+func TestGetProviderJobsByJobIDSuffixesMatchTheLastSegmentWhole(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	const full = "projects/p/locations/l/batchPredictionJobs/123"
+	seedBatchJob(t, store, "vertex", full)
+	seedBatchJob(t, store, "vertex", "projects/p/locations/l/batchPredictionJobs/9123")
+	seedBatchJob(t, store, "vertex", "projects/p/locations/l/batchPredictionJobs/1_3")
+	seedBatchJob(t, store, "vertex", "123")
+	seedBatchJob(t, store, "gemini", "batches/123")
+
+	jobs, err := store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", []string{"123"})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1, "9123 is not 123, a bare 123 is not a resource name, and a gemini row is not vertex's")
+	assert.Equal(t, full, jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", []string{"1_3"})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1, "an underscore in the suffix is a literal, not a wildcard")
+	assert.Equal(t, "projects/p/locations/l/batchPredictionJobs/1_3", jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "gemini", []string{"123"})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, "batches/123", jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindVideo, "vertex", []string{"123"})
+	require.NoError(t, err)
+	assert.Empty(t, jobs, "another kind's rows are not consulted")
+
+	jobs, err = store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", []string{""})
+	require.NoError(t, err)
+	assert.Nil(t, jobs)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", []string{"123", "1_3", "123", ""})
+	require.NoError(t, err)
+	require.Len(t, jobs, 2, "several suffixes are matched in one query, duplicates and empties ignored")
 }

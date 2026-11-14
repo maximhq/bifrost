@@ -87,3 +87,75 @@ func TestGeminiSafetyRatingsAvgLogprobsResponseIDStreamRoundTrip(t *testing.T) {
 	assert.Equal(t, "resp-safety", restoredResponseID,
 		"native responseId must be restored on the streamed response.completed chunk, not a synthesized internal ID")
 }
+
+// TestGeminiURLContextMetadataStreamRoundTrip pins the streamGenerateContent twin of
+// TestGeminiURLContextMetadataSurvivesResponsesRoundTrip: urlContextMetadata arrives on a
+// streamed candidate (here a non-terminal one, ahead of the finish chunk) and must be
+// rebuilt on the GenAI stream egress, since Bifrost's Responses schema has no field for it.
+func TestGeminiURLContextMetadataStreamRoundTrip(t *testing.T) {
+	chunks := []*GenerateContentResponse{
+		{
+			ResponseID:   "resp-url",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates: []*Candidate{{
+				Content: &Content{Role: "model", Parts: []*Part{{Text: "The page is about cats."}}},
+				URLContextMetadata: &URLContextMetadata{URLMetadata: []*URLMetadata{
+					{RetrievedURL: "https://example.com/cats", URLRetrievalStatus: "URL_RETRIEVAL_STATUS_SUCCESS"},
+				}},
+			}},
+		},
+		{
+			ResponseID:   "resp-url",
+			ModelVersion: "gemini-2.5-flash",
+			Candidates:   []*Candidate{{FinishReason: FinishReasonStop}},
+		},
+	}
+
+	forward := &GeminiResponsesStreamState{}
+	forward.flush()
+	reverse := NewBifrostToGeminiStreamState()
+
+	var restored *URLContextMetadata
+	seq := 0
+	for _, chunk := range chunks {
+		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
+		require.Nil(t, bifrostErr, "unexpected forward conversion error")
+		seq += len(events)
+		for _, event := range events {
+			out := ToGeminiResponsesStreamResponse(event, reverse)
+			if out == nil {
+				continue
+			}
+			for _, candidate := range out.Candidates {
+				if candidate.URLContextMetadata != nil {
+					restored = candidate.URLContextMetadata
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, restored, "urlContextMetadata must appear on a streamed GenAI chunk")
+	require.Len(t, restored.URLMetadata, 1)
+	assert.Equal(t, "https://example.com/cats", restored.URLMetadata[0].RetrievedURL)
+	assert.Equal(t, "URL_RETRIEVAL_STATUS_SUCCESS", restored.URLMetadata[0].URLRetrievalStatus)
+
+	// A pooled state is flushed and reused: the next stream, which fetched no URL, must not
+	// inherit the previous stream's urlContextMetadata.
+	forward.flush()
+	reverse = NewBifrostToGeminiStreamState()
+	seq = 0
+	for _, chunk := range safetyRatingsStreamChunks() {
+		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
+		require.Nil(t, bifrostErr, "unexpected forward conversion error")
+		seq += len(events)
+		for _, event := range events {
+			out := ToGeminiResponsesStreamResponse(event, reverse)
+			if out == nil {
+				continue
+			}
+			for _, candidate := range out.Candidates {
+				assert.Nil(t, candidate.URLContextMetadata, "urlContextMetadata leaked across a flushed stream state")
+			}
+		}
+	}
+}

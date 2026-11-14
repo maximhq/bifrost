@@ -19,7 +19,7 @@ const configuredWarp = {
   embedding_model: 'text-embedding-3-small',
   embedding_dimension: 1536,
   log_vector_store_namespace: 'BifrostWarpLogs',
-  semantic_search_threshold: 0.7,
+  semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
 }

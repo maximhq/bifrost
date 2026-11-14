@@ -3,6 +3,7 @@ package rules
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -747,6 +748,96 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, decision) // Rule matches now
 	assert.Equal(t, "azure", decision.Provider)
+}
+
+// TestEvaluateRoutingRules_TeamBeatsCustomerBeatsGlobal pins the scope order below the virtual key:
+// a team's rule wins over its customer's, and a customer's over the global one, whatever their
+// priorities, since priority only orders rules within one scope.
+func TestEvaluateRoutingRules_TeamBeatsCustomerBeatsGlobal(t *testing.T) {
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	for _, r := range []struct {
+		id, scope, provider string
+		scopeID             *string
+		priority            int
+	}{
+		{"global", "global", "openai", nil, 0},
+		{"customer", "customer", "anthropic", bifrost.Ptr("cust-1"), 50},
+		{"team", "team", "azure", bifrost.Ptr("team-1"), 99},
+	} {
+		require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+			ID: r.id, Name: r.id, Scope: r.scope, ScopeID: r.scopeID, Priority: r.priority, Enabled: bifrost.Ptr(true),
+			CelExpression: "model == 'gpt-4o'",
+			Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr(r.provider), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+		}))
+	}
+
+	for _, tc := range []struct {
+		name  string
+		scope GovernanceScope
+		want  string
+	}{
+		{"a request in a team under a customer", GovernanceScope{TeamID: "team-1", CustomerID: "cust-1"}, "azure"},
+		{"a request under the customer alone", GovernanceScope{CustomerID: "cust-1"}, "anthropic"},
+		{"a request with no team or customer", GovernanceScope{}, "openai"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
+				Scope:       tc.scope,
+				Provider:    schemas.OpenAI,
+				Model:       "gpt-4o",
+				Headers:     map[string]string{},
+				QueryParams: map[string]string{},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, decision)
+			assert.Equal(t, tc.want, decision.Provider)
+		})
+	}
+}
+
+// TestEvaluateRoutingRules_RuntimeErrorSkipsTheRule pins that a rule whose condition compiles but
+// fails while it is evaluated, here converting a header that holds no number, is skipped with a
+// trail entry that says so, and the next rule in line still matches. A bad header must not take
+// routing down with it.
+func TestEvaluateRoutingRules_RuntimeErrorSkipsTheRule(t *testing.T) {
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID: "erroring", Name: "Erroring", Scope: "global", Priority: 0, Enabled: bifrost.Ptr(true),
+		CelExpression: "int(headers['x-count']) > 5",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+	}))
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID: "next", Name: "Next", Scope: "global", Priority: 1, Enabled: bifrost.Ptr(true),
+		CelExpression: "model == 'gpt-4o'",
+		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
+	}))
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		Headers:     map[string]string{"x-count": "many"},
+		QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "next", decision.MatchedRuleID, "the rule after the one that failed to evaluate must still match")
+	skipped := false
+	for _, entry := range bgCtx.GetRoutingEngineLogs() {
+		if strings.Contains(entry.Message, "Rule 'Erroring' skipped: eval error") {
+			skipped = true
+		}
+	}
+	assert.True(t, skipped, "the trail must say the failing rule was skipped: %v", bgCtx.GetRoutingEngineLogs())
 }
 
 // TestEvaluateRoutingRules_ChainRuleReEvaluation tests that chain_rule=true causes re-evaluation
@@ -2294,6 +2385,77 @@ func TestEvaluateRoutingRules_ChainRuleUsesLastMatchedRuleFallbacks(t *testing.T
 			require.NotNil(t, decision)
 			assert.Equal(t, "chain-fb-b", decision.MatchedRuleID)
 			assert.Equal(t, tc.want, resolvedFallbacks(decision.Fallbacks))
+		})
+	}
+}
+
+// A rule with several targets picks one at random per request, so whether it honours the weights
+// can only be checked over many picks. The counts are judged with a chi-square goodness-of-fit test
+// whose critical values sit at p = 1e-6, so a correct split essentially never fails.
+
+// targetDraws is how many picks each distribution test makes.
+const targetDraws = 20000
+
+// targetChiSquareCritical maps degrees of freedom to the chi-square value a fit stays under at p = 1e-6.
+var targetChiSquareCritical = map[int]float64{1: 23.928, 2: 27.631, 3: 30.664}
+
+// weightedTargets builds one target per provider with the given weights.
+func weightedTargets(providers []string, weights []float64) []configstoreTables.TableRoutingTarget {
+	targets := make([]configstoreTables.TableRoutingTarget, len(providers))
+	for i := range providers {
+		provider := providers[i]
+		targets[i] = configstoreTables.TableRoutingTarget{Provider: &provider, Weight: weights[i]}
+	}
+	return targets
+}
+
+// countTargetPicks draws selectWeightedTarget n times and counts the picks by provider.
+func countTargetPicks(t *testing.T, targets []configstoreTables.TableRoutingTarget, n int) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for range n {
+		target, ok := selectWeightedTarget(targets)
+		if !ok {
+			t.Fatalf("no target selected from %d targets", len(targets))
+		}
+		counts[*target.Provider]++
+	}
+	return counts
+}
+
+// requireTargetSplit fails the test when the counts do not fit the shares the weights imply.
+func requireTargetSplit(t *testing.T, providers []string, counts map[string]int, weights []float64) {
+	t.Helper()
+	total, n := 0.0, 0
+	for i, provider := range providers {
+		total += weights[i]
+		n += counts[provider]
+	}
+	stat := 0.0
+	for i, provider := range providers {
+		expected := float64(n) * weights[i] / total
+		diff := float64(counts[provider]) - expected
+		stat += diff * diff / expected
+	}
+	if critical := targetChiSquareCritical[len(providers)-1]; stat >= critical {
+		t.Fatalf("picks %v do not fit weights %v (chi-square %.1f, critical %.1f)", counts, weights, stat, critical)
+	}
+}
+
+// TestSelectWeightedTargetSplitFollowsTheWeights checks the share each target gets against its
+// weight (plan row RR-05).
+func TestSelectWeightedTargetSplitFollowsTheWeights(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		providers []string
+		weights   []float64
+	}{
+		{name: "70/30", providers: []string{"openai", "anthropic"}, weights: []float64{0.7, 0.3}},
+		{name: "50/30/20", providers: []string{"openai", "anthropic", "groq"}, weights: []float64{0.5, 0.3, 0.2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			counts := countTargetPicks(t, weightedTargets(tc.providers, tc.weights), targetDraws)
+			requireTargetSplit(t, tc.providers, counts, tc.weights)
 		})
 	}
 }

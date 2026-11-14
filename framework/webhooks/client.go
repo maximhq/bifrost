@@ -28,31 +28,40 @@ const maxErrorBodyBytes = 4 * 1024
 // applies network.PrivateNetworkDialContext's policy instead: loopback and
 // private receivers are dialable, link-local (including its IPv6 transition
 // forms), the cloud metadata endpoints, and unspecified addresses never are.
-// Both refuse redirects and require TLS >= 1.2. The clients carry no timeout
-// state at all — every phase (DNS, dial, TLS, body) is bounded by the
-// per-attempt context, which carries the endpoint's own attempt timeout — so
-// endpoints sharing a policy can share connection pools safely.
+// With an HTTP client factory, both go through the global proxy when it is
+// enabled for API traffic; the policy then judges each target before the
+// request is proxied (network.PolicyTransport). Both refuse redirects and
+// require TLS >= 1.2. The clients carry no timeout state at all — every phase
+// (DNS, dial, TLS, body) is bounded by the per-attempt context, which carries
+// the endpoint's own attempt timeout — so endpoints sharing a policy can share
+// connection pools safely.
 type deliveryClient struct {
 	strict  *http.Client
 	private *http.Client
 }
 
-func newDeliveryClient() *deliveryClient {
-	build := func(dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Client {
+func newDeliveryClient(factory *network.HTTPClientFactory) *deliveryClient {
+	build := func(policy *network.DialPolicy, dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Client {
+		var transport http.RoundTripper = &http.Transport{
+			DialContext:     dial,
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		}
+		if factory != nil {
+			transport = factory.PolicyTransport(network.ClientPurposeAPI, policy)
+		}
 		return &http.Client{
-			Transport: &http.Transport{
-				DialContext:     dial,
-				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-			},
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 	}
+	// A zero dial timeout defers entirely to the per-attempt context.
+	strictDial := network.SSRFSafeDialContext(0)
+	privateDial := network.PrivateNetworkDialContext(0)
 	return &deliveryClient{
-		// A zero dial timeout defers entirely to the per-attempt context.
-		strict:  build(network.SSRFSafeDialContext(0)),
-		private: build(network.PrivateNetworkDialContext(0)),
+		strict:  build(network.SSRFPolicy(nil), strictDial),
+		private: build(network.NewDialPolicy(privateDial, network.ResolvePrivateNetworkTarget), privateDial),
 	}
 }
 

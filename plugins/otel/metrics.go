@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -16,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -65,6 +67,13 @@ type MetricsExporter struct {
 	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
 	// the error rate, so no separate MCP counters are needed.
 	mcpClientOperationDuration *syncFloat64Histogram
+
+	// A2A (Agent Gateway) metrics
+	a2aClientOperationDuration *syncFloat64Histogram
+	relayOperationDuration     *syncFloat64Histogram
+	relayUpstreamDuration      *syncFloat64Histogram
+	relayOverheadLatency       *syncFloat64Histogram
+	relayCostTotal             *syncFloat64Counter
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -210,16 +219,24 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 	}
 }
 
-// NewMetricsExporter creates a new OTEL metrics exporter
-func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
-	res, err := resource.Merge(
+// newMetricsResource builds the metrics resource. service.instance.id stays here because
+// OTLP-native backends read instance identity off the resource with no conversion; the
+// per-replica datapoint label is named bifrost_instance_id so that a collector with
+// resource_to_telemetry_conversion, which turns this attribute into a service_instance_id
+// label, cannot collide with it and drop the metric.
+func newMetricsResource(serviceName string) (*resource.Resource, error) {
+	return resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
-			semconv.ServiceName(config.ServiceName),
+			semconv.ServiceName(serviceName),
 			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
+}
+
+// NewMetricsExporter creates a new OTEL metrics exporter
+func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
+	res, err := newMetricsResource(config.ServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
@@ -269,6 +286,8 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		// The global proxy when it is enabled for API traffic, else the environment.
+		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
 	}
 
 	if len(config.Headers) > 0 {
@@ -290,7 +309,11 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(config.Endpoint),
+		// passthrough hands the host name to the proxy dialer unresolved (see
+		// network.GRPCPassthroughTarget); the dialer uses the global proxy when it is
+		// enabled for API traffic, else the environment's HTTPS proxy as gRPC reads it.
+		otlpmetricgrpc.WithEndpoint(network.GRPCPassthroughTarget(config.Endpoint)),
+		otlpmetricgrpc.WithDialOption(grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI))),
 	}
 
 	if len(config.Headers) > 0 {
@@ -447,6 +470,49 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: mcpOperationDurationBuckets,
 	}
 
+	// Mirrors mcp.client.operation.duration; there is no A2A semconv metric yet.
+	m.a2aClientOperationDuration = &syncFloat64Histogram{
+		name:       "a2a.client.operation.duration",
+		desc:       "Duration of an A2A operation as observed by the gateway (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
+	}
+
+	// Relay calls use the LLM latency buckets, as a passthrough call's metrics do, so a long stream
+	// is not folded into a 300s top bucket.
+	m.relayOperationDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.operation.duration",
+		desc:       "Duration of a relay call to a non-LLM upstream API as observed by Bifrost, from the gateway to the end of the reply",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// The part of a relay call spent blocked on the upstream socket (the upstream half of the
+	// overhead split), so a slow API is told apart from Bifrost's own time.
+	m.relayUpstreamDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.upstream_socket.duration",
+		desc:       "Time a relay call spent blocked on its upstream API's socket",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// Bifrost's own time on a relay call, as bifrost_overhead_latency_microseconds measures it for
+	// LLM calls.
+	m.relayOverheadLatency = &syncFloat64Histogram{
+		name:       "bifrost.relay.overhead_latency",
+		desc:       "Latency Bifrost added to a relay call, in microseconds: total call time minus time blocked on the upstream",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+	m.relayCostTotal = &syncFloat64Counter{
+		name:  "bifrost.relay.cost",
+		desc:  "USD charged for relay calls",
+		unit:  "{USD}",
+		meter: m.meter,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -582,6 +648,31 @@ func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durati
 	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordA2AOperationDuration records the duration of one A2A (Agent Gateway) operation
+func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOperationDuration records the duration of one relay call.
+func (m *MetricsExporter) RecordRelayOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayUpstreamDuration records the upstream time of one relay call.
+func (m *MetricsExporter) RecordRelayUpstreamDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayUpstreamDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOverheadLatency records Bifrost's own time on one relay call, in microseconds.
+func (m *MetricsExporter) RecordRelayOverheadLatency(ctx context.Context, micros float64, attrs ...attribute.KeyValue) {
+	m.relayOverheadLatency.Record(ctx, micros, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayCost adds the USD charged for one relay call.
+func (m *MetricsExporter) RecordRelayCost(ctx context.Context, cost float64, attrs ...attribute.KeyValue) {
+	m.relayCostTotal.Add(ctx, cost, metric.WithAttributes(attrs...))
+}
+
 // RecordHTTPRequest records an HTTP request metric
 func (m *MetricsExporter) RecordHTTPRequest(ctx context.Context, attrs ...attribute.KeyValue) {
 	m.httpRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -606,9 +697,13 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
-// as both a resource attribute and a datapoint label so per-replica breakdown works
-// even when the collector drops resource attributes.
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted as the
+// service.instance.id resource attribute and, under the distinct name
+// bifrost_instance_id, as a datapoint label, so per-replica breakdown works whether or
+// not the collector forwards resource attributes. The names differ deliberately: a
+// collector with resource_to_telemetry_conversion renders the resource attribute as
+// service_instance_id, and a datapoint label of that name would duplicate it and make
+// the Prometheus exporter drop the metric.
 var serviceInstanceID = resolveServiceInstanceID()
 
 func resolveServiceInstanceID() string {
@@ -639,7 +734,7 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("business_unit_name", businessUnitNames),
 		attribute.String("project_id", projectID),
 		attribute.String("project_name", projectName),
-		attribute.String("service_instance_id", serviceInstanceID),
+		attribute.String("bifrost_instance_id", serviceInstanceID),
 	}
 }
 
