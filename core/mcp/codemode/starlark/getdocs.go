@@ -66,6 +66,11 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
+	// A discovered tool may itself be named like a path ("report.py"), so the
+	// supplied name is tried before its normalized form.
+	requestedToolName := toolName
+	serverName, toolName = normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
+
 	// Find matching client
 	var matchedClientName string
 	var matchedTool *schemas.ChatTool
@@ -86,13 +91,9 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			matchedClientName = clientName
 
 			// Find the specific tool
-			for i, tool := range tools {
-				if tool.Function != nil {
-					if matchesToolReference(toolName, clientName, tool.Function.Name) {
-						matchedTool = &tools[i]
-						break
-					}
-				}
+			matchedTool = findToolReference(tools, clientName, requestedToolName)
+			if matchedTool == nil {
+				matchedTool = findToolReference(tools, clientName, toolName)
 			}
 			break
 		}
@@ -134,6 +135,34 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
+}
+
+// findToolReference returns the tool in tools that toolName refers to, or nil.
+func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *schemas.ChatTool {
+	for i, tool := range tools {
+		if tool.Function != nil && matchesToolReference(toolName, clientName, tool.Function.Name) {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+// normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
+// "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
+// "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
+func normalizeDocsArgs(server, tool string, servers []string) (string, string) {
+	parsedServer, _, _ := parseVFSFilePath(server, servers)
+	if parsedServer == "" {
+		parsedServer = strings.TrimSpace(server)
+	}
+	tool = normalizeVFSPath(tool, nil)
+	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
+		tool = tool[i+1:]
+	}
+	if len(tool) > len(parsedServer)+1 && tool[len(parsedServer)] == '.' && strings.EqualFold(tool[:len(parsedServer)], parsedServer) {
+		tool = tool[len(parsedServer)+1:]
+	}
+	return parsedServer, tool
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
