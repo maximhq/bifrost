@@ -34,6 +34,13 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 			"mode": "chat",
 			"base_model": "retired-model",
 			"is_deprecated": true
+		},
+		"anthropic.claude-opus-5": {
+			"provider": "bedrock",
+			"mode": "chat",
+			"base_model": "claude-opus-5",
+			"max_input_tokens": 1000000,
+			"max_output_tokens": 128000
 		}
 	}`)
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
@@ -348,6 +355,46 @@ func TestEnrichModelsResponsesFromCatalog(t *testing.T) {
 	nilCatalog.EnrichModelRetrieveResponse(retrieved)
 	mc.EnrichListModelsResponse(nil)
 	mc.EnrichModelRetrieveResponse(nil)
+}
+
+// A Bedrock model listed under a key alias whose model_id is an application
+// inference profile resolves through the alias's model_name, as pricing does.
+func TestEnrichModelsResponsesThroughAliasModelName(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{
+		ID:     "key-1",
+		Models: schemas.WhiteList{"claude-opus-5", "bare-profile", "unknown-profile"},
+		Aliases: schemas.KeyAliases{
+			"claude-opus-5":   {ModelID: "a1b2c3d4", ModelName: schemas.Ptr("anthropic.claude-opus-5")},
+			"bare-profile":    {ModelID: "e5f6a7b8"},
+			"unknown-profile": {ModelID: "c9d0e1f2", ModelName: schemas.Ptr("anthropic.unknown-model")},
+		},
+	}})
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "bedrock/claude-opus-5", Alias: schemas.Ptr("a1b2c3d4")},
+		{ID: "bedrock/bare-profile", Alias: schemas.Ptr("e5f6a7b8")},
+		{ID: "bedrock/unknown-profile", Alias: schemas.Ptr("c9d0e1f2")},
+	}}
+
+	mc.EnrichListModelsResponse(resp)
+
+	if got := resp.Data[0].MaxInputTokens; got == nil || *got != 1000000 {
+		t.Errorf("claude-opus-5 MaxInputTokens = %v, want 1000000", got)
+	}
+	if got := resp.Data[0].MaxOutputTokens; got == nil || *got != 128000 {
+		t.Errorf("claude-opus-5 MaxOutputTokens = %v, want 128000", got)
+	}
+	for _, m := range resp.Data[1:] {
+		if m.MaxInputTokens != nil || m.Pricing != nil {
+			t.Errorf("%s must stay unenriched, got %#v", m.ID, m)
+		}
+	}
+
+	retrieved := &schemas.BifrostModelRetrieveResponse{Model: schemas.Model{ID: "bedrock/claude-opus-5", Alias: schemas.Ptr("a1b2c3d4")}}
+	mc.EnrichModelRetrieveResponse(retrieved)
+	if got := retrieved.MaxInputTokens; got == nil || *got != 1000000 {
+		t.Errorf("retrieve MaxInputTokens = %v, want 1000000", got)
+	}
 }
 
 // cachedChatResponse is a chat completion whose prompt was partly served from
