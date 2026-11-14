@@ -22,6 +22,10 @@ type StarlarkCodeMode struct {
 	bindingLevel         atomic.Value // schemas.CodeModeBindingLevel
 	toolExecutionTimeout atomic.Value // time.Duration
 	limits               atomic.Pointer[schemas.MCPCodeModeLimits]
+	// Optional ranker for listToolFiles queries; nil uses lexical ranking only
+	discoveryRanker atomic.Pointer[toolRanker]
+	// Bifrost's decision API, set by core for the decision-model ranker
+	decisionRequest atomic.Pointer[DecisionRequestFunc]
 
 	// Dependencies
 	clientManager         mcp.ClientManager
@@ -71,6 +75,7 @@ func NewStarlarkCodeMode(config *mcp.CodeModeConfig, logger schemas.Logger) *Sta
 	s.bindingLevel.Store(config.BindingLevel)
 	s.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	s.storeLimits(config.Limits)
+	s.storeDiscoveryRanker(config.DiscoveryRanker)
 
 	s.logger.Info("%s Starlark code mode initialized with binding level: %s, timeout: %v",
 		mcp.CodeModeLogPrefix, config.BindingLevel, config.ToolExecutionTimeout)
@@ -87,6 +92,19 @@ func (s *StarlarkCodeMode) SetDependencies(deps *mcp.CodeModeDependencies) {
 		s.fetchNewRequestIDFunc = deps.FetchNewRequestIDFunc
 		s.credStore = deps.CredentialStore
 	}
+}
+
+// SetDecisionRequestFunc gives the decision-model discovery ranker its way to
+// call Bifrost's decision API. Core sets it when it creates the code mode; it is
+// not part of CodeModeConfig or CodeModeDependencies because neither the config
+// updates nor the MCP manager have a handle on the Bifrost client. Until it is
+// set, a decision-model ranker falls back to lexical ranking.
+func (s *StarlarkCodeMode) SetDecisionRequestFunc(decide DecisionRequestFunc) {
+	if decide == nil {
+		s.decisionRequest.Store(nil)
+		return
+	}
+	s.decisionRequest.Store(&decide)
 }
 
 // GetTools returns the code mode meta-tools for Starlark execution.
@@ -161,6 +179,10 @@ func (s *StarlarkCodeMode) UpdateConfig(config *mcp.CodeModeConfig) {
 
 	if config.Limits != nil {
 		s.storeLimits(config.Limits)
+	}
+
+	if config.DiscoveryRanker != nil {
+		s.storeDiscoveryRanker(config.DiscoveryRanker)
 	}
 
 	s.logger.Info("%s Starlark code mode configuration updated: binding level=%s, timeout=%v",

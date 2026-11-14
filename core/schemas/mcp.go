@@ -494,6 +494,131 @@ type MCPToolManagerConfig struct {
 	MaxInstructionsTotal  int                `json:"max_instructions_total,omitempty"`
 	CodeModeLimits        *MCPCodeModeLimits `json:"code_mode_limits,omitempty"`        // Per-execution code mode budgets; nil keeps the defaults
 	OAuthPrivateAllowlist []string           `json:"oauth_private_allowlist,omitempty"` // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
+	// CodeModeDiscoveryRanker ranks listToolFiles queries with an external HTTP ranker or a decision model; nil uses only the built-in lexical ranking
+	CodeModeDiscoveryRanker *MCPCodeModeDiscoveryRanker `json:"code_mode_discovery_ranker,omitempty"`
+}
+
+// Bounds on MCPCodeModeDiscoveryRanker.TimeoutSeconds.
+const (
+	DefaultCodeModeDiscoveryRankerTimeout = 5 * time.Second
+	MaxCodeModeDiscoveryRankerTimeout     = 30 * time.Second
+)
+
+// MCPCodeModeDiscoveryRanker configures an optional ranker for
+// listToolFiles(query=...), which Bifrost falls back from to its lexical
+// ranking on any failure. Either Bifrost POSTs the query and the tools the
+// caller can already see to URL, or it asks DecisionModel, through its own
+// decision API, which of those tools fit the query. The two are mutually
+// exclusive; with neither set the ranker is disabled.
+type MCPCodeModeDiscoveryRanker struct {
+	URL            string   `json:"url"`                       // http(s) endpoint that receives the ranking request
+	TokenFile      string   `json:"token_file,omitempty"`      // Optional file holding a bearer token, read on every request so it can rotate
+	DecisionModel  string   `json:"decision_model,omitempty"`  // "provider/model" asked through the decision API instead of an external URL
+	Fallbacks      []string `json:"fallbacks,omitempty"`       // "provider/model" fallbacks for DecisionModel, tried in order
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // Bound on one ranking call; 0 uses the 5s default, at most 30
+}
+
+// Timeout returns the bound on one ranking call, with the default applied.
+func (r MCPCodeModeDiscoveryRanker) Timeout() time.Duration {
+	if r.TimeoutSeconds <= 0 {
+		return DefaultCodeModeDiscoveryRankerTimeout
+	}
+	return time.Duration(r.TimeoutSeconds) * time.Second
+}
+
+// Enabled reports whether a URL or a decision model is set.
+func (r MCPCodeModeDiscoveryRanker) Enabled() bool {
+	return r.URL != "" || r.DecisionModel != ""
+}
+
+// Validate rejects a ranker that cannot be called safely. A ranker with neither
+// a URL nor a decision model is valid and disables ranking.
+func (r MCPCodeModeDiscoveryRanker) Validate() error {
+	maxSeconds := int(MaxCodeModeDiscoveryRankerTimeout / time.Second)
+	// Compared in seconds: converting first would overflow for huge values.
+	if r.TimeoutSeconds < 0 || r.TimeoutSeconds > maxSeconds {
+		return fmt.Errorf("code mode discovery ranker timeout_seconds must be between 0 and %d", maxSeconds)
+	}
+	if r.DecisionModel != "" {
+		if r.URL != "" || r.TokenFile != "" {
+			return fmt.Errorf("code mode discovery ranker decision_model cannot be combined with url or token_file")
+		}
+		if _, _, err := ParseCodeModeDiscoveryRankerModel(r.DecisionModel); err != nil {
+			return fmt.Errorf("code mode discovery ranker decision_model: %w", err)
+		}
+		for i, fallback := range r.Fallbacks {
+			if _, _, err := ParseCodeModeDiscoveryRankerModel(fallback); err != nil {
+				return fmt.Errorf("code mode discovery ranker fallbacks[%d]: %w", i, err)
+			}
+		}
+		return nil
+	}
+	if len(r.Fallbacks) > 0 {
+		return fmt.Errorf("code mode discovery ranker fallbacks require decision_model")
+	}
+	if r.URL == "" {
+		return nil
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil {
+		return fmt.Errorf("code mode discovery ranker url is invalid: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("code mode discovery ranker url must be an absolute http or https URL")
+	}
+	if u.User != nil {
+		return fmt.Errorf("code mode discovery ranker url must not carry credentials; use token_file")
+	}
+	// The token file is sent as a bearer token on every request; plain http would expose it on the network path.
+	if r.TokenFile != "" && !IsHTTPSOrLoopbackURL(r.URL) {
+		return fmt.Errorf("code mode discovery ranker url must use https when token_file is set; plain http is allowed only for loopback")
+	}
+	return nil
+}
+
+// ParseCodeModeDiscoveryRankerModel splits a "provider/model" reference. The
+// provider prefix is required, since the ranker has no request whose provider
+// it could default to; it is not checked against the known providers, so a
+// custom provider can serve the ranker.
+func ParseCodeModeDiscoveryRankerModel(value string) (ModelProvider, string, error) {
+	provider, model, ok := strings.Cut(value, "/")
+	if !ok || provider == "" || model == "" || strings.TrimSpace(value) != value || strings.ContainsAny(provider, " \t\r\n") {
+		return "", "", fmt.Errorf("%q must be provider/model", value)
+	}
+	return ModelProvider(provider), model, nil
+}
+
+// MCPDiscoveryRankerCall is one decision request the code mode discovery
+// ranker made while answering a listToolFiles call. The ranker issues it as an
+// internal request, which skips the plugin pipeline, so it is recorded on the
+// tool call's context and the logging plugin writes it as its own log row.
+type MCPDiscoveryRankerCall struct {
+	Provider  ModelProvider    // provider that served the call, else the configured one
+	Model     string           // model that served the call, else the configured one
+	Usage     *BifrostLLMUsage // tokens used, or billed for a failed call; nil when unknown
+	StartedAt time.Time
+	Latency   time.Duration
+	Error     *BifrostError // nil when the call answered
+}
+
+// AppendMCPDiscoveryRankerCallOnContext records one discovery ranker call on
+// the tool call's context.
+func AppendMCPDiscoveryRankerCallOnContext(ctx *BifrostContext, call MCPDiscoveryRankerCall) {
+	if ctx == nil {
+		return
+	}
+	calls, _ := ctx.Value(BifrostContextKeyMCPDiscoveryRankerCalls).([]MCPDiscoveryRankerCall)
+	ctx.SetValue(BifrostContextKeyMCPDiscoveryRankerCalls, append(slices.Clip(calls), call))
+}
+
+// TakeMCPDiscoveryRankerCallsFromContext returns the discovery ranker calls
+// recorded on ctx and clears them, so each is logged once.
+func TakeMCPDiscoveryRankerCallsFromContext(ctx *BifrostContext) []MCPDiscoveryRankerCall {
+	if ctx == nil {
+		return nil
+	}
+	calls, _ := ctx.GetAndSetValue(BifrostContextKeyMCPDiscoveryRankerCalls, nil).([]MCPDiscoveryRankerCall)
+	return calls
 }
 
 // MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.

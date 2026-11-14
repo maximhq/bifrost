@@ -3841,6 +3841,9 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		}
 		connectCall = isMCPConnectCall(ctx, clientName, toolName)
 	}
+	// The code mode discovery ranker's decision calls skip the plugin pipeline,
+	// so they are written here, before the code mode tool itself is skipped.
+	p.logDiscoveryRankerCalls(ctx)
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
 	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
 		return resp, bifrostErr, nil
@@ -4146,4 +4149,57 @@ func largePayloadRequestThreshold(ctx *schemas.BifrostContext) int64 {
 	}
 	reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
 	return reqThreshold
+}
+
+// logDiscoveryRankerCalls writes each decision call the code mode discovery
+// ranker made for this tool call as its own decision row, with the provider
+// and model that served it, its tokens, latency and cost. The ranker issues
+// them as internal requests, which skip the plugin pipeline, so no PreLLMHook
+// or PostLLMHook sees them. The rows carry no virtual key, user, team or
+// customer: governance does not charge these calls to the caller, so the rows
+// do not attribute them to the caller either. Metadata names the tool call's
+// request ID so the row can be traced back to it.
+func (p *LoggerPlugin) logDiscoveryRankerCalls(ctx *schemas.BifrostContext) {
+	calls := schemas.TakeMCPDiscoveryRankerCallsFromContext(ctx)
+	if len(calls) == 0 {
+		return
+	}
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	contentVisible := p.resolveContentPolicy(ctx).visible()
+	for _, call := range calls {
+		provider, model := string(call.Provider), call.Model
+		entry := &logstore.Log{
+			ID:        uuid.NewString(),
+			Timestamp: call.StartedAt.UTC(),
+			CreatedAt: call.StartedAt.UTC(),
+			Object:    string(schemas.DecisionRequest),
+			Provider:  provider,
+			Model:     model,
+			Status:    logStatusSuccess,
+			MetadataParsed: map[string]interface{}{
+				"internal_request": "code_mode_discovery_ranker",
+				"mcp_request_id":   requestID,
+			},
+		}
+		latency := float64(call.Latency) / float64(time.Millisecond)
+		entry.Latency = &latency
+		if call.Usage != nil {
+			usage := *call.Usage
+			entry.TokenUsageParsed = &usage
+			if p.pricingManager != nil {
+				// Priced from the full usage, as a decision request's own row is:
+				// a provider-reported cost wins, otherwise the tokens (cached ones
+				// at their cache rates) plus any flat per-request fee. The scope
+				// is the serving provider only, since the call is not the caller's.
+				cost := p.pricingManager.CalculateCostForUsage(&usage, call.Provider, model, schemas.DecisionRequest,
+					&modelcatalog.PricingLookupScopes{Provider: provider, BilledAt: call.StartedAt})
+				entry.Cost = &cost
+			}
+		}
+		if call.Error != nil {
+			entry.Status = logStatusError
+			entry.ErrorDetailsParsed = sanitizeErrorForLogging(call.Error, contentVisible, false)
+		}
+		p.EnqueueLogEntry(entry)
+	}
 }

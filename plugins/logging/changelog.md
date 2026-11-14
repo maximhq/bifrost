@@ -1,1 +1,2 @@
 - chore: upgraded core to v1.15.2 and framework to v1.12.2
+- feat: code mode - each decision call the discovery ranker makes for `listToolFiles` is written as its own `decision` row with the serving model, tokens, latency and cost, without the caller's virtual key (thanks [@Xytronix](https://github.com/Xytronix)!)

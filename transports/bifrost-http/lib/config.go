@@ -2542,6 +2542,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 		}
 	}
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP, configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp"))
+	applyCodeModeDiscoveryRanker(config.MCPConfig, configData.MCP)
 
 	// Reconcile Virtual MCPs declared under mcp.virtual_mcps. This runs after client configs are
 	// synced so tool specs can resolve their source MCP clients by name. forceFileSync makes
@@ -3145,6 +3146,70 @@ func createFileMCPClient(ctx context.Context, store configstore.ConfigStore, cli
 		return
 	}
 	logger.Warn("failed to create MCP client config: %v", err)
+}
+
+// Environment overrides for mcp.tool_manager_config.code_mode_discovery_ranker.
+const (
+	envCodeModeDiscoveryRankerURL           = "BIFROST_CODE_MODE_DISCOVERY_RANKER_URL"
+	envCodeModeDiscoveryRankerTokenFile     = "BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE"
+	envCodeModeDiscoveryRankerDecisionModel = "BIFROST_CODE_MODE_DISCOVERY_RANKER_DECISION_MODEL"
+)
+
+// applyCodeModeDiscoveryRanker sets the listToolFiles ranker on the MCP
+// config handed to Bifrost. It is deployment configuration, read from
+// config.json and the environment on every start and never stored in the config
+// store, so only whoever runs the gateway can point it at an endpoint.
+func applyCodeModeDiscoveryRanker(mcpCfg, fileCfg *schemas.MCPConfig) {
+	if mcpCfg == nil {
+		return
+	}
+	ranker := resolveCodeModeDiscoveryRanker(fileCfg)
+	if mcpCfg.ToolManagerConfig == nil {
+		if ranker == nil {
+			return
+		}
+		mcpCfg.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
+	}
+	mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker = ranker
+}
+
+// resolveCodeModeDiscoveryRanker merges the file setting with its environment
+// overrides. A URL from the environment replaces a decision model from the
+// file and a decision model from the environment replaces a URL and token
+// file from the file; both from the environment conflict. It returns nil when
+// neither a URL nor a decision model is set or the result is invalid.
+func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCodeModeDiscoveryRanker {
+	var ranker schemas.MCPCodeModeDiscoveryRanker
+	if fileCfg != nil && fileCfg.ToolManagerConfig != nil && fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
+		ranker = *fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+	}
+	envURL := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL))
+	envDecisionModel := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerDecisionModel))
+	if envURL != "" {
+		ranker.URL = envURL
+		if envDecisionModel == "" {
+			ranker.DecisionModel, ranker.Fallbacks = "", nil
+		}
+	}
+	if envDecisionModel != "" {
+		ranker.DecisionModel = envDecisionModel
+		if envURL == "" {
+			ranker.URL, ranker.TokenFile = "", ""
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerTokenFile)); value != "" {
+		ranker.TokenFile = value
+	}
+	ranker.URL = strings.TrimSpace(ranker.URL)
+	ranker.DecisionModel = strings.TrimSpace(ranker.DecisionModel)
+	if !ranker.Enabled() {
+		return nil
+	}
+	if err := ranker.Validate(); err != nil {
+		logger.Warn("ignoring mcp.tool_manager_config.code_mode_discovery_ranker: %v", err)
+		return nil
+	}
+	return &ranker
 }
 
 func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig, fileIsSourceOfTruth bool) {

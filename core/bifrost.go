@@ -441,9 +441,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
 					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
 					Limits:               mcpConfig.ToolManagerConfig.CodeModeLimits,
+					DiscoveryRanker:      mcpConfig.ToolManagerConfig.CodeModeDiscoveryRanker,
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
+			codeMode.SetDecisionRequestFunc(bifrost.codeModeDecisionRequest)
 			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
@@ -1733,6 +1735,17 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 		return nil, err
 	}
 	return response.DecisionResponse, nil
+}
+
+// codeModeDecisionRequest serves the code mode decision-model discovery ranker.
+// Like the complexity router's classifier, it issues an internal request: the
+// plugin pipeline is skipped and the caller's key routing and body state are
+// shed, so the ranker call is not governed or routed as the caller's. The code
+// mode records the call on the tool call's context instead, and the logging
+// plugin writes it as its own row from the tool call's PostMCPHook.
+func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	PrepareContextForInternalRequest(ctx)
+	return bifrost.DecisionRequest(ctx, req)
 }
 
 // OCRRequest sends an OCR request to the specified provider.

@@ -11078,6 +11078,103 @@
             "type": "string"
           },
           "description": "Hostnames, IP addresses, or CIDR ranges (no schemes or ports) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach even when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json; clients registered while dashboard auth was off stay public-only. Link-local and cloud metadata addresses are always refused and cannot be listed. Example: [\"localhost\", \"127.0.0.1\", \"10.20.0.0/16\"]."
+        },
+        "code_mode_discovery_ranker": {
+          "type": "object",
+          "description": "Optional ranker for listToolFiles(query=...): an external HTTP ranker (url) or a decision model asked through Bifrost's decision API (decision_model), not both. Bifrost falls back to its built-in lexical ranking on any failure. Read at startup only; BIFROST_CODE_MODE_DISCOVERY_RANKER_URL, BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE and BIFROST_CODE_MODE_DISCOVERY_RANKER_DECISION_MODEL override url, token_file and decision_model.",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "http or https endpoint that receives the ranking request. Empty disables the external ranker."
+            },
+            "token_file": {
+              "type": "string",
+              "description": "Optional file holding a bearer token for the ranker, read on every request."
+            },
+            "decision_model": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/\\S.*$",
+              "description": "Decision model that ranks the tools instead of an external URL, as provider/model (e.g. openai/gpt-5-nano). Cannot be combined with url or token_file."
+            },
+            "fallbacks": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^/\\s]+/\\S.*$"
+              },
+              "description": "Fallback decision models, as provider/model, tried in order when decision_model fails. Requires decision_model."
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30,
+              "description": "Bound on one ranking call in seconds. 0 uses the default of 5.",
+              "default": 0
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "decision_model"
+                ],
+                "properties": {
+                  "decision_model": {
+                    "minLength": 1
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "url"
+                      ],
+                      "properties": {
+                        "url": {
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "token_file"
+                      ],
+                      "properties": {
+                        "token_file": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "fallbacks"
+                ],
+                "properties": {
+                  "fallbacks": {
+                    "minItems": 1
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "decision_model"
+                ],
+                "properties": {
+                  "decision_model": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     },
