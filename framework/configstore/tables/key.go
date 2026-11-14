@@ -837,6 +837,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to encrypt ollama url: %w", err)
 		}
+		// Rapid-MLX
+		if err := encryptSecretVarPtr(&k.RapidMLXUrl); err != nil {
+			return fmt.Errorf("failed to encrypt rapidmlx url: %w", err)
+		}
 		// SGL
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
@@ -1019,6 +1023,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// Ollama
 		if err := decryptSecretVarPtr(&k.OllamaUrl); err != nil {
 			return fmt.Errorf("failed to decrypt ollama url: %w", err)
+		}
+		// Rapid-MLX
+		if err := decryptSecretVarPtr(&k.RapidMLXUrl); err != nil {
+			return fmt.Errorf("failed to decrypt rapidmlx url: %w", err)
 		}
 		// SGL
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {

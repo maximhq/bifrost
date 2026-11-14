@@ -128725,7 +128725,6 @@
           "groq",
           "mistral",
           "ollama",
-          "rapidmlx",
           "opencode-go",
           "opencode-zen",
           "openai",

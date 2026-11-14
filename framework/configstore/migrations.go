@@ -7005,6 +7005,9 @@ func migrationAddRapidMLXKeyConfigColumn(ctx context.Context, db *gorm.DB, logge
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
 			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
 				return err
 			}
