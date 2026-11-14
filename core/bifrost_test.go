@@ -3715,6 +3715,51 @@ func TestProviderResolutionErrorReplacesAutoResolveMessage(t *testing.T) {
 	}
 }
 
+// TestProviderResolutionErrorIsPerRequest pins that a provider resolution reason does not outlive
+// its request. Nil-ctx calls share the instance context, so a reason one request's plugin wrote
+// must not become the error of a later request whose provider stays unset with no reason given.
+func TestProviderResolutionErrorIsPerRequest(t *testing.T) {
+	const reason = "model shared-model is served by more than one provider (azure, openai)"
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			plugin := &fakeRoutingPlugin{name: "resolver", resolutionError: reason}
+			client, initErr := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewNoOpLogger(),
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if initErr != nil {
+				t.Fatalf("Init failed: %v", initErr)
+			}
+			t.Cleanup(client.Shutdown)
+
+			send := func() string {
+				req := &schemas.BifrostChatRequest{Model: "shared-model", Input: input}
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					_, bifrostErr = client.ChatCompletionStreamRequest(nil, req)
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(nil, req)
+				}
+				if bifrostErr == nil || bifrostErr.Error == nil {
+					t.Fatalf("got %v, want an error", bifrostErr)
+				}
+				return bifrostErr.Error.Message
+			}
+			if got := send(); got != reason {
+				t.Fatalf("first request: message %q, want %q", got, reason)
+			}
+			plugin.resolutionError = ""
+			if got := send(); got != ProviderAutoResolveErrorMessage {
+				t.Fatalf("second request: message %q, want the generic %q", got, ProviderAutoResolveErrorMessage)
+			}
+		})
+	}
+}
+
 // modelRewritingPlugin rewrites the model in PreRequestHook the way a routing rule does, and
 // records what its PreLLMHook then reads for the caller's original route.
 type modelRewritingPlugin struct {

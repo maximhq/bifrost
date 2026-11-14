@@ -6128,6 +6128,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
+	// The reason a PreRequestHook gives for leaving the provider unset belongs to this request
+	// only; a reused context (bifrost.ctx for nil-ctx callers) must not report an earlier one.
+	ctx.ClearValue(schemas.BifrostContextKeyProviderResolutionError)
 	// Ensure request ID is set in context before PreHooks
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		requestID := uuid.New().String()
@@ -6358,6 +6361,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	// Try the primary provider first
 	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
+	// Per-request, like in handleRequest: drop an earlier request's provider resolution reason.
+	ctx.ClearValue(schemas.BifrostContextKeyProviderResolutionError)
 	// Ensure request ID is set in context before PreHooks
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		requestID := uuid.New().String()
