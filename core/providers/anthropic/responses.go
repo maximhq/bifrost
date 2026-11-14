@@ -5875,6 +5875,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the same way. The
 	// <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := isRequestMessage
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -6233,6 +6234,9 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					// instead of collapsing the prefix from the system block. The override goes
 					// first: effort applies "from the next user turn on", so the reply to the
 					// reminder turn already runs at the new level, as the native item would.
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					appendEffortOnly()
 					if inlined := inlineMidConversationSystem(content); inlined != nil {
 						anthropicMessages = append(anthropicMessages, *inlined)
