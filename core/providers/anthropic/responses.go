@@ -6546,7 +6546,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 								continue
 							}
 							for _, block := range anthropicMessages[n].Content.ContentBlocks {
-								if block.ID != nil && *block.ID == *msg.ResponsesToolMessage.CallID &&
+								if block.ID != nil && *block.ID == providerUtils.SanitizeAnthropicToolUseID(*msg.ResponsesToolMessage.CallID) &&
 									(block.Type == AnthropicContentBlockTypeMCPToolUse ||
 										block.Type == AnthropicContentBlockTypeToolUse ||
 										block.Type == AnthropicContentBlockTypeServerToolUse) {
