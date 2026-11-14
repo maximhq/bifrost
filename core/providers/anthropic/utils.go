@@ -2012,8 +2012,8 @@ func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model 
 // accepts output_config.effort on a role:"system" message inside messages (per-message
 // effort, beta mid-conversation-output-config-2026-07-01). Claude API direct only: the
 // Bedrock and Vertex converters have no native mid-conversation system role to carry it.
-// Documented on Claude Fable 5.1 / Mythos 5.1, Claude Opus 5 and 5.5, and Claude Sonnet
-// 5.5. Every other model, Claude Fable 5 and Opus 4.8 included, returns 400
+// Documented on Claude Fable 5.1 / Mythos 5.1, Claude Opus 5 and 5.5, Claude Sonnet
+// 5.5, and Claude Haiku 5.5. Every other model, Claude Fable 5 and Opus 4.8 included, returns 400
 // "output_config.effort requires a model that supports per-turn effort", so callers drop
 // the override fail-soft when this is false instead of forwarding a guaranteed rejection.
 //
@@ -2023,7 +2023,7 @@ func DefaultSupportsMidConversationOutputConfig(provider schemas.ModelProvider, 
 		return false
 	}
 	m := strings.ToLower(model)
-	return schemas.IsFable51(m) || IsOpus5Plus(m) || IsSonnet55Plus(m)
+	return schemas.IsFable51(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m)
 }
 
 // SupportsFastMode reports fast-mode support for a single (provider, model)

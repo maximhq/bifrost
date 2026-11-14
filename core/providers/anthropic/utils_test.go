@@ -6064,6 +6064,12 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-sonnet-5-5") {
 		t.Error("Sonnet 5.5 must report per-message effort support")
 	}
+	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-haiku-5-5") {
+		t.Error("Haiku 5.5 must report per-message effort support")
+	}
+	if DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-haiku-4-5") {
+		t.Error("Haiku 4.5 must not report per-message effort support")
+	}
 }
 
 // TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome: Bedrock's native
