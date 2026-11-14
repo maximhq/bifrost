@@ -853,6 +853,11 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 			msg.Reasoning = &text
 		}
 		if len(pendingReasoningDetails) > 0 {
+			// Keep detail indexes sequential when the message already carries details.
+			offset := len(msg.ReasoningDetails)
+			for i := range pendingReasoningDetails {
+				pendingReasoningDetails[i].Index += offset
+			}
 			msg.ReasoningDetails = append(msg.ReasoningDetails, pendingReasoningDetails...)
 		}
 		pendingReasoning.Reset()
@@ -1175,6 +1180,21 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 
 	// Handle any remaining tool calls at the end
 	flushToolCalls()
+
+	// Reasoning that closes the turn (a thinking run with no block after it) has no later
+	// assistant message to ride on; keep it on the last one instead of dropping it.
+	if (pendingReasoning.Len() > 0 || len(pendingReasoningDetails) > 0) && len(chatMessages) > 0 {
+		if last := &chatMessages[len(chatMessages)-1]; last.Role == ChatMessageRoleAssistant {
+			if last.ChatAssistantMessage == nil {
+				last.ChatAssistantMessage = &ChatAssistantMessage{}
+			}
+			if last.ChatAssistantMessage.Reasoning != nil && pendingReasoning.Len() > 0 {
+				merged := *last.ChatAssistantMessage.Reasoning + "\n" + pendingReasoning.String()
+				last.ChatAssistantMessage.Reasoning = &merged
+			}
+			attachPendingReasoning(last.ChatAssistantMessage)
+		}
+	}
 
 	return chatMessages
 }
