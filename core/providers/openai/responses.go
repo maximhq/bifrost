@@ -1189,7 +1189,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.TopP = nil
 		}
 		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
-		if base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider); base == schemas.OpenAI || base == schemas.Azure {
+		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
@@ -1203,6 +1204,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					return s == schemas.ResponsesIncludeOutputTextLogProbs
 				})
 			}
+		}
+		if base == schemas.OpenAI || base == schemas.Azure {
 			// Codex asks for encrypted reasoning on every request; models that do not
 			// reason reject it ("Encrypted content is not supported with this model").
 			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
