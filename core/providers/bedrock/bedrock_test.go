@@ -4293,6 +4293,101 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	assert.Equal(t, "customValue", customField)
 }
 
+// TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta pins that a
+// caller's additionalModelRequestFieldPaths.anthropic_beta is unioned with the
+// betas the gateway derives (fine-grained tool streaming, server tools) instead
+// of replacing them, on both the Chat and Responses Converse paths.
+func TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta(t *testing.T) {
+	const (
+		eagerBeta  = "fine-grained-tool-streaming-2025-05-14"
+		memoryBeta = "context-management-2025-06-27"
+		callerBeta = "context-1m-2025-08-07"
+	)
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+	betaList := func(t *testing.T, fields *schemas.OrderedMap) []string {
+		t.Helper()
+		require.NotNil(t, fields)
+		raw, ok := fields.Get("anthropic_beta")
+		require.True(t, ok, "anthropic_beta missing")
+		encoded, err := json.Marshal(raw)
+		require.NoError(t, err)
+		var out []string
+		require.NoError(t, json.Unmarshal(encoded, &out), "anthropic_beta is not a string list: %s", encoded)
+		return out
+	}
+
+	cases := []struct {
+		name        string
+		callerBetas any
+		eager       bool
+		serverTool  bool
+		want        []string
+	}{
+		{name: "caller list keeps the eager beta", callerBetas: []interface{}{callerBeta}, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller string keeps the eager beta", callerBetas: callerBeta, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller repeating the eager beta is not duplicated", callerBetas: []string{eagerBeta, callerBeta}, eager: true, want: []string{eagerBeta, callerBeta}},
+		{name: "caller list keeps server-tool betas", callerBetas: []string{callerBeta}, serverTool: true, want: []string{callerBeta, memoryBeta}},
+		{name: "caller list alone is forwarded unchanged", callerBetas: []string{callerBeta}, want: []string{callerBeta}},
+	}
+
+	for _, tc := range cases {
+		extra := func() map[string]any {
+			return map[string]any{
+				"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(schemas.KV("anthropic_beta", tc.callerBetas)),
+			}
+		}
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: schemas.Ptr(true),
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+
+		if tc.serverTool {
+			continue // server tools are tunneled only on the Chat path
+		}
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   schemas.Ptr(true),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+	}
+}
+
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
 // the "reasoningConfig" field (camelCase) and NOT "thinking".
 func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
