@@ -54,8 +54,8 @@ export default function RouterDetailView({ routerId, traffic, trafficFilter, onB
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
 	const { t: tmr } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
-	const canUpdate = useRbac(RbacResource.Governance, RbacOperation.Update);
-	const canDelete = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const canUpdate = useRbac(RbacResource.Routers, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.Routers, RbacOperation.Delete);
 	const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(ROUTER_TABS).withDefault("overview").withOptions({ history: "push" }));
 	const [suggestionsView, setSuggestionsView] = useQueryState("view", suggestionsViewParser);
 	// The suggestions dashboard ships behind a flag; their APIs work either way.

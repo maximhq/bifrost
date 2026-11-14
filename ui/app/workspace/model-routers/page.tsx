@@ -14,7 +14,7 @@ import { useRouterTraffic, useTrafficFilter } from "./views/useRouterTraffic";
 // they show the same period and moving between them does not read the logs
 // again.
 export default function ModelRoutersPage() {
-	const canCreate = useRbac(RbacResource.Governance, RbacOperation.Create);
+	const canCreate = useRbac(RbacResource.Routers, RbacOperation.Create);
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			router: parseAsString,
