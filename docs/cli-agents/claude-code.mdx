@@ -88,6 +88,10 @@ Use one project header, either `x-bf-project-id` or `x-bf-project-name`. If othe
 
 These settings apply to local Claude Code. Anthropic-hosted cloud sessions do not apply gateway environment variables; see [Anthropic's gateway surface coverage](https://code.claude.com/docs/en/llm-gateway-connect#slack-cloud-sessions-and-remote-control).
 
+<Note>
+  `/anthropic/v1/messages` and `/v1/messages` reach the same Anthropic Messages handler, so `ANTHROPIC_BASE_URL` can be either the gateway root or the `/anthropic` URL used below. Clients that read `/v1/models` get Bifrost's own listing at the root and the Anthropic-shaped listing under `/anthropic`; both include the model's context size when the provider or the model catalog supplies one, and omit it otherwise.
+</Note>
+
 ## Static virtual key
 
 Use this when a fixed virtual key is acceptable. Claude Code sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <token>`, which Bifrost accepts as a virtual key. No Anthropic account login is required.
