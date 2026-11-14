@@ -46,6 +46,15 @@ func GenAIRealtimePaths(pathPrefix string) []string {
 	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
 }
 
+// GenAIVertexRealtimePaths returns the WebSocket GET paths a Google GenAI client in Vertex mode opens for the Live
+// API: the Vertex AI service, in the API versions the SDK uses.
+func GenAIVertexRealtimePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent",
+		pathPrefix + "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent",
+	}
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig

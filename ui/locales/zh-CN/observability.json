@@ -1261,6 +1261,7 @@
 		"decisions": "决策",
 		"speech": "语音生成",
 		"speech_stream": "流式语音生成",
+		"speech_session": "语音生成会话",
 		"transcription": "语音转写",
 		"transcription_stream": "流式语音转写",
 		"image_generation": "图像生成",

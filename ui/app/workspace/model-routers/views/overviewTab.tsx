@@ -6,14 +6,25 @@ import { MetricSegment, MetricStripCard, MetricTrailing } from "@/components/met
 import { SetupChecklist, type SetupChecklistItem } from "@/components/setupChecklist";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { getLocale } from "@/lib/i18n";
 import { COMPLEXITY_TIER_VALUES, DEFAULT_DECISION_CONFIG, ModelRouter, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { COMPACT_NUMBER_FORMAT, formatCompactNumber, formatCurrencyNumber } from "@/lib/utils/numbers";
+import { TIME_PERIODS } from "@/lib/utils/timeRange";
 import NumberFlow from "@number-flow/react";
 import { Link } from "@tanstack/react-router";
+import type { ParseKeys } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import type { RouterTab } from "./routerDetailView";
-import { type ComplexityTierValue, type RouterTraffic, type TrafficWindow, useRouterTierSplit } from "./useRouterTraffic";
+import {
+	type ComplexityTierValue,
+	customRangeLabel,
+	type RouterTraffic,
+	type TrafficFilter,
+	trafficLogsSearch,
+	type TrafficSelection,
+	useRouterTierSplit,
+} from "./useRouterTraffic";
 
 // The classifier's name, and the model behind it.
 export function classifierSummary(
@@ -44,6 +55,14 @@ export function tiersWithModels(router: ModelRouter): number {
 	).length;
 }
 
+// modelCount counts the models set across the tiers: every target that names
+// a model, so two models sharing a tier are two. A target that only moves the
+// request to another provider names no model and is not counted, as
+// tiersWithModels does not count its tier.
+export function modelCount(router: ModelRouter): number {
+	return (router.targets ?? []).filter((target) => Boolean(target.model?.trim())).length;
+}
+
 // OverviewStatus is which line the overview's status card shows.
 export type OverviewStatus = "off" | "on" | "noTraffic" | "serving";
 
@@ -57,6 +76,14 @@ export function overviewStatus(enabled: boolean, trafficState: MetricsState, req
 	return requests === 0 ? "noTraffic" : "serving";
 }
 
+// trafficPeriodLabel names the period the figures cover: a preset by the name
+// the picker gives it, a custom range by its two dates in the picker's timezone.
+export function trafficPeriodLabel(selection: TrafficSelection, t: (key: ParseKeys<"common">) => string, timezone: string): string {
+	if (selection.period === undefined) return customRangeLabel(selection.start, selection.end, getLocale(), timezone);
+	const preset = TIME_PERIODS.find((period) => period.value === selection.period);
+	return preset ? t(preset.labelKey) : selection.period;
+}
+
 const TIER_LABEL_KEYS = { SIMPLE: "tierSimple", MEDIUM: "tierMedium", COMPLEX: "tierComplex" } as const satisfies Record<
 	ComplexityTierValue,
 	string
@@ -64,12 +91,12 @@ const TIER_LABEL_KEYS = { SIMPLE: "tierSimple", MEDIUM: "tierMedium", COMPLEX: "
 
 interface OverviewTabProps {
 	router: ModelRouter;
-	// What the router took over the last seven days; undefined until the read answers.
+	// What the router took over the chosen period; undefined until the read answers.
 	traffic: RouterTraffic | undefined;
 	// The state of that read: pending, unavailable when it failed, or ready.
 	trafficState: MetricsState;
-	// The window those figures cover; the tier split reads the same one.
-	trafficWindow: TrafficWindow;
+	// The period those figures cover; the tier split reads the same one.
+	trafficFilter: TrafficFilter;
 	onNavigate: (tab: RouterTab) => void;
 	canUpdate: boolean;
 	// Opens the router sheet with its switch on, from the status line of a router that is off.
@@ -78,12 +105,12 @@ interface OverviewTabProps {
 
 // OverviewTab answers, at a glance, what the router has taken lately, what it
 // still needs, and how it is set up. It follows the project page: the two
-// figures that matter most on top (requests over the last week split by tier,
-// and their cost against the week before), a setup checklist while something
+// figures that matter most on top (requests over the chosen period split by
+// tier, and their cost against the period before), a setup checklist while something
 // is missing, a strip of facts that each open their tab, and one line on
 // whether the router is serving, with the way into its requests and, while it
 // is off, the way to turn it on.
-export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNavigate, canUpdate, onTurnOn }: OverviewTabProps) {
+export function OverviewTab({ router, traffic, trafficState, trafficFilter, onNavigate, canUpdate, onTurnOn }: OverviewTabProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters.overview" });
 	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
 	const { t: tmr } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
@@ -96,7 +123,8 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 	const requests = traffic?.requests ?? 0;
 	const cost = traffic?.cost ?? 0;
 	const metricState = trafficState;
-	const tiers = useRouterTierSplit(router.id, trafficWindow);
+	const tiers = useRouterTierSplit(router.id, trafficFilter.window);
+	const periodLabel = trafficPeriodLabel(trafficFilter.selection, tc, trafficFilter.timezone);
 	const tierLine = tiers
 		?.map((entry) => t("metrics.tierCount", { tier: tcpx(TIER_LABEL_KEYS[entry.tier]), requests: formatCompactNumber(entry.requests) }))
 		.join(" · ");
@@ -145,7 +173,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 			<MetricStripCard className="grid-cols-1 sm:grid-cols-2" testId="model-router-metrics">
 				<MetricSegment
 					title={t("metrics.requests")}
-					aside={t("metrics.window")}
+					aside={periodLabel}
 					state={metricState}
 					footer={
 						requests === 0 ? (
@@ -164,7 +192,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 				</MetricSegment>
 				<MetricSegment
 					title={t("metrics.cost")}
-					aside={t("metrics.window")}
+					aside={periodLabel}
 					state={metricState}
 					footer={
 						requests === 0 ? (
@@ -215,7 +243,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 				/>
 				<Fact
 					label={tmr("tabs.models")}
-					value={t("facts.modelsSet", { count: modelsSet })}
+					value={t("facts.modelsSet", { count: modelCount(router), tiers: modelsSet })}
 					sub={
 						modelsSet === 0
 							? t("facts.pickModels")
@@ -242,7 +270,7 @@ export function OverviewTab({ router, traffic, trafficState, trafficWindow, onNa
 						<span className="text-muted-foreground text-xs">{status.detail}</span>
 					</div>
 					<Button asChild variant="outline" size="sm" className="h-7 shrink-0 text-xs" data-testid="model-router-view-requests-button">
-						<Link to="/workspace/logs" search={{ model_router_ids: [router.id] }}>
+						<Link to="/workspace/logs" search={{ model_router_ids: [router.id], ...trafficLogsSearch(trafficFilter.selection) }}>
 							{t("status.viewRequests")}
 						</Link>
 					</Button>

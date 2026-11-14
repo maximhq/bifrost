@@ -39,8 +39,7 @@ interface RouterWizardProps {
 export default function RouterWizard({ onCancel, onCreated }: RouterWizardProps) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
 	const { t: tc } = useTranslation("common");
-	const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
-	const canCreate = useRbac(RbacResource.Governance, RbacOperation.Create);
+	const canCreate = useRbac(RbacResource.Routers, RbacOperation.Create);
 	const { data: defaults, isLoading, error, refetch } = useGetModelRouterDefaultsQuery();
 	const [createRouter] = useCreateModelRouterMutation();
 	const [stepIndex, setStepIndex] = useState(0);
@@ -165,12 +164,7 @@ export default function RouterWizard({ onCancel, onCreated }: RouterWizardProps)
 						</form>
 					</Form>
 				)}
-				{stepKey === "classifier" && (
-					<div className="space-y-3">
-						<ClassifierChoice value={config.live.classifier} onChange={config.selectClassifier} includeLlm />
-						<p className="text-muted-foreground text-xs">{tcpx("classifierSwitchHelp")}</p>
-					</div>
-				)}
+				{stepKey === "classifier" && <ClassifierChoice value={config.live.classifier} onChange={config.selectClassifier} includeLlm />}
 				{stepKey === "configuration" && <RouterConfigurationEditor config={config} />}
 			</WizardLayout>
 			<RouterConfigurationSheets config={config} />

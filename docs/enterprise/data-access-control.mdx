@@ -77,6 +77,7 @@ The table below describes what a person sees on each page.
 | **Dashboards and analytics** | Built only from the requests they can see | Same | Same | Same |
 | **Prompts** | Prompts they wrote | + prompts by teammates and prompts of their teams | + prompts by business unit members | + prompts by members and prompts of teams under their customers |
 | **Routing rules** | Global rules, rules for themselves, and rules on keys they can see | + rules for their teams | Same as own data (there are no business unit rules) | + rules for teams and customers under their customers |
+| **Routers** | Routers whose routing is global, for themselves, or on keys they can see | + routers for their teams | Same as own data (there are no business unit routers) | + routers for teams and customers under their customers |
 | **Audit logs** | Changes they made | + changes made by members | Same | Same |
 | **Roles** | Their own role, roles their members hold, and roles created by people they can see | Same | Same | Same |
 | **Access profiles** | Profiles on roles they can see, and profiles created by people they can see | Same | Same | Same |
@@ -172,7 +173,7 @@ Set the scope with `dac` and the overrides with `entity_dac` on each role:
 }
 ```
 
-Values are `own-data`, `team-data`, `business-unit-data`, `customer-data`, and `all-data`. `entity_dac` is keyed by resource name: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `AgentGateway`, `AgentLogs`, `RelayLogs`, `VirtualMCPs`, and `Projects`. A role with an invalid value is skipped with a warning. In Helm, use `bifrost.governance.roles[].dac` and `.entity_dac`.
+Values are `own-data`, `team-data`, `business-unit-data`, `customer-data`, and `all-data`. `entity_dac` is keyed by resource name: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `Routers`, `GuardrailsConfig`, `MCPGateway`, `AgentGateway`, `AgentLogs`, `RelayLogs`, `VirtualMCPs`, and `Projects`. A role with an invalid value is skipped with a warning. In Helm, use `bifrost.governance.roles[].dac` and `.entity_dac`.
 
 ---
 

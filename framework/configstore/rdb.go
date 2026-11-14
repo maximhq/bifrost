@@ -354,6 +354,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		UsageEstimationTokenizers:                 config.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
+		MCPClientMetadataURL:                      mcpExternalURLToString(config.MCPClientMetadataURL),
 		SkillsExternalClientURL:                   mcpExternalURLToString(config.SkillsExternalClientURL),
 		A2AStoreRawRequestResponse:                config.A2AStoreRawRequestResponse,
 		A2AExternalClientURL:                      mcpExternalURLToString(config.A2AExternalClientURL),
@@ -677,6 +678,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		UsageEstimationTokenizers:               dbConfig.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                    dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                    schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		MCPClientMetadataURL:                    schemas.NewSecretVar(dbConfig.MCPClientMetadataURL),
 		SkillsExternalClientURL:                 schemas.NewSecretVar(dbConfig.SkillsExternalClientURL),
 		A2AStoreRawRequestResponse:              dbConfig.A2AStoreRawRequestResponse,
 		A2AExternalClientURL:                    schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
@@ -9235,9 +9237,10 @@ type MCPOAuthConfigFields struct {
 	RedirectURI     string // "" keeps the stored redirect_uri
 
 	// The authorization-server binding; callers that do not set it resolve it with KeepBinding.
-	Issuer                string
-	IssParameterSupported bool
-	DynamicallyRegistered bool
+	Issuer                 string
+	IssParameterSupported  bool
+	DynamicallyRegistered  bool
+	ClientMetadataDocument bool // the client_id is Bifrost's own metadata document, which follows its configured URL
 
 	ExpectedIssuer   *string // when set, applies only while the stored issuer still equals it (ErrOAuthConfigChanged otherwise)
 	ExpectedClientID *string // when set, applies only while the stored client_id still equals it (ErrOAuthConfigChanged otherwise)
@@ -9257,6 +9260,7 @@ func (fields *MCPOAuthConfigFields) KeepBinding(existingOauthConfig *tables.Tabl
 	}
 	if sameClient {
 		fields.DynamicallyRegistered = existingOauthConfig.DynamicallyRegistered
+		fields.ClientMetadataDocument = existingOauthConfig.ClientMetadataDocument
 	}
 }
 
@@ -9348,6 +9352,7 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 	existingOauthConfig.Issuer = fields.Issuer
 	existingOauthConfig.IssParameterSupported = fields.IssParameterSupported
 	existingOauthConfig.DynamicallyRegistered = fields.DynamicallyRegistered
+	existingOauthConfig.ClientMetadataDocument = fields.ClientMetadataDocument
 	if len(fields.Scopes) == 0 {
 		existingOauthConfig.Scopes = ""
 	} else {

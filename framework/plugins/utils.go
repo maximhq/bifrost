@@ -68,6 +68,10 @@ func DownloadPlugin(pluginURL string, extension string, client *http.Client) (st
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", fmt.Errorf("unsupported plugin URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
+	if err := CheckPluginURLAllowed(pluginURL); err != nil {
+		return "", err
+	}
+	client = withAllowlistedRedirects(client)
 
 	req, err := http.NewRequest(http.MethodGet, pluginURL, nil)
 	if err != nil {

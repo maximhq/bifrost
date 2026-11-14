@@ -15,6 +15,9 @@ import {
 	nextSuggestionRun,
 	shouldSeedLLMPrompt,
 	suggestionsFormValues,
+	tierCriteriaFormValues,
+	tierCriteriaReseedValues,
+	tierCriteriaToReseed,
 	toAnalyzerPayload,
 	toComplexityConfigPayload,
 	toFormValues,
@@ -441,6 +444,69 @@ describe("Decision complexity configuration", () => {
 			expect(toAnalyzerPayload(values, saved, kept).suggestions?.tier?.criteria).toEqual({
 				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
 			});
+		});
+
+		test("moves untouched tiers to new generated text with the baseline, keeping edited ones", () => {
+			const saved: AnalyzerConfig = { keywords, semantic, suggestions: decision };
+			const values = toFormValues(saved, undefined, generated);
+			values.suggestions.tier_criteria.MEDIUM.examples = ["medium", "draft a refund reply"];
+			// The router's phrases changed: the gateway now generates other examples.
+			const fresher: SuggestionTierDefaults = {
+				...generated,
+				criteria: {
+					SIMPLE: { ...generated.criteria.SIMPLE, examples: ["simple", "track my parcel"] },
+					MEDIUM: { ...generated.criteria.MEDIUM, examples: ["medium", "summarize the call"] },
+					COMPLEX: generated.criteria.COMPLEX,
+				},
+			};
+			expect(tierCriteriaToReseed(values.suggestions.tier_criteria, generated.criteria)).toEqual(["SIMPLE", "COMPLEX"]);
+			const reseed = tierCriteriaReseedValues(
+				values.suggestions.tier_criteria,
+				generated.criteria,
+				saved.suggestions?.tier,
+				fresher.criteria,
+			);
+			for (const [tier, criteria] of reseed) values.suggestions.tier_criteria[tier] = criteria;
+			// Only the edited tier is sent; the untouched ones keep following the router.
+			expect(toAnalyzerPayload(values, saved, fresher).suggestions?.tier?.criteria).toEqual({
+				MEDIUM: { definition: "Routine work.", signals: ["a draft"], examples: ["medium", "draft a refund reply"] },
+			});
+			// With nothing seeded before, only empty tiers are filled.
+			expect(tierCriteriaToReseed(values.suggestions.tier_criteria, undefined)).toEqual([]);
+		});
+
+		test("a tier put back to the generated text follows newer generated text, not its saved edit", () => {
+			const ours = { definition: "Our own.", signals: ["a refund"], examples: ["refund reply"] };
+			const saved: AnalyzerConfig = {
+				keywords,
+				semantic,
+				suggestions: { ...decision, tier: { ...decision.tier, criteria: { MEDIUM: ours } } },
+			};
+			const values = toFormValues(saved, undefined, generated);
+			expect(values.suggestions.tier_criteria.MEDIUM).toEqual(ours);
+			// The operator puts the generated criteria back in the editor.
+			values.suggestions.tier_criteria.MEDIUM = { definition: "Routine work.", signals: ["a draft"], examples: ["medium"] };
+			const fresher: SuggestionTierDefaults = {
+				...generated,
+				criteria: { ...generated.criteria, MEDIUM: { ...generated.criteria.MEDIUM, examples: ["medium", "summarize the call"] } },
+			};
+			const reseed = tierCriteriaReseedValues(
+				values.suggestions.tier_criteria,
+				generated.criteria,
+				saved.suggestions?.tier,
+				fresher.criteria,
+			);
+			expect(new Map(reseed).get("MEDIUM"), "the saved edit is not put back over the operator's change").toEqual(fresher.criteria.MEDIUM);
+			for (const [tier, criteria] of reseed) values.suggestions.tier_criteria[tier] = criteria;
+			// The tier follows the router again, so its saved edit is no longer sent.
+			expect(toAnalyzerPayload(values, saved, fresher).suggestions?.tier?.criteria).toBeUndefined();
+
+			// A tier still empty is seeded from its saved edit, as on first load.
+			const empty = toFormValues(saved, undefined, undefined);
+			empty.suggestions.tier_criteria.MEDIUM = { definition: "", signals: [], examples: [] };
+			const first = tierCriteriaReseedValues(empty.suggestions.tier_criteria, undefined, saved.suggestions?.tier, generated.criteria);
+			expect(new Map(first).get("MEDIUM")).toEqual(ours);
+			expect(new Map(first).get("SIMPLE")).toEqual(generated.criteria.SIMPLE);
 		});
 
 		test("needs a definition for every tier a decision step sends, but lets lists be empty", () => {
