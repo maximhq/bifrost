@@ -1460,6 +1460,27 @@ func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *
 
 	merged := existing.Clone()
 	incoming.Range(func(key string, value interface{}) bool {
+		if key == "anthropic_beta" {
+			// Union with the betas the gateway already derived (server tools,
+			// fine-grained tool streaming, thinking display): replacing the list
+			// would strip a beta the request body depends on. The caller's
+			// values lead; a value that is not a string or string list passes
+			// through as before.
+			incomingBetas, ok := anthropicBetaValues(value)
+			if !ok {
+				merged.Set(key, value)
+				return true
+			}
+			var derived []string
+			if existingValue, has := merged.Get(key); has {
+				derived, _ = anthropicBetaValues(existingValue)
+			}
+			merged.Delete(key)
+			for _, beta := range append(incomingBetas, derived...) {
+				appendAnthropicBetaToFields(merged, beta)
+			}
+			return true
+		}
 		if key == "output_config" {
 			current := schemas.NewOrderedMap()
 			if existingValue, ok := merged.Get(key); ok {
@@ -1551,20 +1572,7 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 	}
 	var existing []string
 	if raw, ok := fields.Get("anthropic_beta"); ok {
-		switch v := raw.(type) {
-		case []string:
-			existing = v
-		case []interface{}:
-			for _, item := range v {
-				if s, ok := item.(string); ok {
-					existing = append(existing, s)
-				}
-			}
-		case string:
-			if v != "" {
-				existing = []string{v}
-			}
-		}
+		existing, _ = anthropicBetaValues(raw)
 	}
 	for _, h := range existing {
 		if h == header {
@@ -1572,6 +1580,32 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 		}
 	}
 	fields.Set("anthropic_beta", append(existing, header))
+}
+
+// anthropicBetaValues reads an anthropic_beta value as a fresh string slice.
+// ok is false when the value is neither a string nor a list of strings; the
+// string entries of a mixed list are still returned.
+func anthropicBetaValues(raw any) (values []string, ok bool) {
+	switch v := raw.(type) {
+	case []string:
+		return append([]string(nil), v...), true
+	case []interface{}:
+		ok = true
+		for _, item := range v {
+			if s, isString := item.(string); isString {
+				values = append(values, s)
+			} else {
+				ok = false
+			}
+		}
+		return values, ok
+	case string:
+		if v == "" {
+			return nil, true
+		}
+		return []string{v}, true
+	}
+	return nil, false
 }
 
 // applyBedrockThinkingDisplayUpdates settles thinking.display:"updates" on a Converse thinking
