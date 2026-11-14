@@ -140,7 +140,7 @@ Every input item must be a single text part, and items cannot carry their own pa
 
 `voyage-context-4` and `voyage-context-3` embed each chunk of a document in the context of the whole document. `input_type` is required.
 
-- **`document`**: each input item is one whole document as a single text part. Bifrost sends a flat list of strings with `enable_auto_chunking: true` and `chunk_size: 32000`, and Voyage splits the documents. Auto-chunking only works on a flat list of strings and only for `document`, so a pre-chunked document (several parts in one item) is rejected. Each entry of `data` is one document with a 2D `embedding` (one vector per chunk) and `chunks`, the chunk texts in the same order.
+- **`document`**: each input item is one whole document as a single text part. Bifrost sends a flat list of strings with `enable_auto_chunking: true` and `chunk_size: 32000`, and Voyage splits the documents. Auto-chunking only works on a flat list of strings and only for `document`, so a pre-chunked document (several parts in one item) is rejected. Each entry of `data` is one document with a 2D `embedding` (one vector per chunk) and `chunks`, the chunk texts in the same order. `chunks` is present only when Voyage returns a text for every chunk of the document; if any are missing it is omitted, so clients must not rely on it.
 - **`query`**: each item is one query, sent as its own single-query list with no chunking. Each entry carries one flat vector and no `chunks`.
 
 ```bash
