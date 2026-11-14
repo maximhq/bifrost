@@ -18,7 +18,15 @@ import {
 	Status,
 	StatusBarColors,
 } from "@/lib/constants/logs";
-import { ChatMessageContent, DisplayLogEntry, LLMUsage, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import {
+	ChatMessage,
+	ChatMessageContent,
+	DisplayLogEntry,
+	LLMUsage,
+	LogEntry,
+	ResponsesMessage,
+	ResponsesMessageContentBlock,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
@@ -94,23 +102,28 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 	);
 }
 
+function formatToolCall(name?: string, args?: string): string {
+	if (!name) {
+		return "";
+	}
+	const argumentsText = args?.trim();
+	return argumentsText ? `${name}(${argumentsText})` : name;
+}
+
+function formatToolCalls(toolCalls?: ChatMessage["tool_calls"]): string {
+	return (toolCalls || [])
+		.map((toolCall) => formatToolCall(toolCall?.function?.name, toolCall?.function?.arguments))
+		.filter(Boolean)
+		.join("\n");
+}
+
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
 	if (toolCalls.length === 0) {
 		// Hybrid list rows carry only the denormalized names; the full calls live in the offloaded payload.
 		return (log?.tool_call_names || []).join("\n");
 	}
-	return toolCalls
-		.map((toolCall) => {
-			const name = toolCall?.function?.name;
-			if (!name) {
-				return "";
-			}
-			const argumentsText = toolCall?.function?.arguments?.trim();
-			return argumentsText ? `${name}(${argumentsText})` : name;
-		})
-		.filter(Boolean)
-		.join("\n");
+	return formatToolCalls(toolCalls);
 }
 
 function getMessageFromContent(content?: ChatMessageContent): string {
@@ -127,6 +140,87 @@ function getMessageFromContent(content?: ChatMessageContent): string {
 		}
 	}
 	return lastTextContentBlock;
+}
+
+// The helpers below mirror BuildInputContentSummary in
+// framework/logstore/payload.go. Hybrid list rows arrive without history and
+// show its stored content_summary; full rows compute the preview here. Both
+// must use the same precedence: last user text, then the latest tool result or
+// tool call. Keep the two in sync.
+
+function getLastUserChatText(history: ChatMessage[]): string {
+	for (let i = history.length - 1; i >= 0; i--) {
+		if (history[i]?.role === "user") {
+			// Like findLastUserMessageIndex, only the last user message counts.
+			return getMessageFromContent(history[i].content);
+		}
+	}
+	return "";
+}
+
+function getLastChatToolSummary(history: ChatMessage[]): string {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const message = history[i];
+		if (message?.role === "tool") {
+			const text = getMessageFromContent(message.content);
+			if (text) {
+				return text;
+			}
+			continue;
+		}
+		if (message?.role === "assistant") {
+			const calls = formatToolCalls(message.tool_calls);
+			if (calls) {
+				return calls;
+			}
+		}
+	}
+	return "";
+}
+
+// Returns string content, or the last non-empty text block.
+function getLastResponsesText(content?: string | ResponsesMessageContentBlock[]): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	let lastText = "";
+	for (const block of content ?? []) {
+		if (block.text) {
+			lastText = block.text;
+		}
+	}
+	return lastText;
+}
+
+function getLastUserResponsesText(history: ResponsesMessage[]): string {
+	for (let i = history.length - 1; i >= 0; i--) {
+		if (history[i]?.role === "user") {
+			const text = getLastResponsesText(history[i].content);
+			if (text) {
+				return text;
+			}
+		}
+	}
+	return "";
+}
+
+function getLastResponsesToolSummary(history: ResponsesMessage[]): string {
+	for (let i = history.length - 1; i >= 0; i--) {
+		const message = history[i];
+		if (message?.type === "function_call_output") {
+			const output = Array.isArray(message.output) || typeof message.output === "string" ? message.output : undefined;
+			const text = getLastResponsesText(output);
+			if (text) {
+				return text;
+			}
+		} else if (message?.type === "function_call") {
+			const call = formatToolCall(message.name, message.arguments);
+			if (call) {
+				return call;
+			}
+		}
+	}
+	return "";
 }
 
 export function getRealtimeTurnMessages(log?: LogEntry): {
@@ -177,35 +271,33 @@ export function getMessage(log?: LogEntry) {
 		return "";
 	}
 	if (log?.input_history && log.input_history.length > 0) {
-		const lastInput = log.input_history[log.input_history.length - 1];
-		return getMessageFromContent(lastInput?.content);
+		const history = log.input_history;
+		// The latest message's own text is only a last resort, for histories the
+		// stored summary leaves blank (no user text and no tool activity).
+		return (
+			getLastUserChatText(history) ||
+			getLastChatToolSummary(history) ||
+			getMessageFromContent(history[history.length - 1]?.content) ||
+			log.content_summary ||
+			""
+		);
 	} else if (log?.responses_input_history && log.responses_input_history.length > 0) {
-		let lastMessage = log.responses_input_history[log.responses_input_history.length - 1];
-		let lastMessageContent = lastMessage?.content;
-		if (!lastMessage) {
-			return "";
+		const history = log.responses_input_history;
+		const summary = getLastUserResponsesText(history) || getLastResponsesToolSummary(history);
+		if (summary) {
+			return summary;
 		}
-		if (typeof lastMessageContent === "string") {
-			return lastMessageContent;
+		// Last resort, as for chat: the latest item's own text or screenshot.
+		const lastMessage = history[history.length - 1];
+		const lastText = getLastResponsesText(lastMessage?.content);
+		if (lastText) {
+			return lastText;
 		}
-		let lastTextContentBlock = "";
-		for (const block of (lastMessageContent ?? []) as ResponsesMessageContentBlock[]) {
-			if (block.text && block.text !== "") {
-				lastTextContentBlock = block.text;
-			}
+		const output = lastMessage?.output;
+		if (output && typeof output === "object" && !Array.isArray(output) && output.type === "computer_screenshot" && output.image_url) {
+			return output.image_url;
 		}
-		// If no content found in content field, check output field for Responses API
-		if (!lastTextContentBlock && lastMessage.output) {
-			// Handle output field - it could be a string, an array of content blocks, or a computer tool call output data
-			if (typeof lastMessage.output === "string") {
-				return lastMessage.output;
-			} else if (Array.isArray(lastMessage.output)) {
-				return lastMessage.output.map((block) => block.text).join("\n");
-			} else if (lastMessage.output.type && lastMessage.output.type === "computer_screenshot") {
-				return lastMessage.output.image_url;
-			}
-		}
-		return lastTextContentBlock ?? "";
+		return log.content_summary || "";
 	} else if (log?.output_message) {
 		return getMessageFromContent(log.output_message.content);
 	} else if (log?.speech_input) {

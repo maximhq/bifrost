@@ -1302,6 +1302,36 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	assert.NotContains(t, dbLog.ContentSummary, "Paris", "content_summary should not contain output text")
 }
 
+// An agent-loop request whose history has no user text keeps the latest tool
+// result as its list preview instead of an empty summary.
+func TestHybrid_ContentSummaryFallsBackToToolResult(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	system := "You are an agent."
+	toolResult := "25\nexit=0\ncurrent-context: my-own-context"
+	callID := "toolu_1"
+	entry := &Log{
+		ID:        "summary-tool-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-3",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+			{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &toolResult}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+
+	dbLog, err := inner.FindByID(ctx, "summary-tool-1")
+	require.NoError(t, err)
+	assert.Equal(t, toolResult, dbLog.ContentSummary)
+}
+
 func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	// Responses API requests carry their history in responses_input_history
 	// rather than input_history. After offload, the DB row must retain the last
