@@ -331,7 +331,9 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 		{name: "404 model", reply: failureReplies["404 model"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassModelAccess, fallback: true}},
 		{name: "410", reply: failureReplies["410 retired"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassModelGone, fallback: true}},
 		{name: "403 region", reply: failureReplies["403 region"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassRegionBlocked, fallback: true}},
-		{name: "400", reply: failureReplies["400 caller fault"], want: outcome{trail: 1, class: schemas.FailureClassCallerFault, fallback: true}},
+		// A refusal of the request itself is returned, not answered by the fallback (see
+		// TestScenarioFallbacksStopOnCallerFault).
+		{name: "400", reply: failureReplies["400 caller fault"], want: outcome{trail: 1, class: schemas.FailureClassCallerFault}},
 		// The three below end the attempt on Bifrost's side, before the provider answers. The retry loop
 		// stops on them, and labels the attempt: a provider timeout and a request deadline are timeouts,
 		// a caller's cancel is cancelled (see TestScenarioTimedOutAttemptCarriesItsClass for the fields).
@@ -398,7 +400,7 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 				return
 			}
 			if err == nil {
-				t.Fatal("a cancelled or expired request was served")
+				t.Fatal("a refused, cancelled or expired request was served")
 			}
 			requireHits(t, u, map[string]int{"sk-b1": 0})
 			if tc.cancel {
