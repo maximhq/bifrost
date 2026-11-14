@@ -29,6 +29,12 @@ async function expectLanguage(page: Page, locale: string) {
   await expect(page.getByRole('button', { name: expected.observability, exact: true })).toBeVisible()
 }
 
+// expectLanguage reads strings both Portuguese catalogs share, so this one tells them apart.
+async function expectPortugueseCatalog(page: Page, locale: 'pt-BR' | 'pt') {
+  const label = catalog(locale, 'config').clientSettings.dropExcessRequests as string
+  await expect(page.getByText(label, { exact: true })).toBeVisible()
+}
+
 test.describe('Language setting (Client Settings)', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/config/client-settings')
@@ -86,6 +92,21 @@ test.describe('Language setting (Client Settings)', () => {
     await expectLanguage(page, 'en')
   })
 
+  test('offers Brazilian and European Portuguese as separate languages', async ({ page }) => {
+    await selectLanguage(page, 'pt-BR')
+    await expectLanguage(page, 'pt-BR')
+    expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('pt-BR')
+
+    await page.reload()
+    await expectLanguage(page, 'pt-BR')
+    await expectPortugueseCatalog(page, 'pt-BR')
+
+    await selectLanguage(page, 'pt')
+    await expectLanguage(page, 'pt')
+    await expectPortugueseCatalog(page, 'pt')
+    expect(await page.evaluate((key) => localStorage.getItem(key), LOCALE_STORAGE_KEY)).toBe('pt')
+  })
+
   test('renders a saved non-English language on first load', async ({ page }) => {
     await page.addInitScript((key) => localStorage.setItem(key, 'ja'), LOCALE_STORAGE_KEY)
     await page.goto('/workspace/config/client-settings')
@@ -93,5 +114,14 @@ test.describe('Language setting (Client Settings)', () => {
 
     await selectLanguage(page, 'zh-CN')
     await expectLanguage(page, 'zh-CN')
+  })
+})
+
+test.describe('Language detection', () => {
+  test.use({ locale: 'pt-BR' })
+
+  test('opens a Brazilian browser in pt-BR, not European Portuguese', async ({ page }) => {
+    await page.goto('/workspace/config/client-settings')
+    await expectLanguage(page, 'pt-BR')
   })
 })

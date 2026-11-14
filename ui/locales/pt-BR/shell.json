@@ -1,0 +1,690 @@
+{
+	"appName": "Bifrost",
+	"languageEnglish": "English",
+	"languageChinese": "简体中文",
+	"nav": {
+		"home": "Início",
+		"observability": "Observabilidade",
+		"dashboard": "Painel",
+		"llmLogs": "Logs de LLM",
+		"mcpLogs": "Logs de MCP",
+		"connectors": "Conectores",
+		"relayLogs": "Logs de relay",
+		"relays": "Relays",
+		"logsSettings": "Configurações de logs",
+		"models": "Modelos",
+		"modelCatalog": "Catálogo de modelos",
+		"datasheet": "Editor da ficha técnica",
+		"modelProviders": "Provedores de modelos",
+		"budgetsLimits": "Orçamentos e limites",
+		"routingRules": "Regras de roteamento",
+		"complexityRouter": "Roteador por complexidade",
+		"circuitBreaker": "Circuit breaker",
+		"pricingOverrides": "Substituições de preços",
+		"modelSettings": "Configurações de modelos",
+		"mcpGateway": "Servidores MCP",
+		"mcpCatalog": "Catálogo MCP",
+		"mcpLibrary": "Biblioteca MCP",
+		"toolGroups": "Grupos de ferramentas",
+		"virtualMcps": "MCPs virtuais",
+		"authSessions": "Sessões de autenticação",
+		"oauthGrants": "Concessões OAuth",
+		"mcpSettings": "Configurações de MCP",
+		"plugins": "Plugins",
+		"alerting": "Alertas",
+		"channels": "Canais",
+		"rules": "Regras",
+		"history": "Histórico",
+		"governance": "Governança",
+		"virtualKeys": "Chaves virtuais",
+		"users": "Usuários",
+		"teams": "Equipes",
+		"businessUnits": "Unidades de negócio",
+		"customers": "Clientes",
+		"userProvisioning": "Provisionamento de usuários",
+		"rolesPermissions": "Funções e permissões",
+		"accessProfiles": "Perfis de acesso",
+		"projects": "Projetos",
+		"auditLogs": "Logs de auditoria",
+		"guardrails": "Guardrails",
+		"guardrailRules": "Regras",
+		"guardrailProviders": "Provedores",
+		"webhooks": "Webhooks",
+		"edgeControl": "Controle de edge",
+		"devices": "Dispositivos",
+		"approvals": "Aprovações",
+		"edgeSettings": "Configurações de edge",
+		"clusterConfig": "Configuração do cluster",
+		"adaptiveRouting": "Roteamento adaptativo",
+		"adaptiveRoutingDashboard": "Painel",
+		"adaptiveRoutingSettings": "Configurações",
+		"promptRepository": "Repositório de prompts",
+		"skillsRepository": "Repositório de skills",
+		"settings": "Configurações",
+		"clientSettings": "Configurações do cliente",
+		"compatibility": "Compatibilidade",
+		"caching": "Cache",
+		"security": "Segurança",
+		"warp": "Warp",
+		"proxy": "Proxy",
+		"apiKeys": "Chaves de API",
+		"performanceTuning": "Ajuste de desempenho",
+		"featureFlags": "Feature flags",
+		"branding": "Identidade visual",
+		"licenseInfo": "Informações da licença",
+		"agentLogs": "Logs de agentes",
+		"agents": "Agentes",
+		"agentCatalog": "Catálogo de agentes",
+		"pushConfigurations": "Configurações de push",
+		"agentSettings": "Configurações de agentes",
+		"orgChart": "Organograma",
+		"incidents": "Incidentes",
+		"cluster": "Cluster",
+		"clusterNodes": "Nós",
+		"clusterStorage": "Armazenamento",
+		"skills": "Skills",
+		"skillsSettings": "Configurações de skills"
+	},
+	"navDesc": {
+		"relayLogs": "Chamadas de relay e seus custos",
+		"relays": "Faça relay de APIs que não são de LLM, com preços por rota",
+		"home": "Seu uso, chaves, orçamentos e acesso",
+		"observability": "Logs de requisições e monitoramento",
+		"dashboard": "Painel",
+		"llmLogs": "Logs de requisições de LLM e monitoramento",
+		"mcpLogs": "Logs de execução de ferramentas MCP",
+		"connectors": "Conectores de logs",
+		"logsSettings": "Configuração de logs",
+		"models": "Configure modelos",
+		"modelCatalog": "Visão geral de provedores, chaves e uso",
+		"datasheet": "Edite limites, capacidades e preços dos modelos",
+		"modelProviders": "Configure modelos",
+		"budgetsLimits": "Orçamentos e limites de taxa",
+		"routingRules": "Regras de roteamento inteligente",
+		"complexityRouter": "Roteamento por nível de complexidade",
+		"circuitBreaker": "Fallback automático quando os endpoints primários falham",
+		"pricingOverrides": "Substituições de preços com escopo",
+		"modelSettings": "Configuração de modelos e roteamento",
+		"mcpGateway": "Configuração de MCP",
+		"mcpCatalog": "Catálogo de ferramentas MCP",
+		"mcpLibrary": "Instale servidores MCP selecionados",
+		"toolGroups": "Grupos de ferramentas",
+		"virtualMcps": "MCPs virtuais",
+		"authSessions": "Sessões OAuth por usuário",
+		"oauthGrants": "Concessões OAuth downstream",
+		"mcpSettings": "Configuração de MCP",
+		"plugins": "Gerencie plugins personalizados",
+		"alerting": "Gerencie canais, regras e histórico de alertas",
+		"channels": "Configure canais de notificação",
+		"rules": "Defina regras de alerta",
+		"history": "Revise o histórico de entrega de alertas",
+		"governance": "Chaves virtuais, usuários, equipes, clientes e funções",
+		"virtualKeys": "Gerencie chaves virtuais e acesso",
+		"users": "Gerencie usuários",
+		"teams": "Gerencie equipes",
+		"businessUnits": "Gerencie unidades de negócio",
+		"customers": "Gerencie clientes",
+		"userProvisioning": "Gerenciamento e provisionamento de usuários",
+		"rolesPermissions": "Funções e permissões de usuários",
+		"accessProfiles": "Gerencie perfis de acesso para funções",
+		"projects": "Limite as requisições ao acesso e ao orçamento de um projeto",
+		"auditLogs": "Logs de auditoria e conformidade",
+		"guardrails": "Configuração de guardrails",
+		"guardrailRules": "Regras de guardrails",
+		"guardrailProviders": "Configuração de provedores de guardrails",
+		"webhooks": "Endpoints de webhook para jobs assíncronos",
+		"edgeControl": "Gerenciamento de dispositivos edge",
+		"devices": "Gerencie dispositivos edge",
+		"approvals": "Aprove aplicativos e servidores MCP",
+		"edgeSettings": "Configurações de edge",
+		"clusterConfig": "Gerencie o cluster do Bifrost",
+		"adaptiveRouting": "Gerencie o roteamento adaptativo",
+		"adaptiveRoutingDashboard": "Métricas de roteamento adaptativo",
+		"adaptiveRoutingSettings": "Configurações de roteamento adaptativo",
+		"promptRepository": "Repositório de prompts",
+		"skillsRepository": "Repositório de skills",
+		"settings": "Configurações do Bifrost",
+		"clientSettings": "Configurações do cliente",
+		"compatibility": "Configurações de conversão de compatibilidade",
+		"caching": "Configuração de cache",
+		"security": "Configurações de segurança",
+		"warp": "Configuração do agente Warp",
+		"proxy": "Configuração de proxy",
+		"apiKeys": "Gerenciamento de chaves de API",
+		"performanceTuning": "Configurações de ajuste de desempenho",
+		"featureFlags": "Ative ou desative feature flags",
+		"branding": "Logotipo e ícone personalizados",
+		"licenseInfo": "Informações da licença enterprise",
+		"agentLogs": "Logs de requisições de agentes",
+		"agents": "Registre e gerencie agentes A2A",
+		"agentCatalog": "Agentes A2A registrados",
+		"pushConfigurations": "Callbacks de push A2A armazenados",
+		"agentSettings": "Configuração do Agent Gateway",
+		"orgChart": "Orçamentos e uso por unidades de negócio, equipes e usuários",
+		"guardrailIncidents": "Requisições bloqueadas ou sinalizadas por guardrails",
+		"cluster": "Monitore o cluster do Bifrost",
+		"clusterNodes": "Saúde dos nós, CPU, memória e taxa de requisições",
+		"clusterStorage": "Bancos de dados de configuração e de logs, pools e queries lentas",
+		"clusterIncidents": "Incidentes de memória, entrega de mensagens e banco de dados",
+		"clusterSettings": "Monitoramento, retenção de amostras e limite de memória",
+		"adaptiveRoutingIncidents": "Incidentes de roteamento adaptativo",
+		"skills": "Gerencie skills e as configurações do marketplace",
+		"skillsSettings": "Configuração do marketplace de skills"
+	},
+	"home": {
+		"unlockTitle": "Desbloqueie sua página inicial pessoal",
+		"unlockDescription": "Este recurso faz parte da licença enterprise do Bifrost. A página Início mostra a cada usuário seu próprio uso, chaves, orçamentos e acesso."
+	},
+	"commandPalette": {
+		"title": "Menu de comandos",
+		"placeholder": "Busque páginas ou vá para…",
+		"empty": "Nenhum resultado para “{{query}}”",
+		"groups": {
+			"general": "Geral",
+			"results": "Resultados",
+			"actions": "Ações",
+			"thisPage": "Nesta página"
+		},
+		"current": "Atual",
+		"footer": {
+			"navigate": "Navegar",
+			"open": "Abrir",
+			"newTab": "Nova aba",
+			"back": "Voltar"
+		},
+		"actions": {
+			"create": "Criar…",
+			"copyLink": "Copiar link desta página",
+			"changeTheme": "Alterar tema…",
+			"changeLanguage": "Alterar idioma…"
+		},
+		"pages": {
+			"create": {
+				"title": "Criar",
+				"placeholder": "Busque o que criar…"
+			},
+			"theme": {
+				"title": "Tema",
+				"placeholder": "Buscar temas…"
+			},
+			"language": {
+				"title": "Idioma",
+				"placeholder": "Buscar idiomas…"
+			}
+		},
+		"create": {
+			"virtualKey": "Criar chave virtual",
+			"team": "Criar equipe",
+			"customer": "Criar cliente",
+			"user": "Criar usuário",
+			"routingRule": "Criar regra de roteamento",
+			"mcpServer": "Adicionar servidor MCP",
+			"modelLimit": "Criar limite de modelo",
+			"webhook": "Criar webhook",
+			"mcpLibraryServer": "Adicionar servidor à biblioteca MCP",
+			"virtualMcp": "Criar MCP virtual",
+			"agent": "Criar agente",
+			"relay": "Adicionar endpoint de relay",
+			"plugin": "Adicionar plugin",
+			"alertChannel": "Adicionar canal de alerta",
+			"alertRule": "Criar regra de alerta",
+			"businessUnit": "Criar unidade de negócio",
+			"role": "Criar função",
+			"accessProfile": "Criar perfil de acesso",
+			"project": "Criar projeto",
+			"prompt": "Criar prompt",
+			"promptFolder": "Criar pasta de prompts",
+			"skill": "Criar skill",
+			"apiKey": "Criar chave de API"
+		},
+		"toast": {
+			"linkCopied": "Link copiado",
+			"linkCopyFailed": "Não foi possível copiar o link"
+		}
+	},
+	"search": {
+		"placeholder": "Buscar...",
+		"ariaLabel": "Buscar na navegação da barra lateral"
+	},
+	"sidebar": {
+		"collapse": "Recolher barra lateral",
+		"expand": "Expandir barra lateral",
+		"mcpIconTitle": "Ícone de clientes MCP",
+		"newBadge": "Novo"
+	},
+	"promo": {
+		"restartRequired": {
+			"title": "Reinicialização necessária",
+			"defaultReason": "As alterações de configuração exigem a reinicialização do servidor para entrar em vigor."
+		},
+		"onboarding": {
+			"title": "Checklist de configuração incompleto",
+			"stepsLeft_one": "Falta {{count}} etapa de configuração. Não concluir estas etapas deixa sua configuração do Bifrost vulnerável.",
+			"stepsLeft_other": "Faltam {{count}} etapas de configuração. Não concluir estas etapas deixa sua configuração do Bifrost vulnerável.",
+			"resume": "Retomar configuração"
+		},
+		"newRelease": {
+			"available": "{{name}} já está disponível.",
+			"viewNotes": "Ver notas da versão",
+			"imageAlt": "Bifrost"
+		},
+		"productionSetup": {
+			"title": "Precisa de ajuda com a configuração para produção?",
+			"body": "Oferecemos ajuda com a configuração para produção, incluindo integrações personalizadas e suporte dedicado.",
+			"bookPrefix": "Agende uma demonstração com nossa equipe",
+			"here": "aqui"
+		},
+		"setupRequired": {
+			"title": "Autenticação do painel não configurada",
+			"body": "Todas as APIs de gerenciamento aceitam o token de configuração no cabeçalho <code>X-Bifrost-Setup-Token</code> até que você crie uma conta de administrador.",
+			"createAdmin": "Criar administrador",
+			"docs": "Documentação"
+		}
+	},
+	"topbar": {
+		"accountMenu": "Menu da conta",
+		"openMenu": "Abrir menu",
+		"signOut": "Sair",
+		"viewAsUser": "Ver como usuário",
+		"closeView": "Fechar visualização",
+		"version": "Versão",
+		"userFallback": "Usuário",
+		"discord": "Servidor do Discord",
+		"github": "Repositório no GitHub",
+		"reportBug": "Reportar um bug",
+		"docs": "Documentação completa"
+	},
+	"pageTitle": {
+		"beta": "Beta",
+		"betaAria": "{{title}} está em beta",
+		"betaAriaFallback": "Esta página está em beta",
+		"aboutPage": "Sobre esta página"
+	},
+	"titles": {
+		"dashboard": "Painel",
+		"adaptiveRoutingSettings": "Configurações de roteamento adaptativo",
+		"alertChannels": "Canais de alerta",
+		"alertHistory": "Histórico de alertas",
+		"alertRules": "Regras de alerta",
+		"clusterConfig": "Configuração do cluster",
+		"settings": "Configurações",
+		"licenseInfo": "Informações da licença",
+		"edgeSettings": "Configurações de edge",
+		"edgeDevices": "Dispositivos edge",
+		"edgeApprovals": "Aprovações de edge",
+		"rolesPermissions": "Funções e permissões",
+		"guardrailRules": "Regras de guardrails",
+		"guardrailProviders": "Provedores de guardrails",
+		"llmLogs": "Logs de LLM",
+		"logConnectors": "Conectores de logs",
+		"observabilityConnectors": "Conectores de observabilidade",
+		"promptRepository": "Repositório de prompts",
+		"modelProviders": "Provedores de modelos",
+		"routingTree": "Árvore de roteamento",
+		"userProvisioning": "Provisionamento de usuários"
+	},
+	"error": {
+		"title": "Algo deu errado",
+		"description": "Algo deu errado. Atualize a página.",
+		"reload": "Recarregar",
+		"unreachableTitle": "Não conseguimos acessar o painel",
+		"unreachableDescription": "O Bifrost não retornou a configuração dele. Isso costuma ser uma interrupção breve, principalmente enquanto o Bifrost está sendo atualizado.",
+		"retrying": "Tentando novamente…",
+		"retry": "Tentar novamente",
+		"dataUnaffected": "Suas configurações e seus dados não foram afetados."
+	},
+	"notFound": {
+		"title": "Página não encontrada",
+		"description": "A página que você procura não existe ou foi movida",
+		"goHome": "Ir para o início"
+	},
+	"updating": {
+		"bannerTitle": "O Bifrost está sendo atualizado",
+		"bannerDescription": "Você pode continuar trabalhando e recarregar quando a atualização terminar.",
+		"reload": "Recarregar",
+		"screenTitle": "O Bifrost está sendo atualizado",
+		"descriptionWaiting": "Uma nova versão do Bifrost está sendo implantada. Mantenha esta página aberta: ela vai recarregar automaticamente quando a atualização terminar.",
+		"descriptionStuck": "O Bifrost ainda está sendo atualizado. Se estiver demorando mais que o esperado, fale com seu administrador para saber mais.",
+		"autoReloadPaused": "Recarregamento automático pausado",
+		"waiting": "Aguardando a conclusão da atualização",
+		"reloadNow": "Recarregar agora",
+		"screenTitleEnterprise": "Uma nova versão do Bifrost está sendo implantada",
+		"descriptionWaitingEnterprise": "Sua organização decidiu implantar uma nova versão do Bifrost. A implantação avança uma instância por vez. Esta página vai recarregar automaticamente quando a implantação terminar em todas as instâncias.",
+		"descriptionStuckEnterprise": "A implantação ainda está em andamento. Recarregue para verificar de novo em um minuto. Se isso não funcionar, fale com o administrador da sua implantação do Bifrost.",
+		"waitingEnterprise": "Aguardando a conclusão da implantação…"
+	},
+	"onboarding": {
+		"expandSetupChecklist": "Expandir checklist de configuração",
+		"setupChecklist": "Checklist de configuração",
+		"minimize": "Minimizar",
+		"closeForNow": "Fechar por enquanto",
+		"skip": "Pular",
+		"skipped": "Pulada",
+		"remindMeLater": "Lembrar depois",
+		"notCompletingTheseStepsKeepsYourBifrostSetupVulnerable": "Não concluir estas etapas deixa sua configuração do Bifrost vulnerável.",
+		"tomorrow": "Amanhã",
+		"inAWeek": "Em uma semana",
+		"pickADate": "Escolha uma data…",
+		"iAcceptTheRiskHideForEveryone": "Aceito o risco - ocultar para todos",
+		"progress": "{{done}} de {{total}} etapas concluídas",
+		"steps": {
+			"cors": "Restringir origens CORS",
+			"dashboard-auth": "Configurar autenticação do painel",
+			"enforce-inference-auth": "Ativar autenticação na inferência",
+			"provider-key": "Adicionar uma chave de provedor",
+			"scim": "Configurar provisionamento SCIM",
+			"models": "Configurar catálogo de modelos da governança",
+			"virtual-keys": "Configurar chaves virtuais / perfis de acesso"
+		},
+		"sections": {
+			"Security": "Segurança",
+			"Provider Setup": "Configuração de provedores",
+			"Everything Else": "Todo o resto"
+		},
+		"completedSr": "Concluída:"
+	},
+	"warp": {
+		"ask": "Pergunte ao Warp",
+		"history": {
+			"openFailed": "Não foi possível abrir essa conversa.",
+			"deleteFailed": "Não foi possível excluir essa conversa.",
+			"untitled": "Sem título",
+			"deleteAria": "Excluir conversa",
+			"deleteTitle": "Excluir esta conversa?",
+			"deleteDescription": "\"{{title}}\" e suas mensagens serão removidas permanentemente. Essa ação não pode ser desfeita.",
+			"loading": "Carregando histórico",
+			"loadFailed": "Não foi possível carregar o histórico.",
+			"empty": "Nenhuma conversa salva ainda.",
+			"cancel": "Cancelar",
+			"delete": "Excluir",
+			"messages_one": "{{count}} mensagem",
+			"messages_other": "{{count}} mensagens"
+		},
+		"panel": {
+			"indexStatusTitle": "O Warp não conseguiu ler o status do índice. A busca semântica pode ou não estar disponível.",
+			"backToChat": "Voltar ao chat",
+			"chatHistory": "Histórico de chats",
+			"newChat": "Novo chat",
+			"close": "Fechar o Warp",
+			"preview": "Prévia",
+			"loading": "Carregando o Warp...",
+			"loadFailed": "Não foi possível carregar a configuração do Warp. Recarregue a página para tentar novamente.",
+			"turnedOff": "O Warp está desativado",
+			"notSetUp": "O Warp ainda não foi configurado",
+			"enableHint": "Ative a opção Ativar Warp para começar a fazer perguntas.",
+			"chooseModel": "Escolha um modelo para executar o Warp.",
+			"openSettings": "Abrir configurações do Warp",
+			"configure": "Configurar o Warp",
+			"emptyTitle": "Pergunte sobre seus dados do Bifrost",
+			"queued": "Na fila",
+			"removeQueued": "Remover mensagem da fila",
+			"resumeQueue": "Retomar mensagens da fila",
+			"jumpToLatest": "Ir para a mais recente",
+			"indexStatusUnavailable": "Status do índice indisponível",
+			"askAdminTurnOn": "Peça a um administrador para ativar o Warp.",
+			"askAdminSetUp": "Peça a um administrador para configurar o Warp.",
+			"sendsWhenFinished": "Será enviada quando esta resposta terminar",
+			"remove": "Remover"
+		},
+		"starters": {
+			"spend": "Quanto gastei com cada provedor nos últimos 7 dias?",
+			"latency": "Qual modelo teve a pior latência p99 ontem?",
+			"users": "Quem são meus 5 usuários com maior custo nesta semana?",
+			"failed": "Mostre as requisições que falharam nas últimas 24 horas"
+		},
+		"composer": {
+			"followUp": "Faça uma pergunta complementar; ela será enviada quando esta resposta terminar...",
+			"placeholder": "Pergunte sobre seus dados do Bifrost...",
+			"stop": "Parar",
+			"send": "Enviar",
+			"commandClear": "Iniciar uma nova conversa",
+			"settings": "Configurações do Warp",
+			"switchModel": "Trocar modelo",
+			"defaultModel": "Padrão"
+		},
+		"question": {
+			"label": "Pergunta",
+			"skip": "Pular",
+			"orType": "Ou digite sua própria resposta abaixo.",
+			"skipAnswer": "Use seu bom senso e diga o que você presumiu."
+		},
+		"message": {
+			"whatThisCovers": "O que isto abrange",
+			"partialTitle": "Resposta parcial",
+			"partialBody": "O Warp usou todas as etapas de busca antes de terminar a verificação. Isto é o que ele encontrou até agora, e ele informa o que não conseguiu confirmar. Uma pergunta mais específica costuma chegar ao fim.",
+			"whatToTry": "O que tentar:",
+			"thinking": "Pensando",
+			"chartUnavailable": "Gráfico indisponível."
+		},
+		"toolStatus": {
+			"inProgress": "Em andamento",
+			"failed": "Falhou",
+			"completed": "Concluído"
+		},
+		"index": {
+			"noVectorStore": "Sem vector store",
+			"searchNotSetUp": "Busca não configurada",
+			"failed": "Falha na indexação",
+			"indexingPercent": "Indexando {{percent}}%",
+			"indexing": "Indexando",
+			"ready": "Índice pronto",
+			"readyShort": "Pronto"
+		},
+		"tools": {
+			"semantic_search_logs": {
+				"running": "Fazendo busca vetorial",
+				"done": "Fez busca vetorial"
+			},
+			"count_logs": {
+				"running": "Verificando o volume de logs",
+				"done": "Verificou o volume de logs"
+			},
+			"query_logs": {
+				"running": "Buscando nos logs de requisições",
+				"done": "Buscou nos logs de requisições"
+			},
+			"get_log_detail": {
+				"running": "Abrindo uma requisição",
+				"done": "Abriu uma requisição"
+			},
+			"get_request_trace": {
+				"running": "Rastreando o que aconteceu",
+				"done": "Rastreou o que aconteceu"
+			},
+			"query_metrics": {
+				"running": "Consultando métricas",
+				"done": "Consultou métricas"
+			},
+			"query_usage_by": {
+				"running": "Classificando o uso",
+				"done": "Classificou o uso"
+			},
+			"query_user_usage": {
+				"running": "Classificando usuários por uso",
+				"done": "Classificou usuários por uso"
+			},
+			"query_virtual_key_usage": {
+				"running": "Classificando chaves virtuais por uso",
+				"done": "Classificou chaves virtuais por uso"
+			},
+			"query_model_performance": {
+				"running": "Comparando modelos e provedores",
+				"done": "Comparou modelos e provedores"
+			},
+			"describe_filter_space": {
+				"running": "Verificando os valores disponíveis",
+				"done": "Verificou os valores disponíveis"
+			},
+			"describe_virtual_key": {
+				"running": "Verificando os limites da chave virtual",
+				"done": "Verificou os limites da chave virtual"
+			},
+			"describe_scope": {
+				"running": "Validando o escopo",
+				"done": "Validou o escopo"
+			},
+			"ask_user": {
+				"running": "Fazendo uma pergunta",
+				"done": "Fez uma pergunta"
+			},
+			"render_chart": {
+				"running": "Desenhando um gráfico",
+				"done": "Desenhou um gráfico"
+			},
+			"list_topics": {
+				"running": "Listando tópicos",
+				"done": "Listou tópicos"
+			}
+		},
+		"errors": {
+			"not_configured": {
+				"summary": "O Warp ainda não foi configurado.",
+				"cause": "Nenhum provedor e modelo foram definidos, ou o Warp está desativado nas configurações.",
+				"suggestions": ["Abra as configurações do Warp e escolha um provedor e um modelo.", "Verifique se a opção Ativar Warp está ativada."]
+			},
+			"max_iterations": {
+				"summary": "O Warp não conseguiu chegar a uma resposta.",
+				"cause": "O Warp usou todo o limite de etapas de busca sem chegar a uma conclusão. Isso costuma significar que a pergunta era ampla demais e cada query levantava outra, então ele continuou procurando em vez de responder.",
+				"suggestions": [
+					"Peça uma coisa de cada vez: uma única métrica, um período, um escopo.",
+					"Indique o período explicitamente, por exemplo 'nas últimas 24 horas'.",
+					"Diga de quem é o tráfego - uma equipe, um cliente ou todos eles.",
+					"Aumente Máximo de iterações nas configurações do Warp se a pergunta realmente precisar de mais etapas."
+				]
+			},
+			"timeout": {
+				"summary": "Isso demorou demais.",
+				"cause": "A requisição inteira ultrapassou o tempo disponível antes de o Warp terminar. Períodos longos e escopos amplos deixam cada query mais lenta, e o Warp executa várias.",
+				"suggestions": [
+					"Tente um período mais curto.",
+					"Restrinja a uma equipe, um cliente ou uma chave virtual.",
+					"Aumente Tempo limite da requisição nas configurações do Warp se seu modelo for simplesmente lento."
+				]
+			},
+			"upstream_error": {
+				"summary": "Não foi possível acessar o modelo do Warp.",
+				"cause": "O provedor rejeitou a requisição ou estava inacessível. Isso se refere ao próprio modelo do Warp, não ao tráfego sobre o qual você perguntou.",
+				"suggestions": [
+					"Verifique o provedor, o modelo e a chave nas configurações do Warp.",
+					"Confirme se a URL base está correta - o padrão é este Bifrost.",
+					"Teste o mesmo modelo no playground para ver se ele chega a responder."
+				]
+			},
+			"tool_error": {
+				"summary": "Uma query falhou.",
+				"cause": "Uma das queries de dados do Warp retornou um erro, e ele não conseguiu se recuperar nas etapas restantes.",
+				"suggestions": [
+					"Tente um período mais curto.",
+					"Verifique se o modelo, a chave ou a equipe que você citou realmente existe."
+				]
+			},
+			"cancelled": {
+				"summary": "Interrompido.",
+				"cause": "A requisição foi cancelada antes de terminar.",
+				"suggestions": []
+			},
+			"unknown": {
+				"summary": "Algo deu errado.",
+				"cause": "O Warp retornou um erro sem um código reconhecido.",
+				"suggestions": ["Faça a pergunta novamente.", "Se continuar acontecendo, reporte o problema com os detalhes abaixo."]
+			},
+			"access_denied": {
+				"summary": "Sua conta não tem acesso ao modelo do Warp.",
+				"cause": "As regras de governança desta implantação recusaram a requisição antes que ela chegasse ao provedor. As chamadas ao modelo do Warp contam como suas, então precisam do mesmo acesso que qualquer requisição sua.",
+				"suggestions": [
+					"Peça a um administrador para dar à sua conta acesso ao modelo, como um perfil de acesso que permita o modelo do Warp.",
+					"Se você tem acesso, os detalhes abaixo indicam qual regra recusou a chamada."
+				]
+			},
+			"budget_exceeded": {
+				"summary": "Você esgotou seu orçamento.",
+				"cause": "Um orçamento que cobre sua conta foi totalmente gasto neste ciclo, então a governança recusou a chamada ao modelo do Warp. As chamadas ao modelo do Warp contam como suas, então consomem o mesmo orçamento que qualquer requisição sua.",
+				"suggestions": [
+					"Aguarde a redefinição do orçamento no início do próximo ciclo.",
+					"Peça a um administrador para aumentar o limite se precisar de mais neste ciclo.",
+					"Os detalhes abaixo indicam qual orçamento recusou a chamada."
+				]
+			},
+			"rate_limited": {
+				"summary": "Você atingiu um limite de taxa.",
+				"cause": "Sua conta enviou mais requisições ou tokens do que um limite de taxa permite na janela dele, então a governança recusou a chamada ao modelo do Warp. As chamadas ao modelo do Warp contam como suas, então compartilham os mesmos limites.",
+				"suggestions": [
+					"Aguarde um momento e pergunte de novo.",
+					"Peça a um administrador para aumentar o limite se isso continuar acontecendo.",
+					"Os detalhes abaixo indicam qual limite recusou a chamada."
+				]
+			},
+			"model_blocked": {
+				"summary": "O modelo do Warp não é permitido para sua conta.",
+				"cause": "As regras de governança desta implantação bloqueiam o modelo ou provedor que o Warp está configurado para usar na sua conta, então a requisição foi recusada antes de chegar ao provedor.",
+				"suggestions": [
+					"Peça a um administrador para permitir o modelo do Warp para sua conta.",
+					"Ou, nas configurações do Warp, defina um modelo que sua conta tenha permissão para usar."
+				]
+			},
+			"requestFailedStatus": "Falha na requisição do Warp ({{status}})",
+			"noResponseBody": "O Warp não retornou corpo de resposta",
+			"connectionClosed": "A conexão foi encerrada antes de o Warp terminar de responder.",
+			"requestFailed": "Falha na requisição do Warp"
+		},
+		"dock": {
+			"resize": "Redimensionar painel do Warp",
+			"description": "Faça perguntas ao Warp sobre logs, uso e gastos desta implantação."
+		},
+		"chart": {
+			"openInLogs": "Abrir nos logs",
+			"empty": "Sem dados neste período.",
+			"weekOf": "Semana de {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} token",
+			"tokens_other": "{{formattedCount}} tokens"
+		}
+	},
+	"rssSources": {
+		"newsOn": "Notícias ativadas",
+		"newsOff": "Notícias desativadas para este gateway",
+		"updateSettingsFailed": "Não foi possível atualizar as configurações de notícias",
+		"updateFeedFailed": "Não foi possível atualizar {{name}}",
+		"updatedLogo": "Logotipo de {{name}} atualizado",
+		"removedLogo": "Logotipo de {{name}} removido",
+		"updateLogoFailed": "Não foi possível atualizar o logotipo de {{name}}",
+		"removed": "Removido: {{name}}",
+		"removeFailed": "Não foi possível remover {{name}}",
+		"title": "Fontes de notícias",
+		"description": "Escolha quais feeds RSS aparecem na aba Notícias da bandeja de notificações para todos neste gateway.",
+		"showNews": "Mostrar notícias na bandeja de notificações",
+		"showNewsHelp": "Desativar esta opção oculta a aba Notícias para todos neste gateway e interrompe a busca de notícias. Suas fontes abaixo são mantidas.",
+		"settingLoadFailed": "Não foi possível carregar esta configuração.",
+		"tryAgain": "Tentar novamente",
+		"loading": "Carregando fontes",
+		"loadFailed": "Não foi possível carregar as fontes.",
+		"builtinFeeds": "Feeds integrados",
+		"customFeeds": "Feeds personalizados",
+		"noCustomFeeds": "Nenhum feed personalizado ainda. Adicione qualquer URL RSS ou Atom abaixo.",
+		"removeAria": "Remover {{name}}",
+		"disableAria": "Desativar {{name}}",
+		"enableAria": "Ativar {{name}}",
+		"changeLogoAria": "Alterar o logotipo de {{name}}",
+		"uploadLogo": "Enviar logotipo",
+		"removeLogo": "Remover logotipo",
+		"addedFeed": "Adicionado: {{name}}",
+		"addFeedTitle": "Adicionar um feed",
+		"name": "Nome",
+		"namePlaceholder": "Releases do Bifrost",
+		"feedUrl": "URL do feed",
+		"logo": "Logotipo",
+		"optional": "(opcional)",
+		"logoPreviewName": "Prévia do logotipo",
+		"uploadedImage": "Imagem enviada",
+		"upload": "Enviar",
+		"logoHelp": "Uma URL de imagem ou um arquivo PNG, JPEG, GIF, WebP, SVG ou ICO de até 96 KB. O padrão é o favicon do site.",
+		"addFeed": "Adicionar feed"
+	},
+	"agentHandover": {
+		"completeTitle": "Login no Bifrost Agent concluído",
+		"title": "Login no Bifrost Agent",
+		"completeBody": "Você pode fechar esta janela e voltar ao Bifrost Agent.",
+		"status": "Status do login: {{status}}"
+	}
+}
