@@ -135,6 +135,11 @@ var ignoreGoFields = map[string]string{
 	// (TestValidateConfigSchema_InjectedTools pins that).
 	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
 	"/properties/governance/properties/providers/items|passthrough":    "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.passthrough",
+
+	// Phrase suggestions are set per model router (model_routers[].suggestions);
+	// the global complexity analyzer config refuses them, so the schema leaves them out.
+	// Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/governance/properties/complexity_analyzer_config|suggestions": "set per model router; refused on the global complexity analyzer config",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",

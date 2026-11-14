@@ -2146,6 +2146,7 @@
 				"estimateEmpty": "In diesem Zeitraum wurden noch keine Anfragen erfasst.",
 				"estimateBackfill_one": "{{count}} frühere Anfrage aus der Zeit vor den Vorschlägen wird zuerst aus ihrem Log eingebettet.",
 				"estimateBackfill_other": "{{count}} frühere Anfragen aus der Zeit vor den Vorschlägen werden zuerst aus ihren Logs eingebettet.",
+				"estimateBackfillUnknown": "Frühere Anfragen aus der Zeit vor dem Einschalten der Vorschläge werden möglicherweise zuerst aus ihren Logs eingebettet; wie viele, ließ sich nicht ermitteln.",
 				"captureUnavailableEmbedded": "Vorschläge brauchen einen gemeinsamen Vektorspeicher wie Weaviate, Qdrant, Redis oder Pinecone. Der Vektorspeicher dieses Gateways ist Chromem, das Vektoren im Arbeitsspeicher jedes einzelnen Gateways hält, daher werden keine Anfragen für Vorschläge erfasst.",
 				"captureUnavailableNone": "Vorschläge brauchen einen gemeinsamen Vektorspeicher wie Weaviate, Qdrant, Redis oder Pinecone, um erfasste Anfragen aufzubewahren. Es ist keiner konfiguriert, daher werden keine Anfragen für Vorschläge erfasst.",
 				"runInBackground": "Läuft im Hintergrund in Ihrem Gateway, außerhalb des Anfragepfads.",

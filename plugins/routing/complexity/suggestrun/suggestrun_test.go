@@ -773,6 +773,41 @@ func TestWithoutRepeatedPhrasesKeepsSuggestionsWithoutPhrases(t *testing.T) {
 // A suggestion the room has no space for reserves nothing: a lighter one that
 // was written one of its phrases keeps it, instead of being marked covered by
 // a suggestion that is then dropped.
+// A lighter suggestion whose phrases a heavier one already took for another
+// tier is a conflict, not coverage: it is left out of the run, so the stored
+// suggestion its cluster matches stays as it was instead of being superseded.
+// Taken for the same tier, it is covered, as before.
+func TestFitSuggestionsLeavesCrossTierConflictsUntouched(t *testing.T) {
+	heavy := &suggest.Cluster{}
+	light := &suggest.Cluster{}
+	in := []suggest.Suggestion{
+		{Cluster: heavy, Tier: "SIMPLE", Category: suggest.CategoryUncovered, Phrases: []string{"refund status"}},
+		{Cluster: light, Tier: "MEDIUM", Category: suggest.CategoryMisrouted, Phrases: []string{"Refund status "}},
+	}
+	var dropped int64
+	got := FitSuggestions(in, -1, &dropped)
+	require.Len(t, got, 1, "the conflicting suggestion is left out")
+	assert.Same(t, heavy, got[0].Cluster)
+	assert.Zero(t, dropped, "a conflict is not a suggestion over the bank's room")
+
+	now := time.Date(2026, 11, 13, 3, 0, 0, 0, time.UTC)
+	row := logstore.ComplexitySuggestion{ID: "light-row", Status: logstore.ComplexitySuggestionStatusOpen, Tier: "MEDIUM", EmbeddingSignature: "ns"}
+	plan := matchPlan{matched: map[*suggest.Cluster]*logstore.ComplexitySuggestion{light: &row}, claimed: map[string]bool{row.ID: true}}
+	writes, _, _, superseded := reconcile(got, plan, []logstore.ComplexitySuggestion{row}, rowScope{namespace: "ns"}, now)
+	assert.Zero(t, superseded)
+	for _, w := range writes {
+		assert.NotEqual(t, row.ID, w.Suggestion.ID, "the conflicting cluster's stored suggestion is not written")
+	}
+
+	in = []suggest.Suggestion{
+		{Cluster: heavy, Tier: "SIMPLE", Category: suggest.CategoryUncovered, Phrases: []string{"refund status"}},
+		{Cluster: light, Tier: "SIMPLE", Category: suggest.CategoryWeak, Phrases: []string{"Refund status "}},
+	}
+	got = FitSuggestions(in, -1, &dropped)
+	require.Len(t, got, 2)
+	assert.Equal(t, suggest.CategoryCovered, got[1].Category, "taken for the same tier, it is covered")
+}
+
 func TestFitSuggestionsDropsBeforeDeduplicating(t *testing.T) {
 	in := []suggest.Suggestion{
 		{Category: suggest.CategoryUncovered, Phrases: []string{"refund status", "refund for my order"}},

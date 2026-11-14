@@ -2146,6 +2146,7 @@
 				"estimateEmpty": "Todavía no se ha capturado ninguna solicitud en este periodo.",
 				"estimateBackfill_one": "{{count}} solicitud anterior, de antes de activar las sugerencias, se incrusta primero desde su registro.",
 				"estimateBackfill_other": "{{count}} solicitudes anteriores, de antes de activar las sugerencias, se incrustan primero desde sus registros.",
+				"estimateBackfillUnknown": "Las solicitudes anteriores, de antes de activar las sugerencias, pueden incrustarse primero desde sus registros; no se pudo calcular cuántas.",
 				"captureUnavailableEmbedded": "Las sugerencias necesitan un almacén vectorial compartido como Weaviate, Qdrant, Redis o Pinecone. El almacén vectorial de este gateway es Chromem, que guarda los vectores en la memoria de cada gateway, por lo que no se capturan solicitudes para sugerencias.",
 				"captureUnavailableNone": "Las sugerencias necesitan un almacén vectorial compartido como Weaviate, Qdrant, Redis o Pinecone para guardar las solicitudes capturadas. No hay ninguno configurado, por lo que no se capturan solicitudes para sugerencias.",
 				"runInBackground": "Se ejecuta en segundo plano dentro de tu gateway, fuera de la ruta de las solicitudes.",
