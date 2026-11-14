@@ -313361,7 +313361,7 @@
           "response": []
         },
         {
-          "name": "gemini/gemini-2.5-flash chat completions input_audio url on a metadata address is refused with 400 - #2200",
+          "name": "gemini/gemini-2.5-flash chat completions input_audio url on a metadata address is refused with 400 [EXPECT-400] - #2200",
           "event": [
             {
               "listen": "test",
