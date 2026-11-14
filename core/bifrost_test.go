@@ -1222,6 +1222,94 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}
 }
 
+// passthroughBodyRewritingPlugin replaces the request in PreLLMHook with a new passthrough
+// request carrying a different body, the way a guardrail redacts a passthrough turn.
+type passthroughBodyRewritingPlugin struct {
+	body []byte
+}
+
+func (p *passthroughBodyRewritingPlugin) GetName() string { return "passthrough-body-rewriting" }
+func (p *passthroughBodyRewritingPlugin) Cleanup() error  { return nil }
+func (p *passthroughBodyRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughBodyRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	rewritten := *req.PassthroughRequest
+	rewritten.Body = p.body
+	return &schemas.BifrostRequest{RequestType: req.RequestType, PassthroughRequest: &rewritten}, nil, nil
+}
+func (p *passthroughBodyRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRunStreamPreHooks_ReturnsPreHookRequest pins that a request a pre-hook replaces comes back
+// on WSStreamHooks.Request, so a websocket relay forwards the rewritten body instead of the frame
+// it received. With no plugin rewriting, the original request comes back unchanged.
+func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
+	original := []byte(`{"type":"response.create","model":"gpt-5","input":"secret"}`)
+	rewrittenBody := []byte(`{"type":"response.create","model":"gpt-5","input":"[redacted]"}`)
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughStreamRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Method:   "POST",
+				Path:     "/backend-api/codex/responses",
+				Body:     original,
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5",
+			},
+		}
+	}
+
+	t.Run("rewritten", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account:    NewMockAccount(),
+			Logger:     NewNoOpLogger(),
+			LLMPlugins: []schemas.LLMPlugin{&passthroughBodyRewritingPlugin{body: rewrittenBody}},
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request == nil || hooks.Request == req {
+			t.Fatalf("expected the pre-hook's replacement request, got %p (original %p)", hooks.Request, req)
+		}
+		if got := string(hooks.Request.PassthroughRequest.Body); got != string(rewrittenBody) {
+			t.Fatalf("expected rewritten body %s, got %s", rewrittenBody, got)
+		}
+		if got := string(req.PassthroughRequest.Body); got != string(original) {
+			t.Fatalf("original request body changed to %s", got)
+		}
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request != req {
+			t.Fatalf("expected the original request back when no plugin rewrites it")
+		}
+	})
+}
+
 // mockKVStore implements schemas.KVStore for session stickiness tests.
 type mockKVStore struct {
 	mu   sync.RWMutex
