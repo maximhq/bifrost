@@ -184,27 +184,9 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schemas.BifrostTranscriptionResponse {
 	bifrostResp := &schemas.BifrostTranscriptionResponse{}
 
-	// Process candidates to extract text content
-	if len(response.Candidates) > 0 {
-		candidate := response.Candidates[0]
-		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-			var textContent string
-
-			// Extract text content from all parts
-			for _, part := range candidate.Content.Parts {
-				if part == nil {
-					continue
-				}
-				if part.Text != "" {
-					textContent += part.Text
-				}
-			}
-
-			if textContent != "" {
-				bifrostResp.Text = textContent
-				bifrostResp.Task = schemas.Ptr("transcribe")
-			}
-		}
+	if text := response.transcriptText(); text != "" {
+		bifrostResp.Text = text
+		bifrostResp.Task = schemas.Ptr("transcribe")
 	}
 
 	// Usage is billed even when the transcript is empty.
@@ -237,4 +219,31 @@ func ToGeminiTranscriptionResponse(bifrostResp *schemas.BifrostTranscriptionResp
 
 	genaiResp.Candidates = []*Candidate{candidate}
 	return genaiResp
+}
+
+// transcriptText joins the transcript carried by the first candidate's parts.
+// Used for both unary responses and stream chunks.
+func (response *GenerateContentResponse) transcriptText() string {
+	if response == nil || len(response.Candidates) == 0 || response.Candidates[0] == nil || response.Candidates[0].Content == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, part := range response.Candidates[0].Content.Parts {
+		sb.WriteString(part.transcriptText())
+	}
+	return sb.String()
+}
+
+// transcriptText returns the transcript a response part carries. Dedicated
+// transcription models (gemini-3.5-transcribe) answer with
+// {"audioTranscription":{"text":...}} instead of a text part; general models
+// answer with text. A nil part yields "".
+func (part *Part) transcriptText() string {
+	if part == nil {
+		return ""
+	}
+	if part.AudioTranscription != nil && part.AudioTranscription.Text != "" {
+		return part.AudioTranscription.Text
+	}
+	return part.Text
 }
