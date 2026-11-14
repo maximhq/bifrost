@@ -2189,8 +2189,11 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 
 	// Convert tool config
 	if request.ToolConfig != nil && len(request.ToolConfig.Tools) > 0 {
-		for _, tool := range request.ToolConfig.Tools {
+		for i, tool := range request.ToolConfig.Tools {
 			if tool.ToolSpec != nil {
+				if tool.ToolSpec.Description != nil && *tool.ToolSpec.Description == "" {
+					return nil, fmt.Errorf("1 validation error detected: Value '' at 'toolConfig.tools.%d.member.toolSpec.description' failed to satisfy constraint: Member must have length greater than or equal to 1", i+1)
+				}
 				bifrostTool := schemas.ResponsesTool{
 					Type:                  schemas.ResponsesToolTypeFunction,
 					Name:                  &tool.ToolSpec.Name,
@@ -2927,7 +2930,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 				// Use the tool description if available, otherwise use a generic description
 				description := "Function tool"
-				if tool.Description != nil {
+				if tool.Description != nil && *tool.Description != "" {
 					description = *tool.Description
 				}
 
@@ -3488,7 +3491,7 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 			}
 
 			description := "Function tool"
-			if tool.Description != nil {
+			if tool.Description != nil && *tool.Description != "" {
 				description = *tool.Description
 			}
 
