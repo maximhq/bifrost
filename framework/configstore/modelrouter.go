@@ -374,9 +374,12 @@ func decodeModelRouterRow(row *tables.TableModelRouter) (*ModelRouter, error) {
 
 // GetModelRouters returns every stored router, oldest first. A row this
 // version cannot read is logged and left out rather than failing the list.
+// The rows are read on ScopedDB, so a request-driven read honors the
+// row-visibility scope the enterprise DAC wrapper puts on ctx; startup and
+// background reads carry none and see every router.
 func (s *RDBConfigStore) GetModelRouters(ctx context.Context) ([]ModelRouter, error) {
 	var rows []tables.TableModelRouter
-	if err := s.DB().WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+	if err := s.ScopedDB(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	targets, unreadableTargets, err := loadModelRouterTargets(ctx, s.DB())
@@ -401,10 +404,11 @@ func (s *RDBConfigStore) GetModelRouters(ctx context.Context) ([]ModelRouter, er
 	return routers, nil
 }
 
-// GetModelRouter returns one router. It is ErrNotFound when no row exists and
+// GetModelRouter returns one router. It is ErrNotFound when no row exists, or
+// when the row-visibility scope on ctx hides it (see GetModelRouters), and
 // ErrConfigUnreadable when the row exists but this version cannot run it.
 func (s *RDBConfigStore) GetModelRouter(ctx context.Context, id string) (*ModelRouter, error) {
-	router, err := s.getModelRouterWithDB(ctx, s.DB(), strings.TrimSpace(id))
+	router, err := s.getModelRouterWithDB(ctx, s.ScopedDB(ctx), s.DB(), strings.TrimSpace(id))
 	if err != nil {
 		return nil, err
 	}
@@ -414,10 +418,12 @@ func (s *RDBConfigStore) GetModelRouter(ctx context.Context, id string) (*ModelR
 	return router, nil
 }
 
-// getModelRouterWithDB reads one router, returning nil when no row exists.
-func (s *RDBConfigStore) getModelRouterWithDB(ctx context.Context, db *gorm.DB, id string) (*ModelRouter, error) {
+// getModelRouterWithDB reads one router, returning nil when no row exists. The
+// row is read on rowDB and its targets on db: a row-visibility scope names
+// model_routers columns, so it can only narrow the router row.
+func (s *RDBConfigStore) getModelRouterWithDB(ctx context.Context, rowDB, db *gorm.DB, id string) (*ModelRouter, error) {
 	var row tables.TableModelRouter
-	if err := db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+	if err := rowDB.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}

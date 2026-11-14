@@ -248,6 +248,16 @@ test.describe('Base path: self URLs', () => {
     await expect(page.getByTestId('prometheus-metrics-endpoint')).toHaveText(`${origin}${basePath}/metrics`)
   })
 
+  test("the link to Bifrost's client metadata document carries the prefix", async ({ page, request }, testInfo) => {
+    const basePath = basePathOf(testInfo)
+    await page.goto(`${basePath}/workspace/config/mcp-gateway`)
+    await page.getByTestId('mcp-settings-advanced-trigger').click()
+    const link = page.getByTestId('mcp-client-metadata-document-link')
+    await expect(link).toHaveAttribute('href', `${basePath}/api/oauth/client-metadata.json`)
+    const res = await request.get(`${basePath}/api/oauth/client-metadata.json`)
+    expect(res.status(), await res.text()).toBe(200)
+  })
+
   test('the command palette keeps the prefix in the address bar and in new tabs', async ({ page, context }, testInfo) => {
     const basePath = basePathOf(testInfo)
     const origin = originOf(testInfo)

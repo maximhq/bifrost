@@ -3,6 +3,7 @@ import type { EditableKeywordConfig, Suggestion, SuggestionRun } from "@/lib/typ
 import {
 	addPhrases,
 	availableWindows,
+	canStartRun,
 	categoryCounts,
 	stagedAdditions,
 	filterSuggestions,
@@ -95,6 +96,13 @@ describe("run windows", () => {
 		expect(availableWindows(7)).toEqual(["24h", "7d"]);
 		expect(availableWindows(30)).toEqual(["24h", "7d", "14d", "30d"]);
 		expect(availableWindows(1)).toEqual(["24h"]);
+	});
+
+	test("starts a run on requests in the window, or on a backfill that could not be counted", () => {
+		const estimate = { requests: 0, clustered: 0, assigned: 0, skipped: 0, max_model_calls: 0 };
+		expect(canStartRun(estimate)).toBe(false);
+		expect(canStartRun({ ...estimate, requests: 3 })).toBe(true);
+		expect(canStartRun({ ...estimate, backfill_unknown: true })).toBe(true);
 	});
 });
 function run(overrides: Partial<SuggestionRun>): SuggestionRun {

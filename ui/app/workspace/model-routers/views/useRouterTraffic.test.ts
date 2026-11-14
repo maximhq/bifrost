@@ -1,15 +1,18 @@
 import type { DimensionRankingEntry } from "@/lib/types/logs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	customRangeLabel,
 	routerRequests,
 	tierSplit,
 	toRouterTraffic,
+	trafficLogsSearch,
+	trafficSelection,
 	type TrafficWindow,
+	trafficWindow,
 	useRouterTierSplit,
 	useRouterTraffic,
-	useTrafficWindow,
 } from "./useRouterTraffic";
 
 const mocks = vi.hoisted(() => ({
@@ -139,18 +142,66 @@ describe("routerRequests", () => {
 	});
 });
 
-describe("useTrafficWindow", () => {
-	afterEach(() => {
-		vi.useRealTimers();
+describe("trafficSelection", () => {
+	test("is the last seven days when the URL names no period", () => {
+		expect(trafficSelection(null, null, null)).toEqual({ period: "7d" });
 	});
 
-	test("covers the seven days up to now", () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(new Date("2026-03-10T12:30:00.000Z"));
-		expect(readHook(() => useTrafficWindow())).toEqual({
+	test("takes a preset the picker offers", () => {
+		expect(trafficSelection("30d", null, null)).toEqual({ period: "30d" });
+		expect(trafficSelection("this_month", null, null)).toEqual({ period: "this_month" });
+	});
+
+	test("prefers a preset over a range left in the URL", () => {
+		expect(trafficSelection("24h", 100, 200)).toEqual({ period: "24h" });
+	});
+
+	test("takes a custom range with both ends in order", () => {
+		expect(trafficSelection(null, 1772541000, 1773145800)).toEqual({ start: 1772541000, end: 1773145800 });
+	});
+
+	test("falls back to the default for a period it does not know or a range it cannot use", () => {
+		expect(trafficSelection("90d", null, null)).toEqual({ period: "7d" });
+		expect(trafficSelection(null, 1773145800, null)).toEqual({ period: "7d" });
+		expect(trafficSelection(null, 1773145800, 1772541000)).toEqual({ period: "7d" });
+	});
+});
+
+describe("trafficWindow", () => {
+	test("sends a preset by name, for the gateway to resolve", () => {
+		expect(trafficWindow({ period: "30d" })).toEqual({ period: "30d" });
+	});
+
+	test("sends a custom range as its two ends", () => {
+		expect(trafficWindow({ start: 1772541000, end: 1773145800 })).toEqual({
 			start_time: "2026-03-03T12:30:00.000Z",
 			end_time: "2026-03-10T12:30:00.000Z",
 		});
+	});
+});
+
+describe("trafficLogsSearch", () => {
+	test("opens the logs over the same preset or the same range", () => {
+		expect(trafficLogsSearch({ period: "30d" })).toEqual({ period: "30d" });
+		expect(trafficLogsSearch({ start: 1772541000, end: 1773145800 })).toEqual({ start_time: 1772541000, end_time: 1773145800 });
+	});
+});
+
+describe("customRangeLabel", () => {
+	// The formatter sets its dash between thin spaces; the label is compared with plain ones.
+	const plain = (label: string) => label.replace(/\s+/g, " ");
+
+	test("names a range by its two dates", () => {
+		const label = customRangeLabel(Date.UTC(2026, 2, 3, 12) / 1000, Date.UTC(2026, 2, 10, 12) / 1000, "en", "UTC");
+		expect(plain(label)).toBe("Mar 3 – 10, 2026");
+	});
+
+	test("reads the dates in the picker's timezone, so a range across its midnight names both days", () => {
+		// 23:30 on March 3 to 00:30 on March 4 in Los Angeles, which is all March 4 in UTC.
+		const start = Date.UTC(2026, 2, 4, 7, 30) / 1000;
+		const end = Date.UTC(2026, 2, 4, 8, 30) / 1000;
+		expect(plain(customRangeLabel(start, end, "en", "America/Los_Angeles"))).toBe("Mar 3 – 4, 2026");
+		expect(plain(customRangeLabel(start, end, "en", "UTC"))).toBe("Mar 4, 2026");
 	});
 });
 

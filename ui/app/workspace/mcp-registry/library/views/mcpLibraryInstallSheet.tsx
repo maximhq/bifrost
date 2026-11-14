@@ -68,6 +68,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	return {
 		name: sanitizeServerName(server.name),
 		is_code_mode_client: false,
+		server_type_on_slug: "inherit",
 		is_ping_available: true,
 		connection_type: server.connection_type || "http",
 		connection_string: isStdio ? undefined : { value: server.connection_url || "", ref: "" },

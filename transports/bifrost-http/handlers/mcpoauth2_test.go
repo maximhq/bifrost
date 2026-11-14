@@ -17,19 +17,24 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// The document's client_id equals its URL and redirect_uris holds the callback.
+// The document's client_id equals its URL and redirect_uris holds the callback. With a hosted document
+// configured, client_id is the hosted URL and the callback stays on Bifrost's own base.
 func TestClientMetadataDocument(t *testing.T) {
+	const hosted = "https://public.example.com/bifrost/client.json"
 	cases := []struct {
-		name        string
-		externalURL string
-		host        string
-		proto       string
-		wantBase    string
-		wantAppType string
+		name         string
+		externalURL  string
+		hostedURL    string
+		host         string
+		proto        string
+		wantBase     string
+		wantClientID string
+		wantAppType  string
 	}{
-		{"external URL configured", "https://bifrost.example.com", "10.0.0.5:8080", "", "https://bifrost.example.com", "web"},
-		{"from the request behind a TLS proxy", "", "gateway.example.com", "https", "https://gateway.example.com", "web"},
-		{"local deployment", "", "localhost:8080", "", "http://localhost:8080", "native"},
+		{"external URL configured", "https://bifrost.example.com", "", "10.0.0.5:8080", "", "https://bifrost.example.com", "", "web"},
+		{"from the request behind a TLS proxy", "", "", "gateway.example.com", "https", "https://gateway.example.com", "", "web"},
+		{"local deployment", "", "", "localhost:8080", "", "http://localhost:8080", "", "native"},
+		{"hosted document", "https://bifrost.internal.example", hosted, "10.0.0.5:8080", "", "https://bifrost.internal.example", hosted, "web"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,7 +42,13 @@ func TestClientMetadataDocument(t *testing.T) {
 			if tc.externalURL != "" {
 				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(tc.externalURL)
 			}
-			h := &OAuthHandler{store: &lib.Config{ClientConfig: clientConfig}}
+			if tc.hostedURL != "" {
+				clientConfig.MCPClientMetadataURL = schemas.NewSecretVar(tc.hostedURL)
+			}
+			if tc.wantClientID == "" {
+				tc.wantClientID = tc.wantBase + oauthClientMetadataPath
+			}
+			h := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.Header.SetHost(tc.host)
 			if tc.proto != "" {
@@ -51,7 +62,7 @@ func TestClientMetadataDocument(t *testing.T) {
 			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
 			var doc map[string]any
 			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
-			assert.Equal(t, tc.wantBase+oauthClientMetadataPath, doc["client_id"], "client_id must equal the URL the document is served at")
+			assert.Equal(t, tc.wantClientID, doc["client_id"], "client_id must equal the URL the document is fetched from")
 			assert.Equal(t, []any{tc.wantBase + "/api/oauth/callback"}, doc["redirect_uris"])
 			assert.Equal(t, "Bifrost MCP Gateway", doc["client_name"])
 			assert.Equal(t, "none", doc["token_endpoint_auth_method"])
@@ -71,7 +82,7 @@ func BenchmarkClientMetadataDocument(b *testing.B) {
 			if externalURL != "" {
 				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(externalURL)
 			}
-			h := &OAuthHandler{store: &lib.Config{ClientConfig: clientConfig}}
+			h := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.Header.SetHost("gateway.example.com")
 			ctx.Request.SetRequestURI(oauthClientMetadataPath)

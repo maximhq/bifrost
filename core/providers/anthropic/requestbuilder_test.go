@@ -58,7 +58,7 @@ func TestSafeguardsRequestBuilders(t *testing.T) {
 						if !slices.Contains(betas, beta) {
 							t.Errorf("missing required beta: %v", betas)
 						}
-						if provider == schemas.Bedrock || provider == schemas.Vertex {
+						if provider == schemas.Bedrock {
 							if !strings.Contains(providerUtils.GetJSONField(out, "anthropic_beta").Raw, beta) {
 								t.Errorf("missing body beta: %s", out)
 							}
@@ -352,14 +352,14 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		})
 
 		request := &schemas.BifrostResponsesRequest{
-			Provider:       schemas.Vertex,
-			Model:          "claude-sonnet-4-5",
-			RawRequestBody: []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`),
+			Provider:       schemas.Bedrock,
+			Model:          "us.anthropic.claude-sonnet-4-5",
+			RawRequestBody: []byte(`{"model":"us.anthropic.claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`),
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider: schemas.Vertex,
-			Model:    "claude-sonnet-4-5",
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -369,6 +369,95 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 			t.Error("expected anthropic_beta to be injected into body")
 		}
 	})
+
+	// Vertex ignores the anthropic_beta body field and 400s on values it does not list
+	// (inline-tools-2026-09-15, verified live 2026-11-11); betas go in the header only.
+	t.Run("vertex keeps betas out of the body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"get_weather","input_schema":{"type":"object"}}}}]}]}`)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, raw, schemas.Vertex); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Vertex, Model: "claude-opus-5-5", RawRequestBody: raw}
+		result, bErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Vertex, Model: "claude-opus-5-5"})
+		if bErr != nil {
+			t.Fatalf("unexpected error: %v", bErr)
+		}
+		if providerUtils.JSONFieldExists(result, "anthropic_beta") {
+			t.Errorf("anthropic_beta must not be in the Vertex body: %s", result)
+		}
+		header := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Vertex)
+		for _, want := range []string{AnthropicMidConversationToolChangesBetaHeader, AnthropicInlineToolsBetaHeader} {
+			if !slices.Contains(header, want) {
+				t.Errorf("anthropic-beta header lost %s: %v", want, header)
+			}
+		}
+	})
+
+	// Bedrock InvokeModel only reads betas from the body, so inline-tools must stay there.
+	t.Run("inline-tools stays in the Bedrock InvokeModel body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		raw := []byte(`{"model":"us.anthropic.claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"get_weather","input_schema":{"type":"object"}}}}]}]}`)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, raw, schemas.Bedrock); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-opus-5-5", RawRequestBody: raw}
+		result, bErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "us.anthropic.claude-opus-5-5"})
+		if bErr != nil {
+			t.Fatalf("unexpected error: %v", bErr)
+		}
+		betas := providerUtils.GetJSONField(result, "anthropic_beta").Raw
+		for _, want := range []string{AnthropicMidConversationToolChangesBetaHeader, AnthropicInlineToolsBetaHeader} {
+			if !strings.Contains(betas, want) {
+				t.Errorf("anthropic_beta body field lost %s: %s", want, betas)
+			}
+		}
+	})
+}
+
+// TestTypedToolChangesReachCloudHosts: with no datasheet record, a typed system or developer
+// tool change on a Claude 5 model must serialize as a native role:"system" message on every
+// cloud host, not be inlined as a text-only reminder that drops the block.
+func TestTypedToolChangesReachCloudHosts(t *testing.T) {
+	removal := schemas.ResponsesMessageContentBlock{
+		Type:       schemas.ResponsesInputMessageContentBlockTypeToolRemoval,
+		ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+	}
+	input := func(role schemas.ResponsesMessageRoleType) []schemas.ResponsesMessage {
+		return append(makeSimpleInput("hi"), schemas.ResponsesMessage{
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{removal}},
+		})
+	}
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		native   bool
+	}{
+		{schemas.Vertex, "claude-opus-5-5", true},
+		{schemas.Bedrock, "us.anthropic.claude-opus-5-5", true},
+		{schemas.BedrockMantle, "anthropic.claude-sonnet-5-5", true},
+		{schemas.Azure, "claude-opus-5", true},
+		{schemas.Vertex, "claude-sonnet-5", false},
+	} {
+		for _, role := range []schemas.ResponsesMessageRoleType{schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper} {
+			t.Run(fmt.Sprintf("%s/%s/%s", tc.provider, tc.model, role), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				request := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: input(role)}
+				result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: tc.provider, Model: tc.model})
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				msg := gjson.GetBytes(result, "messages.1")
+				native := msg.Get("role").String() == "system" && msg.Get("content.0.type").String() == "tool_removal"
+				if native != tc.native {
+					t.Errorf("native tool change = %v, want %v: %s", native, tc.native, gjson.GetBytes(result, "messages").Raw)
+				}
+			})
+		}
+	}
 }
 
 func TestBuildAnthropicResponsesRequestBody_ThreadFieldStripped(t *testing.T) {
@@ -1557,13 +1646,17 @@ func TestClampedMaxTokensRefitsThinkingBudget(t *testing.T) {
 		var out []byte
 		var err *schemas.BifrostError
 		if chat {
-			out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
+			out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
 				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
-				Params: &schemas.ChatParameters{MaxCompletionTokens: new(maxTokens), Reasoning: &schemas.ChatReasoning{MaxTokens: new(budget), Effort: eff}}}, cfg)
+				Params: &schemas.ChatParameters{MaxCompletionTokens: new(maxTokens), Reasoning: &schemas.ChatReasoning{MaxTokens: new(budget), Effort: eff}},
+			}, cfg)
 		} else {
-			out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
+			out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic, Model: haiku, RawRequestBody: body,
 				Input:  makeSimpleInput("hi"),
-				Params: &schemas.ResponsesParameters{MaxOutputTokens: new(maxTokens), Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: new(budget), Effort: eff}}}, cfg)
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: new(maxTokens), Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: new(budget), Effort: eff}},
+			}, cfg)
 		}
 		if err != nil {
 			t.Fatalf("build: %v", err)
@@ -1694,9 +1787,13 @@ func TestBuildAnthropicRequestBody_DefaultEagerInputStreaming(t *testing.T) {
 				if tc.provider == schemas.Anthropic {
 					return
 				}
-				var betas []string
-				for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
-					betas = append(betas, b.String())
+				// Bedrock InvokeModel reads betas from the body; Vertex from the anthropic-beta header.
+				betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider)
+				if tc.provider == schemas.Bedrock {
+					betas = nil
+					for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+						betas = append(betas, b.String())
+					}
 				}
 				if hasBeta := slices.Contains(betas, AnthropicEagerInputStreamingBetaHeader); hasBeta != tc.wantEager {
 					t.Errorf("anthropic_beta = %v, want fine-grained beta present=%v", betas, tc.wantEager)
@@ -2048,10 +2145,12 @@ func TestExplicitNeutralReasoningChangesWin(t *testing.T) {
 			// Stock for a neutral Reasoning{Effort:"low"} on this model, i.e.
 			// exactly what the request now says rather than what it once said.
 			"a rewritten reasoning configuration is built as it stands",
-			surfaceProbe{model: "claude-sonnet-5-5", thinking: enabledWithBudget(),
+			surfaceProbe{
+				model: "claude-sonnet-5-5", thinking: enabledWithBudget(),
 				mutateNeutral: func(p *schemas.ResponsesParameters) {
 					p.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")}
-				}},
+				},
+			},
 			`thinking={"type":"adaptive","display":"summarized"} effort="low" temperature=- top_p=- top_k=-`,
 		},
 		{
@@ -2062,28 +2161,34 @@ func TestExplicitNeutralReasoningChangesWin(t *testing.T) {
 			// is the shape where the caller's projection genuinely carries no
 			// effort, so the addition is unambiguous.
 			"an effort added downstream is not deleted as synthesized",
-			surfaceProbe{model: "claude-sonnet-5-5", thinking: betweenTools(),
+			surfaceProbe{
+				model: "claude-sonnet-5-5", thinking: betweenTools(),
 				mutateNeutral: func(p *schemas.ResponsesParameters) {
 					p.Reasoning.Effort = schemas.Ptr("low")
-				}},
+				},
+			},
 			`thinking={"type":"between_tools"} effort="low" temperature=- top_p=- top_k=-`,
 		},
 		{
 			// Reasoning cleared outright is a drop, not a change: the caller's
 			// own thinking is still what this request asks for.
 			"reasoning cleared downstream is still recovered",
-			surfaceProbe{model: "claude-sonnet-5-5", thinking: enabledWithBudget(),
-				mutateNeutral: func(p *schemas.ResponsesParameters) { p.Reasoning = nil }},
+			surfaceProbe{
+				model: "claude-sonnet-5-5", thinking: enabledWithBudget(),
+				mutateNeutral: func(p *schemas.ResponsesParameters) { p.Reasoning = nil },
+			},
 			`thinking={"type":"enabled","budget_tokens":4096} effort=- temperature=- top_p=- top_k=-`,
 		},
 		{
 			// between_tools reaches the neutral shape intact, so a rewrite of it
 			// is just as visible and just as binding.
 			"a rewritten between_tools configuration is built as it stands",
-			surfaceProbe{model: "claude-sonnet-5-5", thinking: betweenTools(),
+			surfaceProbe{
+				model: "claude-sonnet-5-5", thinking: betweenTools(),
 				mutateNeutral: func(p *schemas.ResponsesParameters) {
 					p.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
-				}},
+				},
+			},
 			`thinking=- effort=- temperature=- top_p=- top_k=-`,
 		},
 	}
@@ -2276,16 +2381,31 @@ func TestAdaptiveAndDisabledKeepUpstreamBehaviour(t *testing.T) {
 		p    surfaceProbe
 		want string
 	}{
-		{"adaptive typed", surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "adaptive"}},
-			`thinking={"type":"adaptive","display":"summarized"} effort="high" temperature=- top_p=- top_k=-`},
-		{"adaptive raw", surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "adaptive"}, raw: true},
-			`thinking={"type":"adaptive"} effort=- temperature=- top_p=- top_k=-`},
-		{"disabled typed", surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "disabled"}},
-			`thinking=- effort=- temperature=- top_p=- top_k=-`},
-		{"disabled raw", surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "disabled"}, raw: true},
-			`thinking={"type":"adaptive"} effort=- temperature=- top_p=- top_k=-`},
-		{"no thinking typed", surfaceProbe{model: "claude-sonnet-5-5"},
-			`thinking=- effort=- temperature=- top_p=- top_k=-`},
+		{
+			"adaptive typed",
+			surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "adaptive"}},
+			`thinking={"type":"adaptive","display":"summarized"} effort="high" temperature=- top_p=- top_k=-`,
+		},
+		{
+			"adaptive raw",
+			surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "adaptive"}, raw: true},
+			`thinking={"type":"adaptive"} effort=- temperature=- top_p=- top_k=-`,
+		},
+		{
+			"disabled typed",
+			surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "disabled"}},
+			`thinking=- effort=- temperature=- top_p=- top_k=-`,
+		},
+		{
+			"disabled raw",
+			surfaceProbe{model: "claude-sonnet-5-5", thinking: &AnthropicThinking{Type: "disabled"}, raw: true},
+			`thinking={"type":"adaptive"} effort=- temperature=- top_p=- top_k=-`,
+		},
+		{
+			"no thinking typed",
+			surfaceProbe{model: "claude-sonnet-5-5"},
+			`thinking=- effort=- temperature=- top_p=- top_k=-`,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { assertWire(t, c.p, c.want) })
@@ -3607,8 +3727,10 @@ func TestSearchToolVersionsOnProviderWire(t *testing.T) {
 					if strings.HasPrefix(string(version), "web_fetch_") {
 						name = "web_fetch"
 					}
-					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
-						Tools: []AnthropicTool{{Type: &version, Name: name}}}
+					client := &AnthropicMessageRequest{
+						Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: &version, Name: name}},
+					}
 					request := client.ToBifrostResponsesRequest(nil)
 					request.Provider = provider
 					request.Input = makeSimpleInput("Reply hello without using tools.")
@@ -3670,8 +3792,10 @@ func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%s/stream=%t", tc.provider, label, stream), func(t *testing.T) {
 				var tools []schemas.ResponsesTool
 				if tc.webTool != nil {
-					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
-						Tools: []AnthropicTool{{Type: tc.webTool, Name: tc.webName}}}
+					client := &AnthropicMessageRequest{
+						Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: tc.webTool, Name: tc.webName}},
+					}
 					tools = client.ToBifrostResponsesRequest(nil).Params.Tools
 				} else {
 					tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}

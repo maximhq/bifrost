@@ -15,6 +15,9 @@ import (
 // maxCloseReasonBytes is what a close frame's reason may hold: the 125 bytes of a control frame, less the code.
 const maxCloseReasonBytes = 123
 
+// geminiLiveProtocol is the protocol of the Google GenAI SDK, which the GenAI routes relay to Gemini and Vertex AI.
+var geminiLiveProtocol = &nativeProtocol{name: "Gemini Live", integration: "genai"}
+
 // handleGeminiLiveUpgrade serves a client that speaks the Gemini Live protocol itself, such as the Google
 // GenAI SDK. Live names the model in the first frame instead of the URL, so, like a transcription session,
 // the connection is admitted after the upgrade. The credential is still checked before it.
@@ -27,7 +30,7 @@ func (h *WSRealtimeHandler) handleGeminiLiveUpgrade(ctx *fasthttp.RequestCtx) {
 	}
 	preReqCtx, preReqCancel := createBifrostContextFromHeaders(h.handlerStore, setupHeaders)
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
-	preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, geminiLiveProtocol.integration)
 	if authErr := refuseUnauthenticatedRealtime(h.config.ClientConfig.EnforceAuthOnInference, preReqCtx, setupHeaders.authorization); authErr != nil {
 		preReqCancel()
 		SendBifrostError(ctx, authErr)
@@ -45,7 +48,7 @@ func (h *WSRealtimeHandler) handleGeminiLiveUpgrade(ctx *fasthttp.RequestCtx) {
 		defer recoverWebSocketSession(conn)
 		defer preReqCancel()
 		clientConn := newRealtimeClientConn(conn)
-		clientConn.native = true
+		clientConn.native = geminiLiveProtocol
 
 		setup, rawModel, setupErr := bufferGeminiLiveSetup(clientConn)
 		if setupErr != nil {

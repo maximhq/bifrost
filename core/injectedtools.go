@@ -163,7 +163,7 @@ func applyInjectedToolsChat(r *schemas.BifrostChatRequest, set *injectedToolSet)
 			continue
 		}
 		// A client tool with an injected tool's name is replaced by it.
-		if (tool.Function != nil && set.duplicates(tool.Function.Name)) || set.duplicates(tool.Name) {
+		if (tool.Function != nil && set.duplicates(tool.Function.Name)) || (tool.Custom != nil && set.duplicates(tool.Custom.Name)) || set.duplicates(tool.Name) {
 			continue
 		}
 		tools = append(tools, tool)
@@ -172,6 +172,9 @@ func applyInjectedToolsChat(r *schemas.BifrostChatRequest, set *injectedToolSet)
 	for _, tool := range tools {
 		if tool.Function != nil {
 			delete(replaced, tool.Function.Name)
+		}
+		if tool.Custom != nil && tool.Custom.Name != "" {
+			delete(replaced, tool.Custom.Name)
 		}
 		if tool.Name != "" {
 			delete(replaced, tool.Name)
