@@ -242,7 +242,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 			Ephemeral5mInputTokens: 3146,
 		},
 	}
-	accumulateAnthropicResponsesUsage(usage, billed, start)
+	accumulateResponsesUsageFromStruct(usage, billed, start)
 
 	delta := &AnthropicUsage{
 		InputTokens:              2,
@@ -276,7 +276,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 			},
 		},
 	}
-	accumulateAnthropicResponsesUsage(usage, billed, delta)
+	accumulateResponsesUsageFromStruct(usage, billed, delta)
 
 	if usage.OutputTokens != 386 {
 		t.Fatalf("response OutputTokens = %d, want 386", usage.OutputTokens)
@@ -304,7 +304,7 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 	}
 
 	// A later usage event without iterations must not erase the breakdown.
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 74})
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 74})
 	if len(usage.Iterations) != 2 {
 		t.Fatalf("Iterations after iteration-less event = %d, want 2", len(usage.Iterations))
 	}
@@ -377,12 +377,12 @@ func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *test
 	t.Run("write turn reports no cached_tokens", func(t *testing.T) {
 		usage := &schemas.ResponsesResponseUsage{}
 		billed := &schemas.BifrostLLMUsage{}
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 			InputTokens:              14,
 			CacheCreationInputTokens: 4759,
 			CacheCreation:            AnthropicUsageCacheCreation{Ephemeral5mInputTokens: 4759},
 		})
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 5})
 
 		if got := usage.InputTokensDetails.CachedWriteTokens; got != 4759 {
 			t.Fatalf("CachedWriteTokens = %d, want 4759", got)
@@ -404,11 +404,11 @@ func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *test
 	t.Run("read turn surfaces cached_tokens", func(t *testing.T) {
 		usage := &schemas.ResponsesResponseUsage{}
 		billed := &schemas.BifrostLLMUsage{}
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 			InputTokens:          14,
 			CacheReadInputTokens: 4759,
 		})
-		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+		accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{OutputTokens: 5})
 
 		if got := usage.InputTokensDetails.CachedReadTokens; got != 4759 {
 			t.Fatalf("CachedReadTokens = %d, want 4759", got)
@@ -442,14 +442,14 @@ func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) 
 
 	usage := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 		InputTokens:  1000,
 		OutputTokens: 200,
 		Iterations: []AnthropicUsage{
 			{Type: schemas.Ptr("message"), InputTokens: 1000, OutputTokens: 120},
 		},
 	})
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{
 		InputTokens:  1000,
 		OutputTokens: 500,
 		Iterations: []AnthropicUsage{
@@ -458,7 +458,7 @@ func TestAccumulateAnthropicResponsesUsage_KeepsAdvisorIterations(t *testing.T) 
 			{Type: schemas.Ptr("message"), InputTokens: 1100, OutputTokens: 380},
 		},
 	})
-	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{InputTokens: 1000, OutputTokens: 500})
+	accumulateResponsesUsageFromStruct(usage, billed, &AnthropicUsage{InputTokens: 1000, OutputTokens: 500})
 
 	if len(usage.Iterations) != 3 {
 		t.Fatalf("Iterations = %d, want the latest cumulative list of 3", len(usage.Iterations))
