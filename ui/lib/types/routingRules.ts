@@ -45,6 +45,7 @@ export interface RoutingRule {
 	priority: number;
 	enabled: boolean;
 	chain_rule: boolean;
+	sticky_sessions: boolean;
 	query?: RuleGroupType;
 	created_at: string;
 	updated_at: string;
@@ -61,6 +62,7 @@ export interface CreateRoutingRuleRequest {
 	priority: number;
 	enabled?: boolean;
 	chain_rule?: boolean;
+	sticky_sessions?: boolean;
 	query?: RuleGroupType;
 }
 
@@ -108,6 +110,7 @@ export interface RoutingRuleFormData {
 	priority: number;
 	enabled: boolean;
 	chain_rule: boolean;
+	sticky_sessions: boolean;
 	query?: RuleGroupType;
 	isDirty?: boolean;
 }
@@ -162,5 +165,6 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	priority: 0,
 	enabled: true,
 	chain_rule: false,
+	sticky_sessions: false,
 	isDirty: false,
 };

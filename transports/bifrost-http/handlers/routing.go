@@ -171,32 +171,34 @@ type RoutingTarget struct {
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string                              `json:"name" validate:"required"`
-	Description   string                              `json:"description,omitempty"`
-	Enabled       *bool                               `json:"enabled,omitempty"`    // nil = use DB default (true)
-	ChainRule     *bool                               `json:"chain_rule,omitempty"` // nil = use DB default (false)
-	CelExpression string                              `json:"cel_expression"`
-	Targets       []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
-	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	Scope         string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string                             `json:"scope_id,omitempty"`
-	Query         map[string]any                      `json:"query,omitempty"`
-	Priority      int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
+	Name           string                              `json:"name" validate:"required"`
+	Description    string                              `json:"description,omitempty"`
+	Enabled        *bool                               `json:"enabled,omitempty"`         // nil = use DB default (true)
+	ChainRule      *bool                               `json:"chain_rule,omitempty"`      // nil = use DB default (false)
+	StickySessions *bool                               `json:"sticky_sessions,omitempty"` // nil = use DB default (false)
+	CelExpression  string                              `json:"cel_expression"`
+	Targets        []RoutingTarget                     `json:"targets"` // Required; weights must sum to 1
+	Fallbacks      []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Scope          string                              `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID        *string                             `json:"scope_id,omitempty"`
+	Query          map[string]any                      `json:"query,omitempty"`
+	Priority       int                                 `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string                             `json:"name,omitempty"`
-	Description   *string                             `json:"description,omitempty"`
-	Enabled       *bool                               `json:"enabled,omitempty"`
-	ChainRule     *bool                               `json:"chain_rule,omitempty"`
-	CelExpression *string                             `json:"cel_expression,omitempty"`
-	Targets       []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
-	Fallbacks     []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
-	Query         map[string]any                      `json:"query,omitempty"`
-	Priority      *int                                `json:"priority,omitempty"`
-	Scope         *string                             `json:"scope,omitempty"`
-	ScopeID       *string                             `json:"scope_id,omitempty"`
+	Name           *string                             `json:"name,omitempty"`
+	Description    *string                             `json:"description,omitempty"`
+	Enabled        *bool                               `json:"enabled,omitempty"`
+	ChainRule      *bool                               `json:"chain_rule,omitempty"`
+	StickySessions *bool                               `json:"sticky_sessions,omitempty"`
+	CelExpression  *string                             `json:"cel_expression,omitempty"`
+	Targets        []RoutingTarget                     `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks      []configstoreTables.RoutingFallback `json:"fallbacks,omitempty"`
+	Query          map[string]any                      `json:"query,omitempty"`
+	Priority       *int                                `json:"priority,omitempty"`
+	Scope          *string                             `json:"scope,omitempty"`
+	ScopeID        *string                             `json:"scope_id,omitempty"`
 }
 
 // maxRoutingTTFTTimeoutMs caps a target's TTFT deadline; it mirrors
@@ -730,12 +732,17 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	if req.ChainRule != nil {
 		chainRule = *req.ChainRule
 	}
+	stickySessions := false // DB default
+	if req.StickySessions != nil {
+		stickySessions = *req.StickySessions
+	}
 	rule := &configstoreTables.TableRoutingRule{
 		ID:              ruleID,
 		Name:            req.Name,
 		Description:     req.Description,
 		Enabled:         enabled,
 		ChainRule:       chainRule,
+		StickySessions:  stickySessions,
 		CelExpression:   req.CelExpression,
 		Targets:         targets,
 		Scope:           scope,
@@ -807,6 +814,9 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 	if req.ChainRule != nil {
 		rule.ChainRule = *req.ChainRule
+	}
+	if req.StickySessions != nil {
+		rule.StickySessions = *req.StickySessions
 	}
 	if req.CelExpression != nil {
 		// Validate only when the field is supplied, so unrelated updates (e.g. toggling

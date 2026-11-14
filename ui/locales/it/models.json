@@ -2308,6 +2308,8 @@
 		"enableRuleHelp": "La regola sarà attiva e applicata alle richieste corrispondenti",
 		"chainRule": "Regola a catena",
 		"chainRuleHelp": "Dopo il match, rivaluta le regole di routing usando il provider/modello risolto come nuovo contesto. Utile per comporre regole, es. normalizza prima un alias di modello, poi instrada in base al nome canonico.",
+		"stickySessions": "Sessioni persistenti",
+		"stickySessionsHelp": "Mantiene tutte le richieste di una sessione sulla stessa destinazione ponderata, così le conversazioni non cambiano provider a metà e le cache dei prompt continuano a funzionare. Le richieste senza ID di sessione usano ancora la selezione casuale ponderata.",
 		"selectScope": "Seleziona scope...",
 		"priorityRequired": "La priorità è obbligatoria",
 		"priorityMin": "La priorità deve essere ≥ 0",

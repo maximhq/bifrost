@@ -2227,6 +2227,7 @@ export const routingRuleSchema = z
 		priority: z.number().min(0, msg("validation.priorityMustBe0OrGreater")).max(1000, msg("validation.priorityMustBe1000OrLess")),
 		enabled: z.boolean().default(true),
 		chain_rule: z.boolean().default(false),
+		sticky_sessions: z.boolean().default(false),
 	})
 	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
 		error: () => i18n.t("validation.scopeIdIsRequiredWhenScopeIsNotGlobal"),

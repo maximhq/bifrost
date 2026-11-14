@@ -1707,6 +1707,9 @@ RoutingRule:
     chain_rule:
       type: boolean
       description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
+    sticky_sessions:
+      type: boolean
+      description: "When true, every request that carries a session id (x-bf-session-id or a harness session header) gets the same weighted target for that session, scoped to its virtual key and user; requests without a session id, or with x-bf-session-affinity off, keep weighted random selection."
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
@@ -1781,6 +1784,10 @@ CreateRoutingRuleRequest:
       type: boolean
       default: false
       description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
+    sticky_sessions:
+      type: boolean
+      default: false
+      description: "When true, every request that carries a session id (x-bf-session-id or a harness session header) gets the same weighted target for that session, scoped to its virtual key and user; requests without a session id, or with x-bf-session-affinity off, keep weighted random selection."
     cel_expression:
       type: string
       description: CEL expression for matching. Empty or omitted matches every request.
@@ -1844,6 +1851,9 @@ UpdateRoutingRuleRequest:
     chain_rule:
       type: boolean
       description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
+    sticky_sessions:
+      type: boolean
+      description: "When true, every request that carries a session id (x-bf-session-id or a harness session header) gets the same weighted target for that session, scoped to its virtual key and user; requests without a session id, or with x-bf-session-affinity off, keep weighted random selection."
     cel_expression:
       type: string
     targets:

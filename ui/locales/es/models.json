@@ -2308,6 +2308,8 @@
 		"enableRuleHelp": "La regla será activa y aplicada a las solicitudes que coincidan",
 		"chainRule": "Regla de cadena",
 		"chainRuleHelp": "Después de que esta regla coincida, reevaluar las reglas de enrutamiento usando el proveedor/modelo resuelto como el nuevo contexto. Útil para componer reglas, por ejemplo normalizar un alias modelo primero, luego ruta basada en el nombre canónico.",
+		"stickySessions": "Sesiones persistentes",
+		"stickySessionsHelp": "Mantiene todas las solicitudes de una sesión en el mismo destino ponderado, para que las conversaciones no cambien de proveedor a mitad del hilo y las cachés de prompts sigan acertando. Las solicitudes sin ID de sesión siguen usando la selección aleatoria ponderada.",
 		"selectScope": "Selecciona el alcance...",
 		"priorityRequired": "Se requiere prioridad",
 		"priorityMin": "La prioridad debe ser ≥ 0",
