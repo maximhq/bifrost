@@ -14,6 +14,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/voyage"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -258,7 +259,7 @@ func TestContextualizedRequestShape(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 		}
-		if raw, _ := json.Marshal(s.Body()["inputs"]); string(raw) != `[["what is a vector"]]` {
+		if raw, _ := providerUtils.MarshalSorted(s.Body()["inputs"]); string(raw) != `[["what is a vector"]]` {
 			t.Errorf("inputs = %s, want one single-query list", raw)
 		}
 		if _, set := s.Body()["enable_auto_chunking"]; set {
@@ -387,7 +388,7 @@ func TestMultimodalRequestAndUsage(t *testing.T) {
 	if s.Path() != "/v1/multimodalembeddings" {
 		t.Errorf("path = %q", s.Path())
 	}
-	raw, _ := json.Marshal(s.Body()["inputs"])
+	raw, _ := providerUtils.MarshalSorted(s.Body()["inputs"])
 	if want := `[{"content":[{"text":"a banana","type":"text"},{"image_base64":"data:image/png;base64,iVBORw0KGgo=","type":"image_base64"}]}]`; string(raw) != want {
 		t.Errorf("inputs = %s\nwant     %s", raw, want)
 	}
