@@ -104,6 +104,9 @@ func readEmbeddingOptions(name string, model voyageModel, params *schemas.Embedd
 		}
 		switch value {
 		case schemas.EmbeddingEncodingFloat:
+			if dtype != "" {
+				return nil, providerUtils.InvalidRequestErrorf("encoding_format=%s conflicts with output_dtype=%s", dtype, value)
+			}
 		case schemas.EmbeddingEncodingInt8, schemas.EmbeddingEncodingUint8, schemas.EmbeddingEncodingBinary, schemas.EmbeddingEncodingUbinary:
 			if dtype != "" && dtype != value {
 				return nil, providerUtils.InvalidRequestErrorf("encoding_format=%s conflicts with output_dtype=%s", dtype, value)

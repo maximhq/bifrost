@@ -116,7 +116,7 @@ The "Embeddings" column above covers text. The `/v1/embeddings` endpoint also ac
 
 Notes:
 
-- All the parts in one `input` entry produce one vector. Vertex `multimodalembedding@001` and Nova are the exceptions: they return a separate vector per modality, labelled with a `modality` field, and `multimodalembedding@001` returns one vector per video segment.
+- All the parts in one `input` entry produce one vector. Vertex `multimodalembedding@001` and Nova are the exceptions: they return a separate vector per modality, labelled with a `modality` field, and `multimodalembedding@001` returns one vector per video segment. Voyage contextualized models are one more: a document returns a two-dimensional `embedding` with one vector per chunk (and the chunk texts in `chunks`), while a query returns a flat vector.
 - A part the target model cannot carry returns a `400` naming the modality. Bifrost never drops a part silently.
 - Gemini's `:batchEmbedContents` accepts per-entry `task_type` / `dimensions` / `title`. BytePlus sends every entry as its own call and forwards per-entry `dimensions`; every other provider returns a `400` for per-item overrides.
 - Nova embeds one modality per request; Titan multimodal and Nova take one entry per request.

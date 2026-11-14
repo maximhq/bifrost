@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -53,9 +54,19 @@ var testKey = schemas.Key{Value: *schemas.NewSecretVar("voyage-test-key")}
 type stub struct {
 	server *httptest.Server
 	hits   atomic.Int32
+	mu     sync.Mutex
 	path   string
 	auth   string
 	body   map[string]any
+}
+
+// Path, Auth and Body return what the handler goroutine captured, under the lock that guards it.
+func (s *stub) Path() string { s.mu.Lock(); defer s.mu.Unlock(); return s.path }
+func (s *stub) Auth() string { s.mu.Lock(); defer s.mu.Unlock(); return s.auth }
+func (s *stub) Body() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.body
 }
 
 func newStub(t *testing.T, status int, reply string) *stub {
@@ -63,11 +74,12 @@ func newStub(t *testing.T, status int, reply string) *stub {
 	s := &stub{}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
-		s.path = r.URL.Path
-		s.auth = r.Header.Get("Authorization")
 		raw, _ := io.ReadAll(r.Body)
-		s.body = nil
-		_ = json.Unmarshal(raw, &s.body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		s.mu.Lock()
+		s.path, s.auth, s.body = r.URL.Path, r.Header.Get("Authorization"), body
+		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(reply))
@@ -153,6 +165,7 @@ func TestEmbeddingRejectsInvalidRequestsBeforeSending(t *testing.T) {
 		{"dimension on the fixed-size multimodal model", embeddingRequest("voyage-multimodal-3", []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("a banana")}}}}, &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(512)}), "does not support dimensions=512"},
 		{"dimension on a fixed-size model", embeddingRequest("voyage-law-2", textInput("a"), &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(512)}), "does not support dimensions=512"},
 		{"quantized output on a model without it", embeddingRequest("voyage-finance-2", textInput("a"), &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr("int8")}), "float vectors only"},
+		{"encoding_format int8 against output_dtype float", embeddingRequest("voyage-4", textInput("a"), &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr("int8"), ExtraParams: map[string]any{"output_dtype": "float"}}), "conflicts with output_dtype=float"},
 		{"input_type other than query/document", embeddingRequest("voyage-4", textInput("a"), extra("input_type", "search_document")), "input_type must be"},
 		{"too many inputs", embeddingRequest("voyage-4", textInput(manyInputs...), nil), "at most 1000 inputs"},
 		{"per-item params", embeddingRequest("voyage-4", perItem, nil), "own params"},
@@ -207,21 +220,21 @@ func TestContextualizedRequestShape(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 		}
-		if s.path != "/v1/contextualizedembeddings" {
-			t.Errorf("path = %q", s.path)
+		if s.Path() != "/v1/contextualizedembeddings" {
+			t.Errorf("path = %q", s.Path())
 		}
-		if s.auth != "Bearer voyage-test-key" {
-			t.Errorf("Authorization = %q", s.auth)
+		if s.Auth() != "Bearer voyage-test-key" {
+			t.Errorf("Authorization = %q", s.Auth())
 		}
-		inputs, _ := s.body["inputs"].([]any)
+		inputs, _ := s.Body()["inputs"].([]any)
 		if len(inputs) != 2 || inputs[0] != "first doc" || inputs[1] != "second doc" {
-			t.Errorf("inputs = %v, want the flat list of document strings", s.body["inputs"])
+			t.Errorf("inputs = %v, want the flat list of document strings", s.Body()["inputs"])
 		}
-		if s.body["enable_auto_chunking"] != true || s.body["chunk_size"] != float64(32000) || s.body["input_type"] != "document" {
-			t.Errorf("auto-chunking fields wrong: %v", s.body)
+		if s.Body()["enable_auto_chunking"] != true || s.Body()["chunk_size"] != float64(32000) || s.Body()["input_type"] != "document" {
+			t.Errorf("auto-chunking fields wrong: %v", s.Body())
 		}
-		if _, set := s.body["output_dimension"]; set {
-			t.Errorf("output_dimension was sent though the caller did not ask: %v", s.body)
+		if _, set := s.Body()["output_dimension"]; set {
+			t.Errorf("output_dimension was sent though the caller did not ask: %v", s.Body())
 		}
 
 		if len(resp.Data) != 2 {
@@ -245,17 +258,17 @@ func TestContextualizedRequestShape(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 		}
-		if raw, _ := json.Marshal(s.body["inputs"]); string(raw) != `[["what is a vector"]]` {
+		if raw, _ := json.Marshal(s.Body()["inputs"]); string(raw) != `[["what is a vector"]]` {
 			t.Errorf("inputs = %s, want one single-query list", raw)
 		}
-		if _, set := s.body["enable_auto_chunking"]; set {
-			t.Errorf("a query must not enable auto-chunking: %v", s.body)
+		if _, set := s.Body()["enable_auto_chunking"]; set {
+			t.Errorf("a query must not enable auto-chunking: %v", s.Body())
 		}
-		if _, set := s.body["chunk_size"]; set {
-			t.Errorf("a query must not set chunk_size: %v", s.body)
+		if _, set := s.Body()["chunk_size"]; set {
+			t.Errorf("a query must not set chunk_size: %v", s.Body())
 		}
-		if s.body["output_dimension"] != float64(256) {
-			t.Errorf("output_dimension = %v, want 256", s.body["output_dimension"])
+		if s.Body()["output_dimension"] != float64(256) {
+			t.Errorf("output_dimension = %v, want 256", s.Body()["output_dimension"])
 		}
 		if got := resp.Data[0].Embedding.EmbeddingArray; len(got) != 2 || len(resp.Data[0].Chunks) != 0 {
 			t.Errorf("query entry = %+v, want one flat vector and no chunks", resp.Data[0])
@@ -337,8 +350,8 @@ func TestEmbeddingOutputEncodings(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 		}
-		if s.body["output_dtype"] != "int8" {
-			t.Errorf("output_dtype = %v", s.body["output_dtype"])
+		if s.Body()["output_dtype"] != "int8" {
+			t.Errorf("output_dtype = %v", s.Body()["output_dtype"])
 		}
 		if got := resp.Data[0]; len(got.Embedding.EmbeddingInt8Array) != 3 || got.EncodingFormat != schemas.EmbeddingEncodingInt8 {
 			t.Errorf("entry = %+v", got)
@@ -351,8 +364,8 @@ func TestEmbeddingOutputEncodings(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 		}
-		if s.body["encoding_format"] != "base64" {
-			t.Errorf("encoding_format = %v", s.body["encoding_format"])
+		if s.Body()["encoding_format"] != "base64" {
+			t.Errorf("encoding_format = %v", s.Body()["encoding_format"])
 		}
 		if got := resp.Data[0].Embedding.EmbeddingStr; got == nil || *got != "AAAAAA==" {
 			t.Errorf("entry = %+v", resp.Data[0])
@@ -371,15 +384,15 @@ func TestMultimodalRequestAndUsage(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("Embedding: %v", bifrostErr.Error.Message)
 	}
-	if s.path != "/v1/multimodalembeddings" {
-		t.Errorf("path = %q", s.path)
+	if s.Path() != "/v1/multimodalembeddings" {
+		t.Errorf("path = %q", s.Path())
 	}
-	raw, _ := json.Marshal(s.body["inputs"])
+	raw, _ := json.Marshal(s.Body()["inputs"])
 	if want := `[{"content":[{"text":"a banana","type":"text"},{"image_base64":"data:image/png;base64,iVBORw0KGgo=","type":"image_base64"}]}]`; string(raw) != want {
 		t.Errorf("inputs = %s\nwant     %s", raw, want)
 	}
-	if s.body["input_type"] != "document" {
-		t.Errorf("input_type = %v", s.body["input_type"])
+	if s.Body()["input_type"] != "document" {
+		t.Errorf("input_type = %v", s.Body()["input_type"])
 	}
 	if u := resp.Usage; u == nil || u.PromptTokens != 5 || u.TotalTokens != 1005 || u.PromptTokensDetails == nil || u.PromptTokensDetails.ImageTokens != 1000 {
 		t.Errorf("usage = %+v, want 5 text tokens, 1000 media tokens, 1005 total", u)
@@ -402,8 +415,8 @@ func TestRerank(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Rerank: %v", bifrostErr.Error.Message)
 		}
-		if s.path != "/v1/rerank" || s.body["top_k"] != float64(2) || s.body["return_documents"] != true || s.body["model"] != "rerank-3" {
-			t.Errorf("request = %s %v", s.path, s.body)
+		if s.Path() != "/v1/rerank" || s.Body()["top_k"] != float64(2) || s.Body()["return_documents"] != true || s.Body()["model"] != "rerank-3" {
+			t.Errorf("request = %s %v", s.Path(), s.Body())
 		}
 		if len(resp.Results) != 2 || resp.Results[0].Index != 1 || resp.Results[0].RelevanceScore != 0.9 {
 			t.Fatalf("results = %+v, want highest score first", resp.Results)
@@ -423,7 +436,7 @@ func TestRerank(t *testing.T) {
 			t.Fatalf("Rerank: %v", bifrostErr.Error.Message)
 		}
 		for _, field := range []string{"top_k", "return_documents"} {
-			if _, set := s.body[field]; set {
+			if _, set := s.Body()[field]; set {
 				t.Errorf("%s was sent though the caller did not ask", field)
 			}
 		}
