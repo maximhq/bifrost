@@ -9,6 +9,7 @@ import (
 	"hash"
 	"math"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,6 +138,7 @@ type ClientConfig struct {
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPClientMetadataURL                    *schemas.SecretVar                    `json:"mcp_client_metadata_url,omitempty"`             // Full URL where Bifrost's Client ID Metadata Document is hosted; empty serves it under mcp_external_client_url
 	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse              bool                                  `json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                    *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
@@ -554,6 +556,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
+	if c.MCPClientMetadataURL.IsSet() {
+		if c.MCPClientMetadataURL.IsFromSecret() {
+			hash.Write([]byte("clientMetadataURL:ref:" + c.MCPClientMetadataURL.GetRawRef()))
+		} else {
+			hash.Write([]byte("clientMetadataURL:val:" + c.MCPClientMetadataURL.GetValue()))
+		}
+	}
 	if c.SkillsExternalClientURL != nil {
 		if c.SkillsExternalClientURL.IsFromSecret() {
 			hash.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
@@ -662,6 +671,9 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	}
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
+	}
+	if c.MCPClientMetadataURL != nil && c.MCPClientMetadataURL.IsFromSecret() {
+		out.MCPClientMetadataURL = c.MCPClientMetadataURL.Redacted()
 	}
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
@@ -946,6 +958,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			databricksConfig := &schemas.DatabricksKeyConfig{
 				APIFormat:          key.DatabricksKeyConfig.APIFormat,
 				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+				Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
 			}
 			// The workspace URL is a hostname, not a credential — surface it in
 			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
@@ -2037,6 +2050,14 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.SessionSettings = settingsHash
 	}
 
+	if normalized.Suggestions != nil {
+		settingsHash, err := hashComplexityValue(normalized.Suggestions)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash suggestions settings: %w", err)
+		}
+		hashes.SuggestionsSettings = settingsHash
+	}
+
 	return hashes, nil
 }
 
@@ -2338,6 +2359,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	if m.MaxProtocolVersion != "" {
 		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
 	}
+	// Only true contributes, so a file edit of this flag syncs while clients without code mode keep their hash.
+	if m.IsCodeModeClient {
+		hash.Write([]byte("is_code_mode_client:true"))
+	}
+	// Inherit contributes nothing, so existing hashes are unchanged.
+	if m.ServerTypeOnSlug != schemas.MCPServerTypeOnSlugInherit {
+		hash.Write([]byte("server_type_on_slug:" + m.ServerTypeOnSlug.String()))
+	}
 	// nil (expose all) contributes nothing; [] and listed entries do.
 	for _, list := range []struct {
 		name  string
@@ -2466,6 +2495,24 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// MCPClientHashMatchesLegacyCodeMode reports whether storedHash is this client's hash under the formula of
+// builds that did not hash is_code_mode_client. GenerateMCPClientHash now does when it is true, so the
+// first restart after the upgrade sees a mismatch for every such client even when config.json is untouched;
+// reconciliation calls this before treating that mismatch as a file edit, so UI and API edits survive.
+// storedCodeMode must be true too: without code mode both formulas agree, so a stored client without it
+// that now declares it is a file edit, not an old hash.
+func MCPClientHashMatchesLegacyCodeMode(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
+	if storedHash == "" || !m.IsCodeModeClient || !storedCodeMode {
+		return false, nil
+	}
+	m.IsCodeModeClient = false
+	legacy, err := GenerateMCPClientHash(m)
+	if err != nil {
+		return false, err
+	}
+	return legacy == storedHash, nil
 }
 
 // GenerateWebhookEndpointHash generates a SHA256 hash of a webhook endpoint's

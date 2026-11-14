@@ -1506,37 +1506,52 @@ func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) 
 	return files, nil
 }
 
-// attachDecisionFiles gives each image part sent by reference the bytes of the file
-// part its name points at. files is nil for a JSON request, where no part can name a
-// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
-// own multipart rules also give: a name with no file part, two parts naming one file,
-// and a file part no image part names. A file part takes precedence over data.
+// attachDecisionFiles gives each part that names a file part, an image sent by
+// reference or an input_file, the bytes of the file part its name points at, so a
+// large file arrives as raw bytes rather than base64 in the JSON. files is nil for a
+// JSON request, where no part can name a file. Only what the request cannot be built
+// from is rejected, each a 400 Typesafe's own multipart rules also give: a name with
+// no file part, two parts naming one file, and a file part no part names. An image's
+// file part takes precedence over its data; an input_file sends its bytes one way
+// only, so naming a file part as well as sending data or a url is rejected.
 func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
 	used := make(map[string]string, len(files))
 	for m := range input.Messages {
 		parts := input.Messages[m].Content.Parts
 		for i := range parts {
 			part := &parts[i]
-			if !part.IsAsset() || part.Name == nil {
+			if part.Name == nil {
+				continue
+			}
+			var label string
+			switch {
+			case part.IsAsset():
+				label = fmt.Sprintf("input_image part %q", *part.ID)
+			case part.Type == schemas.DecisionInputPartTypeFile:
+				label = "input_file part"
+				if part.Data.File != nil || part.URL != nil {
+					return fmt.Errorf("input_file part names file part %q and also sends data or url; send its bytes one way", *part.Name)
+				}
+			default:
 				continue
 			}
 			if files == nil {
-				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+				return fmt.Errorf("%s names file part %q, which needs a multipart request", label, *part.Name)
 			}
 			data, ok := files[*part.Name]
 			if !ok {
-				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+				return fmt.Errorf("%s names part %q, which the request does not carry", label, *part.Name)
 			}
 			if other, taken := used[*part.Name]; taken {
-				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+				return fmt.Errorf("%s and %s both name part %q", other, label, *part.Name)
 			}
-			used[*part.Name] = *part.ID
+			used[*part.Name] = label
 			part.Data.File = data
 		}
 	}
 	for name := range files {
 		if _, ok := used[name]; !ok {
-			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+			return fmt.Errorf("multipart part %q is not named by any input_image or input_file part", name)
 		}
 	}
 	return nil
@@ -1784,32 +1799,6 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
-// speechAttachmentFilename derives the download filename from the requested
-// audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
-// format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
-// with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
-// or empty formats fall back to mp3 (the API default).
-func speechAttachmentFilename(responseFormat string) string {
-	ext := "mp3"
-	switch {
-	case strings.HasPrefix(responseFormat, "opus"):
-		ext = "opus"
-	case strings.HasPrefix(responseFormat, "aac"):
-		ext = "aac"
-	case strings.HasPrefix(responseFormat, "flac"):
-		ext = "flac"
-	case strings.HasPrefix(responseFormat, "wav"):
-		ext = "wav"
-	case strings.HasPrefix(responseFormat, "pcm"):
-		ext = "pcm"
-	case strings.HasPrefix(responseFormat, "ulaw"):
-		ext = "ulaw"
-	case strings.HasPrefix(responseFormat, "alaw"):
-		ext = "alaw"
-	}
-	return "speech." + ext
-}
-
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -1822,7 +1811,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 	// Filename tracks the requested audio format (prepareSpeechRequest guarantees
 	// req.SpeechParameters is non-nil, so ResponseFormat is safe to read here).
-	attachmentFilename := speechAttachmentFilename(req.ResponseFormat)
+	attachmentFilename := lib.SpeechAttachmentFilename(req.ResponseFormat)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	if bifrostCtx == nil {
@@ -1873,7 +1862,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Type", lib.SpeechContentType(req.ResponseFormat, resp.Audio))
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)

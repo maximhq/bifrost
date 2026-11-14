@@ -92,6 +92,8 @@ const (
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	Baseten       ModelProvider = "baseten"
+	Kimchi        ModelProvider = "kimchi"
+	Soniox        ModelProvider = "soniox"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -146,6 +148,8 @@ var StandardProviders = []ModelProvider{
 	MiniMax,
 	BytePlus,
 	Baseten,
+	Kimchi,
+	Soniox,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -296,9 +300,11 @@ const (
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"   // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier or a model router classified the request, and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier or a model router classified the request (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityScore           BifrostContextKey = "bifrost-governance-complexity-score"     // float64 (classifier score behind the tier: the semantic classifier's similarity to the nearest reference phrase; only present alongside a computed tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyModelRouterID                       BifrostContextKey = "bifrost-model-router-id"                 // string (ID of the model router that took the request after the routing rules; unset when none did (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyModelRouterName                     BifrostContextKey = "bifrost-model-router-name"               // string (name of the model router in BifrostContextKeyModelRouterID (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"       // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"            // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"         // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -345,6 +351,7 @@ const (
 	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
 	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
 	BifrostContextKeyLiveDelegationFailed                BifrostContextKey = "bifrost-live-delegation-failed"                   // bool (set by the live transport on a backend unit the provider refused to run a delegation on)
+	BifrostContextKeySpeechSession                       BifrostContextKey = "bifrost-speech-session"                           // bool (set by the speech session transport on the one request a session is; logging records it as a speech.session row)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
@@ -470,7 +477,7 @@ const (
 	BifrostContextKeyInjectedToolsExecuted               BifrostContextKey = "bifrost-injected-tools-executed"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) - the current attempt ran a provider-injected tool: it is not retried, and its response is assembled across turns
 	BifrostContextKeyMCPHealthCheckRequest               BifrostContextKey = "bifrost-mcp-health-check-request"           // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when the MCP connect/ping/list-tools request was generated by bifrost itself (periodic health checks, or the admin connection-verification probe) rather than originating from a caller
 	BifrostContextKeyMCPCallerCapabilities               BifrostContextKey = "bifrost-mcp-caller-capabilities"            // *mcp.ClientCapabilities (set by the MCP gateway - DO NOT SET THIS MANUALLY) - what the downstream MCP client declared on this request (2026-07-28 only)
-	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode) or "all" (the gateway's sync)
+	BifrostContextKeyMCPToolListing                      BifrostContextKey = "bifrost-mcp-tool-listing"                   // string (set by bifrost - DO NOT SET THIS MANUALLY) - overrides which tools an MCP tool listing includes: "model" (code mode), "all" or "gateway" (the gateway's sync)
 	BifrostContextKeyMCPGatewayClient                    BifrostContextKey = "bifrost-mcp-gateway-client"                 // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the one MCP client a /mcp/<slug> request serves
 	BifrostContextKeyMCPInputResumption                  BifrostContextKey = "bifrost-mcp-input-resumption"               // *mcp.MultiRoundTripParams (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the caller's answers and requestState when it retries a tools/call that needed input
 	BifrostContextKeyMCPRoundTripID                      BifrostContextKey = "bifrost-mcp-round-trip-id"                  // string (set by the MCP gateway - DO NOT SET THIS MANUALLY) - the round-trip id a caller's retry carried in its requestState
@@ -701,6 +708,10 @@ const (
 	RoutingEngineLoadbalancing  = "loadbalancing"
 	RoutingEngineModelCatalog   = "model-catalog"
 	RoutingEngineCircuitBreaker = "circuit-breaker"
+	// RoutingEngineModelRouter marks a model router's decision: after the
+	// routing rules, a router took the request, classified it, and its target
+	// for that tier was applied.
+	RoutingEngineModelRouter = "model-router"
 	// RoutingEngineSessionAffinity marks decisions a session made for the request:
 	// staying on the provider or key that served it before, ahead of what the
 	// routing engines proposed. Recorded so the request's trail says why it went

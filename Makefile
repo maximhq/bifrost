@@ -2070,7 +2070,7 @@ test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on t
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 	exit $$STATUS
 
-test-realtime: install-gotestsum
+test-realtime: install-gotestsum ## Run the Realtime API e2e tests against a running gateway (Usage: make test-realtime [TESTCASE=TestName|PATTERN=substring] [REALTIME_UPSTREAM=real|fake] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/realtime/fake)
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running Realtime API e2e tests...$(NC)"; \
 	mkdir -p $(TEST_REPORTS_DIR); \
@@ -2084,6 +2084,22 @@ test-realtime: install-gotestsum
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../../$$REPORT_FILE \
 		-- -v -count 1 -timeout 600s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-realtime-long: install-gotestsum ## Run the long Gemini and Vertex Live sessions against the real providers: 11 minutes, across Google's connection limit (Usage: make test-realtime-long [TESTCASE=TestName] [BIFROST_BASE_URL=http://localhost:8080]; start the gateway with APP_DIR=$$(pwd)/tests/realtime)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running long Gemini and Vertex Live sessions (real providers)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	RUN_FLAG="-run Long"; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime-long.xml"; \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 REALTIME_UPSTREAM=real REALTIME_LONG=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -count 1 -timeout 40m $$RUN_FLAG; \
 	STATUS=$$?; \
 	cd ../..; \
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \

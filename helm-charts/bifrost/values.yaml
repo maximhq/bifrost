@@ -78,6 +78,73 @@ service:
   port: 8080
   annotations: {}
 
+# Prometheus Operator ServiceMonitor for scraping Bifrost's native /metrics endpoint.
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1), e.g. from
+# kube-prometheus-stack.
+serviceMonitor:
+  enabled: false
+  # Extra labels on the ServiceMonitor object. Match your Prometheus instance's
+  # serviceMonitorSelector, e.g. `release: kube-prometheus-stack`.
+  additionalLabels: {}
+  # Namespace to create the ServiceMonitor in. Defaults to the release namespace.
+  namespace: ""
+  # Path Bifrost exposes Prometheus metrics on.
+  path: /metrics
+  # Scrape interval. Empty string uses the Prometheus global default.
+  interval: 30s
+  # Per-scrape timeout. Must not exceed the interval. Empty string uses the Prometheus
+  # default.
+  scrapeTimeout: ""
+  # Scrape scheme: http (default) or https.
+  scheme: ""
+  # TLS settings for the scrape endpoint (https). See the ServiceMonitor spec.
+  tlsConfig: {}
+  # Authenticate the scrape with Bifrost's admin credentials.
+  #
+  # Bifrost's auth middleware is global: when auth is on (bifrost.authConfig.isEnabled
+  # or bifrost.governance.authConfig.isEnabled) /metrics requires credentials too, as
+  # it is not one of the routes that stay open without auth (such as /health). An
+  # unauthenticated scrape gets a 401 and the target silently sits at up=0: Prometheus
+  # looks healthy but stores no Bifrost metrics. Turn this on whenever auth is enabled.
+  #
+  # The scrape credentials are admin credentials (Bifrost has no metrics-only one), and
+  # the Prometheus Operator copies them into Prometheus's generated config. Restrict
+  # Secret access in both namespaces and prefer scheme: https. Do not whitelist /metrics
+  # in bifrost.client.whitelistedRoutes instead unless the ingress blocks it: the default
+  # ingress routes every path, and metric labels name customers, teams, users and keys.
+  basicAuth:
+    enabled: false
+    # Secret holding the admin credentials. In the Helm release namespace, defaults
+    # to the Secret configured under the active bifrost.governance.authConfig
+    # (preferred) or bifrost.authConfig, so rotating the admin password rotates the
+    # scrape credentials with it. Bifrost reads the Secret as env vars at pod start, so
+    # restart the pods after rotating it (kubectl rollout restart); until then scrapes
+    # get 401. If the ServiceMonitor `namespace` differs, set this
+    # field explicitly to a Secret in that namespace. Prometheus cannot use inline
+    # adminUsername/adminPassword values.
+    existingSecret: ""
+    # Keys within the Secret. When the Secret is inherited from an authConfig, these
+    # inherit that config's usernameKey/passwordKey. With an explicit existingSecret,
+    # they default to "username" / "password".
+    usernameKey: ""
+    passwordKey: ""
+  # Bearer-token auth for the scrape, as an alternative to basicAuth (mutually
+  # exclusive with it). Requires `credentials`: without them the scrape carries no
+  # token, so the render fails. Passed through to the endpoint's `authorization`
+  # field, e.g.
+  #   authorization:
+  #     type: Bearer
+  #     credentials:
+  #       name: bifrost-scrape-token
+  #       key: token
+  authorization: {}
+  # Keep target labels on collision instead of letting Prometheus prefix them.
+  honorLabels: false
+  # relabel_configs applied before scraping.
+  relabelings: []
+  # metric_relabel_configs applied to scraped samples (e.g. drop high-cardinality series).
+  metricRelabelings: []
+
 # Single ingress (legacy format):
 ingress:
   enabled: false
@@ -408,6 +475,7 @@ bifrost:
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
     # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
@@ -663,6 +731,9 @@ bifrost:
       #   # Per-server cap on the MCP protocol version ("auto", "2026-07-28", "2025-11-25", "2025-06-18").
       #   # Omit to use the global maxProtocolVersion.
       #   maxProtocolVersion: "2025-11-25"
+      #   # Code mode on this server's own /mcp/<slug> only: "inherit" (follow isCodeModeClient),
+      #   # "enabled" or "disabled". /mcp, Virtual MCPs and LLM requests follow isCodeModeClient.
+      #   serverTypeOnSlug: "disabled"
       #   # Require every connection to resolve to a public address (set automatically for
       #   # clients registered without an admin credential check; once true it is never cleared).
       #   requirePublicTarget: false
@@ -1891,6 +1962,46 @@ bifrost:
   #       - method: "POST"
   #         path: "/"
   #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
+
+  # Model routers: named complexity classifiers that each take the requests their routing matches,
+  # after governance.routingRules. Each entry takes id, name and description, the settings of
+  # governance.complexityAnalyzerConfig (keywords, classifier, semantic, decision, llm, session,
+  # tier_boundaries), suggestions (phrase suggestions, which only routers make), targets: the
+  # model each tier gets, and routing:
+  # which requests it takes. Routers are tried narrowest scope first (virtual key, user, team, customer,
+  # then global), by priority within a scope; the first enabled router whose condition holds classifies the
+  # request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model.
+  # Rendered as top-level `model_routers` in config.json when non-empty. Routers are separate from
+  # governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.
+  # modelRouters:
+  #   - id: "support"                    # letters, digits, _ and - (max 64)
+  #     name: "Support"                  # unique across routers
+  #     description: "Classifies support traffic"
+  #     classifier: "decision"           # semantic (default) | decision | llm (needs an llm block)
+  #     decision:
+  #       provider: "typesafe"
+  #       model: "jev-latest"
+  #     keywords:                        # required, as in governance.complexityAnalyzerConfig
+  #       simple_keywords: ["how do I reset my password?"]
+  #       medium_keywords: ["why is my invoice higher than last month?"]
+  #       complex_keywords: ["plan a zero-downtime migration of our SSO setup."]
+  #     targets:                         # Optional; omit to keep the dashboard's. A tier with no target keeps the request's model; weights within a tier sum to 1
+  #       - tier: "SIMPLE"
+  #         provider: "openai"
+  #         model: "gpt-4o-mini"
+  #         weight: 1
+  #       - tier: "COMPLEX"
+  #         provider: "anthropic"
+  #         model: "claude-sonnet-4-5"
+  #         weight: 1
+  #         # key_id: "<key-id>"         # Optional key pin; requires provider
+  #         # fallbacks: ["openai/gpt-4o"]  # Replaces the request's fallback chain when this target is chosen
+  #     routing:                         # Optional; omit to keep the dashboard's. A new router without it starts off, global, after the other global routers
+  #       enabled: true                  # Default false
+  #       cel_expression: "model == 'support-assistant'"  # Optional; empty takes every request in scope. Cannot use complexity_tier
+  #       scope: "global"                # global, team, customer, virtual_key (user-scoped routing is API/UI only)
+  #       # scope_id: "team-1"           # Required for non-global scopes: the entity's ID, not its name
+  #       priority: 0                    # Lower = tried first; unique within the scope among model routers
 
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:

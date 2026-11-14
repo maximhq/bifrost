@@ -9,7 +9,9 @@ import {
 	splitModelAccess,
 	summarizeGrantModelAccess,
 	summarizeModelAccess,
+	templateGroupRefs,
 	validateModelRegex,
+	validatePatternAlias,
 } from "./utils";
 
 beforeAll(async () => {
@@ -116,5 +118,99 @@ describe("summaries and placeholders", () => {
 		expect(modelAccessPlaceholder(["regex:^gpt.*"], "allow")).toBe("Add model…");
 		expect(modelAccessPlaceholder(["*"], "block")).toBe("All models blocked");
 		expect(modelAccessPlaceholder([], "block")).toBe("No blocked models");
+	});
+});
+describe("validatePatternAlias", () => {
+	it("ignores plain deployment names", () => {
+		expect(validatePatternAlias("claude-opus-4-8", "global.anthropic.$9")).toBeNull();
+	});
+	it("accepts templates that reference existing groups", () => {
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.$1")).toBeNull();
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.${1}", "$1")).toBeNull();
+		expect(validatePatternAlias("regex:(?P<m>gpt-.*)", "openai.${m}")).toBeNull();
+		expect(validatePatternAlias("regex:mistral-.*", "mistral.fixed-$$")).toBeNull();
+	});
+	it("rejects bad patterns and missing groups", () => {
+		expect(validatePatternAlias("regex:", "x")).not.toBeNull();
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.$2")).toContain("$2");
+		expect(validatePatternAlias("regex:(claude-.*)", "$1x")).toContain("$1x");
+		expect(validatePatternAlias("regex:(claude-.*)", "$1", "${m}")).toContain("$m");
+	});
+	it("accepts Go inline flags that JavaScript cannot parse", () => {
+		expect(validatePatternAlias("regex:(?i)(claude-.*)", "global.anthropic.$1")).toBeNull();
+		expect(validatePatternAlias("regex:(?i)(claude-.*)", "global.anthropic.$2")).toContain("$2");
+		expect(validatePatternAlias("regex:(?s-i:claude)-(.*)", "x.$1")).toBeNull();
+		expect(validatePatternAlias("regex:(?s-i:claude)-(.*)", "x.$2")).toContain("$2");
+		expect(validateModelRegex("(?i)claude-.*")).toBeNull();
+		expect(validateModelRegex("(?U)claude-.*?")).toBeNull();
+	});
+	it("accepts Go quoted literals that JavaScript cannot parse", () => {
+		expect(validatePatternAlias("regex:\\Q(\\E(claude-.*)", "x.$1")).toBeNull();
+		// Quoted text opens no group and names none.
+		expect(validatePatternAlias("regex:\\Q(\\E(claude-.*)", "x.$2")).toContain("$2");
+		expect(validatePatternAlias("regex:\\Q(?P<m>\\E(claude-.*)", "x.$m")).toContain("$m");
+		expect(validateModelRegex("\\Qa.b(\\E-.*")).toBeNull();
+		// Without a closing \\E the quote runs to the end of the pattern.
+		expect(validateModelRegex("claude-\\Q(")).toBeNull();
+		expect(validateModelRegex("\\Q\\E(")).not.toBeNull();
+		// An escaped backslash before Q starts no quote.
+		expect(validateModelRegex("\\\\Q(")).not.toBeNull();
+		// A quoted \\k< is literal text, a bare one is still a named backreference.
+		expect(validatePatternAlias("regex:\\Q\\k<\\E(claude-.*)", "x.$1")).toBeNull();
+		expect(validateModelRegex("(?P<a>x)\\k<a>")).not.toBeNull();
+	});
+	it("ignores group syntax written inside a character class", () => {
+		expect(validatePatternAlias("regex:[(?P<m>)](claude-.*)", "global.anthropic.$m")).toContain("$m");
+		expect(validatePatternAlias("regex:[(?P<m>)](?P<n>claude-.*)", "x.$n")).toBeNull();
+		// In Go a leading "]" is literal, so the class runs on to the next one.
+		expect(validatePatternAlias("regex:[](?P<m>)](claude-.*)", "x.$m")).toContain("$m");
+		expect(validatePatternAlias("regex:[^](?P<m>)](claude-.*)", "x.$m")).toContain("$m");
+		// An escaped bracket opens no class, and a POSIX class closes where Go closes it.
+		expect(validatePatternAlias("regex:\\[(?P<m>claude-.*)", "x.$m")).toBeNull();
+		expect(validatePatternAlias("regex:[[:alpha:]](?P<m>claude-.*)", "x.$m")).toBeNull();
+	});
+	it("leaves syntax JavaScript cannot judge to the gateway", () => {
+		// Go reads \\123 as an octal escape and \\Q\\1\\E as literal text; neither is a backreference.
+		expect(validatePatternAlias("regex:\\123(claude-.*)", "x.$1")).toBeNull();
+		expect(validatePatternAlias("regex:\\Q\\1\\E(claude-.*)", "x.$1")).toBeNull();
+		expect(validatePatternAlias("regex:[(?=](claude-.*)", "x.$1")).toBeNull();
+		// A missing group is still flagged whenever the pattern can be read.
+		expect(validatePatternAlias("regex:\\123(claude-.*)", "x.$2")).toContain("$2");
+		expect(validatePatternAlias("regex:\\Q\\1\\E(claude-.*)", "x.$2")).toContain("$2");
+		// A pattern that does not parse here is not judged at all.
+		expect(validatePatternAlias("regex:(claude-", "x.$1")).toBeNull();
+	});
+	it("still rejects what is wrong in any regex dialect", () => {
+		expect(validatePatternAlias("regex:", "x")).not.toBeNull();
+		expect(validatePatternAlias("regex:   ", "x")).not.toBeNull();
+		expect(validatePatternAlias("regex:*", "x")).not.toBeNull();
+	});
+	it("still rejects flag groups Go does not accept", () => {
+		expect(validateModelRegex("(?)claude")).not.toBeNull();
+		expect(validateModelRegex("(?x)claude")).not.toBeNull();
+		expect(validateModelRegex("(?i")).not.toBeNull();
+	});
+	it("reads group references the way the gateway does", () => {
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.$1é")).toContain("$1é");
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.$é")).toContain("$é");
+		expect(validatePatternAlias("regex:(claude-.*)", "global.anthropic.${1}é")).toBeNull();
+		expect(validatePatternAlias("regex:(claude-.*)", "x.$01")).toContain("$01");
+		expect(validatePatternAlias("regex:(claude-.*)", "x.${01}")).toContain("$01");
+		expect(validatePatternAlias("regex:(?P<01>claude-.*)", "x.$01")).toBeNull();
+		expect(validatePatternAlias("regex:(claude-.*)", "x.$0")).toBeNull();
+		expect(templateGroupRefs("a.$1é/${m}")).toEqual(["1é", "m"]);
+		// Nine digits are a group number to Go, ten are a name.
+		expect(validatePatternAlias("regex:(?P<123456789>claude-.*)", "x.$123456789")).toContain("$123456789");
+		expect(validatePatternAlias("regex:(?P<1234567890>claude-.*)", "x.$1234567890")).toBeNull();
+	});
+	it("leaves an escaped parenthesis before a question mark alone", () => {
+		expect(validatePatternAlias("regex:\\(?i\\)(claude-.*)", "x.$1")).toBeNull();
+		expect(validatePatternAlias("regex:\\(?i\\)(claude-.*)", "x.$2")).toContain("$2");
+	});
+});
+
+describe("templateGroupRefs", () => {
+	it("parses refs like Go regexp.Expand", () => {
+		expect(templateGroupRefs("a.$1.${name}.$$.$x_y")).toEqual(["1", "name", "x_y"]);
 	});
 });

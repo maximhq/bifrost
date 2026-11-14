@@ -40,12 +40,12 @@ func (s *StarlarkCodeMode) serverInstructionsComment(ctx context.Context, client
 
 // jsonModuleShadowed reports whether a code mode server is bound as "json", which keeps the
 // sandbox's json module out of a script's reach (see runSandbox).
-func (s *StarlarkCodeMode) jsonModuleShadowed(toolsPerClient map[string][]schemas.ChatTool) bool {
+func (s *StarlarkCodeMode) jsonModuleShadowed(ctx context.Context, toolsPerClient map[string][]schemas.ChatTool) bool {
 	if len(toolsPerClient["json"]) == 0 {
 		return false
 	}
 	client := s.clientManager.GetClientByName("json")
-	return client != nil && client.ExecutionConfig != nil && client.ExecutionConfig.IsCodeModeClient
+	return client != nil && client.ExecutionConfig != nil && client.ExecutionConfig.CodeModeFor(ctx)
 }
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.

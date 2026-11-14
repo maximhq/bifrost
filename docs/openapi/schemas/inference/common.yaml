@@ -41,6 +41,8 @@ ModelProvider:
     - minimax
     - byteplus
     - baseten
+    - kimchi
+    - soniox
 
 Fallback:
   type: object

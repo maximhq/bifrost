@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
+	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.15.1
@@ -33,7 +34,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
 	github.com/a2aproject/a2a-go/v2 v2.8.0 // indirect
-	github.com/andybalholm/brotli v1.2.7 // indirect
+	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.42.0 // indirect
@@ -56,7 +57,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10 // indirect
 	github.com/aws/smithy-go v1.27.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

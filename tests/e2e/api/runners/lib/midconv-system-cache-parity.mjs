@@ -89,7 +89,7 @@ const ACK = "OK.";
 // The envelope convertBifrostSystemReminderToBedrockUserMessage wraps inlined reminders in.
 // The direct leg has to reproduce it byte-for-byte, since its whole job is to stand in for what
 // Bifrost should have emitted.
-const wrapReminder = (text) => `<system-reminder>\n${text}\n</system-reminder>\n`;
+const wrapReminder = (text) => `<system-reminder>\n${text}\n</system-reminder>`;
 
 // Per-cell cache isolation. Bedrock matches the longest cached prefix at or before each
 // breakpoint, account-wide - it has no notion of "these two harness rows are logically separate".
@@ -271,6 +271,264 @@ export function buildMidConvGrowingTurnItems() {
       ],
       request: legRequest("bifrost_messages", growBody(m.model, cellId, 2)),
     });
+  }
+  return items;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Trailing-reminder cells. Claude Code ends a turn with a role:"system" run of two blocks: a
+// <total_tokens> budget that carries the conversation breakpoint, then a one-line nudge AFTER it
+// that it drops on the next turn. Two converter defects made turn N+1 read only the system floor:
+//   - the envelope ended in "\n", and a cached block ending in whitespace stops matching once the
+//     content after it in the same turn changes (live: read 0 with the "\n", full prefix without);
+//   - a reminder holding both blocks in one message had its breakpoint moved onto the nudge, so
+//     the checkpoint covered text the next turn no longer carries.
+// /anthropic/v1/messages splits the run into one item per block, so it only sees the first; the
+// neutral routes keep one item and see both. Each route runs on Converse and, with a tool_search
+// tool forcing it, on InvokeModel. Turn 2 must read turn 1's prefix back, and raw_request must
+// show the breakpoint on the budget block with no trailing newline.
+//
+// The "after user reminder" shape puts the breakpoint on Claude Code's own <system-reminder> user
+// text instead, which ends in "\n", with the nudge inlined after it in the same user turn. Claude 5
+// models drop trailing whitespace from the text that ends a user turn and keep it mid-turn, so
+// unless Bifrost trims that block before the nudge joins it, turn 2 (nudge dropped) no longer
+// matches it. Claude 4 models keep the whitespace everywhere, so there the block must go out as
+// sent: trimmed, it stops matching its own history. Those cells run on Haiku 5.5, plus one Claude 4
+// cell that checks the block is left alone.
+//
+// The "kept in history" shape keeps every turn's nudge, so turn 2 sends turn 1's block unmarked and
+// still followed by a reminder. It must carry the same bytes it had when it held the breakpoint.
+// ---------------------------------------------------------------------------------------------
+const INVOKE_MODEL = "bedrock/global.anthropic.claude-sonnet-4-6";
+const TRAILER_CELLS = [
+  { key: "messages_converse", route: "messages", model: BIFROST_MODEL, invoke: false },
+  { key: "messages_invoke", route: "messages", model: INVOKE_MODEL, invoke: true },
+  { key: "responses_converse", route: "responses", model: BIFROST_MODEL, invoke: false },
+  { key: "responses_invoke", route: "responses", model: INVOKE_MODEL, invoke: true },
+  { key: "chat_converse", route: "chat", model: BIFROST_MODEL, invoke: false },
+];
+const TRAILER_NUDGE = "Keep working on the task and verify results before reporting.";
+const trailerBudget = (turn) => `<total_tokens>${15000000 - turn * 1000} tokens left</total_tokens>`;
+const trailerUserReminder = (turn) => `<system-reminder>\nTurn ${turn} context: the user opened src/app.ts.\n</system-reminder>\n`;
+const CLAUDE5_MODEL = "bedrock/us.anthropic.claude-haiku-5-5";
+const TRAILER_SHAPES = [
+  { key: "", label: "trailing reminder", anchor: trailerBudget, anchorName: "budget block", cells: TRAILER_CELLS },
+  {
+    key: "user_",
+    label: "trailing reminder after user reminder",
+    anchor: trailerUserReminder,
+    anchorName: "user reminder block",
+    cells: [
+      ...TRAILER_CELLS.map((c) => ({ ...c, model: CLAUDE5_MODEL })),
+      { key: "messages_converse_claude4", route: "messages", model: BIFROST_MODEL, invoke: false, keepsWhitespace: true },
+    ],
+  },
+  {
+    key: "kept_",
+    label: "trailing reminder kept in history",
+    anchor: trailerUserReminder,
+    anchorName: "user reminder block",
+    keepNudge: true,
+    cells: TRAILER_CELLS.map((c) => ({ ...c, model: CLAUDE5_MODEL })),
+  },
+];
+const TRAILER_PATH = {
+  messages: ["anthropic", "v1", "messages"],
+  responses: ["v1", "responses"],
+  chat: ["v1", "chat", "completions"],
+};
+
+// One conversation, three wire dialects. Only the newest anchor carries cache_control and only
+// the newest turn carries the nudge, as Claude Code sends them.
+function trailerBody(cell, shape, cellId, turns) {
+  const cc = { type: "ephemeral" };
+  const text = (t, cached) => {
+    const block = { type: cell.route === "responses" ? "input_text" : "text", text: t };
+    if (cached) block.cache_control = cc;
+    return block;
+  };
+  const assistant = (t) =>
+    cell.route === "responses"
+      ? { role: "assistant", content: [{ type: "output_text", text: t }] }
+      : { role: "assistant", content: [{ type: "text", text: t }] };
+
+  const messages = [
+    { role: "user", content: [text(`${SEG}\n\nDocument A. Reply ${ACK}`)] },
+    assistant(ACK),
+    { role: "user", content: [text(`${SEG}\n\nDocument B. Reply ${ACK}`)] },
+    assistant(ACK),
+  ];
+  for (let i = 1; i <= turns; i++) {
+    if (i > 1) messages.push(assistant("ACKNOWLEDGED"));
+    const last = i === turns;
+    if (shape.key) {
+      messages.push({ role: "user", content: [text(`Turn ${i}. ${QUESTION}`), text(trailerUserReminder(i), last)] });
+      if (last || shape.keepNudge) messages.push({ role: "system", content: [text(TRAILER_NUDGE)] });
+      continue;
+    }
+    messages.push({ role: "user", content: [text(`Turn ${i}. ${QUESTION}`)] });
+    messages.push({
+      role: "system",
+      content: last ? [text(trailerBudget(i), true), text(TRAILER_NUDGE)] : [text(trailerBudget(i))],
+    });
+  }
+
+  if (cell.route === "messages") {
+    const body = {
+      model: cell.model,
+      max_tokens: 32,
+      system: [
+        { type: "text", text: salt(cellId), cache_control: cc },
+        { type: "text", text: SEG, cache_control: cc },
+      ],
+      messages,
+    };
+    if (cell.invoke) {
+      body.tools = [
+        { type: "tool_search_tool_regex_20251119", name: "tool_search_tool_regex" },
+        {
+          name: "get_weather",
+          description: "Get the current weather for a city",
+          input_schema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+          defer_loading: true,
+        },
+      ];
+    }
+    return body;
+  }
+  const leading = [
+    { role: "system", content: [text(salt(cellId), true)] },
+    { role: "system", content: [text(SEG, true)] },
+  ];
+  if (cell.route === "chat") {
+    return { model: cell.model, max_tokens: 32, messages: [...leading, ...messages] };
+  }
+  const body = { model: cell.model, max_output_tokens: 32, input: [...leading, ...messages] };
+  if (cell.invoke) {
+    body.tools = [
+      { type: "tool_search", name: "tool_search_tool_regex" },
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        defer_loading: true,
+      },
+    ];
+  }
+  return body;
+}
+
+function trailerRequest(cell, body) {
+  const path = TRAILER_PATH[cell.route];
+  return {
+    method: "POST",
+    header: [
+      { key: "Content-Type", value: "application/json" },
+      { key: "x-bf-send-back-raw-request", value: "true" },
+    ],
+    body: { mode: "raw", raw: JSON.stringify(body, null, 2) },
+    url: { raw: `{{baseUrl}}/${path.join("/")}`, host: ["{{baseUrl}}"], path },
+  };
+}
+
+// Chat Completions folds cached reads and writes into prompt_tokens, so both come back out.
+const EXTRACT_CHAT = `
+var j = pm.response.json();
+var u = j.usage || {};
+var d = u.prompt_tokens_details || {};
+var read = d.cached_tokens || d.cached_read_tokens || 0;
+var write = d.cached_write_tokens || 0;
+var uncached = Math.max(0, (u.prompt_tokens || 0) - read - write);`.trim();
+
+const trailerExtract = (cell) =>
+  cell.route === "chat" ? EXTRACT_CHAT : EXTRACT[cell.route === "messages" ? "bifrost_messages" : "bifrost_responses"];
+
+// Locates the newest anchor block in raw_request and reports where its breakpoint sits. InvokeModel
+// carries cache_control on the block itself; Converse carries a cachePoint element right after it.
+function trailerRawCheck(cell, shape) {
+  return `
+var raw = (j.extra_fields || {}).raw_request;
+if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+raw = raw || {};
+var anchorText = ${J(shape.anchor(2).trimEnd())};
+var found = null, anchored = false;
+(raw.messages || []).forEach(function (m) {
+  var blocks = Array.isArray(m.content) ? m.content : [];
+  blocks.forEach(function (b, i) {
+    if (typeof b.text === 'string' && b.text.indexOf(anchorText) !== -1) {
+      found = b.text;
+      anchored = ${cell.invoke ? "!!b.cache_control" : "!!(blocks[i + 1] && blocks[i + 1].cachePoint)"};
+    }
+  });
+});`.trim();
+}
+
+function trailerWriteScript(cell, cellId) {
+  return `
+${trailerExtract(cell)}
+${HIT_RATE}
+pm.test(${J(`Cache anchor (trailing reminder) [${cellId}] round 1 (turn 1, write) succeeds`)}, function () {
+  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+});
+if (pm.response.code < 400) {
+  pm.collectionVariables.set(${J(`trailer_${cellId}_r1`)}, JSON.stringify({ read: read, write: write, uncached: uncached }));
+  console.log('[cache-anchor] ' + ${J(cellId)} + ' round1(turn 1) ' + detail);
+}`.trim();
+}
+
+function trailerReadScript(cell, shape, cellId) {
+  const label = cellId;
+  return `
+${trailerExtract(cell)}
+${HIT_RATE}
+${trailerRawCheck(cell, shape)}
+var r1 = JSON.parse(pm.collectionVariables.get(${J(`trailer_${cellId}_r1`)}) || 'null');
+pm.test(${J(`Cache anchor [${label}] round 1 (turn 1, write) ran first in this process`)}, function () {
+  pm.expect(r1, 'round 1 recorded no counters - the write round was filtered out, skipped, or ran in another newman process, so this read started cold').to.not.equal(null);
+});
+pm.test(${J(`Cache anchor [${label}] round 2 (turn 2, ${shape.keepNudge ? "reminder kept" : "trailer dropped"}) succeeds`)}, function () {
+  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+});
+if (pm.response.code < 400) {
+  console.log('CACHE_ANCHOR_REPORT', JSON.stringify({ cell: ${J(cellId)}, caseKey: ${J(cellId)}, caseLabel: ${J(`${shape.label} / ${cell.key}`)}, leg: ${J(`bifrost_${cell.route}`)}, legLabel: ${J(`Bifrost /${TRAILER_PATH[cell.route].join("/")}`)}, model: ${J(cell.model)}, read: read, write: write, uncached: uncached, hitRate: hitRate, expectHit: true, hitRateFloor: ${HIT_RATE_FLOOR} }));
+  pm.test(${J(`Cache anchor [${label}] egressed via ${cell.invoke ? "InvokeModel" : "Converse"}`)}, function () {
+    pm.expect(raw.anthropic_version !== undefined, 'raw_request keys: ' + Object.keys(raw).join(',') + ' - is x-bf-send-back-raw-request honoured on this route?').to.equal(${cell.invoke});
+  });
+  pm.test(${J(`Cache anchor [${label}] breakpoint stays on the ${shape.anchorName}, ${cell.keepsWhitespace ? "sent as the client wrote it" : "which has no trailing whitespace"}`)}, function () {
+    pm.expect(found, 'no raw_request block carries the turn-2 ${shape.anchorName}').to.be.a('string');
+${cell.keepsWhitespace
+  ? `    pm.expect(found, 'Claude 4 keeps trailing whitespace at the end of a user turn, so a trimmed block stops matching its own history next turn').to.equal(${J(shape.anchor(2))});`
+  : `    pm.expect(/\\s$/.test(found), 'the ${shape.anchorName} ends in whitespace: ' + JSON.stringify(found) + ' - a cached block ending in "\\\\n" stops matching once the trailer after it is dropped').to.equal(false);`}
+    pm.expect(anchored, 'the breakpoint is not on the ${shape.anchorName} - it moved onto the trailing nudge, which the next turn drops').to.equal(true);
+  });
+  pm.test(${J(`Cache anchor [${label}] turn 2 reads turn 1's prefix back`)}, function () {
+    pm.expect(hitRate, detail + ' - turn 1 wrote ' + ((r1 || {}).write || 0) + ' tokens; turn 2 ${shape.keepNudge ? "keeps the nudge in history" : "drops the trailing nudge"} and appends one exchange, so nearly all of turn 1 must come back as a read. ' +
+      'A read at the system floor means turn 1 checkpointed text turn 2 no longer renders the same way.').to.be.at.least(${HIT_RATE_FLOOR});
+  });
+}`.trim();
+}
+
+export function buildMidConvTrailingReminderItems() {
+  const items = [];
+  for (const shape of TRAILER_SHAPES) {
+    for (const cell of shape.cells) {
+      const cellId = `trailer_${shape.key}${cell.key}`;
+      const name = `Cache anchor (${shape.label}): ${cell.model} /${TRAILER_PATH[cell.route].join("/")} ${cell.invoke ? "InvokeModel" : "Converse"}`;
+      items.push({
+        name: `${name} round 1 (turn 1, write)`,
+        event: [{ listen: "test", script: { type: "text/javascript", exec: trailerWriteScript(cell, cellId).split("\n") } }],
+        request: trailerRequest(cell, trailerBody(cell, shape, cellId, 1)),
+      });
+      items.push({
+        name: `${name} round 2 (turn 2, ${shape.keepNudge ? "reminder kept" : "trailer dropped"}, read)`,
+        event: [
+          { listen: "prerequest", script: { type: "text/javascript", exec: [SETTLE] } },
+          { listen: "test", script: { type: "text/javascript", exec: trailerReadScript(cell, shape, cellId).split("\n") } },
+        ],
+        request: trailerRequest(cell, trailerBody(cell, shape, cellId, 2)),
+      });
+    }
   }
   return items;
 }
@@ -641,7 +899,11 @@ export function buildMidConvSystemCacheParityItems() {
 }
 
 export function buildMidConvSystemCacheParityFolder() {
-  const items = [...buildMidConvSystemCacheParityItems(), ...buildMidConvGrowingTurnItems()];
+  const items = [
+    ...buildMidConvSystemCacheParityItems(),
+    ...buildMidConvGrowingTurnItems(),
+    ...buildMidConvTrailingReminderItems(),
+  ];
   return {
     name: "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
     description:
@@ -651,6 +913,7 @@ export function buildMidConvSystemCacheParityFolder() {
       `Asserts read / (read + write + uncached) >= ${HIT_RATE_FLOOR} - deliberately NOT read / prompt_tokens, which counts a cache write as a miss and is the metric artifact that masked this defect in production dashboards. ` +
       `Model: bedrock/${BEDROCK_MODEL} (the cheapest Claude reproduces the dropped-breakpoint defect). ` +
       "Plus growing-turn cells for Claude and bedrock/us.openai.gpt-5.6-luna: turn 1 then turn 2 with a new trailing role:system <total_tokens> reminder, asserting raw_request.system did not grow and turn 1's prefix was read back (the field defect a byte-identical replay cannot see). " +
+      "Plus trailing-reminder cells on /anthropic/v1/messages, /v1/responses and /v1/chat/completions (Converse, and InvokeModel via a tool_search tool): turn 1 ends in a cached <total_tokens> budget followed by a nudge, turn 2 drops the nudge, asserting turn 1's prefix is read back and raw_request keeps the breakpoint on the budget block with no trailing newline. " +
       "Plus four single-leg guard rows: role:developer, reminder-placed-last, a ContentStr-form system message that must NOT grow a breakpoint, and two cache_control-bearing reminders against Bedrock's 4-checkpoint cap. " +
       "Per-cell results are emitted as CACHE_ANCHOR_REPORT console lines. Credentials reuse {{bedrockDirectAccessKeyId}}/{{bedrockDirectSecretAccessKey}}/{{bedrockDirectRegion}} (AWS_* via Infisical, same as the Round 33 token-parity matrix).",
     item: items,
