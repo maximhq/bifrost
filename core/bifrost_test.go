@@ -10268,13 +10268,17 @@ func TestRequestDeadlineCapsRetriesAndFallbacks(t *testing.T) {
 		// Hold applied by each upstream before it answers 503.
 		primaryHold, fallbackHold time.Duration
 		primaryRetries            int
+		// Upstream requests the case must have dispatched before the deadline, proving it
+		// reached the phase it describes rather than timing out before any dispatch.
+		minPrimaryHits, minFallbackHits int
 	}{
 		// The primary fails fast and keeps being retried until the deadline passes in a backoff.
-		{name: "deadline passes during retry backoff", primaryRetries: 1000},
+		// At least two primary attempts prove a retry, and so a backoff, happened.
+		{name: "deadline passes during retry backoff", primaryRetries: 1000, minPrimaryHits: 2},
 		// The primary attempt itself outlives the deadline.
-		{name: "deadline passes during a primary attempt", primaryHold: 5 * time.Second, primaryRetries: 1000},
+		{name: "deadline passes during a primary attempt", primaryHold: 5 * time.Second, primaryRetries: 1000, minPrimaryHits: 1},
 		// The primary fails at once, and the deadline passes while the first fallback is running.
-		{name: "deadline passes during a fallback", fallbackHold: 5 * time.Second},
+		{name: "deadline passes during a fallback", fallbackHold: 5 * time.Second, minPrimaryHits: 1, minFallbackHits: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			primary, primaryURL := newDeadlineUpstream(t, tc.primaryHold)
@@ -10322,6 +10326,12 @@ func TestRequestDeadlineCapsRetriesAndFallbacks(t *testing.T) {
 			}
 			if status != http.StatusGatewayTimeout || bifrostErr.Error == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestTimedOut {
 				t.Fatalf("error = %d %q, want a 504 %s", status, bifrostErr.GetErrorString(), schemas.RequestTimedOut)
+			}
+			if got := primary.hits("gpt-4o-mini"); got < tc.minPrimaryHits {
+				t.Errorf("primary reached its upstream %d time(s), want at least %d", got, tc.minPrimaryHits)
+			}
+			if got := fallback.hits("claude-3-5-haiku-20241022"); got < tc.minFallbackHits {
+				t.Errorf("first fallback reached its upstream %d time(s), want at least %d", got, tc.minFallbackHits)
 			}
 			if got := primary.hits("gpt-4o"); got != 0 {
 				t.Errorf("second fallback reached its upstream %d time(s) after the deadline", got)
