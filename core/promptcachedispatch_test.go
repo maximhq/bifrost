@@ -324,6 +324,35 @@ func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
 	}
 }
 
+// BenchmarkPrepareCountTokensRequest measures the preparation count tokens now shares with
+// dispatch: the common case (plain tools) and a request whose custom tool is rewritten.
+func BenchmarkPrepareCountTokensRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var provider schemas.Provider = stubProvider{key: schemas.Anthropic}
+	plain := responsesReqWithText("hello")
+	plain.Model = "claude-sonnet-4-6"
+	plain.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+	}}
+	custom := applyPatchResponsesRequest(schemas.Anthropic, "claude-sonnet-4-6")
+	prepare := func(r *schemas.BifrostResponsesRequest) {
+		_, _ = prepareResponsesRequest(ctx, nil, provider, schemas.Key{}, r)
+	}
+	b.Run("plain_tools", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(plain)
+		}
+	})
+	b.Run("custom_tool", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(custom)
+		}
+	})
+}
+
 // TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
 func TestPrepareResponsesClaudeLocalMCP(test *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
