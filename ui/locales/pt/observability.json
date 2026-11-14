@@ -1121,6 +1121,8 @@
 			"groupTracesBySessionHelp": "Quando habilitado, as requisições que compartilham o mesmo cabeçalho são agrupadas em um único traço, cada requisição aparecendo como um span de nível superior. Um pedido que transporta um rastreador W3C se mantém em seu próprio rastro distribuído e não é afetado.",
 			"disableRootSpanContent": "Desactivar o Conteúdo da Raíz",
 			"disableRootSpanContentHelp": "Quando habilitado, o conteúdo da mensagem de entrada/saída é retirado do intervalo root somente; o span de geração subjacente (llm.call) mantém o conteúdo completo.",
+			"applyTraceDimensionsToChildSpans": "Aplicar dimensões aos spans filhos",
+			"applyTraceDimensionsToChildSpansHelp": "Quando habilitado, as dimensões da solicitação (cabeçalhos x-bf-dim-*) são mescladas em cada span exportado, não apenas no span raiz, para que os spans filhos possam ser filtrados ou agrupados por dimensão. path, method e namespaces reservados como gen_ai.* são ignorados. Cada dimensão é adicionada a todos os spans, então valores de alta cardinalidade aumentam o custo de ingestão do coletor.",
 			"enableMetricsExport": "Activar a Exportação de Métricas",
 			"enableMetricsExportHelp": "Empurre métricas para um coletor para agregação adequada em implantações de cluster",
 			"overheadBreakdown": "Desagregação global",

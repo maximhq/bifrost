@@ -1115,6 +1115,8 @@
 			"groupTracesBySessionHelp": "有効にすると、同じ x-bf-session-id ヘッダーを共有するリクエストは単一のトレースにまとめられ、各リクエストはトップレベルの兄弟スパンとして表示されます。インバウンドの W3C traceparent を持つリクエストは独自の分散トレースに留まり、影響を受けません。",
 			"disableRootSpanContent": "ルートスパーンのコンテンツを無効にする",
 			"disableRootSpanContentHelp": "有効にすると、入力/出力メッセージの内容はルートスパンのみから削除されます。基礎となる生成（llm.call）スパンは完全な内容を保持します。",
+			"applyTraceDimensionsToChildSpans": "子スパンにディメンションを適用",
+			"applyTraceDimensionsToChildSpansHelp": "有効にすると、リクエストのディメンション（x-bf-dim-* ヘッダー）がルートスパンだけでなく、エクスポートされるすべてのスパンにマージされ、子スパンをディメンションでフィルターまたはグループ化できます。path、method、および gen_ai.* などの予約済み名前空間はスキップされます。各ディメンションはすべてのスパンに追加されるため、カーディナリティの高い値はコレクターの取り込みコストを増加させます。",
 			"enableMetricsExport": "メトリクスのエクスポートを有効にする",
 			"enableMetricsExportHelp": "クラスター展開で適切に集約するために、メトリクスをOTELコレクターにプッシュする",
 			"overheadBreakdown": "間接費の内訳",

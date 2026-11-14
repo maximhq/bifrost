@@ -1116,6 +1116,8 @@
 			"groupTracesBySessionHelp": "啟用後，共享同一 x-bf-session-id 請求頭的請求會合入同一條 trace，每個請求作為頂級兄弟 span。攜帶入站 W3C traceparent 的請求仍留在自己的分散式 trace 上，不受影響。",
 			"disableRootSpanContent": "停用根 Span 內容",
 			"disableRootSpanContentHelp": "啟用後，僅從根 span 丟棄輸入/輸出訊息內容；底層 generation（llm.call）span 仍保留完整內容。",
+			"applyTraceDimensionsToChildSpans": "將維度套用至子 span",
+			"applyTraceDimensionsToChildSpansHelp": "啟用後，請求維度（x-bf-dim-* 標頭）會合併到每個匯出的 span 上，而不只是根 span，因此可以依維度篩選或分組子 span。path、method 以及 gen_ai.* 等保留命名空間會被略過。每個維度都會加到每個 span 上，因此高基數的值會增加收集器的擷取成本。",
 			"enableMetricsExport": "啟用 Metrics 匯出",
 			"enableMetricsExportHelp": "將指標推送到 OTEL Collector，以便在叢集部署中正確聚合",
 			"overheadBreakdown": "開銷分解",

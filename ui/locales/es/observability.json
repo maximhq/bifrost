@@ -1121,6 +1121,8 @@
 			"groupTracesBySessionHelp": "Cuando está habilitado, las solicitudes que comparten el mismo encabezado x-bf-session-id se agrupan en un solo trazo, cada solicitud aparece como un tamiz de hermano de alto nivel. Una solicitud que lleva un marcador W3C inbound permanece en su propio trazo distribuido y no se ve afectada.",
 			"disableRootSpanContent": "Desactivar el contenido de la hoja de baño",
 			"disableRootSpanContentHelp": "Cuando está habilitado, el contenido de mensaje de entrada/salida se deja caer del lazo raíz solamente; el lapso de generación subyacente (llm.call) mantiene el contenido completo.",
+			"applyTraceDimensionsToChildSpans": "Aplicar dimensiones a los spans hijos",
+			"applyTraceDimensionsToChildSpansHelp": "Cuando está habilitado, las dimensiones de la solicitud (encabezados x-bf-dim-*) se combinan en cada span exportado, no solo en el span raíz, para que los spans hijos se puedan filtrar o agrupar por dimensión. Se omiten path, method y los espacios de nombres reservados como gen_ai.*. Cada dimensión se añade a todos los spans, por lo que los valores de alta cardinalidad aumentan el coste de ingesta del collector.",
 			"enableMetricsExport": "Exportación de parámetros de acceso",
 			"enableMetricsExportHelp": "Empuje métricas a un coleccionista OTEL para una correcta agregación en despliegues de grupos",
 			"overheadBreakdown": "Desglose de los gastos generales",

@@ -1121,6 +1121,8 @@
 			"groupTracesBySessionHelp": "Quando abilitata, le richieste che condividono la stessa intestazione x-bf-session-id vengono raggruppate in una singola traccia, con ciascuna richiesta che compare come span sibling di primo livello. Una richiesta con un traceparent W3C in ingresso rimane nella propria traccia distribuita e non viene influenzata.",
 			"disableRootSpanContent": "Disabilita il contenuto del root span",
 			"disableRootSpanContentHelp": "Quando abilitata, il contenuto dei messaggi di input/output viene escluso solo dal root span; lo span di generazione sottostante (llm.call) mantiene il contenuto completo.",
+			"applyTraceDimensionsToChildSpans": "Applica le dimensioni agli span figli",
+			"applyTraceDimensionsToChildSpansHelp": "Quando abilitata, le dimensioni della richiesta (header x-bf-dim-*) vengono unite in ogni span esportato, non solo nello span radice, così gli span figli possono essere filtrati o raggruppati per dimensione. path, method e i namespace riservati come gen_ai.* vengono ignorati. Ogni dimensione viene aggiunta a ogni span, quindi valori ad alta cardinalità aumentano il costo di ingestione del collector.",
 			"enableMetricsExport": "Abilita esportazione metriche",
 			"enableMetricsExportHelp": "Invia le metriche a un collector OTEL per una corretta aggregazione nei deployment in cluster",
 			"overheadBreakdown": "Suddivisione dell'overhead",
