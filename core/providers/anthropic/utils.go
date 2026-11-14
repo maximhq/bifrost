@@ -4929,6 +4929,127 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 	return json.RawMessage(result)
 }
 
+// strictModeUnsupportedSchemaKeywords are JSON Schema composition keywords
+// that OpenAI's strict structured outputs do not accept.
+var strictModeUnsupportedSchemaKeywords = []string{
+	"allOf", "oneOf", "not", "if", "then", "else",
+	"patternProperties", "dependentRequired", "dependentSchemas",
+}
+
+// strictModeSupportedStringFormats are the string "format" values OpenAI's
+// strict structured outputs accept. Anthropic accepts more (uri, for one), so
+// a schema using any other format keeps strict off.
+var strictModeSupportedStringFormats = map[string]struct{}{
+	"date-time": {}, "time": {}, "date": {}, "duration": {}, "email": {},
+	"hostname": {}, "ipv4": {}, "ipv6": {}, "uuid": {},
+}
+
+// isStrictCompatibleJSONSchema reports whether a decoded JSON schema can be
+// sent with strict=true to OpenAI's Responses API: every object schema must
+// set additionalProperties to false and list all of its properties in
+// required, no unsupported composition keyword may appear, and any string
+// format must be one OpenAI supports. Nested
+// properties, items, anyOf branches and $defs/definitions are checked too.
+func isStrictCompatibleJSONSchema(node interface{}) bool {
+	switch v := node.(type) {
+	case map[string]interface{}:
+		for _, keyword := range strictModeUnsupportedSchemaKeywords {
+			if _, ok := v[keyword]; ok {
+				return false
+			}
+		}
+		if format, ok := v["format"].(string); ok {
+			if _, supported := strictModeSupportedStringFormats[format]; !supported {
+				return false
+			}
+		}
+		properties, hasProperties := v["properties"].(map[string]interface{})
+		if schemaTypeIncludes(v["type"], "object") || hasProperties {
+			if additional, ok := v["additionalProperties"].(bool); !ok || additional {
+				return false
+			}
+			required := map[string]struct{}{}
+			if list, ok := v["required"].([]interface{}); ok {
+				for _, r := range list {
+					if name, ok := r.(string); ok {
+						required[name] = struct{}{}
+					}
+				}
+			}
+			for name, propertySchema := range properties {
+				if _, ok := required[name]; !ok {
+					return false
+				}
+				if !isStrictCompatibleJSONSchema(propertySchema) {
+					return false
+				}
+			}
+		}
+		for _, key := range []string{"items", "anyOf", "$defs", "definitions"} {
+			child, ok := v[key]
+			if !ok {
+				continue
+			}
+			if defs, isMap := child.(map[string]interface{}); isMap && (key == "$defs" || key == "definitions") {
+				for _, def := range defs {
+					if !isStrictCompatibleJSONSchema(def) {
+						return false
+					}
+				}
+				continue
+			}
+			if !isStrictCompatibleJSONSchema(child) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		for _, item := range v {
+			if !isStrictCompatibleJSONSchema(item) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
+}
+
+// schemaTypeIncludes reports whether a JSON schema "type" value names want,
+// either as the type string or as a member of a type array such as
+// ["object", "null"].
+func schemaTypeIncludes(schemaType interface{}, want string) bool {
+	switch t := schemaType.(type) {
+	case string:
+		return t == want
+	case []interface{}:
+		for _, member := range t {
+			if name, ok := member.(string); ok && name == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isStrictCompatibleRootSchema reports whether a decoded root schema can be
+// sent with strict=true. OpenAI's strict mode requires the root to be a plain
+// object schema (type "object", not a nullable union and not a root-level
+// anyOf); nested schemas are then checked by isStrictCompatibleJSONSchema.
+func isStrictCompatibleRootSchema(root interface{}) bool {
+	rootMap, ok := root.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if schemaType, ok := rootMap["type"].(string); !ok || schemaType != "object" {
+		return false
+	}
+	if _, hasAnyOf := rootMap["anyOf"]; hasAnyOf {
+		return false
+	}
+	return isStrictCompatibleJSONSchema(rootMap)
+}
+
 // convertAnthropicOutputFormatToResponsesTextConfig converts Anthropic's output_format structure
 // to OpenAI Responses API text config.
 //
@@ -4979,6 +5100,21 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		format.Name = schemas.Ptr(strings.TrimSpace(name))
 	} else {
 		format.Name = schemas.Ptr("output_format")
+	}
+
+	// Anthropic structured outputs accept optional properties, but OpenAI's
+	// Responses API treats an omitted text.format.strict as true and rejects
+	// any schema whose properties are not all listed in required. An explicit
+	// boolean strict on the incoming format is carried over as is. Otherwise
+	// strict is enabled only when the schema already satisfies OpenAI's strict
+	// mode rules, so schema adherence stays guaranteed where it can be, and is
+	// pinned to false for schemas with optional properties that strict mode
+	// would reject upstream.
+	if strict, ok := formatMap["strict"].(bool); ok {
+		format.Strict = schemas.Ptr(strict)
+	} else {
+		schemaValue := gjson.GetBytes(outputFormat, "schema")
+		format.Strict = schemas.Ptr(schemaValue.IsObject() && isStrictCompatibleRootSchema(schemaValue.Value()))
 	}
 
 	// Extract schema if present (an *OrderedMap after the ordered decode)

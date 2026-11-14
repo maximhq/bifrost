@@ -16573,6 +16573,109 @@
               }
             },
             {
+              "name": "Anthropic: output_config format json_schema with optional property → openai/gpt-4o-mini - #8159",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #8159: the reply must be the requested JSON object, not just any text.",
+                      "pm.test('output_config format returns a JSON object matching the schema - #8159', function () {",
+                      "  var ctx = '; response: ' + (pm.response.text() || '').slice(0, 500);",
+                      "  pm.expect(pm.response.code, 'expected HTTP 200, got ' + pm.response.code + ctx).to.equal(200);",
+                      "  var j;",
+                      "  try { j = pm.response.json(); } catch (e) { pm.expect.fail('response was not valid JSON: ' + e.message + ctx); return; }",
+                      "  var block = (j.content || []).filter(function (c) { return c.type === 'text'; })[0];",
+                      "  pm.expect(block, 'expected a text content block' + ctx).to.exist;",
+                      "  var obj;",
+                      "  try { obj = JSON.parse(block.text); } catch (e) { pm.expect.fail('text block was not valid JSON: ' + e.message + ctx); return; }",
+                      "  pm.expect(obj, 'expected a JSON object' + ctx).to.be.an('object');",
+                      "  pm.expect(obj.city, 'required city must be a string' + ctx).to.be.a('string');",
+                      "  if (obj.country !== undefined) { pm.expect(obj.country, 'optional country must be a string' + ctx).to.be.a('string'); }",
+                      "  Object.keys(obj).forEach(function (k) { pm.expect(['city', 'country'], 'unexpected key ' + k + ctx).to.include(k); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 400,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a city\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Anthropic: output_config format json_schema with a required uri property → openai/gpt-4o-mini (strict stays off) - #8159",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// #8159: uri is fine for anthropic but not for openai strict mode, so the gateway must send strict=false and the request must still succeed.",
+                      "pm.test('output_config format with a required uri property returns a JSON object matching the schema - #8159', function () {",
+                      "  var ctx = '; response: ' + (pm.response.text() || '').slice(0, 500);",
+                      "  pm.expect(pm.response.code, 'expected HTTP 200, got ' + pm.response.code + ctx).to.equal(200);",
+                      "  var j;",
+                      "  try { j = pm.response.json(); } catch (e) { pm.expect.fail('response was not valid JSON: ' + e.message + ctx); return; }",
+                      "  var block = (j.content || []).filter(function (c) { return c.type === 'text'; })[0];",
+                      "  pm.expect(block, 'expected a text content block' + ctx).to.exist;",
+                      "  var obj;",
+                      "  try { obj = JSON.parse(block.text); } catch (e) { pm.expect.fail('text block was not valid JSON: ' + e.message + ctx); return; }",
+                      "  pm.expect(obj, 'expected a JSON object' + ctx).to.be.an('object');",
+                      "  pm.expect(obj.homepage, 'required homepage must be a string' + ctx).to.be.a('string');",
+                      "  Object.keys(obj).forEach(function (k) { pm.expect(['homepage'], 'unexpected key ' + k + ctx).to.include(k); });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 400,\n  \"output_config\": {\"format\": {\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"homepage\":{\"type\":\"string\",\"format\":\"uri\"}},\"required\":[\"homepage\"],\"additionalProperties\":false}}},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Give the homepage url of a well known city\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Anthropic: tool defer_loading + advanced beta",
               "request": {
                 "method": "POST",

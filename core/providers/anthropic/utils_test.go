@@ -6327,3 +6327,118 @@ func TestParseJSONInput(t *testing.T) {
 		})
 	}
 }
+
+// An Anthropic output_config.format schema may leave properties optional, so
+// the converted Responses text.format must not inherit OpenAI's strict=true
+// default (which would require every property to be listed in required).
+func TestConvertAnthropicOutputFormatSetsStrictFalse(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+
+	cfg := convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	if cfg == nil || cfg.Format == nil {
+		t.Fatalf("expected a text config with a format, got %+v", cfg)
+	}
+	if cfg.Format.Strict == nil || *cfg.Format.Strict {
+		t.Fatalf("expected strict=false, got %v", cfg.Format.Strict)
+	}
+
+	out, err := json.Marshal(cfg.Format)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v, ok := m["strict"]; !ok || v != false {
+		t.Fatalf("expected serialized strict=false, got %s", out)
+	}
+}
+
+func TestConvertAnthropicOutputFormatNonSchemaUnchanged(t *testing.T) {
+	if cfg := convertAnthropicOutputFormatToResponsesTextConfig(json.RawMessage(`{"type":"text"}`)); cfg != nil {
+		t.Fatalf("expected nil for non json_schema format, got %+v", cfg)
+	}
+}
+
+func TestConvertAnthropicOutputFormatHonorsExplicitStrict(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","strict":true,"schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+	cfg := convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	if cfg == nil || cfg.Format == nil || cfg.Format.Strict == nil || !*cfg.Format.Strict {
+		t.Fatalf("expected explicit strict=true to be carried over, got %+v", cfg)
+	}
+}
+
+// A schema that already meets OpenAI's strict mode rules keeps the schema
+// adherence guarantee: strict is enabled when the client did not set it.
+func TestConvertAnthropicOutputFormatEnablesStrictForCompatibleSchema(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"object","properties":{"c":{"type":"integer"}},"required":["c"],"additionalProperties":false}},"required":["a","b"],"additionalProperties":false}}`)
+	cfg := convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	if cfg == nil || cfg.Format == nil || cfg.Format.Strict == nil || !*cfg.Format.Strict {
+		t.Fatalf("expected strict=true for a strict compatible schema, got %+v", cfg)
+	}
+}
+
+// OpenAI's strict mode rejects a root-level anyOf and needs an object root, so
+// a root union keeps strict off even when every branch is strict compatible.
+func TestConvertAnthropicOutputFormatRootUnionKeepsStrictOff(t *testing.T) {
+	cases := map[string]string{
+		"root anyOf":        `{"type":"json_schema","schema":{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false},{"type":"object","properties":{"b":{"type":"string"}},"required":["b"],"additionalProperties":false}]}}`,
+		"root without type": `{"type":"json_schema","schema":{"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`,
+		"root nullable":     `{"type":"json_schema","schema":{"type":["object","null"],"properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := convertAnthropicOutputFormatToResponsesTextConfig(json.RawMessage(raw))
+			if cfg == nil || cfg.Format == nil || cfg.Format.Strict == nil || *cfg.Format.Strict {
+				t.Fatalf("expected strict=false for %s, got %+v", name, cfg)
+			}
+		})
+	}
+}
+
+func TestIsStrictCompatibleJSONSchema(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema string
+		want   bool
+	}{
+		{"all required", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`, true},
+		{"optional property", `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}`, false},
+		{"additionalProperties missing", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`, false},
+		{"additionalProperties true", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":true}`, false},
+		{"nested optional", `{"type":"object","properties":{"o":{"type":"object","properties":{"x":{"type":"string"}},"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, false},
+		{"array item optional", `{"type":"object","properties":{"l":{"type":"array","items":{"type":"object","properties":{"x":{"type":"string"}},"additionalProperties":false}}},"required":["l"],"additionalProperties":false}`, false},
+		{"anyOf ok", `{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["v"],"additionalProperties":false}`, true},
+		{"oneOf unsupported", `{"type":"object","properties":{"v":{"oneOf":[{"type":"string"},{"type":"integer"}]}},"required":["v"],"additionalProperties":false}`, false},
+		{"defs optional", `{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,"$defs":{"P":{"type":"object","properties":{"x":{"type":"string"}},"additionalProperties":false}}}`, false},
+		{"nullable object without additionalProperties false", `{"type":"object","properties":{"o":{"type":["object","null"],"additionalProperties":true}},"required":["o"],"additionalProperties":false}`, false},
+		{"nullable object optional property", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, false},
+		{"nullable object ok", `{"type":"object","properties":{"o":{"type":["object","null"],"properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}},"required":["o"],"additionalProperties":false}`, true},
+		{"supported format", `{"type":"object","properties":{"d":{"type":"string","format":"date-time"}},"required":["d"],"additionalProperties":false}`, true},
+		{"unsupported format", `{"type":"object","properties":{"u":{"type":"string","format":"uri"}},"required":["u"],"additionalProperties":false}`, false},
+		{"unsupported format in array items", `{"type":"object","properties":{"l":{"type":"array","items":{"type":"string","format":"uri"}}},"required":["l"],"additionalProperties":false}`, false},
+		{"defs ok", `{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,"$defs":{"P":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false}}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var node interface{}
+			if err := json.Unmarshal([]byte(tc.schema), &node); err != nil {
+				t.Fatalf("bad schema: %v", err)
+			}
+			if got := isStrictCompatibleJSONSchema(node); got != tc.want {
+				t.Fatalf("isStrictCompatibleJSONSchema(%s) = %v, want %v", tc.schema, got, tc.want)
+			}
+		})
+	}
+}
+
+// BenchmarkConvertAnthropicOutputFormatToResponsesTextConfig measures the
+// output_config.format conversion on the request path.
+func BenchmarkConvertAnthropicOutputFormatToResponsesTextConfig(b *testing.B) {
+	raw := json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = convertAnthropicOutputFormatToResponsesTextConfig(raw)
+	}
+}
