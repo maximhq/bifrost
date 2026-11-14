@@ -313260,8 +313260,8 @@
       ]
     },
     {
-      "name": "323. Gemini audio URL input (gemini audio url) (PR #2200)",
-      "description": "A Gemini chat or Responses request may carry input_audio with a url instead of base64 data. Provider methods download it before conversion and send it to Gemini as inline data, so converters stay free of HTTP calls. Each case points at the WAV fixture in this repository through raw.githubusercontent.com, and requires a non-empty answer plus audio tokens in the usage block: a route that dropped the URL would send Gemini no audio, and the model can still answer with text saying so, so a text-only check would pass. Vertex Gemini shares ResolveChatAudioURLs and ResolveResponsesAudioURLs. Other providers do not read the url field, so they are not covered here.",
+      "name": "350. Gemini audio URL input (gemini audio url) (PR #2200)",
+      "description": "A Gemini chat or Responses request may carry input_audio with a url instead of base64 data. Provider methods download it before conversion and send it to Gemini as inline data, so converters stay free of HTTP calls. Each case points at the WAV fixture in this repository through raw.githubusercontent.com, and requires a non-empty answer plus audio tokens in the usage block: a route that dropped the URL would send Gemini no audio, and the model can still answer with text saying so, so a text-only check would pass. Vertex Gemini shares ResolveChatAudioURLs and ResolveResponsesAudioURLs. Downloads go through the shared SSRF-checked fetcher, so a URL on a non-public address is refused with a 400 naming the block before any upstream call. Other providers do not fetch the url: on the OpenAI wire it is dropped when data is present and forwarded otherwise, like file_url.",
       "item": [
         {
           "name": "gemini/gemini-2.5-flash chat completions input_audio url is downloaded and understood - #2200",
@@ -313355,6 +313355,51 @@
               "path": [
                 "v1",
                 "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash chat completions input_audio url on a metadata address is refused with 400 - #2200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a non-public audio URL is refused as a caller error, not a 500', function () {",
+                  "  pm.expect(pm.response.code, 'want 400: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('the error names the refused block', function () {",
+                  "  var message = ((pm.response.json() || {}).error || {}).message || '';",
+                  "  pm.expect(message, 'error body: ' + pm.response.text()).to.include('messages[0].content[1]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://169.254.169.254/latest/meta-data/audio.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           },

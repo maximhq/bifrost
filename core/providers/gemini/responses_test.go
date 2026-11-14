@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -2391,6 +2392,27 @@ func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
 	assert.Equal(t, "medium", *got.ThinkingLevel)
 }
 
+// stubAudioFetch replaces the audio fetcher for one test. FetchAndEncodeURL refuses the
+// loopback addresses httptest listens on by design, so tests stand in for the network here.
+// Not safe for t.Parallel.
+func stubAudioFetch(t *testing.T, fetch func(ctx context.Context, url string) (string, string, error)) {
+	t.Helper()
+	previous := fetchAudioURL
+	fetchAudioURL = fetch
+	t.Cleanup(func() { fetchAudioURL = previous })
+}
+
+// stubAudioFetchBytes serves payload for every URL and counts the fetches.
+func stubAudioFetchBytes(t *testing.T, payload []byte) *atomic.Int32 {
+	t.Helper()
+	var fetches atomic.Int32
+	stubAudioFetch(t, func(context.Context, string) (string, string, error) {
+		fetches.Add(1)
+		return "audio/wav", base64.StdEncoding.EncodeToString(payload), nil
+	})
+	return &fetches
+}
+
 func responsesAudioBlock(url string) schemas.ResponsesMessageContentBlock {
 	return schemas.ResponsesMessageContentBlock{
 		Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
@@ -2412,16 +2434,10 @@ func responsesAudioURLRequest(url string) *schemas.BifrostResponsesRequest {
 }
 
 func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
-	restore := providerUtils.AllowPrivateAudioURLsForTest()
-	defer restore()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("audio-bytes"))
-	}))
-	defer server.Close()
+	fetches := stubAudioFetchBytes(t, []byte("audio-bytes"))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	request := responsesAudioURLRequest(server.URL)
+	request := responsesAudioURLRequest("https://audio.example/sample.wav")
 	resolved, err := ResolveResponsesAudioURLs(ctx, request)
 	require.NoError(t, err)
 	require.Empty(t, request.Input[0].Content.ContentBlocks[0].Audio.Data, "the original request must survive for a retry")
@@ -2433,21 +2449,17 @@ func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
 	require.NotNil(t, result.Contents[0].Parts[0].InlineData)
 	require.Equal(t, "audio/wav", result.Contents[0].Parts[0].InlineData.MIMEType)
 	require.NotEmpty(t, result.Contents[0].Parts[0].InlineData.Data)
+	require.Equal(t, int32(1), fetches.Load())
 }
 
 // TestAudioURLRequestsNormalizeUpstreamModel drives each provider route with a
 // google/ model name and URL-only audio. The audio resolvers return a copy, so the
 // converter's model normalization must still reach the request the URL is built from.
 func TestAudioURLRequestsNormalizeUpstreamModel(t *testing.T) {
-	restore := providerUtils.AllowPrivateAudioURLsForTest()
-	defer restore()
+	stubAudioFetchBytes(t, []byte("audio-bytes"))
 
 	var upstreamPath atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte("audio-bytes"))
-			return
-		}
 		upstreamPath.Store(r.URL.Path)
 		body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`
 		if strings.Contains(r.URL.Path, ":streamGenerateContent") {
@@ -2464,7 +2476,7 @@ func TestAudioURLRequestsNormalizeUpstreamModel(t *testing.T) {
 		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
 	}, testNoopLogger{})
 	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
-	audioURL := server.URL + "/sample.wav"
+	audioURL := "https://audio.example/sample.wav"
 	noopPostHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return result, err
 	}
@@ -2583,16 +2595,10 @@ func TestToGeminiResponsesRequestRejectsUnresolvedAudioURL(t *testing.T) {
 }
 
 func TestResolveResponsesAudioURLsResolvesToolOutputBlocks(t *testing.T) {
-	restore := providerUtils.AllowPrivateAudioURLsForTest()
-	defer restore()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("audio-bytes"))
-	}))
-	defer server.Close()
+	stubAudioFetchBytes(t, []byte("audio-bytes"))
 
 	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
-	block := responsesAudioBlock(server.URL)
+	block := responsesAudioBlock("https://audio.example/tool.wav")
 	request := &schemas.BifrostResponsesRequest{
 		Model: "gemini-3-pro",
 		Input: []schemas.ResponsesMessage{
@@ -2618,15 +2624,12 @@ func TestResolveResponsesAudioURLsResolvesToolOutputBlocks(t *testing.T) {
 }
 
 func TestResolveResponsesAudioURLsSkipsToolOutputForModelsWithoutToolMedia(t *testing.T) {
-	restore := providerUtils.AllowPrivateAudioURLsForTest()
-	defer restore()
-
 	var downloads atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	stubAudioFetch(t, func(context.Context, string) (string, string, error) {
 		downloads.Add(1)
-		w.WriteHeader(http.StatusGone)
-	}))
-	defer server.Close()
+		return "", "", errors.New("gone")
+	})
+	const deadURL = "https://audio.example/gone.wav"
 
 	callID := "call_1"
 	functionName := "fetch_audio"
@@ -2634,7 +2637,7 @@ func TestResolveResponsesAudioURLsSkipsToolOutputForModelsWithoutToolMedia(t *te
 	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
 	role := schemas.ResponsesInputMessageRoleUser
 	prompt := "transcribe it"
-	block := responsesAudioBlock(server.URL)
+	block := responsesAudioBlock(deadURL)
 	request := &schemas.BifrostResponsesRequest{
 		Provider: schemas.Gemini,
 		Model:    "gemini-2.5-flash",
@@ -2672,7 +2675,7 @@ func TestResolveResponsesAudioURLsSkipsToolOutputForModelsWithoutToolMedia(t *te
 	payload, err := sonic.Marshal(result)
 	require.NoError(t, err)
 	require.Contains(t, string(payload), "audio")
-	require.NotContains(t, string(payload), server.URL)
+	require.NotContains(t, string(payload), deadURL)
 	require.NotContains(t, string(payload), `"inlineData"`)
 	require.NotContains(t, string(payload), `"inline_data"`)
 }
@@ -2684,6 +2687,8 @@ func TestResolveResponsesAudioURLsStillFailsOnMessageAudioWithoutToolMedia(t *te
 	request.Model = "gemini-2.5-flash"
 	_, err := ResolveResponsesAudioURLs(ctx, request)
 	require.Error(t, err)
+	require.True(t, providerUtils.IsInvalidRequestError(err), "a refused audio URL is the caller's input and must map to a 400: %v", err)
+	require.Contains(t, err.Error(), "input[0].content[0]")
 }
 
 func TestResolveResponsesAudioURLsLeavesTextRequestUntouched(t *testing.T) {

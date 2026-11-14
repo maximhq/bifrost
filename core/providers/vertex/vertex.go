@@ -3086,14 +3086,15 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			resolvedRequests := append([]schemas.BatchRequestItem(nil), request.Requests...)
 			// Claude-on-Vertex instances do not carry input_audio, so only the Gemini family resolves.
 			if !schemas.IsAnthropicModelFamily(ctx, *request.Model) {
+				audioBudget := gemini.NewAudioURLBudget()
 				for i, item := range resolvedRequests {
 					body := item.Body
 					if body == nil {
 						body = item.Params
 					}
-					resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body)
+					resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body, audioBudget)
 					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", i, item.CustomID), err)
+						return nil, gemini.BatchAudioURLError(i, item.CustomID, err)
 					}
 					resolvedRequests[i].Body = resolvedBody
 				}

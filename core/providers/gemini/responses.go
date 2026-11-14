@@ -4868,7 +4868,7 @@ func ResolveResponsesAudioURLs(ctx *schemas.BifrostContext, request *schemas.Bif
 	// The same model the converter gates tool output media on.
 	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, request.Model))
 	toolOutputMedia := schemas.ResolveModelCaps(request.Provider, capModel).SupportsMultimodalToolOutput(isGemini3Plus(capModel))
-	input, err := resolveResponsesAudioURLs(ctx, request.Input, toolOutputMedia)
+	input, err := resolveResponsesAudioURLs(ctx, request.Input, toolOutputMedia, NewAudioURLBudget())
 	if err != nil {
 		return nil, err
 	}
@@ -4901,15 +4901,16 @@ func responsesMessageHasAudioURL(msg schemas.ResponsesMessage) bool {
 }
 
 // resolveResponsesAudioURLs returns a copy of messages with URL-only audio
-// downloaded into Data. Only the messages that change are copied, and nested
-// content is copied before it changes, so a retry still sees the original request.
-// Tool output blocks are only resolved when toolOutputMedia is true.
-func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, toolOutputMedia bool) ([]schemas.ResponsesMessage, error) {
+// downloaded into Data, charging every download to budget. Only the messages that
+// change are copied, and nested content is copied before it changes, so a retry
+// still sees the original request. Tool output blocks are only resolved when
+// toolOutputMedia is true.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage, toolOutputMedia bool, budget *AudioURLBudget) ([]schemas.ResponsesMessage, error) {
 	resolved := slices.Clone(messages)
 	for msgIndex := range resolved {
 		msg := &resolved[msgIndex]
 		if msg.Content != nil && responsesBlocksHaveAudioURL(msg.Content.ContentBlocks) {
-			blocks, err := resolveResponsesAudioBlocks(ctx, msg.Content.ContentBlocks)
+			blocks, err := resolveResponsesAudioBlocks(ctx, msg.Content.ContentBlocks, budget, fmt.Sprintf("input[%d].content", msgIndex))
 			if err != nil {
 				return nil, err
 			}
@@ -4918,7 +4919,7 @@ func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.Responses
 			msg.Content = &content
 		}
 		if outputBlocks := responsesToolOutputBlocks(msg); toolOutputMedia && responsesBlocksHaveAudioURL(outputBlocks) {
-			blocks, err := resolveResponsesAudioBlocks(ctx, outputBlocks)
+			blocks, err := resolveResponsesAudioBlocks(ctx, outputBlocks, budget, fmt.Sprintf("input[%d].output", msgIndex))
 			if err != nil {
 				return nil, err
 			}
@@ -4932,7 +4933,7 @@ func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.Responses
 	return resolved, nil
 }
 
-func resolveResponsesAudioBlocks(ctx context.Context, blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, error) {
+func resolveResponsesAudioBlocks(ctx context.Context, blocks []schemas.ResponsesMessageContentBlock, budget *AudioURLBudget, location string) ([]schemas.ResponsesMessageContentBlock, error) {
 	resolved := slices.Clone(blocks)
 	for blockIndex := range resolved {
 		block := &resolved[blockIndex]
@@ -4940,9 +4941,9 @@ func resolveResponsesAudioBlocks(ctx context.Context, blocks []schemas.Responses
 			continue
 		}
 		audio := *block.Audio
-		audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+		audioData, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("%s[%d]", location, blockIndex))
 		if err != nil {
-			return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			return nil, err
 		}
 		audio.Data = audioData
 		block.Audio = &audio

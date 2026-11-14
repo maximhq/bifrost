@@ -2304,6 +2304,46 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
+// fetchAudioURL downloads URL-only audio. It is providerUtils.FetchAndEncodeURL (SSRF-checked
+// at dial time, provider-proxy aware, 25 MiB per URL, errors redact the URL); a variable only so
+// tests can stand in for the network, since that fetcher refuses the loopback httptest uses.
+var fetchAudioURL = providerUtils.FetchAndEncodeURL
+
+// maxAudioURLBytesPerRequest bounds the decoded audio one request, or one inline batch, may pull
+// from URLs. Gemini caps an inline request at 20 MB anyway, so a larger total can never succeed
+// upstream; refusing early keeps a request with many URL blocks from holding N x 25 MiB.
+const maxAudioURLBytesPerRequest = 25 * 1024 * 1024
+
+// AudioURLBudget tracks how much URL-fetched audio a request has used. Create one per request
+// (or one per inline batch, shared by every item) with NewAudioURLBudget. Not safe for
+// concurrent use; resolution is sequential.
+type AudioURLBudget struct{ remaining int }
+
+// NewAudioURLBudget returns a budget of maxAudioURLBytesPerRequest decoded bytes.
+func NewAudioURLBudget() *AudioURLBudget {
+	return &AudioURLBudget{remaining: maxAudioURLBytesPerRequest}
+}
+
+// fetch downloads audioURL as base64 and charges its decoded size to the budget. location names
+// the block (e.g. "messages[2].content[1]") in errors. A fetch failure or an exhausted budget is
+// the caller's input, so it is returned as InvalidRequestErrorf and reaches the client as a 400;
+// a cancelled or expired request context is returned as-is.
+func (b *AudioURLBudget) fetch(ctx context.Context, audioURL, location string) (string, error) {
+	_, encoded, err := fetchAudioURL(ctx, audioURL)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		return "", providerUtils.InvalidRequestErrorf("failed to download audio for %s: %v", location, err)
+	}
+	size := base64.StdEncoding.DecodedLen(len(encoded))
+	if size > b.remaining {
+		return "", providerUtils.InvalidRequestErrorf("audio downloaded from URLs exceeds the %d-byte total allowed per request (at %s)", maxAudioURLBytesPerRequest, location)
+	}
+	b.remaining -= size
+	return encoded, nil
+}
+
 // ResolveChatAudioURLs returns request with URL-only input audio replaced by inline
 // data. It does network I/O, so provider methods call it before
 // ToGeminiChatCompletionRequest and the converter stays pure. A request with no
@@ -2312,7 +2352,7 @@ func ResolveChatAudioURLs(ctx context.Context, request *schemas.BifrostChatReque
 	if request == nil || !slices.ContainsFunc(request.Input, chatMessageHasAudioURL) {
 		return request, nil
 	}
-	input, err := resolveAudioURLs(ctx, request.Input)
+	input, err := resolveAudioURLs(ctx, request.Input, NewAudioURLBudget())
 	if err != nil {
 		return nil, err
 	}
@@ -2341,10 +2381,11 @@ func chatMessageHasAudioURL(msg schemas.ChatMessage) bool {
 	return false
 }
 
-// resolveAudioURLs returns messages with URL-only input audio downloaded into Data.
-// It returns messages itself when nothing needs downloading, and otherwise copies
-// only the messages that change, so a retry still sees the original request.
-func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
+// resolveAudioURLs returns messages with URL-only input audio downloaded into Data,
+// charging every download to budget. It returns messages itself when nothing needs
+// downloading, and otherwise copies only the messages that change, so a retry still
+// sees the original request.
+func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage, budget *AudioURLBudget) ([]schemas.ChatMessage, error) {
 	if !slices.ContainsFunc(messages, chatMessageHasAudioURL) {
 		return messages, nil
 	}
@@ -2366,9 +2407,9 @@ func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]sc
 			}
 
 			audio := *block.InputAudio
-			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			audioData, err := budget.fetch(ctx, audio.URL, fmt.Sprintf("messages[%d].content[%d]", msgIndex, blockIndex))
 			if err != nil {
-				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+				return nil, err
 			}
 			audio.Data = audioData
 			block.InputAudio = &audio

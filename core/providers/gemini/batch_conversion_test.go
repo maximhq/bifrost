@@ -1,7 +1,6 @@
 package gemini_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -102,7 +101,7 @@ func TestToGeminiBatchGenerateContentRequest(t *testing.T) {
 			},
 		}
 
-		_, err := gemini.ToGeminiBatchGenerateContentRequestWithContext(context.Background(), body)
+		_, err := gemini.ToGeminiBatchGenerateContentRequest(body)
 		require.ErrorContains(t, err, "failed to resolve audio URLs")
 	})
 

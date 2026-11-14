@@ -2743,10 +2743,11 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		} else {
 			// Inline requests: convert Bifrost requests to Gemini format
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
+			audioBudget := NewAudioURLBudget()
 			for i, bifrostItem := range request.Requests {
-				resolvedBody, err := ResolveBatchAudioURLs(ctx, bifrostItem.Body)
+				resolvedBody, err := ResolveBatchAudioURLs(ctx, bifrostItem.Body, audioBudget)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", i, bifrostItem.CustomID), err)
+					return nil, BatchAudioURLError(i, bifrostItem.CustomID, err)
 				}
 				geminiReq, err := ToGeminiBatchGenerateContentRequest(resolvedBody)
 				if err != nil {
