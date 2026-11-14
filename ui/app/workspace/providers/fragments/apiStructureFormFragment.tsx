@@ -40,6 +40,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 			is_key_less: provider.custom_provider_config?.is_key_less ?? false,
 			does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
 			wait_for_usage: provider.custom_provider_config?.wait_for_usage ?? false,
+			boolean_schema_nodes_unsupported: provider.custom_provider_config?.boolean_schema_nodes_unsupported ?? false,
 			allowed_requests: {
 				text_completion: provider.custom_provider_config?.allowed_requests?.text_completion ?? true,
 				text_completion_stream: provider.custom_provider_config?.allowed_requests?.text_completion_stream ?? true,
@@ -86,6 +87,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					is_key_less: data.is_key_less ?? false,
 					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
 					wait_for_usage: data.wait_for_usage ?? false,
+					boolean_schema_nodes_unsupported: data.boolean_schema_nodes_unsupported ?? false,
 					allowed_requests: data.allowed_requests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				},
@@ -218,6 +220,32 @@ export function ApiStructureFormFragment({ provider }: Props) {
 											checked={field.value}
 											onCheckedChange={field.onChange}
 											disabled={!hasUpdateProviderAccess}
+										/>
+									</div>
+								</FormItem>
+							)}
+						/>
+					)}
+					{provider.custom_provider_config?.base_provider_type === "openai" && (
+						<FormField
+							control={form.control}
+							name="boolean_schema_nodes_unsupported"
+							render={({ field }) => (
+								<FormItem>
+									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="boolean-schema-nodes-unsupported" className="text-sm font-medium">
+												{t("providers.custom.rewriteBooleanToolSchemas")}
+											</label>
+											<p className="text-muted-foreground text-sm">{t("providers.custom.rewriteBooleanToolSchemasHelp")}</p>
+										</div>
+										<Switch
+											id="boolean-schema-nodes-unsupported"
+											size="md"
+											checked={field.value ?? false}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="custom-provider-boolean-schema-nodes-unsupported-switch"
 										/>
 									</div>
 								</FormItem>
