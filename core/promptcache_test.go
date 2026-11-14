@@ -106,3 +106,48 @@ func TestPromptCacheResponsesRequest_NoBaseProviderOnContextUsesPassedKey(t *tes
 	require.NotNil(t, out)
 	require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
 }
+
+func resolvedAliasCtx(modelID, modelName string) *schemas.BifrostContext {
+	return schemas.NewBifrostContextWithValue(
+		context.Background(),
+		schemas.NoDeadline,
+		schemas.BifrostContextKeyResolvedAlias,
+		&schemas.ResolvedAlias{
+			Key: "claude-sonnet-4-5",
+			Config: &schemas.AliasConfig{
+				ModelID:   modelID,
+				ModelName: schemas.Ptr(modelName),
+			},
+		},
+	)
+}
+
+// Application-inference-profile aliases rewrite r.Model to an opaque profile ID, so
+// capability gating must check ResolveCanonicalModel(ctx, r.Model) rather than r.Model.
+func TestPromptCacheChatRequest_OpaqueAliasResolvesCanonicalModel(t *testing.T) {
+	ctx := resolvedAliasCtx("abc123xyz456", "anthropic.claude-sonnet-4-5-20250929-v1:0")
+	req := chatReqFor("abc123xyz456", "stable prefix")
+
+	out := promptCacheChatRequest(ctx, autoInjectingConfig(), schemas.Bedrock, req)
+
+	require.NotNil(t, out)
+	require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl,
+		"a Bedrock alias with an opaque model_id and Claude model_name must receive injected breakpoints")
+	assert.Equal(t, schemas.CacheControlTypeEphemeral, out.Input[0].Content.ContentBlocks[0].CacheControl.Type)
+	assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl,
+		"the shared request must not be written through")
+}
+
+func TestPromptCacheResponsesRequest_OpaqueAliasResolvesCanonicalModel(t *testing.T) {
+	ctx := resolvedAliasCtx("abc123xyz456", "anthropic.claude-sonnet-4-5-20250929-v1:0")
+	req := responsesReqFor("abc123xyz456", "stable prefix")
+
+	out := promptCacheResponsesRequest(ctx, autoInjectingConfig(), schemas.Bedrock, req)
+
+	require.NotNil(t, out)
+	require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl,
+		"a Bedrock alias with an opaque model_id and Claude model_name must receive injected breakpoints")
+	assert.Equal(t, schemas.CacheControlTypeEphemeral, out.Input[0].Content.ContentBlocks[0].CacheControl.Type)
+	assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl,
+		"the shared request must not be written through")
+}

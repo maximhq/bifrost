@@ -8955,7 +8955,7 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 		return r
 	}
 	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
-	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), r.Model) {
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)) {
 		return r
 	}
 	cp := *r
@@ -9193,7 +9193,7 @@ func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.Provide
 		return r
 	}
 	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
-	if !providerUtils.PromptCacheInjectionEnabled(promptCache, baseProvider, r.Model) {
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, baseProvider, schemas.ResolveCanonicalModel(ctx, r.Model)) {
 		return r
 	}
 	cp := *r
