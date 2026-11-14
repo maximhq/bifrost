@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -850,6 +851,148 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 		}
 	}
 	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
+}
+
+// TestOpenAIChatMessageRoleValidation verifies OpenAI-compatible chat and Azure deployment routes
+// reject empty roles with indexed JSON errors before conversion, in both stream modes.
+func TestOpenAIChatMessageRoleValidation(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/langchain", "/litellm", "/pydanticai", "/azure"} {
+		for _, path := range []string{"/v1/chat/completions", "/chat/completions", "/openai/deployments/{deploymentPath:*}"} {
+			// The Azure resource mount only exposes deployment-style paths.
+			if prefix == "/azure" && !strings.Contains(path, "deployments") {
+				continue
+			}
+			route := findOpenAIRoute(prefix, prefix+path)
+			require.NotNil(t, route)
+			for _, stream := range []bool{false, true} {
+				for _, tc := range []struct {
+					name, messages string
+					index          int
+				}{
+					{"missing", `[{"content":"hello"}]`, 0},
+					{"empty", `[{"role":"","content":"hello"}]`, 0},
+					{"null", `[{"role":null,"content":"hello"}]`, 0},
+					{"null message", `[null]`, 0},
+					{"later message", `[{"role":"user","content":"hello"},{"content":"world"}]`, 1},
+				} {
+					t.Run(fmt.Sprintf("%s%s/%s/stream=%t", prefix, path, tc.name, stream), func(t *testing.T) {
+						var ctx fasthttp.RequestCtx
+						body := []byte(fmt.Sprintf(`{"model":"ollama/gemma4:e4b","stream":%t,"messages":%s}`, stream, tc.messages))
+						req := &openai.OpenAIChatRequest{}
+						require.NoError(t, parseJSONRequestBody(body, req))
+						bctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+						handled := false
+						var err error
+						if route.ShortCircuit != nil {
+							handled, err = route.ShortCircuit(&ctx, bctx, req)
+						}
+						require.NoError(t, err)
+						require.True(t, handled, "invalid message must be refused before conversion/provider dispatch")
+						require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+						require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+						require.Equal(t, "invalid_request_error", gjson.GetBytes(ctx.Response.Body(), "error.type").String())
+						require.Equal(t, fmt.Sprintf("messages[%d].role is required", tc.index), gjson.GetBytes(ctx.Response.Body(), "error.message").String())
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestOpenAIChatMessageRoleValidationPreservesOtherRequests verifies role validation leaves
+// nonempty roles, unparsed large payloads, and non-chat requests untouched.
+func TestOpenAIChatMessageRoleValidationPreservesOtherRequests(t *testing.T) {
+	route := findOpenAIRoute("/openai", "/openai/openai/deployments/{deploymentPath:*}")
+	for _, tc := range []struct {
+		name  string
+		req   any
+		large bool
+	}{
+		{"nonempty roles", &openai.OpenAIChatRequest{Messages: []openai.OpenAIMessage{{Role: "system"}, {Role: "developer"}, {Role: "user"}, {Role: "assistant"}, {Role: "tool"}, {Role: "custom"}}}, false},
+		{"large payload without parsed messages", &openai.OpenAIChatRequest{}, true},
+		{"responses", &openai.OpenAIResponsesRequest{}, false},
+		{"embeddings", &openai.OpenAIEmbeddingRequest{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			bctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			if tc.large {
+				bctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+			}
+			if route.ShortCircuit != nil {
+				handled, err := route.ShortCircuit(&ctx, bctx, tc.req)
+				require.NoError(t, err)
+				require.False(t, handled)
+			}
+			require.Empty(t, ctx.Response.Body())
+		})
+	}
+}
+
+// BenchmarkOpenAIChatRequestPreparation measures decoding, pre-callback, role validation, and
+// conversion costs for increasing message counts, after warming the decoder and converter.
+func BenchmarkOpenAIChatRequestPreparation(b *testing.B) {
+	route := findOpenAIRoute("/openai", "/openai/v1/chat/completions")
+	for _, count := range []int{1, 16, 128} {
+		b.Run(fmt.Sprintf("messages=%d", count), func(b *testing.B) {
+			message := `{"role":"user","content":"hello"}`
+			body := []byte(`{"model":"openai/gpt-4o-mini","messages":[` + strings.TrimSuffix(strings.Repeat(message+",", count), ",") + `]}`)
+			var ctx fasthttp.RequestCtx
+			bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			// Warm Sonic's decoder before measuring request processing.
+			warm := &openai.OpenAIChatRequest{}
+			if err := parseJSONRequestBody(body, warm); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := route.RequestConverter(bctx, warm); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				req := &openai.OpenAIChatRequest{}
+				if err := parseJSONRequestBody(body, req); err != nil {
+					b.Fatal(err)
+				}
+				if err := route.PreCallback(&ctx, bctx, req); err != nil {
+					b.Fatal(err)
+				}
+				if route.ShortCircuit != nil {
+					handled, err := route.ShortCircuit(&ctx, bctx, req)
+					if err != nil || handled {
+						b.Fatalf("handled=%t err=%v", handled, err)
+					}
+				}
+				if _, err := route.RequestConverter(bctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkOpenAIChatMessageRoleValidation isolates the validation hook cost for already-decoded
+// valid requests as message counts grow, reporting time and allocations.
+func BenchmarkOpenAIChatMessageRoleValidation(b *testing.B) {
+	route := findOpenAIRoute("/openai", "/openai/v1/chat/completions")
+	for _, count := range []int{1, 16, 128} {
+		b.Run(fmt.Sprintf("messages=%d", count), func(b *testing.B) {
+			req := &openai.OpenAIChatRequest{Messages: make([]openai.OpenAIMessage, count)}
+			for i := range req.Messages {
+				req.Messages[i].Role = schemas.ChatMessageRoleUser
+			}
+			var ctx fasthttp.RequestCtx
+			bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				if route.ShortCircuit != nil {
+					handled, err := route.ShortCircuit(&ctx, bctx, req)
+					if err != nil || handled {
+						b.Fatalf("handled=%t err=%v", handled, err)
+					}
+				}
+			}
+		})
+	}
 }
 
 // assertRawPaths checks that each path in redacted carries the replacement instead of the literal, and that each path
