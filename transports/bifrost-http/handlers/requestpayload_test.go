@@ -922,6 +922,32 @@ func TestPrepareDecisionRequestPromptCache(t *testing.T) {
 	assert.NotContains(t, req.ExtraParams, "prompt_cache_options")
 }
 
+// TestPrepareChatAndResponsesRequestPromptCacheOptions pins that /v1/chat/completions
+// and /v1/responses read prompt_cache_options only into the typed field. Left in
+// ExtraParams, passthrough re-sends it to every fallback provider, which Vertex and
+// Anthropic reject as an unknown field.
+func TestPrepareChatAndResponsesRequestPromptCacheOptions(t *testing.T) {
+	want := &schemas.PromptCacheOptions{Mode: new("implicit")}
+
+	t.Run("chat", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetBodyString(`{"model":"openai/gpt-5.6-luna","messages":[{"role":"user","content":"hi"}],"prompt_cache_options":{"mode":"implicit"}}`)
+		_, req, err := prepareChatCompletionRequest(ctx, nil)
+		require.NoError(t, err)
+		assert.Equal(t, want, req.Params.PromptCacheOptions)
+		assert.NotContains(t, req.Params.ExtraParams, "prompt_cache_options")
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetBodyString(`{"model":"openai/gpt-5.6-luna","input":"hi","prompt_cache_options":{"mode":"implicit"}}`)
+		_, req, err := prepareResponsesRequest(ctx, nil)
+		require.NoError(t, err)
+		assert.Equal(t, want, req.Params.PromptCacheOptions)
+		assert.NotContains(t, req.Params.ExtraParams, "prompt_cache_options")
+	})
+}
+
 // TestPrepareDecisionMapFormRequestNormalizes pins that a map-form body
 // becomes the normalized request: questions sorted by name and named after
 // their keys, noul as predicate keeping its criteria, options as choices, and
