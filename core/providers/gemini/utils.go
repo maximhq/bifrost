@@ -2336,12 +2336,22 @@ func (b *AudioURLBudget) fetch(ctx context.Context, audioURL, location string) (
 		}
 		return "", providerUtils.InvalidRequestErrorf("failed to download audio for %s: %v", location, err)
 	}
-	size := base64.StdEncoding.DecodedLen(len(encoded))
+	size := decodedBase64Len(encoded)
 	if size > b.remaining {
 		return "", providerUtils.InvalidRequestErrorf("audio downloaded from URLs exceeds the %d-byte total allowed per request (at %s)", maxAudioURLBytesPerRequest, location)
 	}
 	b.remaining -= size
 	return encoded, nil
+}
+
+// decodedBase64Len is the exact decoded size of padded standard base64. DecodedLen alone counts
+// the trailing padding as data, so it can overstate the size by up to two bytes.
+func decodedBase64Len(encoded string) int {
+	size := base64.StdEncoding.DecodedLen(len(encoded))
+	for i := len(encoded) - 1; i >= 0 && i >= len(encoded)-2 && encoded[i] == '='; i-- {
+		size--
+	}
+	return size
 }
 
 // ResolveChatAudioURLs returns request with URL-only input audio replaced by inline

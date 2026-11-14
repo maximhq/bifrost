@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +221,26 @@ func TestResolveBatchAudioURLsResolvesIntoCopy(t *testing.T) {
 
 	_, err = ToGeminiBatchGenerateContentRequest(body)
 	require.ErrorIs(t, err, errUnresolvedAudioURL, "the caller's body must not be mutated")
+}
+
+// A 10 MiB clip encodes with two padding characters; the budget charges its decoded size, so
+// 10 MiB plus 15 MiB fits the 25 MiB budget exactly.
+func TestAudioURLBudgetChargesDecodedSizeNotPadding(t *testing.T) {
+	payloads := map[string][]byte{
+		"https://audio.example/a.wav": make([]byte, 10*1024*1024),
+		"https://audio.example/b.wav": make([]byte, 15*1024*1024),
+	}
+	stubAudioFetch(t, func(_ context.Context, url string) (string, string, error) {
+		return "audio/wav", base64.StdEncoding.EncodeToString(payloads[url]), nil
+	})
+	require.True(t, strings.HasSuffix(base64.StdEncoding.EncodeToString(payloads["https://audio.example/a.wav"]), "=="))
+
+	budget := NewAudioURLBudget()
+	_, err := ResolveBatchAudioURLs(context.Background(), batchAudioBody("https://audio.example/a.wav"), budget)
+	require.NoError(t, err)
+	_, err = ResolveBatchAudioURLs(context.Background(), batchAudioBody("https://audio.example/b.wav"), budget)
+	require.NoError(t, err, "10 MiB + 15 MiB equals the budget and must be accepted")
+	require.Zero(t, budget.remaining)
 }
 
 // One budget is shared by every item of an inline batch, so a batch cannot hold N x 25 MiB.
