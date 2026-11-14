@@ -326870,6 +326870,1368 @@
           ]
         }
       ]
+    },
+    {
+      "name": "342. GenAI function calls without ids get unique call ids (genai missing call ids)",
+      "description": "GenAI clients such as the Antigravity CLI send functionCall and functionResponse parts without an id. convertGeminiContentsToResponsesMessages (core/providers/gemini/responses.go) used the function name as the call id, so two read_file calls in one turn shared call_id \"read_file\": Anthropic rejected the request with 400 \"tool_use ids must be unique\" and other providers could not tell the outputs apart. Bifrost now mints a deterministic bf_call_N per id-less call and pairs each id-less functionResponse with the oldest unanswered call of the same name. Each case replays two parallel same-name calls without ids and asserts the model answer contains both tool outputs (a trailing text part tells the model to answer from them, since small models otherwise re-call the tool even with correct ids). 342.1 and 342.2 are red before the fix (400); 342.3 pins the OpenAI egress; 342.4 pins the round trip back to Gemini, where the function name is recovered from the minted call id. 342.5 pins a later review fix: calls c1 and c2 carry client ids, and an id-less response comes before an explicit c1 response. The id-less response used to take c1 (the oldest pending call), so c1 got two results and c2 none, and Anthropic answered 400; it now skips calls that some response answers explicitly and pairs with c2.",
+      "item": [
+        {
+          "name": "342.1 anthropic claude-haiku-4-5 /genai generateContent parallel same-name calls without ids (genai missing call ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Read a.txt and b.txt, then reply with both file contents verbatim.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"a.txt\"\n            }\n          }\n        },\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"b.txt\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: FIRST_FILE_AAA\"\n            }\n          }\n        },\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: SECOND_FILE_BBB\"\n            }\n          }\n        },\n        {\n          \"text\": \"Both files have been read above. Answer now from these results; do not call read_file again.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"read_file\",\n          \"description\": \"Read a file\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"Path\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"Path\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var ps = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];",
+                  "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('no duplicate tool call id rejection', function () { pm.expect(pm.response.text()).to.not.include('ids must be unique'); });",
+                  "pm.test('answer uses both functionResponses', function () { pm.expect(text, pm.response.text()).to.include('FIRST_FILE_AAA'); pm.expect(text, pm.response.text()).to.include('SECOND_FILE_BBB'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.2 anthropic claude-haiku-4-5 /genai streamGenerateContent parallel same-name calls without ids (genai missing call ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Read a.txt and b.txt, then reply with both file contents verbatim.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"a.txt\"\n            }\n          }\n        },\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"b.txt\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: FIRST_FILE_AAA\"\n            }\n          }\n        },\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: SECOND_FILE_BBB\"\n            }\n          }\n        },\n        {\n          \"text\": \"Both files have been read above. Answer now from these results; do not call read_file again.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"read_file\",\n          \"description\": \"Read a file\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"Path\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"Path\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var raw = pm.response.text();",
+                  "var text = '';",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var d; try { d = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  var ps = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];",
+                  "  ps.forEach(function (p) { text += p.text || ''; });",
+                  "});",
+                  "pm.test('no error event in stream', function () { pm.expect(raw).to.not.include('ids must be unique'); pm.expect(raw).to.not.include('\"error\"'); });",
+                  "pm.test('streamed answer uses both functionResponses', function () { pm.expect(text, raw).to.include('FIRST_FILE_AAA'); pm.expect(text, raw).to.include('SECOND_FILE_BBB'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.3 openai gpt-4o-mini /genai generateContent parallel same-name calls without ids (genai missing call ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Read a.txt and b.txt, then reply with both file contents verbatim.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"a.txt\"\n            }\n          }\n        },\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"b.txt\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: FIRST_FILE_AAA\"\n            }\n          }\n        },\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: SECOND_FILE_BBB\"\n            }\n          }\n        },\n        {\n          \"text\": \"Both files have been read above. Answer now from these results; do not call read_file again.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"read_file\",\n          \"description\": \"Read a file\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"Path\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"Path\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/openai/gpt-4o-mini:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "openai",
+                "gpt-4o-mini:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var ps = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];",
+                  "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('no duplicate tool call id rejection', function () { pm.expect(pm.response.text()).to.not.include('ids must be unique'); });",
+                  "pm.test('answer uses both functionResponses', function () { pm.expect(text, pm.response.text()).to.include('FIRST_FILE_AAA'); pm.expect(text, pm.response.text()).to.include('SECOND_FILE_BBB'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.4 gemini gemini-2.5-flash /genai generateContent parallel same-name calls without ids (genai missing call ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Read a.txt and b.txt, then reply with both file contents verbatim.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"a.txt\"\n            }\n          }\n        },\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"b.txt\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: FIRST_FILE_AAA\"\n            }\n          }\n        },\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: SECOND_FILE_BBB\"\n            }\n          }\n        },\n        {\n          \"text\": \"Both files have been read above. Answer now from these results; do not call read_file again.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"read_file\",\n          \"description\": \"Read a file\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"Path\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"Path\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var ps = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];",
+                  "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('no duplicate tool call id rejection', function () { pm.expect(pm.response.text()).to.not.include('ids must be unique'); });",
+                  "pm.test('answer uses both functionResponses', function () { pm.expect(text, pm.response.text()).to.include('FIRST_FILE_AAA'); pm.expect(text, pm.response.text()).to.include('SECOND_FILE_BBB'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "342.5 anthropic claude-haiku-4-5 /genai generateContent id-less response before an explicit one (genai missing call ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Read a.txt and b.txt, then reply with both file contents verbatim.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"a.txt\"\n            },\n            \"id\": \"c1\"\n          }\n        },\n        {\n          \"functionCall\": {\n            \"name\": \"read_file\",\n            \"args\": {\n              \"Path\": \"b.txt\"\n            },\n            \"id\": \"c2\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: SECOND_FILE_BBB\"\n            }\n          }\n        },\n        {\n          \"functionResponse\": {\n            \"id\": \"c1\",\n            \"name\": \"read_file\",\n            \"response\": {\n              \"output\": \"1: FIRST_FILE_AAA\"\n            }\n          }\n        },\n        {\n          \"text\": \"Both files have been read above. Answer now from these results; do not call read_file again.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"read_file\",\n          \"description\": \"Read a file\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"Path\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"Path\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var ps = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];",
+                  "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('every call has exactly one result', function () { pm.expect(pm.response.text()).to.not.include('without `tool_result`'); pm.expect(pm.response.text()).to.not.include('tool_use_id'); });",
+                  "pm.test('answer uses both functionResponses', function () { pm.expect(text, pm.response.text()).to.include('FIRST_FILE_AAA'); pm.expect(text, pm.response.text()).to.include('SECOND_FILE_BBB'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "343. Bedrock structured output sent natively as Converse outputConfig (bedrock native structured output) (#8158 / #8058)",
+      "description": "Bedrock Converse used to carry every json_schema response_format / text.format / output_config.format as a synthetic bf_so_* tool. The tool does not constrain decoding, is pinned with a forced tool_choice that hides the caller's own tools, is left unpinned (so the model may answer in prose) under thinking and on models that reject a forced choice, and its streamed input deltas broke the /anthropic/v1/messages block lifecycle (#8158). Models whose datasheet row (supports_native_structured_output, with a name fallback of Claude 4.5+ and GPT-5+) allows it now get Converse's native outputConfig.textFormat; Claude schemas are closed (additionalProperties:false on every object) and a schema Claude would reject (minimum, oneOf, open objects, recursion, too many optional or union properties) keeps the synthetic tool. Cases read the outbound Converse body through x-bf-send-back-raw-request and assert the reply on chat, chat streaming, /v1/responses and the /anthropic/v1/messages stream.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions response_format sent as outputConfig (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Converse receives the schema natively in outputConfig.textFormat, not as a bf_so_* tool', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var wire = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(wire, 'no raw_request echoed: ' + body).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig.textFormat.type).to.equal('json_schema');",
+                  "  var schema = JSON.parse(wire.outputConfig.textFormat.structure.jsonSchema.schema);",
+                  "  pm.expect(schema.properties.city, 'schema lost its properties: ' + JSON.stringify(schema)).to.be.an('object');",
+                  "  var tools = (wire.toolConfig && wire.toolConfig.tools) || [];",
+                  "  tools.forEach(function (t) { pm.expect((t.toolSpec || {}).name || '', 'synthetic tool still sent: ' + JSON.stringify(wire.toolConfig)).to.not.match(/^bf_so_/); });",
+                  "});",
+                  "pm.test('reply is schema JSON with finish_reason stop', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, body).to.equal('stop');",
+                  "  pm.expect(choice.message.tool_calls || [], 'no tool calls expected: ' + body).to.be.empty;",
+                  "  var out = JSON.parse(choice.message.content);",
+                  "  pm.expect(out.city, body).to.be.a('string');",
+                  "  pm.expect(out.meta.country, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream response_format streams schema JSON as content (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('content deltas concatenate to schema JSON and the stream ends with stop', function () {",
+                  "  var text = '', finish = null, toolCalls = false;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var ev = JSON.parse(data);",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.delta && c.delta.tool_calls) { toolCalls = true; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(toolCalls, 'unexpected tool_calls: ' + body).to.equal(false);",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "  var out = JSON.parse(text);",
+                  "  pm.expect(out.city, text).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-5 /anthropic/v1/messages stream output_config.format arrives as one text block (bedrock native structured output) - #8158",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('one text block: content_block_start, deltas on its index, content_block_stop, in that order', function () {",
+                  "  var state = {}, textIndex = null, textStarts = 0, text = '', stopReason = null;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data) { return; }",
+                  "    var ev = JSON.parse(data);",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      if (ev.content_block.type === 'text') { textStarts++; textIndex = ev.index; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {",
+                  "      pm.expect(state[ev.index], 'text delta outside an open block ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'delta on another index: ' + body).to.equal(textIndex);",
+                  "      text += ev.delta.text;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      state[ev.index] = 'closed';",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "  });",
+                  "  pm.expect(textStarts, 'text content_block_start events: ' + body).to.equal(1);",
+                  "  pm.expect(state[textIndex], 'text block never closed: ' + body).to.equal('closed');",
+                  "  pm.expect(stopReason, body).to.equal('end_turn');",
+                  "  var out = JSON.parse(text);",
+                  "  pm.expect(out.city, body).to.be.a('string');",
+                  "  pm.expect(out.country, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-5\",\"max_tokens\":500,\"stream\":true,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\",\"country\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"Capital of Australia and its country?\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-6-luna /v1/chat/completions response_format sent as outputConfig (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Converse receives the schema natively in outputConfig.textFormat, not as a bf_so_* tool', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var wire = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(wire, 'no raw_request echoed: ' + body).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig.textFormat.type).to.equal('json_schema');",
+                  "  var schema = JSON.parse(wire.outputConfig.textFormat.structure.jsonSchema.schema);",
+                  "  pm.expect(schema.properties.city, 'schema lost its properties: ' + JSON.stringify(schema)).to.be.an('object');",
+                  "  var tools = (wire.toolConfig && wire.toolConfig.tools) || [];",
+                  "  tools.forEach(function (t) { pm.expect((t.toolSpec || {}).name || '', 'synthetic tool still sent: ' + JSON.stringify(wire.toolConfig)).to.not.match(/^bf_so_/); });",
+                  "});",
+                  "pm.test('reply is schema JSON with finish_reason stop', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, body).to.equal('stop');",
+                  "  pm.expect(choice.message.tool_calls || [], 'no tool calls expected: ' + body).to.be.empty;",
+                  "  var out = JSON.parse(choice.message.content);",
+                  "  pm.expect(out.city, body).to.be.a('string');",
+                  "  pm.expect(out.meta.country, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-6-luna\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-opus-4-7 /v1/responses text.format sent as outputConfig (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Converse receives the schema natively in outputConfig.textFormat, not as a bf_so_* tool', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var wire = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(wire, 'no raw_request echoed: ' + body).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig.textFormat.type).to.equal('json_schema');",
+                  "  var schema = JSON.parse(wire.outputConfig.textFormat.structure.jsonSchema.schema);",
+                  "  pm.expect(schema.properties.city, 'schema lost its properties: ' + JSON.stringify(schema)).to.be.an('object');",
+                  "  var tools = (wire.toolConfig && wire.toolConfig.tools) || [];",
+                  "  tools.forEach(function (t) { pm.expect((t.toolSpec || {}).name || '', 'synthetic tool still sent: ' + JSON.stringify(wire.toolConfig)).to.not.match(/^bf_so_/); });",
+                  "});",
+                  "pm.test('output message text is schema JSON', function () {",
+                  "  var out = pm.response.json().output || [];",
+                  "  var text = '';",
+                  "  out.forEach(function (o) { if (o.type === 'message') { (o.content || []).forEach(function (c) { text += c.text || ''; }); } });",
+                  "  pm.expect(out.filter(function (o) { return o.type === 'function_call'; }), body).to.be.empty;",
+                  "  var parsed = JSON.parse(text);",
+                  "  pm.expect(parsed.city, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-opus-4-7\",\"max_output_tokens\":400,\"input\":\"What is the capital of Australia? Answer in the schema.\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions response_format leaves the caller's tool callable (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('Converse receives the schema natively in outputConfig.textFormat, not as a bf_so_* tool', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var wire = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  pm.expect(wire, 'no raw_request echoed: ' + body).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig.textFormat.type).to.equal('json_schema');",
+                  "  var schema = JSON.parse(wire.outputConfig.textFormat.structure.jsonSchema.schema);",
+                  "  pm.expect(schema.properties.city, 'schema lost its properties: ' + JSON.stringify(schema)).to.be.an('object');",
+                  "  var tools = (wire.toolConfig && wire.toolConfig.tools) || [];",
+                  "  tools.forEach(function (t) { pm.expect((t.toolSpec || {}).name || '', 'synthetic tool still sent: ' + JSON.stringify(wire.toolConfig)).to.not.match(/^bf_so_/); });",
+                  "});",
+                  "pm.test('the caller tool stays callable: sent with an unpinned choice, and a tool call keeps finish_reason tool_calls', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  var names = ((wire.toolConfig && wire.toolConfig.tools) || []).map(function (t) { return (t.toolSpec || {}).name; });",
+                  "  pm.expect(names, 'caller tool not sent: ' + JSON.stringify(wire.toolConfig)).to.include('lookup_capital');",
+                  "  pm.expect(wire.toolConfig.toolChoice, 'tool_choice auto must reach Converse as its default (no toolChoice), not {any} or {tool}: ' + JSON.stringify(wire.toolConfig)).to.be.undefined;",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = choice.message.tool_calls || [];",
+                  "  if (calls.length) {",
+                  "    pm.expect(choice.finish_reason, body).to.equal('tool_calls');",
+                  "    pm.expect(calls[0].function.name, body).to.equal('lookup_capital');",
+                  "  } else {",
+                  "    pm.expect(choice.finish_reason, body).to.equal('stop');",
+                  "    pm.expect(JSON.parse(choice.message.content).city, body).to.be.a('string');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_capital\",\"description\":\"Look up a country's capital. Always call this first.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}}}],\"tool_choice\":\"auto\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions response_format with a forced caller tool_choice returns that tool call (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('the schema goes natively and the forced caller tool_choice reaches Converse', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.an('object');",
+                  "  pm.expect(((wire.toolConfig.toolChoice || {}).tool || {}).name, JSON.stringify(wire.toolConfig)).to.equal('lookup_capital');",
+                  "});",
+                  "pm.test('the forced caller tool is called and finish_reason is tool_calls', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, body).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls[0].function.name, body).to.equal('lookup_capital');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"meta\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}},\"required\":[\"city\",\"meta\"]}}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_capital\",\"description\":\"Look up a country's capital. Always call this first.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"lookup_capital\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions schema Claude rejects natively keeps the synthetic tool (bedrock native structured output) - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('a minimum constraint Claude cannot enforce falls back to the bf_so_* tool instead of a 400', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.undefined;",
+                  "  pm.expect(wire.toolConfig.tools[0].toolSpec.name, JSON.stringify(wire.toolConfig)).to.match(/^bf_so_/);",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, body).to.equal('stop');",
+                  "  var out = JSON.parse(choice.message.content);",
+                  "  pm.expect(out.population, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":400,\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of Australia and its population? Answer in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"population\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"city\",\"population\"],\"additionalProperties\":false}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.meta.llama9-does-not-exist-v1:0 -> bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions stream fallback after a synthetic-tool attempt still streams schema JSON (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('the native fallback streams the schema JSON (a stale bf_so_* name used to drop every text delta)', function () {",
+                  "  var text = '', finish = null;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var ev = JSON.parse(data);",
+                  "    (ev.choices || []).forEach(function (c) {",
+                  "      if (c.delta && c.delta.content) { text += c.delta.content; }",
+                  "      if (c.finish_reason) { finish = c.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text, 'empty stream: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).city, text).to.be.a('string');",
+                  "  pm.expect(finish, body).to.equal('stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.meta.llama9-does-not-exist-v1:0\",\"fallbacks\":[\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\"],\"max_tokens\":400,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Capital of Australia and its country?\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\",\"country\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.meta.llama9-does-not-exist-v1:0 -> bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/responses stream fallback after a synthetic-tool attempt still streams schema JSON (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('the stream completes and its output_text deltas concatenate to the schema JSON', function () {",
+                  "  var text = '', completed = null;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    var ev = JSON.parse(data);",
+                  "    pm.expect(['error', 'response.failed', 'response.incomplete'], 'stream ended badly: ' + body).to.not.include(ev.type);",
+                  "    if (ev.type === 'response.output_text.delta') { text += ev.delta; }",
+                  "    if (ev.type === 'response.completed') { completed = ev.response; }",
+                  "  });",
+                  "  pm.expect(completed, 'no response.completed: ' + body).to.be.an('object');",
+                  "  pm.expect(completed.status, body).to.equal('completed');",
+                  "  pm.expect(text, 'no output_text: ' + body).to.not.equal('');",
+                  "  pm.expect(JSON.parse(text).city, text).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.meta.llama9-does-not-exist-v1:0\",\"fallbacks\":[\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\"],\"max_output_tokens\":400,\"stream\":true,\"input\":\"Capital of Australia and its country?\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\",\"country\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions synthetic-tool path with a caller tool call keeps finish_reason tool_calls (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('a caller tool call keeps finish_reason tool_calls so the agent loop runs it', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = (choice.message.tool_calls || []).map(function (t) { return t.function.name; });",
+                  "  pm.expect(calls, body).to.include('lookup_capital');",
+                  "  pm.expect(choice.finish_reason, body).to.equal('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":3000,\"reasoning_effort\":\"low\",\"messages\":[{\"role\":\"user\",\"content\":\"Use lookup_capital for Australia before answering.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_capital\",\"description\":\"Look up the capital of a country. Always use this.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"country\":{\"type\":\"string\"}},\"required\":[\"country\"]}}}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"population\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"city\",\"population\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-6-luna /v1/chat/completions schema name with spaces and dots still returns schema JSON (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('content is the schema JSON (an unsanitized name used to return 200 with no text)', function () {",
+                  "  var content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(content, 'no content: ' + body).to.be.a('string');",
+                  "  pm.expect(JSON.parse(content).city, content).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-6-luna\",\"max_tokens\":2000,\"messages\":[{\"role\":\"user\",\"content\":\"Capital of Australia and its country?\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"my schema.v1\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"}},\"required\":[\"city\",\"country\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions 11 optional properties keeps the synthetic tool instead of a grammar timeout (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('11 optional properties route to the bf_so_* tool, not outputConfig (Sonnet 4.5 answers them natively with Grammar compilation timed out)', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  pm.expect(wire, 'no raw_request echoed: ' + body).to.be.an('object');",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.undefined;",
+                  "  pm.expect(wire.toolConfig.tools[0].toolSpec.name, JSON.stringify(wire.toolConfig)).to.match(/^bf_so_/);",
+                  "  var content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(JSON.parse(content).name, content).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":1500,\"messages\":[{\"role\":\"user\",\"content\":\"Describe Canberra briefly in the schema.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"city_profile\",\"schema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"},\"state\":{\"type\":\"string\"},\"population_note\":{\"type\":\"string\"},\"climate\":{\"type\":\"string\"},\"landmark\":{\"type\":\"string\"},\"founded\":{\"type\":\"string\"},\"river\":{\"type\":\"string\"},\"lake\":{\"type\":\"string\"},\"university\":{\"type\":\"string\"},\"airport\":{\"type\":\"string\"},\"nickname\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-6-luna /v1/chat/completions response_format is enforced, not a hint (text.format.strict) (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('the schema pattern holds even when the prompt asks to break it', function () {",
+                  "  var content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(JSON.parse(content).code, content).to.match(/^[A-Z]{3}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-6-luna\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"Give the code as the lowercase phrase 'hello world 123'.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"code\",\"schema\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"string\",\"pattern\":\"^[A-Z]{3}$\"}},\"required\":[\"code\"],\"additionalProperties\":false}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions allOf beside properties keeps the synthetic tool instead of a 400 (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('content is the schema JSON (Claude answers this shape natively with Cannot merge allOf schemas)', function () {",
+                  "  var content = pm.response.json().choices[0].message.content;",
+                  "  var out = JSON.parse(content).pair;",
+                  "  pm.expect(out.a, content).to.be.a('string');",
+                  "  pm.expect(out.b, content).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":800,\"messages\":[{\"role\":\"user\",\"content\":\"Set pair.a to 'x' and pair.b to 'y'.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"pair\",\"schema\":{\"type\":\"object\",\"properties\":{\"pair\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"},\"b\":{\"type\":\"string\"}},\"required\":[\"a\",\"b\"],\"allOf\":[{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}}]}},\"required\":[\"pair\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions ref into properties keeps the synthetic tool instead of a 400 (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('content is the schema JSON (Claude answers refs outside $defs with References must be defined under $defs)', function () {",
+                  "  var content = pm.response.json().choices[0].message.content;",
+                  "  pm.expect(JSON.parse(content).node.name, content).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":800,\"messages\":[{\"role\":\"user\",\"content\":\"A chain of two nodes named a then b.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"chain\",\"schema\":{\"type\":\"object\",\"properties\":{\"node\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"next\":{\"anyOf\":[{\"$ref\":\"#/properties/node\"},{\"type\":\"null\"}]}},\"required\":[\"name\",\"next\"]}},\"required\":[\"node\"]}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-6-luna /v1/chat/completions external $ref keeps the synthetic tool instead of a native error (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "var wire = pm.response.json().extra_fields.raw_request;",
+                  "wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "pm.test('an external $ref routes to the bf_so_* tool (natively GPT with strict answers it with a 500)', function () {",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.undefined;",
+                  "  pm.expect(wire.toolConfig.tools[0].toolSpec.name, JSON.stringify(wire.toolConfig)).to.match(/^bf_so_/);",
+                  "  pm.expect(JSON.parse(pm.response.json().choices[0].message.content).city, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-6-luna\",\"max_tokens\":800,\"messages\":[{\"role\":\"user\",\"content\":\"Capital of Australia; set a to 'x'.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"ext\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"$ref\":\"https://example.com/schema.json\"},\"city\":{\"type\":\"string\"}},\"required\":[\"a\",\"city\"],\"additionalProperties\":false}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.openai.gpt-6-luna /v1/chat/completions caller additionalModelRequestFields text keeps text.format.strict (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "var wire = pm.response.json().extra_fields.raw_request;",
+                  "wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "pm.test('the caller text.verbosity and the generated text.format.strict both reach Converse', function () {",
+                  "  var text = (wire.additionalModelRequestFields || {}).text || {};",
+                  "  pm.expect(text.verbosity, JSON.stringify(wire.additionalModelRequestFields)).to.equal('low');",
+                  "  pm.expect((text.format || {}).strict, JSON.stringify(wire.additionalModelRequestFields)).to.equal(true);",
+                  "  pm.expect(JSON.parse(pm.response.json().choices[0].message.content).city, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-6-luna\",\"max_tokens\":800,\"messages\":[{\"role\":\"user\",\"content\":\"Capital of Australia?\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}},\"additionalModelRequestFieldPaths\":{\"text\":{\"verbosity\":\"low\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions allOf merging a $ref keeps the synthetic tool instead of a 400 (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('an allOf merging a $ref routes to the bf_so_* tool (natively: Cannot merge allOf schemas: schema 0 contains $ref)', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.undefined;",
+                  "  pm.expect(wire.toolConfig.tools[0].toolSpec.name, JSON.stringify(wire.toolConfig)).to.match(/^bf_so_/);",
+                  "  var address = JSON.parse(pm.response.json().choices[0].message.content).address;",
+                  "  pm.expect(address, body).to.be.an('object');",
+                  "  pm.expect(address.street, 'street from the $ref branch: ' + body).to.be.a('string');",
+                  "  pm.expect(address.city, 'city from the inline branch: ' + body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":800,\"messages\":[{\"role\":\"user\",\"content\":\"Address: street 1 Main St, city Canberra.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"address\",\"schema\":{\"type\":\"object\",\"properties\":{\"address\":{\"allOf\":[{\"$ref\":\"#/$defs/Street\"},{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}]}},\"required\":[\"address\"],\"$defs\":{\"Street\":{\"type\":\"object\",\"properties\":{\"street\":{\"type\":\"string\"}},\"required\":[\"street\"]}}}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-opus-4-7 /v1/chat/completions union properties shared with a strict tool keep the synthetic tool past 16 (bedrock native structured output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "pm.test('10 output + 7 strict-tool union properties route to the bf_so_* tool (natively: too many parameters with union types (17))', function () {",
+                  "  var wire = pm.response.json().extra_fields.raw_request;",
+                  "  wire = typeof wire === 'string' ? JSON.parse(wire) : wire;",
+                  "  pm.expect(wire.outputConfig, 'outbound body: ' + JSON.stringify(wire)).to.be.undefined;",
+                  "  var names = wire.toolConfig.tools.map(function (t) { return (t.toolSpec || {}).name; });",
+                  "  pm.expect(names.some(function (n) { return /^bf_so_/.test(n); }), JSON.stringify(names)).to.equal(true);",
+                  "  pm.expect(names, JSON.stringify(names)).to.include('lookup_city');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-opus-4-7\",\"max_tokens\":1500,\"messages\":[{\"role\":\"user\",\"content\":\"Describe Canberra in the schema; leave unknown fields null. Do not call tools.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"profile\",\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"f0\":{\"type\":[\"string\",\"null\"]},\"f1\":{\"type\":[\"string\",\"null\"]},\"f2\":{\"type\":[\"string\",\"null\"]},\"f3\":{\"type\":[\"string\",\"null\"]},\"f4\":{\"type\":[\"string\",\"null\"]},\"f5\":{\"type\":[\"string\",\"null\"]},\"f6\":{\"type\":[\"string\",\"null\"]},\"f7\":{\"type\":[\"string\",\"null\"]},\"f8\":{\"type\":[\"string\",\"null\"]},\"f9\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"city\",\"f0\",\"f1\",\"f2\",\"f3\",\"f4\",\"f5\",\"f6\",\"f7\",\"f8\",\"f9\"],\"additionalProperties\":false}}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_city\",\"description\":\"Look up a city\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"g0\":{\"type\":[\"string\",\"null\"]},\"g1\":{\"type\":[\"string\",\"null\"]},\"g2\":{\"type\":[\"string\",\"null\"]},\"g3\":{\"type\":[\"string\",\"null\"]},\"g4\":{\"type\":[\"string\",\"null\"]},\"g5\":{\"type\":[\"string\",\"null\"]},\"g6\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"city\",\"g0\",\"g1\",\"g2\",\"g3\",\"g4\",\"g5\",\"g6\"],\"additionalProperties\":false}}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
