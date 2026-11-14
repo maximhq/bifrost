@@ -412,7 +412,7 @@ func TestValidateConfigSchema_InvalidType(t *testing.T) {
 }
 
 func TestValidateConfigSchema_InvalidEnum(t *testing.T) {
-	// vector_store.type must be one of: weaviate, redis, qdrant, pinecone
+	// vector_store.type must be one of: weaviate, redis, qdrant, pinecone, chromem, pgvector
 	invalidConfig := `{
 		"vector_store": {
 			"enabled": true,
@@ -4184,6 +4184,7 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 		vectorstore.VectorStoreTypeQdrant:   "qdrant_config",
 		vectorstore.VectorStoreTypePinecone: "pinecone_config",
 		vectorstore.VectorStoreTypeChromem:  "chromem_config",
+		vectorstore.VectorStoreTypePgVector: "pgvector_config",
 	}
 
 	schema := loadSchema(t)
@@ -4235,6 +4236,7 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			"qdrant":   `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "localhost"}}}`,
 			"pinecone": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {"api_key": "k", "index_host": "h"}}}`,
 			"chromem":  `{"vector_store": {"enabled": true, "type": "chromem", "config": {"path": "/app/data/chromem"}}}`,
+			"pgvector": `{"vector_store": {"enabled": true, "type": "pgvector", "config": {"host": "localhost", "user": "bifrost", "database": "bifrost"}}}`,
 		}
 		for name, config := range valid {
 			if err := validateConfig(t, compiled, config); err != nil {
@@ -4254,6 +4256,12 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			"chromem with a redis config":   `{"vector_store": {"enabled": true, "type": "chromem", "config": {"addr": "localhost:6379"}}}`,
 			"weaviate with an empty config": `{"vector_store": {"enabled": true, "type": "weaviate", "config": {}}}`,
 			"pinecone with an empty config": `{"vector_store": {"enabled": true, "type": "pinecone", "config": {}}}`,
+			// A qdrant block carries host but no user or database, so it must not
+			// pass for pgvector, and pgvector's extra fields must not pass for qdrant.
+			"pgvector with a qdrant config": `{"vector_store": {"enabled": true, "type": "pgvector", "config": {"host": "localhost"}}}`,
+			"pgvector with a redis config":  `{"vector_store": {"enabled": true, "type": "pgvector", "config": {"addr": "localhost:6379"}}}`,
+			"pgvector with an empty config": `{"vector_store": {"enabled": true, "type": "pgvector", "config": {}}}`,
+			"qdrant with a pgvector config": `{"vector_store": {"enabled": true, "type": "qdrant", "config": {"host": "localhost", "user": "bifrost", "database": "bifrost"}}}`,
 		}
 		for name, config := range mismatched {
 			if err := validateConfig(t, compiled, config); err == nil {
@@ -4268,7 +4276,7 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 	t.Run("service-backed types require a config block", func(t *testing.T) {
 		compiled := compileSchema(t)
 
-		for _, storeType := range []string{"weaviate", "redis", "qdrant", "pinecone"} {
+		for _, storeType := range []string{"weaviate", "redis", "qdrant", "pinecone", "pgvector"} {
 			omitted := `{"vector_store": {"enabled": true, "type": "` + storeType + `"}}`
 			if err := validateConfig(t, compiled, omitted); err == nil {
 				t.Errorf("%s with no config block must be rejected: it has no endpoint to dial", storeType)
@@ -4333,6 +4341,64 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 		} {
 			if err := validateConfig(t, compiled, config); err != nil {
 				t.Errorf("a non-blank chromem path (%s) must stay valid, got: %v", name, err)
+			}
+		}
+	})
+
+	// newPgVectorStore refuses to start without host, user and database, and
+	// rejects a schema that is not a plain identifier, a port outside 1-65535 and
+	// a non-positive max_conns. The schema has to refuse the same configs.
+	t.Run("pgvector config validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		wrap := func(config string) string {
+			return `{"vector_store": {"enabled": true, "type": "pgvector", "config": ` + config + `}}`
+		}
+
+		everyField := `{"host": "db.internal", "port": 5432, "user": "bifrost", "password": "secret", "database": "bifrost", "ssl_mode": "verify-full", "schema": "bifrost_vectors", "max_conns": 20}`
+		for name, config := range map[string]string{
+			"every field":    everyField,
+			"env references": `{"host": "env.PGVECTOR_HOST", "user": "env.PGVECTOR_USER", "password": "env.PGVECTOR_PASSWORD", "database": "env.PGVECTOR_DATABASE"}`,
+		} {
+			if err := validateConfig(t, compiled, wrap(config)); err != nil {
+				t.Errorf("a pgvector config with %s must be valid, got: %v", name, err)
+			}
+		}
+
+		// The schema types port and max_conns as integers while PgVectorConfig holds
+		// them as SecretVar, so what the schema accepts has to load as well.
+		var loaded vectorstore.Config
+		if err := json.Unmarshal([]byte(`{"enabled": true, "type": "pgvector", "config": `+everyField+`}`), &loaded); err != nil {
+			t.Fatalf("a schema-valid pgvector config must load, got: %v", err)
+		}
+		pgConfig, ok := loaded.Config.(vectorstore.PgVectorConfig)
+		if !ok {
+			t.Fatalf("a pgvector config must load as vectorstore.PgVectorConfig, got %T", loaded.Config)
+		}
+		if pgConfig.Port.CoerceInt(0) != 5432 || pgConfig.MaxConns.CoerceInt(0) != 20 || pgConfig.SSLMode.GetValue() != "verify-full" || pgConfig.Schema.GetValue() != "bifrost_vectors" {
+			t.Errorf("pgvector config loaded port=%q max_conns=%q ssl_mode=%q schema=%q, want 5432, 20, verify-full, bifrost_vectors",
+				pgConfig.Port.GetValue(), pgConfig.MaxConns.GetValue(), pgConfig.SSLMode.GetValue(), pgConfig.Schema.GetValue())
+		}
+
+		for missing, config := range map[string]string{
+			"host":     `{"user": "bifrost", "database": "bifrost"}`,
+			"user":     `{"host": "localhost", "database": "bifrost"}`,
+			"database": `{"host": "localhost", "user": "bifrost"}`,
+		} {
+			if err := validateConfig(t, compiled, wrap(config)); err == nil {
+				t.Errorf("a pgvector config without %s must be rejected: the store cannot start without it", missing)
+			}
+		}
+
+		for name, config := range map[string]string{
+			"an unknown field":       `{"host": "localhost", "user": "bifrost", "database": "bifrost", "dimension": 1536}`,
+			"an unknown ssl_mode":    `{"host": "localhost", "user": "bifrost", "database": "bifrost", "ssl_mode": "on"}`,
+			"port 0":                 `{"host": "localhost", "user": "bifrost", "database": "bifrost", "port": 0}`,
+			"port 65536":             `{"host": "localhost", "user": "bifrost", "database": "bifrost", "port": 65536}`,
+			"a schema with a hyphen": `{"host": "localhost", "user": "bifrost", "database": "bifrost", "schema": "bifrost-vectors"}`,
+			"max_conns 0":            `{"host": "localhost", "user": "bifrost", "database": "bifrost", "max_conns": 0}`,
+		} {
+			if err := validateConfig(t, compiled, wrap(config)); err == nil {
+				t.Errorf("a pgvector config with %s must be rejected", name)
 			}
 		}
 	})

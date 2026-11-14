@@ -2492,9 +2492,10 @@
             "redis",
             "qdrant",
             "pinecone",
-            "chromem"
+            "chromem",
+            "pgvector"
           ],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints, and \"pgvector\" for PostgreSQL with the pgvector extension). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
         },
         "config": {
           "description": "Backend-specific settings. The block must match the backend named by the sibling \"type\"; the conditionals below pin it to that backend rather than accepting any backend's shape",
@@ -2513,6 +2514,9 @@
             },
             {
               "$ref": "#/$defs/chromem_config"
+            },
+            {
+              "$ref": "#/$defs/pgvector_config"
             }
           ]
         }
@@ -2621,6 +2625,28 @@
             "properties": {
               "config": {
                 "$ref": "#/$defs/chromem_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "pgvector"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "config"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/pgvector_config"
               }
             }
           }
@@ -4687,6 +4713,22 @@
                     "disable_identity_scoping": {
                       "type": "boolean",
                       "description": "Share cache entries across identities. Off by default: an entry is only served to the identity that wrote it, meaning the same virtual key and the same user, even when requests share a cache key or default_cache_key. Set to true to let every identity share entries by cache key."
+                    },
+                    "tenant_isolation": {
+                      "type": "boolean",
+                      "description": "Second tenant wall, off by default. Stamps every entry with a non-reversible tenant_scope (a hash of the identity, never the raw ids) and sends it to the vector store with each call. A store that enforces it, currently pgvector with row_level_security, then keeps tenants apart inside the database as well. Needs identity scoping (cannot be combined with disable_identity_scoping)."
+                    },
+                    "cleanup_interval": {
+                      "description": "How often to delete expired entries from the vector store in the background (duration string like '10m' or seconds as number). Off by default (0): expired entries are otherwise only deleted when they are read again. Works with stores that can delete expired entries in bulk (pgvector).",
+                      "oneOf": [
+                        { "type": "string" },
+                        { "type": "number", "minimum": 0 }
+                      ]
+                    },
+                    "cleanup_batch_size": {
+                      "type": "integer",
+                      "description": "Most entries deleted per call during a cleanup run (default: 1000 when cleanup_interval is set)",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -11563,6 +11605,80 @@
           "path"
         ]
       }
+    },
+    "pgvector_config": {
+      "type": "object",
+      "description": "PostgreSQL with the pgvector extension, as a vector store. Each namespace is one table in the configured schema. The extension is created in the database on startup when it is missing, which needs a role allowed to create it.",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "PostgreSQL server hostname or IP address, without the port - REQUIRED (can use env. prefix)"
+        },
+        "port": {
+          "type": "integer",
+          "description": "PostgreSQL server port (default: 5432)",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 5432
+        },
+        "user": {
+          "type": "string",
+          "description": "Database user - REQUIRED (can use env. prefix)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Database password (optional, can use env. prefix)"
+        },
+        "database": {
+          "type": "string",
+          "description": "Database name - REQUIRED (can use env. prefix)"
+        },
+        "ssl_mode": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full"
+          ],
+          "description": "SSL mode for the connection, with the same meaning as libpq's sslmode (default: prefer)",
+          "default": "prefer"
+        },
+        "schema": {
+          "type": "string",
+          "description": "Existing schema that holds the namespace tables (default: public). Letters, digits and underscores, starting with a letter or underscore",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "default": "public"
+        },
+        "max_conns": {
+          "type": "integer",
+          "description": "Maximum number of pooled connections (default: 10)",
+          "minimum": 1,
+          "default": 10
+        },
+        "vector_type": {
+          "type": "string",
+          "enum": [
+            "vector",
+            "halfvec"
+          ],
+          "description": "Column type for embeddings (default: vector). halfvec stores 2 bytes per dimension instead of 4 and can be indexed up to 4000 dimensions (vector: 2000); it needs pgvector 0.7.0 or later and loses a little precision. Fixed when a namespace's table is created.",
+          "default": "vector"
+        },
+        "row_level_security": {
+          "type": "boolean",
+          "description": "Turn on PostgreSQL row-level security on every namespace table, as a second wall between tenants (default: false). Rows are visible only to a call whose tenant scope matches the row's tenant_scope metadata, which the semantic cache writes when its tenant_isolation is on. The database role must not be a superuser or have BYPASSRLS.",
+          "default": false
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "database"
+      ],
+      "additionalProperties": false
     },
     "proxy_config": {
       "type": "object",

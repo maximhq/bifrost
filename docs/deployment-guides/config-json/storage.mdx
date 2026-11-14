@@ -10,7 +10,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
 | `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS/Azure Blob offload |
-| `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
+| `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone, PostgreSQL (pgvector) |
 
 <Note>
 If you use PostgreSQL for any store, the target database must be **UTF8 encoded**. See [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement).
@@ -600,7 +600,7 @@ Restart after changing storage configuration or credentials; identity tokens ref
 
 ## vector_store
 
-A vector store is required for [semantic caching](/features/semantic-caching). Choose from Weaviate, Redis/Valkey, Qdrant, or Pinecone.
+A vector store is required for [semantic caching](/features/semantic-caching). Choose from Weaviate, Redis/Valkey, Qdrant, Pinecone, or PostgreSQL with pgvector.
 
 ### Weaviate
 
@@ -718,6 +718,38 @@ Pinecone is external-only.
 |-------|-------------|
 | `api_key` | Pinecone API key (supports `env.` prefix) |
 | `index_host` | Index host from Pinecone console (e.g. `your-index.svc.us-east1-gcp.pinecone.io`) |
+
+### PostgreSQL (pgvector)
+
+A PostgreSQL database with the [pgvector](https://github.com/pgvector/pgvector) extension. Bifrost creates the extension on startup if it is missing and the user is allowed to; each namespace becomes one table. See [PostgreSQL (pgvector)](/integrations/vector-databases/pgvector) for privileges and naming rules.
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pgvector",
+    "config": {
+      "host": "env.PGVECTOR_HOST",
+      "port": 5432,
+      "user": "env.PGVECTOR_USER",
+      "password": "env.PGVECTOR_PASSWORD",
+      "database": "bifrost",
+      "ssl_mode": "require"
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `host` | - | PostgreSQL host, without the port (supports `env.` prefix). Required |
+| `port` | `5432` | PostgreSQL port |
+| `user` | - | Database user (supports `env.` prefix). Required |
+| `password` | - | Database password (supports `env.` prefix) |
+| `database` | - | Database name (supports `env.` prefix). Required |
+| `ssl_mode` | `prefer` | `disable`, `allow`, `prefer`, `require`, `verify-ca` or `verify-full` |
+| `schema` | `public` | Existing schema that holds the namespace tables |
+| `max_conns` | `10` | Maximum pooled connections |
 
 ---
 

@@ -1,1 +1,2 @@
+- feat: pgvector support, including tenant-scoped cleanup and opt-in row-level security [@MadhusudhanM23](https://github.com/MadhusudhanM23)
 - chore: upgraded core to v1.15.2 and framework to v1.12.2

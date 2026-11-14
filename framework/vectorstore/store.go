@@ -17,6 +17,7 @@ const (
 	VectorStoreTypeQdrant   VectorStoreType = "qdrant"
 	VectorStoreTypePinecone VectorStoreType = "pinecone"
 	VectorStoreTypeChromem  VectorStoreType = "chromem"
+	VectorStoreTypePgVector VectorStoreType = "pgvector"
 )
 
 // Query represents a query to the vector store.
@@ -166,6 +167,40 @@ func FiltersVectorReadsOnServer(store VectorStore) bool {
 	return ok && reader.FiltersVectorReadsOnServer()
 }
 
+// PoolStats reports a pooled vector store's current connection usage, for an
+// operator checking whether the configured pool is large enough under load.
+// Fields mirror what pgx's pgxpool.Stat exposes; a store backed by something
+// else reports whatever its own pool/client tracks, or does not implement
+// PoolStatsProvider at all.
+type PoolStats struct {
+	// MaxConns is the pool's configured connection limit.
+	MaxConns int32 `json:"max_conns"`
+	// TotalConns is the number of connections currently open (idle + acquired
+	// + being established).
+	TotalConns int32 `json:"total_conns"`
+	// IdleConns is the number of open connections not currently in use.
+	IdleConns int32 `json:"idle_conns"`
+	// AcquiredConns is the number of connections currently checked out and in use.
+	AcquiredConns int32 `json:"acquired_conns"`
+}
+
+// PoolStatsProvider is implemented by a store backed by a connection pool that can
+// report its current usage. A store that is not pool-backed (for example, an HTTP
+// API client) does not implement it.
+type PoolStatsProvider interface {
+	PoolStats() PoolStats
+}
+
+// VectorStorePoolStats returns store's current connection pool usage and whether
+// store exposes one at all.
+func VectorStorePoolStats(store VectorStore) (PoolStats, bool) {
+	provider, ok := store.(PoolStatsProvider)
+	if !ok {
+		return PoolStats{}, false
+	}
+	return provider.PoolStats(), true
+}
+
 // IncludeVectorsRequested reports whether the current read asked for vectors.
 func IncludeVectorsRequested(ctx context.Context) bool {
 	if ctx == nil {
@@ -270,6 +305,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Config = chromemConfig
+	case VectorStoreTypePgVector:
+		var pgVectorConfig PgVectorConfig
+		if err := json.Unmarshal(temp.Config, &pgVectorConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal pgvector config: %w", err)
+		}
+		c.Config = pgVectorConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -331,6 +372,15 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid chromem config")
 		}
 		return newChromemStore(ctx, &chromemConfig, logger)
+	case VectorStoreTypePgVector:
+		if config.Config == nil {
+			return nil, fmt.Errorf("pgvector config is required")
+		}
+		pgVectorConfig, ok := config.Config.(PgVectorConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid pgvector config")
+		}
+		return newPgVectorStore(ctx, &pgVectorConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }

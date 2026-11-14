@@ -1027,7 +1027,7 @@ Bifrost supports multiple vector stores for semantic caching:
 | Parameter             | Description                                              | Default |
 | --------------------- | -------------------------------------------------------- | ------- |
 | `vectorStore.enabled` | Enable vector store                                      | `false` |
-| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant`, `pinecone`, or `chromem` | `none`  |
+| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant`, `pinecone`, `chromem`, or `pgvector` | `none`  |
 
 #### Weaviate
 
@@ -1069,6 +1069,26 @@ vectorStore:
     # external:
     #   enabled: true
     #   host: "qdrant.example.com"
+```
+
+#### PostgreSQL (pgvector)
+
+External only: the chart does not deploy pgvector, and the bundled PostgreSQL image does not include it. Point it at a PostgreSQL server with the pgvector extension. The password can come from an existing secret, injected as `BIFROST_PGVECTOR_PASSWORD`.
+
+```yaml
+vectorStore:
+  enabled: true
+  type: pgvector
+  pgvector:
+    external:
+      enabled: true
+      host: "pgvector.example.com"
+      port: 5432
+      user: bifrost
+      database: bifrost_vectors
+      sslMode: require
+      existingSecret: "pgvector-credentials" # or set password directly
+      passwordKey: "password"
 ```
 
 ### Bifrost Application Configuration
@@ -1253,6 +1273,7 @@ The chart includes pre-configured examples in `values-examples/`:
 | `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching              |
 | `postgres-redis.yaml`    | PostgreSQL + Redis for semantic caching                 |
 | `postgres-qdrant.yaml`   | PostgreSQL + Qdrant for semantic caching                |
+| `postgres-pgvector.yaml` | PostgreSQL + external PostgreSQL with pgvector for semantic caching |
 | `sqlite-weaviate.yaml`   | SQLite + Weaviate                                       |
 | `sqlite-redis.yaml`      | SQLite + Redis                                          |
 | `sqlite-qdrant.yaml`     | SQLite + Qdrant                                         |
@@ -1276,7 +1297,7 @@ helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
 For production deployments, we recommend:
 
 1. **Use PostgreSQL** for reliable data persistence
-2. **Enable semantic caching** with Weaviate, Redis, or Qdrant
+2. **Enable semantic caching** with Weaviate, Redis, Qdrant, or PostgreSQL with pgvector
 3. **Configure auto-scaling** for handling variable load
 4. **Set up Ingress** with TLS termination
 5. **Use external secrets** for sensitive data

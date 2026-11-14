@@ -2499,8 +2499,12 @@ func TestWarpTopicsJobAgainstLiveVectorStores(t *testing.T) {
 		"qdrant":   {Enabled: true, Type: vectorstore.VectorStoreTypeQdrant, Config: vectorstore.QdrantConfig{Host: *sv(env("QDRANT_HOST", "localhost")), Port: *sv(env("QDRANT_PORT", "6334"))}},
 		"redis":    {Enabled: true, Type: vectorstore.VectorStoreTypeRedis, Config: vectorstore.RedisConfig{Addr: sv(env("REDIS_ADDR", "localhost:6379"))}},
 		"pinecone": {Enabled: true, Type: vectorstore.VectorStoreTypePinecone, Config: vectorstore.PineconeConfig{APIKey: *sv(env("PINECONE_API_KEY", "pclocal")), IndexHost: *sv(env("PINECONE_INDEX_HOST", "localhost:5081"))}},
+		"pgvector": {Enabled: true, Type: vectorstore.VectorStoreTypePgVector, Config: vectorstore.PgVectorConfig{
+			Host: *sv(env("PGVECTOR_HOST", "localhost")), Port: *sv(env("PGVECTOR_PORT", "5433")), User: *sv(env("PGVECTOR_USER", "bifrost")),
+			Password: *sv(env("PGVECTOR_PASSWORD", "bifrost_password")), Database: *sv(env("PGVECTOR_DATABASE", "bifrost")), SSLMode: *sv(env("PGVECTOR_SSLMODE", "disable")),
+		}},
 	}
-	for _, name := range []string{"chromem", "weaviate", "qdrant", "redis", "pinecone"} {
+	for _, name := range []string{"chromem", "weaviate", "qdrant", "redis", "pinecone", "pgvector"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()

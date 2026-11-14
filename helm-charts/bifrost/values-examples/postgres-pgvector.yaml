@@ -1,0 +1,105 @@
+# Configuration: PostgreSQL for config/logs + PostgreSQL with pgvector for vector store
+# Usage: helm install bifrost ./bifrost -f values-examples/postgres-pgvector.yaml
+#
+# The chart does not deploy pgvector: vectorStore.pgvector.external points at a
+# PostgreSQL server that has the pgvector extension, for example one running the
+# pgvector/pgvector:pg16 image or a managed PostgreSQL that offers pgvector. The
+# bundled PostgreSQL below (postgres:16-alpine) does not include pgvector.
+# On startup Bifrost runs CREATE EXTENSION IF NOT EXISTS vector when the extension
+# is missing from the database, which needs a role allowed to create extensions;
+# otherwise have an administrator create it once beforehand.
+#
+# Prerequisites - create the Kubernetes secrets before installing the chart:
+#
+#    # Password of the pgvector database user
+#    kubectl create secret generic pgvector-credentials \
+#      --from-literal=password='your-pgvector-password'
+#
+#    # OpenAI key for the semantic cache's embedding provider
+#    kubectl create secret generic bifrost-semantic-cache \
+#      --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+#
+# SECURITY NOTE: This example contains placeholder values that MUST be replaced
+# before deployment. Specifically:
+# - PostgreSQL password must be set to a strong, randomly generated value
+# - The pgvector host, user and database must point at your own server
+# See inline comments for specific requirements.
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# PostgreSQL configuration (config and logs store)
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    # REQUIRED: Replace with a strong, randomly generated password
+    # Example: Use `openssl rand -base64 32` to generate a secure password
+    # Or set via Helm: --set postgresql.auth.password="$(openssl rand -base64 32)"
+    password: "REPLACE_ME_WITH_STRONG_PASSWORD"
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# External PostgreSQL with pgvector for vector store
+vectorStore:
+  enabled: true
+  type: pgvector
+  pgvector:
+    external:
+      enabled: true
+      # REQUIRED: hostname or IP address of the pgvector server, without the port
+      host: "your-pgvector-host.example.com"
+      port: 5432
+      user: bifrost
+      database: bifrost_vectors
+      sslMode: require
+      # schema: public  # Existing schema that holds the namespace tables
+      # Password from the pgvector-credentials secret, injected as BIFROST_PGVECTOR_PASSWORD
+      existingSecret: "pgvector-credentials"
+      passwordKey: "password"
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  # The embedding provider for the semantic cache below. Its API key is injected
+  # from the Kubernetes secret (semanticCache.secretRef) as SEMANTIC_CACHE_API_KEY.
+  providers:
+    openai:
+      keys:
+        - name: "embeddings"
+          value: "env.SEMANTIC_CACHE_API_KEY"
+          weight: 1
+          models: ["text-embedding-3-small"]
+
+  # Enable semantic cache plugin to use the pgvector vector store
+  plugins:
+    semanticCache:
+      enabled: true
+      # OpenAI key for the embedding provider, injected as SEMANTIC_CACHE_API_KEY (used by providers.openai above).
+      secretRef:
+        name: "bifrost-semantic-cache"
+        key: "openai-key"
+      config:
+        provider: "openai"
+        embedding_model: "text-embedding-3-small"
+        # 1536 is within the 2000 dimensions pgvector can index with HNSW; above
+        # that Bifrost still works but every similarity search scans the table.
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"

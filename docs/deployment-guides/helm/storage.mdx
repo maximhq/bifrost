@@ -706,7 +706,7 @@ helm upgrade bifrost bifrost/bifrost \
 
 ## Vector Store
 
-A vector store is required for [semantic caching](/deployment-guides/helm/plugins). Choose from Weaviate, Redis, or Qdrant (embedded or external), or Pinecone (external only).
+A vector store is required for [semantic caching](/deployment-guides/helm/plugins). Choose from Weaviate, Redis, or Qdrant (embedded or external), or Pinecone or PostgreSQL with pgvector (external only).
 
 ### Weaviate
 
@@ -840,6 +840,31 @@ vectorStore:
       indexHost: "your-index.svc.us-east1-gcp.pinecone.io"
       existingSecret: "pinecone-credentials"
       apiKeyKey: "api-key"
+```
+
+### PostgreSQL (pgvector)
+
+pgvector is external-only: the chart does not deploy it, and the bundled PostgreSQL image does not include the extension. Point the chart at a PostgreSQL server with pgvector; Bifrost creates the extension on startup if it is missing and the user is allowed to. See [PostgreSQL (pgvector)](/integrations/vector-databases/pgvector) for the required privileges.
+
+```bash
+kubectl create secret generic pgvector-credentials \
+  --from-literal=password='your-pgvector-password'
+```
+
+```yaml
+vectorStore:
+  enabled: true
+  type: pgvector
+  pgvector:
+    external:
+      enabled: true
+      host: "your-pgvector-host.example.com"
+      port: 5432
+      user: bifrost
+      database: bifrost_vectors
+      sslMode: require
+      existingSecret: "pgvector-credentials"
+      passwordKey: "password"
 ```
 
 Apply any of the vector store options above with:

@@ -86,6 +86,9 @@ A few things that trip up first-time users — read these before configuring:
   <Card title="Pinecone" icon="database" href="/integrations/vector-databases/pinecone">
     Managed, serverless vector database service.
   </Card>
+  <Card title="PostgreSQL (pgvector)" icon="database" href="/integrations/vector-databases/pgvector">
+    Cache entries as tables in your own PostgreSQL database.
+  </Card>
 </CardGroup>
 
 2. **An embedding-capable provider** — only if you want semantic mode. Direct-only mode needs no provider.
@@ -348,6 +351,9 @@ bifrostConfig := schemas.BifrostConfig{
 | `vector_store_namespace` | string | `BifrostSemanticCachePlugin` | Bucket/index where entries live. Changing it points the plugin at a different (possibly empty) bucket; old entries aren't deleted, just no longer queried. |
 | `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** Entries are also partitioned by identity on top of this, unless `disable_identity_scoping` is set (see [Triggering the cache](#triggering-the-cache)). |
 | `cache_tool_call_responses` | boolean | `false` | Persist responses that carry tool calls. Off by default, since a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt. |
+| `tenant_isolation` | boolean | `false` | A second tenant wall inside the database. Stamps every entry with a hashed `tenant_scope` (never the raw ids) and sends it to the vector store on every call. With the pgvector store and its `row_level_security` option, PostgreSQL itself then hides one tenant's rows from another. Needs identity scoping, so it cannot be combined with `disable_identity_scoping`. See [pgvector](/integrations/vector-databases/pgvector#row-level-security-a-second-wall-between-tenants). |
+| `cleanup_interval` | duration / seconds | `0` (off) | How often to delete expired entries from the vector store in the background, for example `"10m"`. Off by default, which leaves expired entries in place until something reads them. Works with pgvector. See [cleaning up expired entries](/integrations/vector-databases/pgvector#cleaning-up-expired-entries). |
+| `cleanup_batch_size` | integer | `1000` once `cleanup_interval` is set | The most entries one delete call removes during a cleanup run. |
 | `disable_identity_scoping` | boolean | `false` | Share entries across identities. Off by default: an entry is only served to the identity that wrote it, meaning the same virtual key and the same user, even when requests share a cache key. Set to `true` to let every identity share entries by cache key. |
 
 ---
@@ -435,7 +441,7 @@ In direct-only mode, all requests use hash matching regardless of the `x-bf-cach
 
 ### Vector stores in direct-only mode
 
-Every vector store works in direct-only mode. **Redis/Valkey-compatible stores** are the lightest choice: they store no vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups. Weaviate, Qdrant, and Pinecone require a vector for every entry, so the plugin stores a fixed placeholder vector with each one; it needs no embedding provider, and lookups still match on the request hash alone.
+Every vector store works in direct-only mode. **Redis/Valkey-compatible stores** are the lightest choice: they store no vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups. **PostgreSQL with pgvector** also stores no vector for metadata-only entries; their fields live in a JSONB column with a GIN index. Weaviate, Qdrant, and Pinecone require a vector for every entry, so the plugin stores a fixed placeholder vector with each one; it needs no embedding provider, and lookups still match on the request hash alone.
 
 ---
 
@@ -716,14 +722,14 @@ err := plugin.ClearCacheForKey("support-session-456")
 
 ### Lifecycle & Cleanup
 
-- **TTL expiration** — every entry is stored with an `expires_at` timestamp. Expired entries are no longer served and are swept out over time.
+- **TTL expiration** — every entry is stored with an `expires_at` timestamp. Expired entries are no longer served. They are deleted when a lookup reads one, and with pgvector also by the optional background cleanup (`cleanup_interval`); without either, an expired entry that is never read again stays in the store.
 - **Entries persist across restarts** — cache data lives in your vector store and is **not** purged when Bifrost shuts down. A restart resumes serving the existing (unexpired) cache. To wipe entries, use the [cache-clear APIs](#cache-management) or clear the namespace in your vector store directly.
 - **Namespace isolation** — each `vector_store_namespace` is an independent cache pool. Use distinct namespaces to keep separate caches from colliding.
 
 <Warning>
 **Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only, and it is **not** recreated automatically when the dimension changes.
 
-Every vector store catches a dimension mismatch when the plugin loads: namespace creation fails with `namespace ... already exists with dimension N but config requires M`. At startup Bifrost does not come up until you resolve it. Through the plugins API or the UI, the save is refused with a 400, the previous configuration is kept, and the running cache keeps serving. Redis, Qdrant and Pinecone compare against the dimension the index or collection was created with; a Pinecone index has one dimension for all its namespaces, so a config at any other size is refused. Weaviate and the in-process store record no dimension, so they compare against a vector already stored, and an empty namespace accepts any size. Qdrant and Weaviate skip the check, and log that they did, when the lookup itself fails; Qdrant also skips it for collections with named vectors, which Bifrost never creates.
+Every vector store catches a dimension mismatch when the plugin loads: namespace creation fails with `namespace ... already exists with dimension N but config requires M`. At startup Bifrost does not come up until you resolve it. Through the plugins API or the UI, the save is refused with a 400, the previous configuration is kept, and the running cache keeps serving. Redis, Qdrant, Pinecone and pgvector compare against the dimension the index, collection or table was created with; a Pinecone index has one dimension for all its namespaces, so a config at any other size is refused. Weaviate and the in-process store record no dimension, so they compare against a vector already stored, and an empty namespace accepts any size. Qdrant and Weaviate skip the check, and log that they did, when the lookup itself fails; Qdrant also skips it for collections with named vectors, which Bifrost never creates.
 
 Either way, before saving such a change:
 
@@ -777,6 +783,6 @@ No vector store is enabled. Configure and enable one in `config.json` (see [Prer
 
 ## Next steps
 
-- **[Vector Store setup](/architecture/framework/vector-store)** — configure Weaviate, Redis/Valkey, Qdrant, or Pinecone.
+- **[Vector Store setup](/architecture/framework/vector-store)** — configure Weaviate, Redis/Valkey, Qdrant, Pinecone, or PostgreSQL (pgvector).
 - **[Plugins overview](/features/plugins)** — how Bifrost's plugin pipeline works.
 - **[Providers](/providers)** — configure the embedding provider used for semantic mode.

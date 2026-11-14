@@ -13,7 +13,7 @@ import (
 
 // requiresVectors returns true if the vector store requires vectors for storage.
 // Some stores (like Qdrant, Pinecone, and Weaviate) require vectors for all entries,
-// while others (like Redis) can store metadata without vectors.
+// while others (like Redis and pgvector) can store metadata without vectors.
 func requiresVectors(storeType vectorstore.VectorStoreType) bool {
 	switch storeType {
 	case vectorstore.VectorStoreTypeQdrant, vectorstore.VectorStoreTypePinecone, vectorstore.VectorStoreTypeWeaviate:
@@ -43,6 +43,7 @@ func getVectorStoreTestCases() []VectorStoreTestCase {
 		{"Redis", vectorstore.VectorStoreTypeRedis},
 		{"Qdrant", vectorstore.VectorStoreTypeQdrant},
 		{"Pinecone", vectorstore.VectorStoreTypePinecone},
+		{"PgVector", vectorstore.VectorStoreTypePgVector},
 	}
 }
 

@@ -591,9 +591,10 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 
 // pluginLoadFailureStatus is the status for a plugin that failed to load with the config it was
 // given: 400 when the config itself is what was refused (a config that fails validation, a vector
-// store namespace that already holds vectors of another size), 500 for anything else.
+// store namespace that already holds vectors of another size or cannot name a table), 500 for
+// anything else.
 func pluginLoadFailureStatus(err error) int {
-	if errors.Is(err, lib.ErrInvalidPluginConfig) || errors.Is(err, vectorstore.ErrDimensionMismatch) {
+	if errors.Is(err, lib.ErrInvalidPluginConfig) || errors.Is(err, vectorstore.ErrDimensionMismatch) || errors.Is(err, vectorstore.ErrInvalidNamespace) {
 		return fasthttp.StatusBadRequest
 	}
 	return fasthttp.StatusInternalServerError

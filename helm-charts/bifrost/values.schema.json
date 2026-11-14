@@ -1703,6 +1703,22 @@
                       "type": "boolean",
                       "description": "Share cache entries across identities. Off by default: an entry is only served to the virtual key and user that wrote it."
                     },
+                    "tenant_isolation": {
+                      "type": "boolean",
+                      "description": "Second tenant wall, off by default: stamps entries with a hashed tenant_scope so a store that enforces it (pgvector with rowLevelSecurity) keeps tenants apart in the database too. Cannot be combined with disable_identity_scoping."
+                    },
+                    "cleanup_interval": {
+                      "description": "How often to delete expired entries in the background (duration string like '10m' or seconds). Off by default.",
+                      "oneOf": [
+                        { "type": "string" },
+                        { "type": "number", "minimum": 0 }
+                      ]
+                    },
+                    "cleanup_batch_size": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Most entries deleted per call during a cleanup run (default: 1000 when cleanup_interval is set)"
+                    },
                     "vector_store_namespace": {
                       "type": "string"
                     },
@@ -6767,7 +6783,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem", "pgvector"]
         },
         "weaviate": {
           "type": "object",
@@ -7132,6 +7148,88 @@
             "compress": {
               "type": "boolean",
               "description": "Gzip-compress persisted documents (only used when path is set)"
+            }
+          }
+        },
+        "pgvector": {
+          "type": "object",
+          "description": "PostgreSQL + pgvector configuration for vector store (external only, the chart does not deploy it). Renders into vector_store.config in config.json.",
+          "properties": {
+            "external": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "type": "string",
+                  "description": "PostgreSQL server hostname or IP address, without the port"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "default": 5432,
+                  "description": "PostgreSQL server port (default: 5432)"
+                },
+                "user": {
+                  "type": "string",
+                  "description": "Database user"
+                },
+                "password": {
+                  "type": "string",
+                  "description": "Database password"
+                },
+                "database": {
+                  "type": "string",
+                  "description": "Database name"
+                },
+                "sslMode": {
+                  "type": "string",
+                  "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"],
+                  "default": "prefer",
+                  "description": "SSL mode for the connection (default: prefer)"
+                },
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "description": "Existing schema that holds the namespace tables (default: public)"
+                },
+                "maxConns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum pooled connections (default: 10)"
+                },
+                "vectorType": {
+                  "type": "string",
+                  "enum": ["vector", "halfvec"],
+                  "default": "vector",
+                  "description": "Embedding column type (default: vector). halfvec halves the storage, needs pgvector 0.7.0 or later and loses a little precision."
+                },
+                "rowLevelSecurity": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Turn on PostgreSQL row-level security on every namespace table, as a second wall between tenants (default: false). The database user must not be a superuser or have BYPASSRLS."
+                },
+                "existingSecret": {
+                  "type": "string",
+                  "description": "Name of existing secret containing the database password"
+                },
+                "passwordKey": {
+                  "type": "string",
+                  "description": "Key in the secret containing the password"
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": ["host", "user", "database"]
+              }
             }
           }
         }

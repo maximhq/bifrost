@@ -366,6 +366,7 @@ The chart ships ready-made example files under [`helm-charts/bifrost/values-exam
 | `postgres-redis.yaml` | Postgres + Redis vector store |
 | `postgres-weaviate.yaml` | Postgres + Weaviate vector store |
 | `postgres-qdrant.yaml` | Postgres + Qdrant vector store |
+| `postgres-pgvector.yaml` | Postgres + external PostgreSQL (pgvector) vector store |
 | `semantic-cache-secret-example.yaml` | Semantic cache with secret injection |
 | `mixed-backend.yaml` | Config store = postgres, logs store = sqlite |
 
@@ -424,7 +425,7 @@ A quick-reference table of the most commonly used top-level parameters:
 | `storage.persistence.size` | PVC size for SQLite | `10Gi` |
 | `postgresql.enabled` | Deploy embedded PostgreSQL | `false` |
 | `vectorStore.enabled` | Enable vector store | `false` |
-| `vectorStore.type` | Vector store type (`weaviate`, `redis`, `qdrant`) | `none` |
+| `vectorStore.type` | Vector store type (`weaviate`, `redis`, `qdrant`, `pinecone`, `chromem`, `pgvector`) | `none` |
 | `bifrost.encryptionKey` | Optional encryption key (use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
 | `bifrost.loadBalancer.enabled` | Render `load_balancer_config` from the `bifrost.loadBalancer.*` keys *(enterprise only)*. See [Adaptive Routing settings](/enterprise/adaptive-routing/overview#settings) | `false` |
 | `bifrost.circuitBreakerConfig` | Circuit breaker policies, rendered as `circuit_breaker_config` *(enterprise only)*. See [Circuit Breaker](/enterprise/circuit-breaker) | unset |
@@ -447,6 +448,8 @@ Use existing Kubernetes Secrets instead of plain-text values. Every sensitive fi
 | `vectorStore.weaviate.external.apiKeyKey` | Key within the secret | `"api-key"` |
 | `vectorStore.qdrant.external.existingSecret` | Secret name for Qdrant API key | `""` |
 | `vectorStore.qdrant.external.apiKeyKey` | Key within the secret | `"api-key"` |
+| `vectorStore.pgvector.external.existingSecret` | Secret name for the pgvector database password | `""` |
+| `vectorStore.pgvector.external.passwordKey` | Key within the secret | `"password"` |
 | `bifrost.plugins.maxim.secretRef.name` | Secret name for Maxim API key | `""` |
 | `bifrost.plugins.maxim.secretRef.key` | Key within the secret | `"api-key"` |
 | `bifrost.providerSecrets.<provider>.existingSecret` | Secret name for provider API key | `""` |

@@ -166,6 +166,14 @@ spec:
                   name: {{ .Values.vectorStore.pinecone.external.existingSecret }}
                   key: {{ .Values.vectorStore.pinecone.external.apiKeyKey | default "api-key" }}
             {{- end }}
+            {{- /* pgvector database password from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "pgvector") .Values.vectorStore.pgvector.external.enabled .Values.vectorStore.pgvector.external.existingSecret }}
+            - name: BIFROST_PGVECTOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.pgvector.external.existingSecret }}
+                  key: {{ .Values.vectorStore.pgvector.external.passwordKey | default "password" }}
+            {{- end }}
             {{- /* Object storage credentials from existing secret */ -}}
             {{- if and .Values.storage.logsStore.enabled .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled .Values.storage.logsStore.objectStorage.existingSecret }}
             {{- if eq .Values.storage.logsStore.objectStorage.type "s3" }}

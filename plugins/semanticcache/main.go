@@ -45,6 +45,11 @@ type Config struct {
 	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
 	CacheToolCallResponses       bool   `json:"cache_tool_call_responses,omitempty"`      // Persist responses that carry tool calls (default: false)
 	DisableIdentityScoping       bool   `json:"disable_identity_scoping,omitempty"`       // Share entries across virtual keys and users (default: false, entries stay with the identity that wrote them)
+
+	// Second tenant wall and cleanup (all opt-in; the defaults leave behaviour unchanged)
+	TenantIsolation  bool          `json:"tenant_isolation,omitempty"`   // Stamp every entry with a hashed tenant_scope and send it to the store with each call, so a store that enforces it (pgvector with row_level_security) keeps tenants apart on its own (default: false; needs identity scoping)
+	CleanupInterval  time.Duration `json:"cleanup_interval,omitempty"`   // How often to delete expired entries from the store in the background (default: 0, off; expired entries are otherwise only deleted when they are read)
+	CleanupBatchSize int           `json:"cleanup_batch_size,omitempty"` // Most entries deleted per call during a cleanup run (default: 1000 when cleanup_interval is set)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Config so TTL accepts
@@ -57,36 +62,53 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	// package picks the shallower field on a name conflict.
 	type alias Config
 	aux := &struct {
-		TTL json.RawMessage `json:"ttl,omitempty"`
+		TTL             json.RawMessage `json:"ttl,omitempty"`
+		CleanupInterval json.RawMessage `json:"cleanup_interval,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, aux); err != nil {
 		return fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	if len(aux.TTL) == 0 || string(aux.TTL) == "null" {
-		return nil
-	}
-
-	// Try string first ("1m"); fall back to a JSON number (seconds).
-	var s string
-	if err := json.Unmarshal(aux.TTL, &s); err == nil {
-		d, err := time.ParseDuration(s)
+	if len(aux.TTL) != 0 && string(aux.TTL) != "null" {
+		d, err := parseDurationField(aux.TTL, "TTL")
 		if err != nil {
-			return fmt.Errorf("failed to parse TTL duration string '%s': %w", s, err)
+			return err
 		}
 		c.TTL = d
-	} else {
-		var seconds float64
-		if err := json.Unmarshal(aux.TTL, &seconds); err != nil {
-			return fmt.Errorf("unsupported TTL value: %s", string(aux.TTL))
-		}
-		c.TTL = time.Duration(seconds * float64(time.Second))
 	}
-	if c.TTL < 0 {
-		return fmt.Errorf("TTL must be non-negative, got %v", c.TTL)
+	if len(aux.CleanupInterval) != 0 && string(aux.CleanupInterval) != "null" {
+		d, err := parseDurationField(aux.CleanupInterval, "cleanup_interval")
+		if err != nil {
+			return err
+		}
+		c.CleanupInterval = d
 	}
 	return nil
+}
+
+// parseDurationField reads a duration given as a string ("1m", "1h") or a JSON number (seconds).
+func parseDurationField(raw json.RawMessage, name string) (time.Duration, error) {
+	var d time.Duration
+	// Try string first ("1m"); fall back to a JSON number (seconds).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse %s duration string '%s': %w", name, s, err)
+		}
+		d = parsed
+	} else {
+		var seconds float64
+		if err := json.Unmarshal(raw, &seconds); err != nil {
+			return 0, fmt.Errorf("unsupported %s value: %s", name, string(raw))
+		}
+		d = time.Duration(seconds * float64(time.Second))
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %v", name, d)
+	}
+	return d, nil
 }
 
 // StreamChunk is one chunk from a streaming response, retained until the
@@ -277,6 +299,15 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 	if config.Provider != "" && config.Dimension <= 0 {
 		return nil, fmt.Errorf("dimension must be > 0 when provider is set (got dimension=%d, provider=%q)", config.Dimension, config.Provider)
 	}
+	if config.TenantIsolation && config.DisableIdentityScoping {
+		return nil, fmt.Errorf("tenant_isolation needs identity scoping: remove disable_identity_scoping or turn tenant_isolation off")
+	}
+	if config.CleanupInterval < 0 {
+		return nil, fmt.Errorf("cleanup_interval must be non-negative, got %v", config.CleanupInterval)
+	}
+	if config.CleanupBatchSize < 0 {
+		return nil, fmt.Errorf("cleanup_batch_size must be non-negative, got %d", config.CleanupBatchSize)
+	}
 	// Set plugin-specific defaults
 	if config.VectorStoreNamespace == "" {
 		logger.Debug("Vector store namespace is not set, using default of %s", DefaultVectorStoreNamespace)
@@ -329,6 +360,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 
 	plugin.cleanupWg.Add(1)
 	go plugin.runCacheStateCleanupLoop()
+
+	if config.TenantIsolation && !vectorstore.EnforcesTenantScope(store) {
+		logger.Warn("tenant_isolation is on, but the vector store does not enforce the tenant scope itself (pgvector needs row_level_security: true): entries are still stamped, and only the params hash keeps tenants apart")
+	}
+	plugin.startExpiredEntryCleanup()
 
 	return plugin, nil
 }
@@ -434,6 +470,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// The identity scope rides inside the metadata, so it reaches the params
 	// hash, the request hash and the direct cache ID together.
 	state.IdentityScope = plugin.resolveIdentityScope(ctx)
+	state.TenantScope = plugin.tenantScopeFor(state.IdentityScope)
 	metadata, err := plugin.buildRequestMetadataForCaching(state, req)
 	if err != nil {
 		plugin.clearCacheState(requestID)
@@ -830,6 +867,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		paramsHash = ""
 	}
 	unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
+	// With tenant_isolation the store is told who the entry belongs to, both in the entry itself
+	// (the field its policy reads) and, below, on the context of the write.
+	tenantScope := state.TenantScope
+	if tenantScope != "" {
+		unifiedMetadata["tenant_scope"] = tenantScope
+	}
 
 	if isStream {
 		// Append the owned serialized chunk synchronously — the accumulator
@@ -852,6 +895,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 			return res, nil, nil
 		}
 		plugin.cacheWriter(storageID, func(cacheCtx context.Context) {
+			cacheCtx = plugin.withTenantScope(cacheCtx, tenantScope)
 			if err := plugin.processAccumulatedStream(cacheCtx, requestID); err != nil {
 				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
 			}
@@ -860,6 +904,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	}
 
 	plugin.cacheWriter(storageID, func(cacheCtx context.Context) {
+		cacheCtx = plugin.withTenantScope(cacheCtx, tenantScope)
 		if err := plugin.addNonStreamingResponse(cacheCtx, storageID, responseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 			plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
 		}
@@ -1034,7 +1079,7 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 	defer cancel()
-	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
+	results, err := plugin.store.DeleteAll(plugin.withTenantAdmin(ctx), plugin.config.VectorStoreNamespace, queries)
 	if err != nil {
 		plugin.logger.Warn("Failed to delete cache entries for key '%s': %v", cacheKey, err)
 		return err
@@ -1061,7 +1106,7 @@ func (plugin *Plugin) ClearCacheForCacheID(cacheID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 	defer cancel()
-	if err := plugin.store.Delete(ctx, plugin.config.VectorStoreNamespace, cacheID); err != nil {
+	if err := plugin.store.Delete(plugin.withTenantAdmin(ctx), plugin.config.VectorStoreNamespace, cacheID); err != nil {
 		plugin.logger.Warn("Failed to delete cache entry %s: %v", cacheID, err)
 		return err
 	}

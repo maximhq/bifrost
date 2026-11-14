@@ -12,7 +12,7 @@ The VectorStore is a core component of Bifrost's framework package that provides
 - **Vector Similarity Search**: Find semantically similar content using embeddings
 - **Namespace Management**: Organize data into separate collections with custom schemas
 - **Flexible Filtering**: Query data with complex filters and pagination
-- **Multiple Backends**: Support for Weaviate, Redis/Valkey-compatible, Qdrant, and Pinecone vector stores
+- **Multiple Backends**: Support for Weaviate, Redis/Valkey-compatible, Qdrant, Pinecone, and PostgreSQL (pgvector) vector stores
 - **High Performance**: Optimized for production workloads
 - **Scalable Storage**: Handle millions of vectors with efficient indexing
 
@@ -138,6 +138,9 @@ err = store.Delete(ctx, "my_content", "unique-id-123")
   </Card>
   <Card title="Pinecone" icon="database" href="/integrations/vector-databases/pinecone">
     Managed vector database with serverless options.
+  </Card>
+  <Card title="PostgreSQL (pgvector)" icon="database" href="/integrations/vector-databases/pgvector">
+    Vector search in your own PostgreSQL database.
   </Card>
 </CardGroup>
 

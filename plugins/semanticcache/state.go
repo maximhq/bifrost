@@ -35,6 +35,10 @@ type cacheState struct {
 	// identity. See resolveIdentityScope.
 	IdentityScope map[string]interface{}
 
+	// TenantScope is a non-reversible hash of IdentityScope, sent to the store with every call and
+	// stored on every entry when tenant_isolation is on. Empty when it is off. See tenantScopeFor.
+	TenantScope string
+
 	// ShortCircuited is set when PreLLMHook served the response from cache
 	// (returned a non-nil LLMPluginShortCircuit). PostLLMHook uses this to
 	// skip the entire cache-write path: only the FINAL replay chunk carries
