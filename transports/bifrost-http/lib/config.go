@@ -2542,6 +2542,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 		}
 	}
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP, configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp"))
+	applyCodeModeDiscoveryRanker(config.MCPConfig, configData.MCP)
 
 	// Reconcile Virtual MCPs declared under mcp.virtual_mcps. This runs after client configs are
 	// synced so tool specs can resolve their source MCP clients by name. forceFileSync makes
@@ -3145,6 +3146,54 @@ func createFileMCPClient(ctx context.Context, store configstore.ConfigStore, cli
 		return
 	}
 	logger.Warn("failed to create MCP client config: %v", err)
+}
+
+// Environment overrides for mcp.tool_manager_config.code_mode_discovery_ranker.
+const (
+	envCodeModeDiscoveryRankerURL       = "BIFROST_CODE_MODE_DISCOVERY_RANKER_URL"
+	envCodeModeDiscoveryRankerTokenFile = "BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE"
+)
+
+// applyCodeModeDiscoveryRanker sets the external listToolFiles ranker on the MCP
+// config handed to Bifrost. It is deployment configuration, read from
+// config.json and the environment on every start and never stored in the config
+// store, so only whoever runs the gateway can point it at an endpoint.
+func applyCodeModeDiscoveryRanker(mcpCfg, fileCfg *schemas.MCPConfig) {
+	if mcpCfg == nil {
+		return
+	}
+	ranker := resolveCodeModeDiscoveryRanker(fileCfg)
+	if mcpCfg.ToolManagerConfig == nil {
+		if ranker == nil {
+			return
+		}
+		mcpCfg.ToolManagerConfig = &schemas.MCPToolManagerConfig{}
+	}
+	mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker = ranker
+}
+
+// resolveCodeModeDiscoveryRanker merges the file setting with its environment
+// overrides. It returns nil when no URL is set or the result is invalid.
+func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCodeModeDiscoveryRanker {
+	var ranker schemas.MCPCodeModeDiscoveryRanker
+	if fileCfg != nil && fileCfg.ToolManagerConfig != nil && fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
+		ranker = *fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+	}
+	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL)); value != "" {
+		ranker.URL = value
+	}
+	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerTokenFile)); value != "" {
+		ranker.TokenFile = value
+	}
+	ranker.URL = strings.TrimSpace(ranker.URL)
+	if ranker.URL == "" {
+		return nil
+	}
+	if err := ranker.Validate(); err != nil {
+		logger.Warn("ignoring mcp.tool_manager_config.code_mode_discovery_ranker: %v", err)
+		return nil
+	}
+	return &ranker
 }
 
 func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig, fileIsSourceOfTruth bool) {

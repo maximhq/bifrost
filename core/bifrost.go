@@ -441,6 +441,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
 					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
 					Limits:               mcpConfig.ToolManagerConfig.CodeModeLimits,
+					DiscoveryRanker:      mcpConfig.ToolManagerConfig.CodeModeDiscoveryRanker,
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)

@@ -87,6 +87,36 @@ func TestMCPCodeModeLimitsValidate(t *testing.T) {
 	}
 }
 
+func TestMCPCodeModeDiscoveryRankerValidate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ranker  MCPCodeModeDiscoveryRanker
+		wantErr bool
+	}{
+		{"empty disables", MCPCodeModeDiscoveryRanker{}, false},
+		{"https", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank"}, false},
+		{"http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank"}, false},
+		{"maximum timeout", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 30}, false},
+		{"timeout above maximum", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 31}, true},
+		{"timeout that overflows a duration", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 9223372037}, true},
+		{"negative timeout", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: -1}, true},
+		{"other scheme", MCPCodeModeDiscoveryRanker{URL: "ftp://ranker.example/rank"}, true},
+		{"relative", MCPCodeModeDiscoveryRanker{URL: "/rank"}, true},
+		{"credentials in url", MCPCodeModeDiscoveryRanker{URL: "https://user:pass@ranker.example/rank"}, true},
+		{"token over https", MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"token over loopback http", MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:9000/rank", TokenFile: "/run/secrets/ranker"}, false},
+		{"plain http without token", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank"}, false},
+		{"token over non-loopback http", MCPCodeModeDiscoveryRanker{URL: "http://ranker.internal:9000/rank", TokenFile: "/run/secrets/ranker"}, true},
+	} {
+		if err := tc.ranker.Validate(); (err != nil) != tc.wantErr {
+			t.Fatalf("%s: Validate() = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+	if got := (MCPCodeModeDiscoveryRanker{}).Timeout(); got != DefaultCodeModeDiscoveryRankerTimeout {
+		t.Fatalf("default timeout = %v", got)
+	}
+}
+
 func TestMCPConnectionTypeOpenAPI_OTelNetworkTransport(t *testing.T) {
 	if got := MCPConnectionTypeOpenAPI.OTelNetworkTransport(); got != "tcp" {
 		t.Fatalf("openapi tools reach their upstream over HTTP; OTelNetworkTransport() = %q, want tcp", got)

@@ -410,6 +410,100 @@ servers/
     write_file.pyi
 ```
 
+**Parameters (both optional):**
+- `query` - A short description of what the model wants to do, such as `"create a github issue"`. Returns a ranked shortlist instead of the complete listing.
+- `limit` - The most files a shortlist returns, from 1 to 20. Defaults to 8. Ignored without `query`.
+
+Without `query`, `listToolFiles` returns the complete listing shown above, unchanged.
+
+#### Ranked discovery
+
+With hundreds of tools across many servers, the complete listing is long, and the model has to read through all of it to find the few tools that fit the task. A `query` returns just those:
+
+```python
+listToolFiles(query="post a message to the team channel", limit=3)
+```
+
+```
+# Ranked shortlist for this query (lexical match): 2 of 214 tools visible to this caller matched.
+# Not exhaustive: call listToolFiles without query for the complete listing.
+# Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode
+# Call readToolFile before executeToolCode to confirm parameters and return shape.
+
+servers/slack/send_message.pyi
+servers/slack/search_messages.pyi
+```
+
+By default Bifrost ranks tools lexically: words of the query found in a server or tool name count most, words found in a tool's description or parameter names count less, and a query that names a tool (`slack.send_message` or its file path) returns that tool. At server binding level each server file is listed once, with up to 8 of the matching tool names and a `+N more` count for the rest.
+
+Ranking only reorders and shortens the listing the caller already gets. The shortlist holds only tools the caller can see in the complete listing (including the virtual key filter described above), ranking never runs a tool, and it does not change what `executeToolCode` may call.
+
+#### External ranker
+
+For ranking by meaning rather than shared words, point Bifrost at an HTTP service that implements the contract below. Bifrost sends it the query and the caller's visible tools, and falls back to the lexical shortlist when the ranker times out, fails, or returns an answer that does not pass validation.
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "code_mode_discovery_ranker": {
+        "url": "https://tool-ranker.internal/rank",
+        "token_file": "/run/secrets/tool-ranker-token",
+        "timeout_seconds": 5
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `url` | `http` or `https` endpoint that receives the ranking request. Credentials in the URL are rejected. Use `https` unless the ranker runs on the same host or a trusted private network. |
+| `token_file` | Optional. File holding a bearer token, sent as `Authorization: Bearer <token>`. Read on every request, so the token can rotate without a restart. Requires an `https` URL, or plain `http` on a loopback host: over plain `http` anyone on the network path could read the token. Any other `url` with `token_file` set is rejected at startup with a warning, and the built-in ranking is used. |
+| `timeout_seconds` | Optional. Bound on one ranking call, 1 to 30 seconds. Defaults to 5. |
+
+The environment variables `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` and `BIFROST_CODE_MODE_DISCOVERY_RANKER_TOKEN_FILE` override `url` and `token_file`. The ranker is deployment configuration: it is read from `config.json` and the environment at startup and is not stored in the config store or editable from the UI. Redirects are not followed.
+
+**Request** (`POST`, `Content-Type: application/json`):
+
+```json
+{
+  "version": 1,
+  "revision": "5f2c…",
+  "query": "post a message to the team channel",
+  "candidates": [
+    {
+      "id": "servers/slack/send_message.pyi",
+      "server": "slack",
+      "name": "send_message",
+      "description": "Post a message to a channel",
+      "parameters": ["channel", "text"]
+    }
+  ]
+}
+```
+
+- `revision` changes whenever a visible tool's definition or the binding level changes, so a ranker can cache by `revision` and `query`.
+- `candidates` holds up to 32 tools. When the caller sees more, Bifrost sends the best lexical matches plus at least one tool from as many other servers as fit. Descriptions are capped at 512 characters.
+
+**Response** (`200`, JSON, at most 64 KiB):
+
+```json
+{
+  "version": 1,
+  "revision": "5f2c…",
+  "candidates": [
+    { "id": "servers/slack/send_message.pyi", "relevance": 0.92 }
+  ],
+  "sufficient": 0.9
+}
+```
+
+- `version` must be `1` and `revision` must echo the request.
+- Every `id` must be one of the request's candidates, at most once, and every `relevance` must be a number from 0 to 1. Candidates left out count as not relevant. Any violation discards the whole answer.
+- The shortlist lists candidates with a relevance above 0, highest first, up to `limit`.
+- `sufficient` is optional: the ranker's estimate, from 0 to 1, that the candidates cover the request. Below 0.5 the shortlist tells the model to fall back to the complete listing.
+
 ### 2. readToolFile
 
 Reads a virtual `.pyi` file to get compact Python function signatures for tools.
