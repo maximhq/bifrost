@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,6 +88,18 @@ func TestAgentRealtimePathIsUnchanged(t *testing.T) {
 	other, err := provider.ToProviderRealtimeEvent(&schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCancel})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"type":"response.cancel"}`, string(other))
+
+	for _, frame := range []string{
+		`{"type":"user_message","text":"Say hello."}`,
+		`{"type":"contextual_update","text":"The user is on the pricing page."}`,
+		`{"type":"client_tool_result","tool_call_id":"c1","result":"sunny","is_error":false}`,
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(frame))
+		require.NoError(t, err)
+		forwarded, err := provider.ToProviderRealtimeEvent(event)
+		require.NoError(t, err)
+		require.JSONEq(t, frame, string(forwarded), "the fields of a client's event reach the agent with it")
+	}
 }
 
 // TestRealtimeWebSocketURLSendsScribeToItsOwnEndpoint pins where a Scribe model goes, and that one opened
@@ -103,7 +116,7 @@ func TestRealtimeWebSocketURLSendsScribeToItsOwnEndpoint(t *testing.T) {
 	require.Equal(t, 400, *bifrostErr.StatusCode)
 	require.Contains(t, bifrostErr.Error.Message, "intent=transcription")
 
-	translator, bifrostErr := provider.NewRealtimeTranslator(schemas.Key{}, "agent_123")
+	translator, bifrostErr := provider.NewRealtimeTranslator(nil, schemas.Key{}, "agent_123")
 	require.Nil(t, translator)
 	require.NotNil(t, bifrostErr, "an agent id has no translator")
 }
@@ -835,5 +848,184 @@ func BenchmarkScribeTranslatorPartial(b *testing.B) {
 			b.Fatal(err)
 		}
 		i++
+	}
+}
+
+// nativeScribeChunk is the frame an ElevenLabs SDK sends: n bytes of audio, optionally with the commit.
+func nativeScribeChunk(n int, commit bool) json.RawMessage {
+	return json.RawMessage(`{"message_type":"input_audio_chunk","audio_base_64":"` + base64.StdEncoding.EncodeToString(make([]byte, n)) + `","commit":` + strconv.FormatBool(commit) + `,"sample_rate":16000}`)
+}
+
+// A native client's call is addressed by its own URL: the client's query goes upstream as sent, less its
+// credentials, on the key's base URL, with the model the gateway resolved in place of the one it named.
+func TestNativeRealtimeDial(t *testing.T) {
+	provider := NewElevenlabsProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL:      "https://api.in.residency.elevenlabs.io/",
+		ExtraHeaders: map[string]schemas.SecretVar{"x-residency": *schemas.NewSecretVar("in")},
+	}}, nil)
+	key := schemas.Key{Value: *schemas.NewSecretVar("provider-key")}
+
+	for _, tc := range []struct {
+		name, route, query, model, want string
+	}{
+		{"scribe keeps every option", NativeScribeRoute, "model_id=alias&audio_format=pcm_16000&commit_strategy=vad&language_code=hi&include_timestamps=true&keyterms=a&keyterms=b&enable_logging=false&vad_silence_threshold_secs=0.5",
+			"scribe_v3_live", "wss://api.in.residency.elevenlabs.io/v1/speech-to-text/realtime?audio_format=pcm_16000&commit_strategy=vad&enable_logging=false&include_timestamps=true&keyterms=a&keyterms=b&language_code=hi&model_id=scribe_v3_live&vad_silence_threshold_secs=0.5"},
+		{"credentials are dropped", NativeScribeRoute, "model_id=scribe_v3_live&token=sutkn_secret&xi-api-key=sk-bf-vk", "scribe_v3_live", "wss://api.in.residency.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v3_live"},
+		{"no model_id in the query gets the resolved one", NativeDialogueRoute, "output_format=pcm_24000", "eleven_v4_turbo", "wss://api.in.residency.elevenlabs.io/v1/text-to-dialogue/stream-input?model_id=eleven_v4_turbo&output_format=pcm_24000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, headers, err := provider.NativeRealtimeDial(nil, key, tc.route, tc.query, tc.model)
+			require.Nil(t, err)
+			require.Equal(t, tc.want, got)
+			require.Equal(t, "provider-key", headers["xi-api-key"], "the key's credential goes upstream")
+			require.Equal(t, "in", headers["x-residency"])
+		})
+	}
+
+	for _, tc := range []struct{ name, route, query string }{
+		{"a route ElevenLabs has no native socket for", "/v1/convai/conversation", "model_id=x"},
+		{"a path that only resembles one", NativeScribeRoute + "/../x", "model_id=x"},
+		{"a query that does not parse", NativeScribeRoute, "model_id=%zz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := provider.NativeRealtimeDial(nil, key, tc.route, tc.query, "m")
+			require.NotNil(t, err)
+		})
+	}
+}
+
+func TestScribeAudioBytesPerSecond(t *testing.T) {
+	for format, want := range map[string]int64{
+		"pcm_16000": 32000, "pcm_8000": 16000, "pcm_22050": 44100, "pcm_24000": 48000, "pcm_44100": 88200, "pcm_48000": 96000,
+		"ulaw_8000": 8000, "alaw_8000": 8000,
+		"": 32000, "pcm": 32000, "pcm_abc": 32000, "pcm_0": 32000, "weird": 32000,
+	} {
+		require.Equal(t, want, scribeAudioBytesPerSecond(format), format)
+	}
+}
+
+func TestBase64DecodedLen(t *testing.T) {
+	for n := range 40 {
+		raw := make([]byte, n)
+		require.Equal(t, int64(n), base64DecodedLen(base64.StdEncoding.EncodeToString(raw)), "padded, %d bytes", n)
+		require.Equal(t, int64(n), base64DecodedLen(base64.RawStdEncoding.EncodeToString(raw)), "unpadded, %d bytes", n)
+	}
+	require.Zero(t, base64DecodedLen(""))
+}
+
+// A native Scribe connection is governed turn by turn from what its frames say, and its audio is metered from them.
+func TestScribeNativeProtocolMetersAudioPerSegment(t *testing.T) {
+	provider := &ElevenlabsProvider{}
+	protocol, err := provider.NativeRealtimeProtocol(NativeScribeRoute, "model_id=scribe_v3_live&audio_format=pcm_16000")
+	require.Nil(t, err)
+
+	var starts []bool
+	for _, frame := range []json.RawMessage{nativeScribeChunk(16000, false), nativeScribeChunk(16000, false), nativeScribeChunk(0, true)} {
+		event, parseErr := protocol.ToBifrostRealtimeEvent(frame)
+		require.NoError(t, parseErr)
+		forwarded, encodeErr := protocol.ToProviderRealtimeEvent(event)
+		require.NoError(t, encodeErr)
+		require.JSONEq(t, string(frame), string(forwarded), "the client's frame goes upstream as it was sent")
+		starts = append(starts, protocol.ShouldStartRealtimeTurn(event))
+	}
+	require.Equal(t, []bool{true, true, true}, starts, "a segment starts at its audio")
+
+	committed := json.RawMessage(`{"message_type":"committed_transcript","text":"hello \"world\""}`)
+	event, parseErr := protocol.ToBifrostRealtimeEvent(committed)
+	require.NoError(t, parseErr)
+	require.Equal(t, protocol.RealtimeTurnFinalEvent(), event.Type)
+	require.Equal(t, `"hello \"world\""`, string(event.ExtraParams["transcript"]))
+	require.False(t, protocol.ShouldStartRealtimeTurn(event))
+
+	usage := protocol.(schemas.RealtimeUsageExtractor).ExtractRealtimeTurnUsage(committed)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.AudioSeconds)
+	require.InDelta(t, 1.0, *usage.AudioSeconds, 1e-9, "32000 bytes of pcm_16000 is one second")
+	require.Nil(t, protocol.(schemas.RealtimeUsageExtractor).ExtractRealtimeTurnUsage(committed), "the next segment starts from nothing")
+
+	_, _ = protocol.ToBifrostRealtimeEvent(nativeScribeChunk(8000, false))
+	usage = protocol.(schemas.RealtimeUsageExtractor).ExtractRealtimeTurnUsage(committed)
+	require.InDelta(t, 0.25, *usage.AudioSeconds, 1e-9)
+}
+
+// Scribe is metered at the format of the query: a byte a sample for u-law, two for pcm.
+func TestScribeNativeProtocolMetersTheQueryFormat(t *testing.T) {
+	for query, wantSeconds := range map[string]float64{
+		"audio_format=ulaw_8000":  2,
+		"audio_format=pcm_8000":   1,
+		"audio_format=pcm_48000":  1.0 / 6,
+		"model_id=scribe_v3_live": 0.5, // pcm_16000 when the query names no format
+	} {
+		protocol, err := (&ElevenlabsProvider{}).NativeRealtimeProtocol(NativeScribeRoute, query)
+		require.Nil(t, err)
+		_, parseErr := protocol.ToBifrostRealtimeEvent(nativeScribeChunk(16000, false))
+		require.NoError(t, parseErr)
+		usage := protocol.(schemas.RealtimeUsageExtractor).ExtractRealtimeTurnUsage(nil)
+		require.NotNil(t, usage, query)
+		require.InDelta(t, wantSeconds, *usage.AudioSeconds, 1e-9, query)
+	}
+}
+
+// Frames Scribe sends are typed for the turn pipeline, and the error ones carry their error: the frame is forwarded as it is.
+func TestScribeNativeProtocolReadsScribeFrames(t *testing.T) {
+	protocol, err := (&ElevenlabsProvider{}).NativeRealtimeProtocol(NativeScribeRoute, "")
+	require.Nil(t, err)
+
+	for frame, want := range map[string]schemas.RealtimeEventType{
+		`{"message_type":"session_started","session_id":"sess-1","config":{}}`:              schemas.RTEventSessionCreated,
+		`{"message_type":"partial_transcript","text":"hel"}`:                                "partial_transcript",
+		`{"message_type":"committed_transcript_with_timestamps","text":"hello","words":[]}`: "committed_transcript_with_timestamps",
+		`{"message_type":"committed_transcript","text":"hello"}`:                            schemas.RTEventInputAudioTransCompleted,
+		`{"message_type":"quota_exceeded","error":"You have exceeded your quota."}`:         "quota_exceeded",
+		`{"message_type":"input_error","error":"Failed to decode audio chunk"}`:             "input_error",
+		`{"message_type":"auth_error","error":"Invalid API key"}`:                           "auth_error",
+	} {
+		event, parseErr := protocol.ToBifrostRealtimeEvent(json.RawMessage(frame))
+		require.NoError(t, parseErr, frame)
+		require.Equal(t, want, event.Type, frame)
+		require.JSONEq(t, frame, string(event.RawData), "the frame is forwarded as it was")
+		require.True(t, protocol.ShouldForwardRealtimeEvent(event))
+		require.False(t, protocol.ShouldStartRealtimeTurn(event), frame)
+		if message := gjson.Get(frame, "error"); message.Exists() {
+			require.NotNil(t, event.Error, frame)
+			require.Equal(t, message.Str, event.Error.Message)
+		} else {
+			require.Nil(t, event.Error, frame)
+		}
+	}
+	event, _ := protocol.ToBifrostRealtimeEvent(json.RawMessage(`{"message_type":"session_started","session_id":"sess-1"}`))
+	require.Equal(t, "sess-1", event.Session.ID)
+
+	_, err = (&ElevenlabsProvider{}).NativeRealtimeProtocol(NativeDialogueRoute, "")
+	require.NotNil(t, err, "the dialogue socket is one session, not governed turn by turn")
+}
+
+// BenchmarkScribeNativeProtocolClientFrame is one audio frame of a native Scribe client through the hooks: the
+// cost the relay adds to every frame (8000 bytes is a quarter of a second of pcm_16000).
+func BenchmarkScribeNativeProtocolClientFrame(b *testing.B) {
+	protocol, _ := (&ElevenlabsProvider{}).NativeRealtimeProtocol(NativeScribeRoute, "audio_format=pcm_16000")
+	frame := nativeScribeChunk(8000, false)
+	b.SetBytes(int64(len(frame)))
+	b.ReportAllocs()
+	for b.Loop() {
+		event, err := protocol.ToBifrostRealtimeEvent(frame)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err = protocol.ToProviderRealtimeEvent(event); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkScribeNativeProtocolPartial is one partial transcript from Scribe through the hooks.
+func BenchmarkScribeNativeProtocolPartial(b *testing.B) {
+	protocol, _ := (&ElevenlabsProvider{}).NativeRealtimeProtocol(NativeScribeRoute, "")
+	frame := json.RawMessage(scribePartial("Hello from Bifrost. This is a test of the partial."))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := protocol.ToBifrostRealtimeEvent(frame); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

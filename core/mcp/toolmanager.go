@@ -312,7 +312,8 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
-		if client.ExecutionConfig.IsCodeModeClient {
+		direct, codeMode := codeModeListing(ctx, client.ExecutionConfig)
+		if codeMode {
 			includeCodeModeTools = true
 		}
 		// Add tools from this client, checking for duplicates
@@ -320,7 +321,7 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
 				seenToolNames[tool.Function.Name] = true
 				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
-				if !client.ExecutionConfig.IsCodeModeClient {
+				if direct {
 					availableTools = append(availableTools, tool)
 				}
 			}

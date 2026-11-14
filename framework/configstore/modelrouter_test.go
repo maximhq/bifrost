@@ -11,6 +11,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -620,4 +621,38 @@ func TestDeleteModelRouterFreesNameAndPriority(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, &ModelRouterRouting{Scope: "global", Priority: 4}, got.Routing, "the new router gets the default routing, not the old one")
 	assert.Empty(t, got.Targets, "the deleted router's targets do not come back")
+}
+
+// TestModelRouterReadsHonorQueryScope pins that router reads honor a row-visibility QueryScope on
+// ctx, as routing rule reads do, so the enterprise DAC wrapper can hide routers whose routing is
+// outside the caller's scope. The scope names model_routers columns, so it narrows only the router
+// rows: a visible router still comes back with its targets. A ctx without a scope reads every router.
+func TestModelRouterReadsHonorQueryScope(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "support", testModelRouterTargets()))
+	require.NoError(t, store.SetModelRouterRouting(ctx, "billing", ModelRouterRouting{Scope: "team", ScopeID: bifrost.Ptr("team-b")}))
+	require.NoError(t, store.SetModelRouterRouting(ctx, "support", ModelRouterRouting{Scope: "team", ScopeID: bifrost.Ptr("team-a")}))
+
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("model_routers.scope = ? AND model_routers.scope_id = ?", "team", "team-a")
+	})
+
+	routers, err := store.GetModelRouters(scoped)
+	require.NoError(t, err)
+	require.Len(t, routers, 1)
+	assert.Equal(t, "support", routers[0].ID)
+	assert.Len(t, routers[0].Targets, 3, "the scope narrows routers, not their targets")
+
+	got, err := store.GetModelRouter(scoped, "support")
+	require.NoError(t, err)
+	assert.Len(t, got.Targets, 3)
+	_, err = store.GetModelRouter(scoped, "billing")
+	assert.ErrorIs(t, err, ErrNotFound, "a router outside the scope reads as not found")
+
+	all, err := store.GetModelRouters(ctx)
+	require.NoError(t, err)
+	assert.Len(t, all, 2, "a ctx without a scope reads every router")
 }

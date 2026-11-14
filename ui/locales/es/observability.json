@@ -1266,6 +1266,7 @@
 		"decisions": "Decisiones",
 		"speech": "Discurso",
 		"speech_stream": "Voz en streaming",
+		"speech_session": "Sesión de voz",
 		"transcription": "Transcripción",
 		"transcription_stream": "Transcripción Stream",
 		"image_generation": "Generación de imagen",

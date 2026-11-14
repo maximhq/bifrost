@@ -94,7 +94,7 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		case testConfig.Provider == schemas.Elevenlabs:
 			runElevenLabsRealtimeTest(t, conn, testConfig)
 		case translated:
-			translator, bifrostErr := translating.NewRealtimeTranslator(key, testConfig.RealtimeModel)
+			translator, bifrostErr := translating.NewRealtimeTranslator(bfCtx, key, testConfig.RealtimeModel)
 			if bifrostErr != nil {
 				t.Fatalf("failed to create the realtime translator for provider %s: %v", testConfig.Provider, bifrostErr)
 			}
