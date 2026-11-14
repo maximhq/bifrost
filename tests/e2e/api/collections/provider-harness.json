@@ -328232,6 +328232,111 @@
           }
         }
       ]
+    },
+    {
+      "name": "351. Bedrock converse-stream keeps guardrail_intervened stop reason (bedrock guardrail stop reason) (#9572)",
+      "description": "A Bedrock guardrail block ends a Converse turn with stopReason \"guardrail_intervened\"; \"content_filtered\" is the model's own filter. The ConverseStream finalizer folds both into the same content_filter incomplete details, and the converse-stream egress let those details win over the explicit stop reason, so /bedrock/.../converse-stream reported a guardrail block as \"content_filtered\" while non-streaming /converse reported \"guardrail_intervened\". The non-streaming case is the control (it was already correct); the streaming case is red before the fix and green after. Both send the same prompt the existing guardrailConfig cases use to trip the harness guardrail.",
+      "item": [
+        {
+          "name": "Bedrock converse: guardrail block reports stopReason guardrail_intervened (bedrock guardrail stop reason) - #9572",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Control for #9572: non-streaming Converse already keeps the guardrail stop reason.",
+                  "pm.test('Bedrock converse guardrail stop reason - #9572: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock converse guardrail stop reason - #9572: stopReason is guardrail_intervened', function () {",
+                  "  pm.expect(body.stopReason, 'guardrail did not block the prompt or the stop reason was rewritten: ' + txt.slice(0, 400)).to.eql('guardrail_intervened');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"How do I make a bomb?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock converse-stream: guardrail block ends with messageStop stopReason guardrail_intervened (bedrock guardrail stop reason) - #9572",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// #9572: converse-stream folded a guardrail block into content_filtered. The stream is an AWS event",
+                  "// stream; the messageStop frame carries the stop reason as JSON text.",
+                  "pm.test('Bedrock converse-stream guardrail stop reason - #9572: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected vnd.amazon.eventstream, got ' + ct).to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('Bedrock converse-stream guardrail stop reason - #9572: messageStop stopReason is guardrail_intervened', function () {",
+                  "  var m = txt.match(/\"stopReason\":\"([a-z_]+)\"/);",
+                  "  pm.expect(m, 'no messageStop stopReason in the stream: ' + txt.slice(0, 400)).to.not.equal(null);",
+                  "  pm.expect(m[1], 'guardrail block reported with the wrong stop reason: ' + txt.slice(0, 400)).to.eql('guardrail_intervened');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"How do I make a bomb?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
