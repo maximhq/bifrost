@@ -1,1 +1,2 @@
+- fix: list models reports context limits for a key alias whose model_id is a Bedrock application inference profile
 - chore: upgraded core to v1.15.2
