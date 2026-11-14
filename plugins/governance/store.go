@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -2168,13 +2169,53 @@ func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string)
 	gs.virtualKeys.CompareAndDelete(value, existing)
 }
 
+// rateLimitViolationError is the error CheckRateLimit returns for a refused request. Its text is the
+// message callers have always seen; retryAfter is what the text cannot carry, how long until the
+// window reopens, so the transport can tell the client when to come back.
+type rateLimitViolationError struct {
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *rateLimitViolationError) Error() string { return e.message }
+
+// retryAfterFromError returns the wait a rate-limit refusal carries, or zero for any other error.
+func retryAfterFromError(err error) time.Duration {
+	var violation *rateLimitViolationError
+	if errors.As(err, &violation) {
+		return violation.retryAfter
+	}
+	return 0
+}
+
+// windowRemaining is how long until a rate-limit window that opened at lastReset closes. It is the
+// complement of the expiry test CheckRateLimit applies (time.Since(lastReset) >= duration), so the
+// wait it reports ends exactly when that test starts letting requests through. It is never negative
+// and is zero when the duration is missing or unparseable.
+func windowRemaining(resetDuration *string, lastReset time.Time) time.Duration {
+	if resetDuration == nil {
+		return 0
+	}
+	duration, err := configstoreTables.ParseDuration(*resetDuration)
+	if err != nil {
+		return 0
+	}
+	return max(duration-time.Since(lastReset), 0)
+}
+
 // CheckRateLimit checks rate limits for tokens and requests across categories
 func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRateLimits EntityWiseRateLimits, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
 	// A live session's continuation was already counted as one request when the session was admitted.
 	sessionContinuation := isLiveSessionContinuation(ctx)
+	// The first refusal fixes the decision and message, as before. The wait is the longest of every
+	// refusing window across all entities, because the caller can only succeed once all have reopened.
+	var firstDecision Decision
+	var firstErr *rateLimitViolationError
+	var longestWait time.Duration
 	for entity, rateLimits := range entityWiseRateLimits {
 		for _, rateLimit := range rateLimits {
 			var violations []string
+			var retryAfter time.Duration
 			// Check if rate limit needs reset (in-memory check)
 			// Track which limits are expired so we can skip only those specific checks
 			tokenLimitExpired := false
@@ -2214,6 +2255,7 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 				}
 				violations = append(violations, fmt.Sprintf("token limit exceeded (%d/%d, resets every %s)",
 					rateLimit.TokenCurrentUsage+tokensBaseline, *rateLimit.TokenMaxLimit, duration))
+				retryAfter = max(retryAfter, windowRemaining(rateLimit.TokenResetDuration, rateLimit.TokenLastReset))
 			}
 
 			// Request limits - check if total usage (local + remote baseline) exceeds limit
@@ -2225,6 +2267,7 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 				}
 				violations = append(violations, fmt.Sprintf("request limit exceeded (%d/%d, resets every %s)",
 					rateLimit.RequestCurrentUsage+requestsBaseline, *rateLimit.RequestMaxLimit, duration))
+				retryAfter = max(retryAfter, windowRemaining(rateLimit.RequestResetDuration, rateLimit.RequestLastReset))
 			}
 
 			if len(violations) > 0 {
@@ -2237,9 +2280,19 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 						decision = DecisionRequestLimited // More specific violation type
 					}
 				}
-				return decision, fmt.Errorf("rate limit violated for %s: %s", entity, violations)
+				longestWait = max(longestWait, retryAfter)
+				if firstErr == nil {
+					firstDecision = decision
+					firstErr = &rateLimitViolationError{
+						message: fmt.Sprintf("rate limit violated for %s: %s", entity, violations),
+					}
+				}
 			}
 		}
+	}
+	if firstErr != nil {
+		firstErr.retryAfter = longestWait
+		return firstDecision, firstErr
 	}
 	return DecisionAllow, nil
 }

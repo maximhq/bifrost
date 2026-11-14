@@ -130,6 +130,8 @@ const (
 	HeaderBifrostPassthroughPath         = "x-bifrost-passthrough-path"
 	HeaderBifrostErrorType               = "x-bifrost-error-type"
 	HeaderBifrostRetryAfterMs            = "x-bifrost-retry-after-ms"
+	// HeaderRetryAfter is the standard header; see ApplyBifrostErrorResponseHeaders.
+	HeaderRetryAfter = "Retry-After"
 )
 
 // HeaderMCPSessionID is the MCP Streamable HTTP session id the /mcp gateway answers initialize with.
@@ -153,7 +155,7 @@ var ExposedResponseHeaders = strings.Join([]string{
 	HeaderBifrostCacheThreshold, HeaderBifrostCacheProviderUsed, HeaderBifrostCacheModelUsed, HeaderBifrostCacheInputTokens,
 	HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
 	HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
-	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderMCPSessionID,
+	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderRetryAfter, HeaderMCPSessionID,
 }, ", ")
 
 // extraFieldsKey is the top-level JSON key every Bifrost response and error carries its metadata under.
@@ -286,6 +288,13 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		ConvertedRequestType:      extra.ConvertedRequestType,
 		DroppedCompatPluginParams: extra.DroppedCompatPluginParams,
 	}, false)
+	// A refusal by Bifrost's own governance limits says when the window reopens in the standard
+	// header (RFC 9110, section 7.1.3), in every mode: a client honors it with no Bifrost-specific
+	// knowledge, and no provider was called to supply one. Whole seconds, rounded up, so waiting
+	// the stated time never lands a moment before the window reopens.
+	if extra.ErrorType == schemas.ErrorTypePolicyRateLimited && extra.RetryAfter > 0 {
+		ctx.Response.Header.Set(HeaderRetryAfter, strconv.FormatInt((extra.RetryAfter+999)/1000, 10))
+	}
 	if !ExtraFieldsInHeaders(ctx) {
 		return
 	}

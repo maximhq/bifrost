@@ -1163,6 +1163,8 @@ message. A client branching on the refusal reads `type`, not `error.type`.
 }
 ```
 
+  The response also says when to come back. A standard `Retry-After` header carries the whole seconds, rounded up, until the window that refused the request reopens (when both a token and a request window refused it, the longer one). That is the time left in the window, not the window's length that the message names. Clients that honor `Retry-After` wait for it instead of retrying into a window that is still closed. In [headers mode](/providers/response-headers), `x-bifrost-retry-after-ms` carries the same wait in milliseconds, and the body's `extra_fields.retry_after_ms` carries it when extra fields are in the body. Unlike a provider's hint, this value is not clamped to 5 minutes, since a window can be as long as a year.
+
 - Budget Exceeded (402)
 ```json
 {

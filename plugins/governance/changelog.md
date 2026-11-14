@@ -1,1 +1,2 @@
+- feat: a 429 from a virtual key's token or request limit now carries a `Retry-After` header (and `retry_after_ms` in extra fields) with the time left until the window reopens
 - chore: upgraded core to v1.15.2 and framework to v1.12.2
