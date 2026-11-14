@@ -70,6 +70,9 @@ type ModelCapabilities struct {
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
 	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
 
+	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
+	StripsUserTurnTrailingWhitespace *bool `json:"strips_user_turn_trailing_whitespace,omitempty"`
+
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
 	// broadly populated across the catalog where the flags above are curated.
