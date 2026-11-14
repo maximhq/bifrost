@@ -8950,12 +8950,14 @@ func drainAbandonedStream(stream chan *schemas.BifrostStreamChunk) {
 // reports. A custom provider surfaces its own key ("my-anthropic"), which no
 // capability switch knows, so gating on it unresolved would answer false and quietly
 // deny injection to every custom provider wrapping a cache_control backend.
+// The same goes for the model: an alias can send an opaque ID (a Bedrock application
+// inference profile), so the gate judges the alias's canonical model instead.
 func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if r == nil || config == nil {
 		return r
 	}
 	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
-	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), r.Model) {
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)) {
 		return r
 	}
 	cp := *r
@@ -9193,7 +9195,7 @@ func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.Provide
 		return r
 	}
 	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
-	if !providerUtils.PromptCacheInjectionEnabled(promptCache, baseProvider, r.Model) {
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, baseProvider, schemas.ResolveCanonicalModel(ctx, r.Model)) {
 		return r
 	}
 	cp := *r
