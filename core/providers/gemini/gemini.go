@@ -375,7 +375,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (*GeminiGenerationRequest, error) {
-			return ToGeminiChatCompletionRequest(ctx, request)
+			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return ToGeminiChatCompletionRequest(ctx, resolvedRequest)
 		})
 	if err != nil {
 		return nil, err
@@ -435,7 +439,11 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (*GeminiGenerationRequest, error) {
-			reqBody, err := ToGeminiChatCompletionRequest(ctx, request)
+			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiChatCompletionRequest(ctx, resolvedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -774,7 +782,11 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (*GeminiGenerationRequest, error) {
-				reqBody, err := ToGeminiResponsesRequest(ctx, request)
+				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := ToGeminiResponsesRequest(ctx, resolvedRequest)
 				if err != nil {
 					return nil, err
 				}
@@ -973,7 +985,11 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (*GeminiGenerationRequest, error) {
-			reqBody, err := ToGeminiResponsesRequest(ctx, request)
+			resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiResponsesRequest(ctx, resolvedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -2727,8 +2743,13 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		} else {
 			// Inline requests: convert Bifrost requests to Gemini format
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
+			audioBudget := NewAudioURLBudget()
 			for i, bifrostItem := range request.Requests {
-				geminiReq, err := ToGeminiBatchGenerateContentRequest(bifrostItem.Body)
+				resolvedBody, err := ResolveBatchAudioURLs(ctx, bifrostItem.Body, audioBudget)
+				if err != nil {
+					return nil, BatchAudioURLError(i, bifrostItem.CustomID, err)
+				}
+				geminiReq, err := ToGeminiBatchGenerateContentRequest(resolvedBody)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini format", err)
 				}
@@ -4136,7 +4157,11 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (*GeminiGenerationRequest, error) {
-				return ToGeminiResponsesRequest(ctx, request)
+				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				return ToGeminiResponsesRequest(ctx, resolvedRequest)
 			},
 		)
 		if bifrostErr != nil {

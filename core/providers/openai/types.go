@@ -605,7 +605,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						continue
 					}
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
-					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType)))
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType))) || audioURLShadowedByData(block.InputAudio)
 					if needsBlockCopy {
 						blockCopy := block
 						if stripBlockCacheControl {
@@ -626,6 +626,11 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
+						}
+						if audioURLShadowedByData(blockCopy.InputAudio) {
+							audioCopy := *blockCopy.InputAudio
+							audioCopy.URL = ""
+							blockCopy.InputAudio = &audioCopy
 						}
 						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
@@ -1281,6 +1286,9 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.File != nil && fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType) {
 				return true
 			}
+			if audioURLShadowedByData(block.InputAudio) {
+				return true
+			}
 		}
 		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
 		if chatEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
@@ -1302,6 +1310,15 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 		}
 	}
 	return false
+}
+
+// audioURLShadowedByData reports an input_audio block that carries both inline data and a url.
+// Data wins on every route that reads the url (the Gemini resolver only fetches URL-only audio),
+// so the url is dropped from the OpenAI wire, which has no such field: a client that sends both
+// keeps sending OpenAI exactly what it did before input_audio.url existed. URL-only audio is left
+// as it is, like file_url, so the upstream answers for a reference it cannot take.
+func audioURLShadowedByData(audio *schemas.ChatInputAudio) bool {
+	return audio != nil && audio.Data != "" && audio.URL != ""
 }
 
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks

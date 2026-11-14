@@ -725,7 +725,11 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				var err error
 
 				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+					resolvedRequest, err := gemini.ResolveChatAudioURLs(ctx, request)
+					if err != nil {
+						return nil, err
+					}
+					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 					if err != nil {
 						return nil, err
 					}
@@ -1124,7 +1128,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (*gemini.GeminiGenerationRequest, error) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveChatAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1419,7 +1427,11 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (*gemini.GeminiGenerationRequest, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1674,7 +1686,11 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (*gemini.GeminiGenerationRequest, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -3067,7 +3083,23 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests, *request.Model)
+			resolvedRequests := append([]schemas.BatchRequestItem(nil), request.Requests...)
+			// Claude-on-Vertex instances do not carry input_audio, so only the Gemini family resolves.
+			if !schemas.IsAnthropicModelFamily(ctx, *request.Model) {
+				audioBudget := gemini.NewAudioURLBudget()
+				for i, item := range resolvedRequests {
+					body := item.Body
+					if body == nil {
+						body = item.Params
+					}
+					resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body, audioBudget)
+					if err != nil {
+						return nil, gemini.BatchAudioURLError(i, item.CustomID, err)
+					}
+					resolvedRequests[i].Body = resolvedBody
+				}
+			}
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, resolvedRequests, *request.Model)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}
@@ -4451,7 +4483,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (*gemini.GeminiGenerationRequest, error) {
-				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 			},
 		)
 		if bifrostErr != nil {

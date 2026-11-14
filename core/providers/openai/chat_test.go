@@ -2261,6 +2261,42 @@ func TestOpenAIChatRequest_StripsCitationTextFromAnnotations(t *testing.T) {
 	require.NotNil(t, req.Messages[1].OpenAIChatAssistantMessage.Annotations[0].URLCitation.Text)
 }
 
+// input_audio.url is a Bifrost extension. When data is present too, data wins, so the url must
+// not reach the OpenAI wire: a client that sends both keeps sending exactly what it sent before
+// the field existed. URL-only audio is forwarded as is, like file_url, so the upstream refuses it
+// by name instead of the block arriving empty.
+func TestOpenAIChatRequest_InputAudioURLOnTheWire(t *testing.T) {
+	audioRequest := func(audio *schemas.ChatInputAudio) *OpenAIChatRequest {
+		return &OpenAIChatRequest{
+			Model:    "gpt-4o-audio-preview",
+			Provider: schemas.OpenAI,
+			Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: audio},
+				}},
+			}},
+		}
+	}
+
+	t.Run("url beside data is dropped", func(t *testing.T) {
+		req := audioRequest(&schemas.ChatInputAudio{Data: "UklGRg==", URL: "https://audio.example/a.wav", Format: schemas.Ptr("wav")})
+		wireBody, err := json.Marshal(req)
+		require.NoError(t, err)
+		audio := gjson.GetBytes(wireBody, "messages.0.content.0.input_audio")
+		require.Equal(t, "UklGRg==", audio.Get("data").String())
+		require.Equal(t, "wav", audio.Get("format").String())
+		require.False(t, audio.Get("url").Exists(), "url must not reach the OpenAI wire beside data: %s", wireBody)
+		require.Equal(t, "https://audio.example/a.wav", req.Messages[0].Content.ContentBlocks[0].InputAudio.URL, "the caller's request must not be mutated")
+	})
+
+	t.Run("url-only audio is forwarded", func(t *testing.T) {
+		wireBody, err := json.Marshal(audioRequest(&schemas.ChatInputAudio{URL: "https://audio.example/a.wav"}))
+		require.NoError(t, err)
+		require.Equal(t, "https://audio.example/a.wav", gjson.GetBytes(wireBody, "messages.0.content.0.input_audio.url").String())
+	})
+}
+
 func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
 	req := &OpenAIChatRequest{
 		Model:    "gpt-4o-search-preview",

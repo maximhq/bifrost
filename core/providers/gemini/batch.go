@@ -1,9 +1,12 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +45,9 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		}
 		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
 		if err != nil {
+			if errors.Is(err, errUnresolvedAudioURL) {
+				return geminiReq, fmt.Errorf("failed to resolve audio URLs: %w", err)
+			}
 			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
 		}
 		geminiReq.Contents = contents
@@ -49,6 +55,56 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 	}
 
 	return geminiReq, nil
+}
+
+// ResolveBatchAudioURLs fetches any URL-backed audio in an OpenAI-style batch body
+// and returns a copy whose messages carry inline data. This is the network-bound
+// half of batch conversion, kept separate so the conversion itself stays pure.
+// Every item of one batch shares budget, so the batch as a whole is bounded. A body
+// with no URL-only audio comes back as the same map, unchanged.
+func ResolveBatchAudioURLs(ctx context.Context, body map[string]interface{}, budget *AudioURLBudget) (map[string]interface{}, error) {
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return body, nil
+	}
+
+	messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal messages: %w", err)
+	}
+	// Most batch items carry no audio at all; skip the decode for them.
+	if !bytes.Contains(messagesBytes, []byte(`"input_audio"`)) {
+		return body, nil
+	}
+	var chatMessages []schemas.ChatMessage
+	if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal messages: %w", err)
+	}
+	if !slices.ContainsFunc(chatMessages, chatMessageHasAudioURL) {
+		return body, nil
+	}
+	resolvedMessages, err := resolveAudioURLs(ctx, chatMessages, budget)
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedBody := make(map[string]interface{}, len(body))
+	for key, value := range body {
+		resolvedBody[key] = value
+	}
+	resolvedBody["messages"] = resolvedMessages
+	return resolvedBody, nil
+}
+
+// BatchAudioURLError reports a ResolveBatchAudioURLs failure for one batch item. A caller
+// fault (unreachable or refused URL, budget exceeded) becomes a 400 naming the item; anything
+// else stays an operation error.
+func BatchAudioURLError(index int, customID string, err error) *schemas.BifrostError {
+	if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+		badRequest.Error.Message = fmt.Sprintf("batch request item %d (custom_id %q): %s", index, customID, badRequest.Error.Message)
+		return badRequest
+	}
+	return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", index, customID), err)
 }
 
 // ToBifrostBatchStatus converts Gemini batch job state to Bifrost status.
