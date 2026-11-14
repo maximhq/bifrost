@@ -403,6 +403,72 @@ func TestConverseStreamAnthropicStopSequence(t *testing.T) {
 	}
 }
 
+// TestConverseStreamGuardrailStopReason pins that a Bedrock guardrail block keeps its
+// native stopReason on converse-stream (issue #9572). The finalizer folds guardrail_intervened
+// and content_filtered into the same content_filter incomplete details, so the details alone
+// cannot tell them apart; the explicit stop reason has to win for the guardrail case, as it
+// does on non-streaming /converse.
+func TestConverseStreamGuardrailStopReason(t *testing.T) {
+	t.Run("upstream round trip", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			messageStop string
+			want        string
+		}{
+			{"guardrail_intervened", `{"stopReason":"guardrail_intervened"}`, `{"stopReason":"guardrail_intervened"}`},
+			{"content_filtered", `{"stopReason":"content_filtered"}`, `{"stopReason":"content_filtered"}`},
+			{"max_tokens", `{"stopReason":"max_tokens"}`, `{"stopReason":"max_tokens"}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := messageStopPayload(t, driveConverseStopStream(t, tc.messageStop))
+				if got != tc.want {
+					t.Errorf("messageStop = %s, want %s", got, tc.want)
+				}
+			})
+		}
+	})
+
+	contentFilter := &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter}
+	for _, tc := range []struct {
+		name     string
+		response *schemas.BifrostResponsesResponse
+		want     string
+	}{
+		{"guardrail_intervened with content_filter details", &schemas.BifrostResponsesResponse{
+			StopReason:        schemas.Ptr("guardrail_intervened"),
+			IncompleteDetails: contentFilter,
+		}, "guardrail_intervened"},
+		{"guardrail_intervened without details", &schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr("guardrail_intervened"),
+		}, "guardrail_intervened"},
+		{"content_filter with content_filter details", &schemas.BifrostResponsesResponse{
+			StopReason:        schemas.Ptr("content_filter"),
+			IncompleteDetails: contentFilter,
+		}, "content_filtered"},
+		// Max-output truncation details still win over a stale guardrail reason.
+		{"guardrail_intervened with max_output_tokens details", &schemas.BifrostResponsesResponse{
+			StopReason:        schemas.Ptr("guardrail_intervened"),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		}, "max_tokens"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event, err := ToBedrockConverseStreamResponse(&schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeIncomplete,
+				Response: tc.response,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if event == nil || event.StopReason == nil {
+				t.Fatalf("response.incomplete produced no messageStop (event=%+v)", event)
+			}
+			if *event.StopReason != tc.want {
+				t.Errorf("stopReason = %q, want %q", *event.StopReason, tc.want)
+			}
+		})
+	}
+}
+
 // BenchmarkConverseStreamEndTurn measures a short end_turn ConverseStream from upstream
 // events to converse-stream egress events.
 func BenchmarkConverseStreamEndTurn(b *testing.B) {
