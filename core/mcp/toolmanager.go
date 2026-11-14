@@ -356,6 +356,10 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscove
 				if !seenToolNames[tool.Function.Name] {
 					availableTools = append(availableTools, tool)
 					seenToolNames[tool.Function.Name] = true
+					// Record like every other injected tool so a caller who declares
+					// e.g. "executeToolCode" themselves, without Bifrost offering it,
+					// can be told apart from a turn where Bifrost actually added it.
+					schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
 				}
 			}
 		}

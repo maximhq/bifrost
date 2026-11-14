@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -200,12 +201,21 @@ func (a *AgentModeExecutor) executeAgent(
 					autoExecutableTools = append(autoExecutableTools, toolCall)
 					continue
 				}
+				// Code mode meta-tools (list/read/docs/execute) only exist because Bifrost
+				// injected them for a code-mode client; without that they are not tools
+				// Bifrost offered at all, and a caller can declare a tool of the same name
+				// in their own request. Auto-execution must not trust a name alone: fall
+				// through to nonAutoExecutableTools unless Bifrost's own injection step
+				// actually added this exact tool name to this request (see
+				// BifrostContextKeyMCPAddedTools, populated in ParseAndAddToolsToRequest).
+				bifrostAddedTool := isBifrostAddedTool(ctx, toolName)
+
 				// Allow code mode list, read, and docs tools (all read-only operations)
-				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
+				if bifrostAddedTool && (toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs) {
 					autoExecutableTools = append(autoExecutableTools, toolCall)
 					a.logger.Debug("Tool %s can be auto-executed", toolName)
 					continue
-				} else if toolName == ToolTypeExecuteToolCode {
+				} else if bifrostAddedTool && toolName == ToolTypeExecuteToolCode {
 					// Build allowed auto-execution tools map for code mode validation
 					allClientNames, allowedAutoExecutionTools := buildAllowedAutoExecutionTools(ctx, clientManager)
 
@@ -547,4 +557,17 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 	}
 
 	return allClientNames, allowedTools
+}
+
+// isBifrostAddedTool reports whether toolName is one Bifrost itself injected into
+// this request (via ParseAndAddToolsToRequest), as opposed to one the caller
+// declared in their own request body. BifrostContextKeyMCPAddedTools is set only
+// by Bifrost's own tool-injection step, so its absence means Bifrost never
+// offered this tool on this turn, however the name reads.
+func isBifrostAddedTool(ctx *schemas.BifrostContext, toolName string) bool {
+	addedTools, ok := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string)
+	if !ok {
+		return false
+	}
+	return slices.Contains(addedTools, toolName)
 }
