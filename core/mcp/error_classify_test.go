@@ -247,3 +247,34 @@ func TestProbeRetryConfig_RetriesTimeoutsButNotPermanentFailures(t *testing.T) {
 		})
 	}
 }
+
+// TestClosedTransportIsPermanent: a request on a client whose transport has closed (a STDIO
+// child that exited, for one) fails at once with transport.ErrTransportClosed, and every retry on
+// that same client fails the same way. Both the connect and the probe classifiers must give up on
+// it immediately so the connection checker reaches the reconnect that repairs it.
+func TestClosedTransportIsPermanent(t *testing.T) {
+	errs := map[string]error{
+		"bare":    transport.ErrTransportClosed,
+		"wrapped": fmt.Errorf("list_tools failed: %w", transport.ErrTransportClosed),
+	}
+	noBackoff := func(config RetryConfig) RetryConfig {
+		config.InitialBackoff = 0
+		config.MaxBackoff = 0
+		return config
+	}
+	for name, closedErr := range errs {
+		t.Run(name, func(t *testing.T) {
+			require.False(t, isTransientError(closedErr), "connect classifier")
+			require.False(t, isTransientProbeError(closedErr), "probe classifier")
+			for _, config := range []RetryConfig{noBackoff(ConnectRetryConfig), noBackoff(ProbeRetryConfig)} {
+				attempts := 0
+				err := ExecuteWithRetry(context.Background(), func() error {
+					attempts++
+					return closedErr
+				}, config, &MockLogger{})
+				require.ErrorIs(t, err, transport.ErrTransportClosed)
+				require.Equal(t, 1, attempts)
+			}
+		})
+	}
+}
