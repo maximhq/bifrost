@@ -31,6 +31,7 @@ export enum RbacResource {
 	RBAC = "RBAC",
 	Governance = "Governance",
 	RoutingRules = "RoutingRules",
+	Routers = "Routers",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
 	AccessProfiles = "AccessProfiles",

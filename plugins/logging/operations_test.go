@@ -7253,3 +7253,102 @@ func TestIdleTimedOutStreamEstimatedFromRealAccumulator(t *testing.T) {
 	require.Equal(t, 1, usage.CompletionTokens)
 	require.NotNil(t, usage.Estimation)
 }
+
+// A speech session knows the text it spoke only when it ends, so it reports it with its final response, and that
+// text is the row's input, as the text of a speech request is.
+func TestApplySpeechSessionInputRecordsTheTextTheSessionSpoke(t *testing.T) {
+	final := &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
+		Type:         schemas.SpeechStreamResponseTypeDone,
+		SessionInput: "Hello world.",
+	}}
+
+	entry := &logstore.Log{}
+	applySpeechSessionInput(entry, final, true)
+	require.NotNil(t, entry.SpeechInputParsed)
+	require.Equal(t, "Hello world.", entry.SpeechInputParsed.Input)
+
+	hidden := &logstore.Log{}
+	applySpeechSessionInput(hidden, final, false)
+	require.Nil(t, hidden.SpeechInputParsed, "content logging is off")
+
+	silent := &logstore.Log{}
+	applySpeechSessionInput(silent, &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{}}, true)
+	applySpeechSessionInput(silent, &schemas.BifrostResponse{}, true)
+	applySpeechSessionInput(silent, nil, true)
+	require.Nil(t, silent.SpeechInputParsed, "a response that reports no text leaves the input alone")
+}
+
+// A speech stream with no audio has no speech output to keep: a speech session streams its audio to the client and
+// keeps none, so its row would otherwise carry an empty output that the logs page shows as a player with nothing to play.
+func TestApplyStreamingOutputToEntryKeepsSpeechOutputOnlyWhenThereIsAudio(t *testing.T) {
+	plugin := &LoggerPlugin{}
+
+	spoken := &logstore.Log{}
+	plugin.applyStreamingOutputToEntry(spoken, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{AudioOutput: &schemas.BifrostSpeechResponse{Audio: []byte("ABC")}},
+	}, false, true)
+	require.NotNil(t, spoken.SpeechOutputParsed)
+	require.Equal(t, []byte("ABC"), spoken.SpeechOutputParsed.Audio)
+
+	silent := &logstore.Log{}
+	plugin.applyStreamingOutputToEntry(silent, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{AudioOutput: &schemas.BifrostSpeechResponse{}},
+	}, false, true)
+	require.Nil(t, silent.SpeechOutputParsed, "no audio, nothing to keep")
+}
+
+// A speech session is a socket that stays open as long as its client likes, which an HTTP speech stream is not, so its
+// row has an object of its own and the logs page can tell the two apart.
+func TestPreLLMHookLogsASpeechSessionUnderItsOwnObject(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	req := &schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: &schemas.BifrostSpeechRequest{
+		Provider: schemas.Elevenlabs, Model: "eleven_v4_turbo", Input: &schemas.SpeechInput{},
+	}}
+
+	for _, tc := range []struct {
+		requestID string
+		session   bool
+		want      string
+	}{
+		{"speech-session-1", true, "speech.session"},
+		{"speech-http-stream-1", false, "speech_stream"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, tc.requestID)
+		if tc.session {
+			ctx.SetValue(schemas.BifrostContextKeySpeechSession, true)
+		}
+		_, _, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		pending, ok := plugin.pendingLogsEntries.Load(tc.requestID)
+		require.True(t, ok, tc.requestID)
+		require.Equal(t, tc.want, pending.(*PendingLogData).InitialData.Object, tc.requestID)
+	}
+	require.NoError(t, plugin.Cleanup())
+}
+
+// BenchmarkSpeechSessionContextLookup is the only work the session's own object adds to the request path: one
+// context read for a speech stream, and none for any other request type.
+func BenchmarkSpeechSessionContextLookup(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		session bool
+	}{{"session", true}, {"http stream", false}} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-1")
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+			if tc.session {
+				ctx.SetValue(schemas.BifrostContextKeySpeechSession, true)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if speechSession, _ := ctx.Value(schemas.BifrostContextKeySpeechSession).(bool); speechSession != tc.session {
+					b.Fatal("wrong object")
+				}
+			}
+		})
+	}
+}

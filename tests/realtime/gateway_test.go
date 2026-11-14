@@ -22,9 +22,16 @@ import (
 // keySpec is what a test needs of a virtual key of its own.
 type keySpec struct {
 	allowedModels []string // OpenAI models the key may use; every catalog model when empty
+	liveModels    []string // Gemini and Vertex Live models the key may use; both Live models when empty
+	elevenModels  []string // ElevenLabs models the key may use; the Scribe and speech models when empty
+	sonioxModels  []string // Soniox models the key may use; the realtime, async and speech models when empty
 	budgetUSD     float64  // no budget when zero
 	maxRequests   int      // no request limit when zero
 }
+
+// liveModelNames are the Live models the suite uses on Gemini and Vertex. A virtual key names them: a
+// wildcard allows only the models the catalog lists, and a fake-mode gateway has no reason to list them.
+var liveModelNames = []string{"gemini-3.8-live", "gemini-3.1-flash-live-preview"}
 
 type virtualKey struct {
 	ID       string
@@ -50,16 +57,33 @@ func postVirtualKey(name string, spec keySpec) (virtualKey, error) {
 	if len(allowed) == 0 {
 		allowed = []string{"*"}
 	}
+	live := spec.liveModels
+	if len(live) == 0 {
+		live = liveModelNames
+	}
+	eleven := spec.elevenModels
+	if len(eleven) == 0 {
+		eleven = []string{"scribe_v2_realtime", "scribe_v3_live", "eleven_v4_turbo"}
+	}
+	soniox := spec.sonioxModels
+	if len(soniox) == 0 {
+		soniox = []string{"stt-rt-v5", "stt-rt-v6", "stt-async-v6", "tts-rt-v2"}
+	}
+	// Named, not "*": a wildcard allows the models the catalog lists for the provider, and it has no Scribe realtime model yet.
+	// stt-async-v6 is allowed so the test of a model Soniox cannot serve in realtime reaches the provider.
+	liveConfigs := []any{
+		map[string]any{"provider": "gemini", "weight": 1.0, "allowed_models": live, "key_ids": []string{"*"}},
+		map[string]any{"provider": "elevenlabs", "weight": 1.0, "allowed_models": eleven, "key_ids": []string{"*"}},
+		map[string]any{"provider": "soniox", "weight": 1.0, "allowed_models": soniox, "key_ids": []string{"*"}},
+	}
 	body := map[string]any{
-		"name": fmt.Sprintf("%s %d", name, time.Now().UnixNano()),
-		"provider_configs": []any{
-			map[string]any{"provider": "openai", "weight": 1.0, "allowed_models": allowed, "key_ids": []string{"*"}},
-			map[string]any{"provider": "bedrock", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
-			map[string]any{"provider": "anthropic", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
-			map[string]any{"provider": "azure", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
-			// Named, not "*": a wildcard allows the models the catalog lists for the provider, and it has no Scribe realtime model yet.
-			map[string]any{"provider": "elevenlabs", "weight": 1.0, "allowed_models": []string{"scribe_v2_realtime", "scribe_v3_live"}, "key_ids": []string{"*"}},
-		},
+		"name":             fmt.Sprintf("%s %d", name, time.Now().UnixNano()),
+		"provider_configs": liveConfigs,
+	}
+	if upstreamMode == realUpstream {
+		// Vertex has no fake, so only the real profile configures it.
+		vertex := map[string]any{"provider": "vertex", "weight": 1.0, "allowed_models": live, "key_ids": []string{"*"}}
+		body["provider_configs"] = append(append(realProviderConfigs(allowed), vertex), liveConfigs...)
 	}
 	if spec.budgetUSD > 0 {
 		body["budgets"] = []any{map[string]any{"max_limit": spec.budgetUSD, "reset_duration": "1h"}}
@@ -76,6 +100,16 @@ func postVirtualKey(name string, spec keySpec) (virtualKey, error) {
 		Value:    created.Get("virtual_key.value").Str,
 		BudgetID: created.Get("virtual_key.budgets.0.id").Str,
 	}, nil
+}
+
+// realProviderConfigs lists the providers only the real profile configures.
+func realProviderConfigs(openaiAllowed []string) []any {
+	return []any{
+		map[string]any{"provider": "openai", "weight": 1.0, "allowed_models": openaiAllowed, "key_ids": []string{"*"}},
+		map[string]any{"provider": "bedrock", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
+		map[string]any{"provider": "anthropic", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
+		map[string]any{"provider": "azure", "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}},
+	}
 }
 
 // deleteVirtualKey deletes a virtual key, treating one already gone as deleted.
@@ -251,6 +285,53 @@ func turnRowsFor(t *testing.T, vk virtualKey) []turnRow {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// speechRowsFor lists the speech stream rows a virtual key has logged, oldest first.
+func speechRowsFor(t *testing.T, vk virtualKey) []turnRow {
+	t.Helper()
+	require.NotEmpty(t, vk.ID, "rows are found by virtual key; this session has none")
+	query := url.Values{"virtual_key_ids": {vk.ID}, "limit": {"50"}, "order": {"asc"}, "sort_by": {"timestamp"}}
+	status, list, err := apiCall(http.MethodGet, "/api/logs?"+query.Encode(), nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, "list logs: %s", list.Raw)
+	var rows []turnRow
+	for _, summary := range list.Get("logs").Array() {
+		status, full, err := apiCall(http.MethodGet, "/api/logs/"+summary.Get("id").Str, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "get log: %s", full.Raw)
+		if full.Get("log").Exists() {
+			full = full.Get("log")
+		}
+		var row turnRow
+		require.NoError(t, json.Unmarshal([]byte(full.Raw), &row), "decode row: %s", full.Raw)
+		row.raw = full
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// waitSpeechRows waits until a virtual key has logged n finished speech sessions.
+func waitSpeechRows(t *testing.T, vk virtualKey, n int) []turnRow {
+	t.Helper()
+	deadline := time.Now().Add(rowWaitTimeout)
+	for {
+		rows := speechRowsFor(t, vk)
+		finished := 0
+		for _, row := range rows {
+			if row.Status != "processing" {
+				finished++
+			}
+		}
+		require.LessOrEqual(t, len(rows), n, "virtual key logged %d speech sessions, want %d", len(rows), n)
+		if finished == n {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("virtual key logged %d finished speech sessions of %d within %s, want %d", finished, len(rows), rowWaitTimeout, n)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // apiCall sends one JSON request to the management API and returns the status and parsed body.
