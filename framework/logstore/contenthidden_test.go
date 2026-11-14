@@ -90,7 +90,7 @@ func TestHybrid_ContentHiddenIgnoresExclusionList(t *testing.T) {
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
 	// params is configured to stay DB-resident and out of the object payload.
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"})
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"}, nil)
 	defer hybrid.Close(ctx)
 
 	normal := newContentHiddenTestEntry("normal-1")

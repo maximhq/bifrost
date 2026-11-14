@@ -102,6 +102,8 @@ func TestWarpRenderChartRejectsShapesItCannotDraw(t *testing.T) {
 		"latency by team":         {map[string]any{"kind": "bar", "title": "t", "metric": "latency", "group": "team"}, "latency can only be grouped by provider or model"},
 		"pie":                     {map[string]any{"kind": "pie", "title": "t", "metric": "cost"}, "not supported"},
 		"hourly over thirty days": {map[string]any{"kind": "line", "title": "t", "metric": "requests", "interval": "hour", "filters": map[string]any{"start_time": "-30d"}}, `use interval "day"`},
+		// 200 hours from mid-hour touch 201 epoch-aligned buckets.
+		"hourly over 200 hours from mid-hour": {map[string]any{"kind": "line", "title": "t", "metric": "requests", "interval": "hour", "filters": map[string]any{"start_time": "2026-08-20T00:30:00Z", "end_time": "2026-08-28T08:30:00Z"}}, `use interval "day"`},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

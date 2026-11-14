@@ -86,10 +86,11 @@ const client = new TypeSafeClient({
 ## Behavior Notes
 
 - **Success responses are shape-compatible** with TypeSafe's own API: native `answers` with `noul`/`choice`/`score` value fields and `input_tokens`/`output_tokens` usage. Bytes are identical only on the raw-response passthrough path; otherwise the response is rebuilt and re-encoded, preserving the shape but not exact JSON byte ordering.
-- **Models**: bare IDs (`jev-1.13.0`, `jev-latest`, `jev-preview`) work exactly as upstream; `typesafe/`-prefixed IDs are additionally accepted.
+- **Models**: bare IDs (`jev-1.13.0`, `jev-1.14.0`, `jev-latest`, `jev-preview`) work exactly as upstream; `typesafe/`-prefixed IDs are additionally accepted.
+- **Images and Box**: images the SDK uploads, as multipart file parts or base64 `assets`, reach TypeSafe the same way, and box questions answer with their `box`. Bifrost adds the `TypeSafe-Danger-Zone-Images` header itself unless the provider's Beta Headers setting turns it off, so the SDK's `extra_headers` entry for it is not needed. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
 - **Errors**: returned in TypeSafe's native shape (`{"detail": {"error_type", "message"}}`) with upstream status codes (401, 422, 429, 529) preserved, so SDK exception parsing works unchanged. Requests rejected by Bifrost's local validation return `400` where TypeSafe's own validation would return `422`.
 - **Retries**: Bifrost retries 429 and 529 with backoff per the provider's `network_config` in addition to any SDK-side retry policy.
 
 <Note>
-For provider-routed access with fallbacks and Bifrost's normalized response shape, use [`POST /v1/decisions`](/quickstart/gateway/decisions) instead - same questions, `kind` instead of `type`, and a unified `value` per answer.
+For provider-routed access with fallbacks and Bifrost's normalized response shape, use [`POST /v1/decisions`](/quickstart/gateway/decisions) instead - the same questions as a list, answered in order by any decision model.
 </Note>

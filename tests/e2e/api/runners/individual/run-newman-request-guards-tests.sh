@@ -65,6 +65,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Environment Variables:"
             echo "  BIFROST_BASE_URL              Gateway base URL (default: http://localhost:8080); dashboard auth must be disabled"
+            echo "  BIFROST_E2E_SETUP_TOKEN       OSS setup token sent on every request (default: bifrost-e2e-setup-token)"
             echo "  BIFROST_E2E_ADMIN_EXISTS      Set to 1 when a stored admin account exists whose password is"
             echo "                                BIFROST_E2E_ADMIN_PASSWORD; enables the Dashboard auth update folder (default: 0)"
             echo "  BIFROST_E2E_ADMIN_USERNAME    Stored admin username (default: admin)"
@@ -152,8 +153,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Build Newman command
-cmd=(newman run "$COLLECTION")
+# OSS locks /api behind the setup token while dashboard auth is not active, and every folder here
+# runs with auth disabled, so each request carries the setup token (same as the governance runners).
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
+SETUP_COLLECTION="$REPORT_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+
+cmd=(newman run "$SETUP_COLLECTION")
 cmd+=(--env-var "base_url=$base_url")
+cmd+=(--env-var "setup_token=$SETUP_TOKEN")
 cmd+=(--env-var "admin_exists=$admin_exists")
 cmd+=(--env-var "admin_username=$admin_username")
 cmd+=(--environment "$SECRET_ENV_FILE")

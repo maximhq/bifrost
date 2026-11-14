@@ -157,7 +157,7 @@ func renderChartTool() Tool {
 			}
 			// One bar per user, team or key is a ranking, scoped like one.
 			group, _ := args["group"].(string)
-			filters, err := filterArg(args, Now(), rankingScope(deps.scope, group))
+			filters, err := filterArg(args, deps.now(), rankingScope(deps.scope, group))
 			if err != nil {
 				return nil, err
 			}
@@ -254,7 +254,7 @@ func timeSeriesPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Sea
 	if interval != "hour" {
 		bucket = 86400
 	}
-	if span := filters.EndTime.Sub(*filters.StartTime).Seconds(); span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		if interval == "hour" {
 			return nil, fmt.Errorf(`interval "hour" over this range makes more than %d points; use interval "day" or a shorter range`, MaxHistogramBuckets)
 		}

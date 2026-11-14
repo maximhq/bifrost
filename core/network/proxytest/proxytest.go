@@ -397,6 +397,17 @@ var Sources = []Source{
 			SkipTLSVerify: true,
 		}
 	}},
+	// The same inherited proxy with a no_proxy list: no_proxy scopes which targets keep
+	// verification, never the TLS hop to the proxy itself (here an IP literal, which
+	// sends no SNI, and also named in no_proxy).
+	{Name: "https-skip-verify+no_proxy", Route: &Route{Proxy: "config-tls"}, Config: func(s *Set) *schemas.ProxyConfig {
+		return &schemas.ProxyConfig{
+			Type:          schemas.HTTPProxy,
+			URL:           schemas.NewSecretVar("https://127.0.0.1:" + s.TLS.Port()),
+			SkipTLSVerify: true,
+			NoProxy:       "127.0.0.1,.corp.internal",
+		}
+	}},
 	{Name: "socks5", Route: &Route{Proxy: "socks"}, Config: func(s *Set) *schemas.ProxyConfig {
 		return &schemas.ProxyConfig{Type: schemas.Socks5Proxy, URL: schemas.NewSecretVar("socks5://127.0.0.1:" + s.Socks.Port())}
 	}},

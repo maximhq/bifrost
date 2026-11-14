@@ -177,6 +177,30 @@ func TestModelCaps_SupportsNamespaceTools(t *testing.T) {
 	})
 }
 
+// ModelCaps.SupportsNativeStructuredOutput: the wire field name is what the datasheet
+// publishes, and a row decides in either direction over the caller's fallback.
+func TestModelCaps_SupportsNativeStructuredOutput(t *testing.T) {
+	var parsed ModelCapabilities
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_native_structured_output":true}`), &parsed))
+	require.NotNil(t, parsed.SupportsNativeStructuredOutput)
+	assert.True(t, *parsed.SupportsNativeStructuredOutput)
+
+	t.Run("OverrideHit", func(t *testing.T) {
+		model := "open-weight-native-so-yes"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(true)})
+		assert.True(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(false))
+	})
+	t.Run("OverrideExplicitFalse", func(t *testing.T) {
+		model := "claude-opus-4-7-native-so-off"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNativeStructuredOutput: new(false)})
+		assert.False(t, ResolveModelCaps(Bedrock, model).SupportsNativeStructuredOutput(true))
+	})
+	t.Run("OverrideAbsent_CallerFallbackTakesOver", func(t *testing.T) {
+		assert.True(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(true))
+		assert.False(t, ResolveModelCaps(Bedrock, "native-so-unknown-model").SupportsNativeStructuredOutput(false))
+	})
+}
+
 // ModelCaps.ToolNameMaxLength: a row's tool_name_max_length replaces the caller's
 // per-provider default; absent hands the default back.
 func TestModelCaps_ToolNameMaxLength(t *testing.T) {
@@ -193,6 +217,32 @@ func TestModelCaps_ToolNameMaxLength(t *testing.T) {
 		setCapabilityOverride(t, model, ModelCapabilities{ToolNameMaxLength: new(0)})
 		assert.Equal(t, 64, ResolveModelCaps(OpenAI, model).ToolNameMaxLength(64))
 	})
+}
+
+// The tool-schema restrictions decode from the datasheet's names, and each accessor
+// lets a row decide while an absent or empty row hands the caller's fallback back.
+func TestModelCaps_ToolSchemaRestrictions(t *testing.T) {
+	var row ModelCapabilities
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_regex_lookaround":false,"supports_regex_nul_escape":true,"supports_schema_pattern":false,"supported_schema_formats":["date-time","uuid"]}`), &row))
+	model := "model-with-schema-row"
+	setCapabilityOverride(t, model, row)
+	caps := ResolveModelCaps(Bedrock, model)
+	assert.False(t, caps.SupportsRegexLookaround(true))
+	assert.True(t, caps.SupportsRegexNULEscape(false))
+	assert.False(t, caps.SupportsSchemaPattern(true))
+	assert.Equal(t, []string{"date-time", "uuid"}, caps.SupportedSchemaFormats([]string{"email"}))
+
+	absent := ResolveModelCaps(Bedrock, "no-row")
+	assert.True(t, absent.SupportsRegexLookaround(true))
+	assert.False(t, absent.SupportsRegexNULEscape(false))
+	assert.True(t, absent.SupportsSchemaPattern(true))
+	assert.False(t, absent.SupportsSchemaPattern(false))
+	assert.Equal(t, []string{"email"}, absent.SupportedSchemaFormats([]string{"email"}))
+	assert.Nil(t, absent.SupportedSchemaFormats(nil))
+
+	empty := "model-with-empty-formats"
+	setCapabilityOverride(t, empty, ModelCapabilities{SupportedSchemaFormats: []string{}})
+	assert.Equal(t, []string{"email"}, ResolveModelCaps(Bedrock, empty).SupportedSchemaFormats([]string{"email"}))
 }
 
 // ModelCaps.MaxOutputTokens: a positive row wins; an absent row or a non-positive

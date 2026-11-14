@@ -709,19 +709,23 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 
 // -----------------------------------------------------------------------------
 // A failed embedding must not produce an empty-vector upsert on a store that
-// requires vectors (issue #4756: Qdrant "Expected some vectors").
+// requires vectors (issue #4756: Qdrant "Expected some vectors"). Like a store
+// that needs no vector, it still writes the entry, under the placeholder
+// vector, so the direct path keeps serving it; the embedding failure itself is
+// reported once as a plugin warning.
 // -----------------------------------------------------------------------------
 
-func TestPostLLMHook_SkipsWriteWhenVectorRequiredButEmbeddingMissing(t *testing.T) {
+func TestPostLLMHook_WritesPlaceholderWhenVectorRequiredButEmbeddingMissing(t *testing.T) {
 	base := newObservableStore()
 	plugin := newTestPlugin(t, &vectorRequiringStore{observableStore: base})
+	plugin.config.TTL = 5 * time.Minute
 	// Embedding executor fails, mirroring the "no keys found" resolution error
 	// that leaves state.Embeddings unset.
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found for provider"}}
 	})
 
-	ctx := CreateContextWithCacheKey(t, "")
+	ctx := scopedTestContext(t, "")
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: CreateBasicChatRequest("hello", 0.7, 50),
@@ -751,10 +755,149 @@ func TestPostLLMHook_SkipsWriteWhenVectorRequiredButEmbeddingMissing(t *testing.
 	}
 	plugin.WaitForPendingOperations()
 
+	if !pluginLogContains(ctx.GetPluginLogs(), schemas.LogLevelWarn, "failed to generate embedding") {
+		t.Fatalf("expected the embedding failure as a Warn plugin log, got %+v", ctx.GetPluginLogs())
+	}
+
 	base.mu.Lock()
-	defer base.mu.Unlock()
-	if len(base.addIDs) != 0 {
-		t.Fatalf("expected zero cache writes when embedding is missing on a vector-requiring store, got %d", len(base.addIDs))
+	if len(base.addIDs) != 1 {
+		base.mu.Unlock()
+		t.Fatalf("expected one cache write under the placeholder vector when embedding is missing on a vector-requiring store, got %d", len(base.addIDs))
+	}
+	written := base.addEmbeddings[0]
+	base.mu.Unlock()
+	if len(written) != plugin.config.Dimension || written[0] != 1 {
+		t.Fatalf("expected the %d-dimension placeholder vector (first element 1), got len=%d", plugin.config.Dimension, len(written))
+	}
+
+	// The entry serves the same request again through the direct path, exactly
+	// as it would on a store that needs no vector.
+	repeat := scopedTestContext(t, "")
+	if _, sc, err := plugin.PreLLMHook(repeat, req); err != nil {
+		t.Fatalf("repeat PreLLMHook failed: %v", err)
+	} else if sc == nil || sc.Response == nil {
+		t.Fatal("expected the repeat to be served from the entry written under the placeholder vector")
+	}
+}
+
+// The placeholder vector says nothing about the prompt it was written for, so an entry stored
+// under it must never be a semantic candidate. Without that, a later and different prompt under
+// the same key, params and identity, whose embedding happens to lean toward the placeholder's
+// direction, would be served the earlier prompt's response.
+func TestSemanticSearchNeverMatchesAPlaceholderEntry(t *testing.T) {
+	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+		Enabled: true,
+		Type:    vectorstore.VectorStoreTypeChromem,
+		Config:  vectorstore.ChromemConfig{},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatalf("failed to create chromem store: %v", err)
+	}
+	plugin := newTestPlugin(t, store)
+	plugin.config.Dimension = 3
+	plugin.config.TTL = 5 * time.Minute
+	plugin.config.VectorStoreNamespace = "PlaceholderSearchTest"
+	if err := store.CreateNamespace(context.Background(), plugin.config.VectorStoreNamespace, plugin.config.Dimension, nil); err != nil {
+		t.Fatalf("CreateNamespace failed: %v", err)
+	}
+
+	// The first prompt cannot be embedded, so its response is written under the placeholder.
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found for provider"}}
+	})
+	first := scopedTestContext(t, "")
+	firstReq := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("first prompt", 0.7, 50)}
+	if _, sc, err := plugin.PreLLMHook(first, firstReq); err != nil || sc != nil {
+		t.Fatalf("expected the first request to miss, got short-circuit=%v err=%v", sc, err)
+	}
+	firstRes := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+	}}
+	if _, _, err := plugin.PostLLMHook(first, firstRes, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	// A different prompt embeds to a vector at cosine 0.9 from the placeholder (1, 0, 0), above
+	// the configured 0.8 threshold.
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.9, 0.43589, 0}}}},
+		}, nil
+	})
+	second := scopedTestContext(t, "")
+	secondReq := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("an unrelated second prompt", 0.7, 50)}
+	_, sc, err := plugin.PreLLMHook(second, secondReq)
+	if err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	if sc != nil {
+		t.Fatal("a different prompt was served the response stored under the placeholder vector")
+	}
+}
+
+// A semantic-only request skips the direct lookup, so it has no direct cache ID and its entry would
+// be stored under its own request ID, which no lookup reads. When its embedding also fails, no
+// semantic search can find the entry either, so it must not be written at all, on any store.
+func TestPostLLMHook_SkipsWriteWhenSemanticOnlyEmbeddingFails(t *testing.T) {
+	stores := []struct {
+		name  string
+		build func(*observableStore) vectorstore.VectorStore
+	}{
+		{"store requiring vectors", func(base *observableStore) vectorstore.VectorStore {
+			return &vectorRequiringStore{observableStore: base}
+		}},
+		{"store without vectors", func(base *observableStore) vectorstore.VectorStore { return base }},
+	}
+	for _, s := range stores {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", s.name, stream), func(t *testing.T) {
+				base := newObservableStore()
+				plugin := newTestPlugin(t, s.build(base))
+				plugin.config.TTL = 5 * time.Minute
+				plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+					return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found for provider"}}
+				})
+
+				ctx := CreateContextWithCacheKeyAndType(t, "", CacheTypeSemantic)
+				requestType := schemas.ChatCompletionRequest
+				if stream {
+					requestType = schemas.ChatCompletionStreamRequest
+				}
+				req := &schemas.BifrostRequest{RequestType: requestType, ChatRequest: CreateBasicChatRequest("hello", 0.7, 50)}
+				if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil || sc != nil {
+					t.Fatalf("expected a miss, got short-circuit=%v err=%v", sc, err)
+				}
+				requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+
+				if stream {
+					for i := 0; i < 2; i++ {
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, i == 1)
+						if _, _, err := plugin.PostLLMHook(ctx, newChatStreamChunk(i, "chunk", nil), nil); err != nil {
+							t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
+						}
+					}
+				} else {
+					res := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+						ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+					}}
+					if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+						t.Fatalf("PostLLMHook failed: %v", err)
+					}
+				}
+				plugin.WaitForPendingOperations()
+
+				base.mu.Lock()
+				written := append([]string(nil), base.addIDs...)
+				base.mu.Unlock()
+				if len(written) != 0 {
+					t.Fatalf("expected no cache write for a semantic-only request whose embedding failed, got writes under %v (request id %s)", written, requestID)
+				}
+				if _, ok := plugin.streamAccumulators.Load(requestID); ok {
+					t.Fatal("expected no stream accumulator left behind for the skipped write")
+				}
+			})
+		}
 	}
 }
 

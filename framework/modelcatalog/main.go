@@ -43,6 +43,10 @@ type ModelCatalog struct {
 
 	providersForModel *gencache.Cache[[]schemas.ModelProvider]
 	modelsForProvider *gencache.Cache[[]string]
+	// maxOutputTokens memoizes the datasheet output-token cap per provider+model.
+	// 0 means "no cap known" and is cached too, so a model missing from the
+	// sheet pays the full-table capability scan once per generation, not per request.
+	maxOutputTokens *gencache.Cache[int]
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -163,7 +167,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				go func() {
 					defer mc.wg.Done()
 					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_pricing_startup_sync", 10, func() error {
-						return mc.runPricingSync(mc.syncCtx)
+						_, err := mc.runPricingSync(mc.syncCtx)
+						return err
 					}); err != nil {
 						logger.Warn("background startup pricing sync failed: %v", err)
 					} else {
@@ -172,7 +177,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				}()
 			} else {
 				if err := mc.withDistributedLock(ctx, "model_catalog_pricing_startup_sync", 10, func() error {
-					return mc.runPricingSync(ctx)
+					_, err := mc.runPricingSync(ctx)
+					return err
 				}); err != nil {
 					pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 				}
@@ -190,18 +196,14 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
-					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
-						return mc.runParamsSync(mc.syncCtx)
-					}); err != nil {
+					if _, err := mc.runParamsSync(mc.syncCtx); err != nil {
 						logger.Warn("background startup model parameters sync failed: %v", err)
 					} else {
 						logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
-					return mc.runParamsSync(ctx)
-				}); err != nil {
+				if _, err := mc.runParamsSync(ctx); err != nil {
 					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
 			}
@@ -212,6 +214,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		}
 		if paramsErr != nil {
 			return nil, paramsErr
+		}
+		// Datasheet overrides go on after the first load; every later load and
+		// sync re-applies them on its own.
+		if err := mc.datasheet.ReloadEntryOverrides(ctx); err != nil {
+			return nil, err
 		}
 
 		// MCP library catalog follows the datasheet bootstrap pattern: if the DB
@@ -283,16 +290,21 @@ func (mc *ModelCatalog) SetShouldSyncGate(fn func(ctx context.Context) bool) {
 	mc.shouldSyncGate = fn
 }
 
-// SetAfterSyncHook registers a callback invoked after every successful
-// URL → DB pricing sync. In enterprise this broadcasts a gossip message so
-// other pods reload from DB.
+// SetAfterSyncHook registers a callback invoked after a successful URL → DB
+// pricing or model-parameters sync that actually ran on this node. A sync
+// skipped by the shouldSyncGate never fires it. In enterprise this broadcasts
+// a gossip message so other pods reload both tables from DB (ReloadFromDB).
 func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
 	mc.afterSyncHook = fn
 }
 
-// ReloadFromDB reloads pricing + model-parameters caches from the database.
-// Gossip handler on non-leader pods.
+// ReloadFromDB reloads datasheet overrides, pricing and model-parameters
+// caches from the database. Gossip handler on non-leader pods.
 func (mc *ModelCatalog) ReloadFromDB(ctx context.Context) error {
+	// Overrides first: both loads below re-apply whatever set is installed.
+	if err := mc.datasheet.LoadEntryOverridesFromStore(ctx); err != nil {
+		return err
+	}
 	if err := mc.datasheet.LoadFromDB(ctx); err != nil {
 		return err
 	}
@@ -368,10 +380,13 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 	// The URL fetch is bounded inside the datasheet; DB fallback and overrides reload need a live ctx.
 	var wg sync.WaitGroup
 	var pricingErr, paramsErr error
+	var pricingRan, paramsRan bool
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := mc.runPricingSync(ctx); err != nil {
+		ran, err := mc.runPricingSync(ctx)
+		pricingRan = ran
+		if err != nil {
 			pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 			return
 		}
@@ -381,7 +396,9 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 	}()
 	go func() {
 		defer wg.Done()
-		if err := mc.runParamsSync(ctx); err != nil {
+		ran, err := mc.runParamsSync(ctx)
+		paramsRan = ran
+		if err != nil {
 			paramsErr = fmt.Errorf("failed to sync model parameters: %w", err)
 		}
 	}()
@@ -394,7 +411,8 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		return paramsErr
 	}
 
-	if mc.afterSyncHook != nil {
+	// Peers reload from the DB only when this node wrote to it.
+	if (pricingRan || paramsRan) && mc.afterSyncHook != nil {
 		mc.afterSyncHook(ctx)
 	}
 
@@ -465,6 +483,17 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 
 	// Pricing and MCP library use separate distributed locks so their
 	// independent cadences don't block each other.
+	//
+	// A node whose gate rejects the pricing sync (a non-leader in cluster mode)
+	// skips it before taking the lock and neither fires the after-sync hook nor
+	// marks itself synced. Firing the hook there made every node broadcast a
+	// reload each cycle, so N nodes cost N*(N-1) full catalog reads instead of
+	// N-1. Leaving lastSyncedAt untouched means a node that later becomes leader
+	// finds the sync overdue and runs it on its next tick.
+	if pricingDue && !mc.syncGateOpen(ctx) {
+		mc.logger.Debug("model catalog pricing sync skipped by sync gate")
+		pricingDue = false
+	}
 	var outerWg sync.WaitGroup
 	if pricingDue {
 		outerWg.Add(1)
@@ -473,27 +502,38 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 			if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
 				var wg sync.WaitGroup
 				var pricingErr, paramsErr error
+				var pricingRan, paramsRan bool
 				wg.Add(2)
 				go func() {
 					defer wg.Done()
-					if err := mc.runPricingSync(ctx); err != nil {
+					ran, err := mc.runPricingSync(ctx)
+					pricingRan = ran
+					if err != nil {
 						mc.logger.Error("background pricing sync failed: %v", err)
 						pricingErr = err
 					}
 				}()
 				go func() {
 					defer wg.Done()
-					if err := mc.runParamsSync(ctx); err != nil {
+					ran, err := mc.runParamsSync(ctx)
+					paramsRan = ran
+					if err != nil {
 						mc.logger.Error("background model parameters sync failed: %v", err)
 						paramsErr = err
 					}
 				}()
 				wg.Wait()
+				// The gate is checked again inside each run, so leadership can
+				// move between the check above and here. Peers reload when either
+				// sync wrote to the DB, but the node counts as synced only when
+				// both ran, so a half-skipped cycle stays overdue and is retried.
 				if pricingErr == nil && paramsErr == nil {
-					if mc.afterSyncHook != nil {
+					if (pricingRan || paramsRan) && mc.afterSyncHook != nil {
 						mc.afterSyncHook(ctx)
 					}
-					mc.datasheet.MarkSynced(time.Now())
+					if pricingRan && paramsRan {
+						mc.datasheet.MarkSynced(time.Now())
+					}
 				}
 				if pricingErr != nil {
 					return pricingErr
@@ -526,21 +566,42 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	mc.logger.Debug("model catalog background sync completed")
 }
 
-// runPricingSync wraps the datasheet pricing sync with the gate check.
-func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
-		return nil
-	}
-	return mc.datasheet.SyncFromURL(ctx)
+// syncGateOpen reports whether this node may run the URL → DB sync. With no
+// gate installed (single node) it always may.
+func (mc *ModelCatalog) syncGateOpen(ctx context.Context) bool {
+	return mc.shouldSyncGate == nil || mc.shouldSyncGate(ctx)
 }
 
-// runParamsSync wraps the datasheet params sync with the gate check.
-func (mc *ModelCatalog) runParamsSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
-		mc.logger.Debug("model parameters sync cancelled by custom gate")
-		return nil
+// runPricingSync wraps the datasheet pricing sync with the gate check. ran is
+// false when the gate skipped the sync, so callers can tell a skip from a
+// sync that succeeded.
+func (mc *ModelCatalog) runPricingSync(ctx context.Context) (ran bool, err error) {
+	if !mc.syncGateOpen(ctx) {
+		return false, nil
 	}
-	return mc.datasheet.SyncModelParamsFromURL(ctx)
+	return true, mc.datasheet.SyncFromURL(ctx)
+}
+
+// runParamsSync serializes the DB snapshot, upsert and cache publication across
+// gateways. ran is false when the gate skips the sync, including after a lock
+// wait, so callers do not publish a skipped update.
+func (mc *ModelCatalog) runParamsSync(ctx context.Context) (ran bool, err error) {
+	if !mc.syncGateOpen(ctx) {
+		mc.logger.Debug("model parameters sync cancelled by custom gate")
+		return false, nil
+	}
+	if mc.configStore == nil {
+		return true, mc.datasheet.SyncModelParamsFromURL(ctx)
+	}
+	heldCtx, release, err := mc.distributedLockManager.AcquireWithRetry(ctx, "model_catalog_params_sync", 10)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire model parameters sync lock: %w", err)
+	}
+	defer release()
+	if !mc.syncGateOpen(heldCtx) {
+		return false, nil
+	}
+	return true, mc.datasheet.SyncModelParamsFromURL(heldCtx)
 }
 
 // withDistributedLock acquires a named distributed lock and runs fn under

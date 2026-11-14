@@ -1,6 +1,8 @@
 package datasheet
 
 import (
+	"maps"
+	"math"
 	"slices"
 	"testing"
 
@@ -13,7 +15,7 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	inputCost := 0.00000014
 	provider := schemas.ModelProvider("together")
 	s := NewTestStore(nil)
-	s.pricingData[makeKey(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
 		Model:             model,
 		Provider:          "together_ai",
 		Mode:              "chat",
@@ -36,7 +38,7 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	s.rebuildDatasheetViewUnsafe()
+	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
 	s.mu.Unlock()
 	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
 		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
@@ -49,36 +51,36 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()
-	s.pricingData[makeKey("deprecated-b", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-b", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-b",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("deprecated-a", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("deprecated-a", "openai", "responses")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "responses")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "responses",
 		IsDeprecated: true,
 	}
-	s.pricingData[makeKey("active", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("active", "openai", "chat")] = configstoreTables.TableModelPricing{
 		Model:    "active",
 		Provider: "openai",
 		Mode:     "chat",
 	}
-	s.pricingData[makeKey("deprecated-vertex", "vertex_ai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData[makeKeyNormalized("deprecated-vertex", "vertex_ai", "chat")] = configstoreTables.TableModelPricing{
 		Model:        "deprecated-vertex",
 		Provider:     "vertex_ai",
 		Mode:         "chat",
 		IsDeprecated: true,
 	}
-	s.rebuildDatasheetViewUnsafe()
+	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
 	s.mu.Unlock()
 
 	got := s.DeprecatedDatasheetModelsForProvider(schemas.OpenAI)
@@ -97,5 +99,87 @@ func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	want = []string{"deprecated-vertex"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected deprecated Vertex models %v, got %v", want, got)
+	}
+}
+
+func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
+	inputCost, outputCost := 0.000002, 0.000008
+	s := NewTestStore(nil)
+	entry := Entry{Provider: "github_copilot", Mode: "chat"}
+	entry.InputCostPerToken = &inputCost
+	entry.OutputCostPerToken = &outputCost
+	s.applyPricingData(map[string]Entry{"github_copilot/gpt-4.1": entry})
+
+	if got := s.DatasheetModelsForProvider(schemas.GithubCopilot); !slices.Equal(got, []string{"gpt-4.1"}) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want [gpt-4.1]", got)
+	}
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	if cost := s.CalculateCost(makeChatResponse(schemas.GithubCopilot, "gpt-4.1", usage), nil); math.Abs(cost-0.006) > 1e-12 {
+		t.Fatalf("CalculateCost() = %v, want 0.006", cost)
+	}
+
+	providerID := string(schemas.GithubCopilot)
+	if err := s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "copilot-override",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "gpt-4.1",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
+	}}); err != nil {
+		t.Fatalf("SetOverrides() error = %v", err)
+	}
+	cost := s.CalculateCost(makeChatResponse(schemas.GithubCopilot, "gpt-4.1", usage), &LookupScopes{Provider: providerID})
+	// 1000*0.000001 + 500*0.000008
+	if math.Abs(cost-0.005) > 1e-12 {
+		t.Fatalf("CalculateCost() with override = %v, want 0.005", cost)
+	}
+}
+
+// Get, GetPricingEntryForModel and IsTextCompletionSupported read pricingData
+// through makeKeyNormalized, so they match a row in any casing.
+func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
+	inputCost := 0.0000015
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{
+		Model:             "GPT-3.5-Turbo-Instruct",
+		Provider:          "openai",
+		Mode:              "completion",
+		InputCostPerToken: &inputCost,
+	}})
+
+	row := s.Get("gpt-3.5-turbo-instruct", schemas.OpenAI, schemas.TextCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
+		t.Fatalf("Get() = %+v, want the GPT-3.5-Turbo-Instruct row", row)
+	}
+	entry := s.GetPricingEntryForModel("gpt-3.5-turbo-instruct", schemas.OpenAI)
+	if entry == nil || entry.InputCostPerToken == nil || *entry.InputCostPerToken != inputCost {
+		t.Fatalf("GetPricingEntryForModel() = %+v, want the GPT-3.5-Turbo-Instruct row", entry)
+	}
+	if !s.IsTextCompletionSupported("gpt-3.5-turbo-instruct", schemas.OpenAI) {
+		t.Fatal("IsTextCompletionSupported() = false, want true from the mixed-case completion row")
+	}
+}
+
+// Rows that lose the lowercase key are not priced from, but the datasheet view
+// still lists every spelling and indexes its base model.
+func TestSetPricingRowsKeepsEverySpellingInDatasheetView(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "DeepSeek-V4-Pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},
+		{Model: "deepseek-v4-pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},
+	})
+
+	want := []string{"DeepSeek-V4-Pro", "deepseek-v4-pro"}
+	if got := s.DatasheetModelsForProvider(schemas.Azure); !slices.Equal(got, want) {
+		t.Fatalf("DatasheetModelsForProvider() = %v, want %v", got, want)
+	}
+	if got := s.DeprecatedDatasheetModelsForProvider(schemas.Azure); !slices.Equal(got, want) {
+		t.Fatalf("DeprecatedDatasheetModelsForProvider() = %v, want %v", got, want)
+	}
+	if got := s.BaseModelName("DeepSeek-V4-Pro"); got != "deepseek-v4-pro" {
+		t.Fatalf("BaseModelName() = %q, want the indexed base model", got)
 	}
 }

@@ -347,12 +347,9 @@ func jsonImpersonationLifetimeSeconds(jsonData []byte) (int, error) {
 	if r.Type != gjson.Number {
 		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer, got %s", field, r.Raw)
 	}
-	n, err := strconv.ParseInt(r.Raw, 10, 64)
+	n, err := strconv.Atoi(r.Raw)
 	if err != nil {
-		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer that fits in 64 bits, got %s", field, r.Raw)
+		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer that fits in an int, got %s", field, r.Raw)
 	}
-	if int64(int(n)) != n {
-		return 0, fmt.Errorf("vertex aws federation: %s is out of range: %s", field, r.Raw)
-	}
-	return int(n), nil
+	return n, nil
 }

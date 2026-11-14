@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
@@ -101,5 +103,41 @@ func TestProviderMemoReturnsClone(t *testing.T) {
 		if p == "MUTATED" {
 			t.Fatalf("caller mutation leaked into cached entry: %v", second)
 		}
+	}
+}
+
+// TestMaxOutputTokensMemo pins the output-token cap memo: a hit and a miss are
+// both cached (a miss costs a full-sheet capability scan, which is too slow to
+// repeat per request), and a datasheet write drops every entry so a sync that
+// adds or changes a cap is seen on the next request.
+func TestMaxOutputTokensMemo(t *testing.T) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
+	})
+	mc := NewTestCatalogWithDatasheet(ds)
+
+	if got := mc.GetMaxOutputTokens("gemini-test-flash", schemas.Gemini); got != 65536 {
+		t.Fatalf("GetMaxOutputTokens(hit) = %d, want 65536", got)
+	}
+	if got := mc.GetMaxOutputTokens("gemini-new-flash", schemas.Gemini); got != 0 {
+		t.Fatalf("GetMaxOutputTokens(miss) = %d, want 0", got)
+	}
+	for _, model := range []string{"gemini-test-flash", "gemini-new-flash"} {
+		if _, cached := mc.maxOutputTokens.Get(lrucache.EncodeKey(string(schemas.Gemini), model)); !cached {
+			t.Errorf("%s was not cached", model)
+		}
+	}
+
+	// A sync adds the missing model and changes the known cap.
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(32768)},
+		{Model: "gemini-new-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(8192)},
+	})
+	if got := mc.GetMaxOutputTokens("gemini-test-flash", schemas.Gemini); got != 32768 {
+		t.Errorf("after sync GetMaxOutputTokens(gemini-test-flash) = %d, want 32768 (stale cap served)", got)
+	}
+	if got := mc.GetMaxOutputTokens("gemini-new-flash", schemas.Gemini); got != 8192 {
+		t.Errorf("after sync GetMaxOutputTokens(gemini-new-flash) = %d, want 8192 (stale miss served)", got)
 	}
 }

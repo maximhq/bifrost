@@ -82,6 +82,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 	if len(request.Tools) > 0 {
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
+		if native := geminiNativeOnlyTools(request.Tools); len(native) > 0 {
+			params.ExtraParams[geminiNativeToolsExtraParamKey] = native
+		}
 	}
 
 	if request.ToolConfig != nil {
@@ -117,6 +120,15 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 	if request.CachedContent != "" {
 		params.ExtraParams["cached_content"] = request.CachedContent
+	}
+
+	if request.ContinuationToken != "" {
+		params.ExtraParams["continuation_token"] = request.ContinuationToken
+	}
+
+	// session_id rides as prompt_cache_key, so only Vertex keys with session routing send it on.
+	if request.SessionID != nil && request.SessionID.Value != "" {
+		params.PromptCacheKey = new(request.SessionID.Value)
 	}
 
 	bifrostReq.Params = params
@@ -239,6 +251,9 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 						{Text: *bifrostReq.Params.Instructions},
 					},
 				}
+			} else if *bifrostReq.Params.Instructions != "" {
+				// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+				geminiReq.SystemInstruction.Parts = append([]*Part{{Text: *bifrostReq.Params.Instructions}}, geminiReq.SystemInstruction.Parts...)
 			}
 		}
 
@@ -252,6 +267,16 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
 				delete(geminiReq.ExtraParams, "cached_content")
 				geminiReq.CachedContent = cachedContent
+			}
+			if token, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["continuation_token"]); ok {
+				delete(geminiReq.ExtraParams, "continuation_token")
+				geminiReq.ContinuationToken = token
+			}
+			// Gemini-native tools with no neutral form, carried from the GenAI ingress.
+			// Appended into geminiReq's own slice; the source slice is shared across retries.
+			if nativeTools, ok := bifrostReq.Params.ExtraParams[geminiNativeToolsExtraParamKey]; ok {
+				delete(geminiReq.ExtraParams, geminiNativeToolsExtraParamKey)
+				geminiReq.Tools = append(geminiReq.Tools, extractGeminiNativeTools(nativeTools)...)
 			}
 		}
 	}
@@ -287,6 +312,14 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		}
 	}
 
+	// A blocked prompt has no candidate; without this it normalizes to an empty "completed".
+	if blockErr := response.promptBlockError(); blockErr != nil {
+		bifrostResp.StopReason = new(ConvertGeminiFinishReasonToBifrost(FinishReasonSafety))
+		bifrostResp.Status = new(schemas.ResponsesResponseStatusFailed)
+		bifrostResp.Error = blockErr
+		return bifrostResp
+	}
+
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
@@ -308,6 +341,13 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 					Code:    stopReason,
 					Message: errMsg,
 				}
+				// A blocked first candidate says nothing about the others; carry them so
+				// ToGeminiResponsesResponse still returns every candidate.
+				if len(response.Candidates) > 1 {
+					bifrostResp.ProviderExtraFields = map[string]interface{}{
+						"additionalCandidates": response.Candidates[1:],
+					}
+				}
 
 				return bifrostResp
 			}
@@ -317,7 +357,11 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 			bifrostResp.Status, bifrostResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
 
-		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
+		// The Responses output describes one answer. Further candidates (candidateCount > 1)
+		// are carried verbatim on ProviderExtraFields below rather than appended here, where
+		// they would read as extra assistant turns and merge into one GenAI candidate.
+		// Same message id form as the stream state, so item ids match the streaming path.
+		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates[:1], "msg_"+schemas.GetRandomString(24))
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
@@ -337,6 +381,18 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		}
 		if candidate.AvgLogprobs != 0 {
 			extraFields["avgLogprobs"] = candidate.AvgLogprobs
+		}
+		if candidate.LogprobsResult != nil {
+			extraFields["logprobsResult"] = candidate.LogprobsResult
+		}
+		if candidate.URLContextMetadata != nil {
+			extraFields["urlContextMetadata"] = candidate.URLContextMetadata
+		}
+		if candidate.ContinuationToken != "" {
+			extraFields["continuationToken"] = candidate.ContinuationToken
+		}
+		if len(response.Candidates) > 1 {
+			extraFields["additionalCandidates"] = response.Candidates[1:]
 		}
 		// Server-side tool parts have no lossless home in Bifrost's OpenAI-shaped schema
 		// (the web_search_call item keeps the queries, but not the raw tool response or the
@@ -367,6 +423,28 @@ func thoughtTextParts(reasoning *schemas.ResponsesReasoning) []*Part {
 			continue
 		}
 		parts = append(parts, &Part{Text: summaryBlock.Text, Thought: true})
+	}
+	return parts
+}
+
+// replayThoughtTextParts is thoughtTextParts for the request converter, which renders a
+// reasoning item on its own and never reaches the generic content conversion. The text
+// lives in the summary on items Bifrost streamed and in reasoning_text content blocks on
+// items it built from a non-streamed Gemini response, so the content blocks are read when
+// the summary carries no text. ToGeminiResponsesResponse must not use it: it already
+// converts every message's content blocks, and would send the thought text twice.
+func replayThoughtTextParts(msg *schemas.ResponsesMessage) []*Part {
+	if msg == nil || msg.ResponsesReasoning == nil {
+		return nil
+	}
+	parts := thoughtTextParts(msg.ResponsesReasoning)
+	if len(parts) > 0 || msg.Content == nil {
+		return parts
+	}
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil && *block.Text != "" {
+			parts = append(parts, &Part{Text: *block.Text, Thought: true})
+		}
 	}
 	return parts
 }
@@ -503,6 +581,11 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				}
 			}
 
+			// Code execution carries code and logs, not content.
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall && msg.ResponsesToolMessage != nil {
+				currentParts = append(currentParts, geminiPartsFromCodeInterpreterCall(&msg)...)
+			}
+
 			// Handle tool calls (function calls)
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall && msg.ResponsesToolMessage != nil {
 				argsRaw := json.RawMessage("{}")
@@ -620,17 +703,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					continue
 				}
 
-				// Reasoning content is in the Summary array
-				if len(msg.ResponsesReasoning.Summary) > 0 {
-					for _, summaryBlock := range msg.ResponsesReasoning.Summary {
-						if summaryBlock.Text != "" {
-							currentParts = append(currentParts, &Part{
-								Text:    summaryBlock.Text,
-								Thought: true,
-							})
-						}
-					}
-				}
+				currentParts = append(currentParts, thoughtTextParts(msg.ResponsesReasoning)...)
 				if msg.ResponsesReasoning.EncryptedContent != nil {
 					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
 					if decodedSig != nil && !preservedToolSignatures[base64.StdEncoding.EncodeToString(decodedSig)] {
@@ -697,6 +770,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if target.AvgLogprobs == 0 {
 				target.AvgLogprobs = terminal.AvgLogprobs
 			}
+			if target.URLContextMetadata == nil {
+				target.URLContextMetadata = terminal.URLContextMetadata
+			}
 		} else {
 			candidates = append(candidates, terminal)
 		}
@@ -715,6 +791,18 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		// visible, has preserved parts and an empty Output at the same time.
 		geminiResp.Candidates = []*Candidate{
 			buildGeminiTerminalCandidate(bifrostResp, preservedToolParts, "", 0, nil, nil, nil),
+		}
+	}
+
+	// Candidates after the first (candidateCount > 1) were carried verbatim at parse time.
+	if bifrostResp.ProviderExtraFields != nil {
+		for _, extra := range extractGeminiAdditionalCandidates(bifrostResp.ProviderExtraFields["additionalCandidates"]) {
+			if extra == nil {
+				continue
+			}
+			restored := *extra
+			restored.Index = int32(len(geminiResp.Candidates))
+			geminiResp.Candidates = append(geminiResp.Candidates, &restored)
 		}
 	}
 
@@ -826,9 +914,78 @@ func buildGeminiTerminalCandidate(
 		if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
 			candidate.AvgLogprobs = avgLogprobs
 		}
+		if logprobs := extractGeminiLogprobsResult(bifrostResp.ProviderExtraFields["logprobsResult"]); logprobs != nil {
+			candidate.LogprobsResult = logprobs
+		}
+		if urlContext := extractGeminiURLContextMetadata(bifrostResp.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+			candidate.URLContextMetadata = urlContext
+		}
+		if token, ok := bifrostResp.ProviderExtraFields["continuationToken"].(string); ok {
+			candidate.ContinuationToken = token
+		}
 	}
 
 	return candidate
+}
+
+// extractGeminiURLContextMetadata recovers *URLContextMetadata from
+// ProviderExtraFields["urlContextMetadata"], from the in-memory pointer or a JSON-decoded map.
+func extractGeminiURLContextMetadata(v interface{}) *URLContextMetadata {
+	if v == nil {
+		return nil
+	}
+	if meta, ok := v.(*URLContextMetadata); ok {
+		return meta
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var meta URLContextMetadata
+	if err := sonic.Unmarshal(b, &meta); err != nil {
+		return nil
+	}
+	return &meta
+}
+
+// extractGeminiLogprobsResult recovers *LogprobsResult from ProviderExtraFields["logprobsResult"],
+// from the in-memory pointer or a JSON-decoded map.
+func extractGeminiLogprobsResult(v interface{}) *LogprobsResult {
+	if v == nil {
+		return nil
+	}
+	if result, ok := v.(*LogprobsResult); ok {
+		return result
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var result LogprobsResult
+	if err := sonic.Unmarshal(b, &result); err != nil {
+		return nil
+	}
+	return &result
+}
+
+// extractGeminiAdditionalCandidates recovers the candidates after the first from
+// ProviderExtraFields["additionalCandidates"], from the in-memory slice or a JSON-decoded form.
+func extractGeminiAdditionalCandidates(v interface{}) []*Candidate {
+	if v == nil {
+		return nil
+	}
+	if candidates, ok := v.([]*Candidate); ok {
+		return candidates
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var candidates []*Candidate
+	if err := sonic.Unmarshal(b, &candidates); err != nil {
+		return nil
+	}
+	return candidates
 }
 
 // geminiFinishReasonFromResponses picks the Gemini finish reason for a terminal
@@ -1141,7 +1298,11 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// them, so thoughtSignatures never reached a /genai SSE client at all.
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		return nil
+		if bifrostResp.Item == nil || bifrostResp.Item.Type == nil ||
+			*bifrostResp.Item.Type != schemas.ResponsesMessageTypeCodeInterpreterCall || bifrostResp.Item.ResponsesToolMessage == nil {
+			return nil
+		}
+		candidate.Content.Parts = append(candidate.Content.Parts, geminiPartsFromCodeInterpreterCall(bifrostResp.Item)...)
 
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		// Handle content parts that contain images, audio, or files
@@ -1193,6 +1354,12 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				}
 				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
 					candidate.AvgLogprobs = avgLogprobs
+				}
+				if urlContext := extractGeminiURLContextMetadata(bifrostResp.Response.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+					candidate.URLContextMetadata = urlContext
+				}
+				if token, ok := bifrostResp.Response.ProviderExtraFields["continuationToken"].(string); ok {
+					candidate.ContinuationToken = token
 				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
@@ -1269,18 +1436,25 @@ type GeminiResponsesStreamState struct {
 	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
 	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
-	SafetyRatings []*SafetyRating
-	AvgLogprobs   float64
+	SafetyRatings      []*SafetyRating
+	AvgLogprobs        float64
+	URLContextMetadata *URLContextMetadata // may arrive on any chunk, not only the terminal one
+	ContinuationToken  string              // latest long-decode token; the terminal one is the next hop's
 
 	// Finish reason from a chunk that could not close the stream (no item opened yet);
 	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
 	PendingFinishReason  FinishReason
 	PendingFinishMessage string
+	PromptBlockError     *schemas.ResponsesResponseError // set when Gemini refused the prompt; terminal reports failed
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
 	HasStartedToolCall bool            // Whether we've started a tool call
 	TextBuffer         strings.Builder // Accumulates text deltas for output_text.done
+
+	CodeExecOutputIndex int    // -1 when no code_interpreter_call is open
+	CodeExecItemID      string // Item ID of the open code_interpreter_call
+	CodeExecCode        string // Code carried by the open call
 
 	// Web search tracking
 	HasEmittedWebSearch bool // Whether web_search_call events have been emitted
@@ -1320,6 +1494,7 @@ var geminiResponsesStreamStatePool = sync.Pool{
 			HasStartedText:       false,
 			HasStartedToolCall:   false,
 			HasEmittedWebSearch:  false,
+			CodeExecOutputIndex:  -1,
 		}
 	},
 }
@@ -1337,6 +1512,18 @@ func releaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
 		state.flush()
 		geminiResponsesStreamStatePool.Put(state)
 	}
+}
+
+// AcquireGeminiResponsesStreamState gets a pooled Responses stream state for driving
+// ToBifrostResponsesStream outside the provider's own stream loop (e.g. rebuilding a recorded
+// passthrough stream). Pair every call with ReleaseGeminiResponsesStreamState.
+func AcquireGeminiResponsesStreamState() *GeminiResponsesStreamState {
+	return acquireGeminiResponsesStreamState()
+}
+
+// ReleaseGeminiResponsesStreamState returns a state obtained from AcquireGeminiResponsesStreamState.
+func ReleaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
+	releaseGeminiResponsesStreamState(state)
 }
 
 func (state *GeminiResponsesStreamState) flush() {
@@ -1373,8 +1560,11 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.URLContextMetadata = nil
+	state.ContinuationToken = ""
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
+	state.PromptBlockError = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1384,6 +1574,9 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.HasStartedToolCall = false
 	state.HasEmittedWebSearch = false
 	state.ServerSearchRounds = nil
+	state.CodeExecOutputIndex = -1
+	state.CodeExecItemID = ""
+	state.CodeExecCode = ""
 	state.TextBuffer.Reset()
 }
 
@@ -1403,11 +1596,13 @@ func (state *GeminiResponsesStreamState) nextOutputIndex() int {
 	return index
 }
 
-// generateItemID creates a unique item ID with the given suffix.
-// Falls back to index-based ID if MessageID is nil.
-func (state *GeminiResponsesStreamState) generateItemID(suffix string, outputIndex int) string {
-	if state.MessageID != nil {
-		return fmt.Sprintf("msg_%s_%s_%d", *state.MessageID, suffix, outputIndex)
+// generateItemID creates an output item id from the response's message id, the item kind and
+// its output index, falling back to an index-based id when messageID is nil. Shared by the
+// streaming and non-streamed paths so both mint the same form; never rs_, which the OpenAI
+// converter keeps on replay and OpenAI rejects when it did not issue it.
+func generateItemID(messageID *string, suffix string, outputIndex int) string {
+	if messageID != nil {
+		return fmt.Sprintf("msg_%s_%s_%d", *messageID, suffix, outputIndex)
 	}
 	return fmt.Sprintf("%s_%d", suffix, outputIndex)
 }
@@ -1461,12 +1656,21 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		responses = append(responses, state.startEvents(sequenceNumber)...)
 	}
 
+	// A blocked prompt arrives as one candidate-less chunk; close the stream on it.
+	if blockErr := response.promptBlockError(); blockErr != nil {
+		state.PromptBlockError = blockErr
+		return append(responses, closeGeminiOpenItems(state, nil, response.UsageMetadata, sequenceNumber+len(responses), "", "")...), nil
+	}
+
 	// Process candidates
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
 
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
@@ -1483,6 +1687,12 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		}
 		if candidate.AvgLogprobs != 0 {
 			state.AvgLogprobs = candidate.AvgLogprobs
+		}
+		if candidate.URLContextMetadata != nil {
+			state.URLContextMetadata = candidate.URLContextMetadata
+		}
+		if candidate.ContinuationToken != "" {
+			state.ContinuationToken = candidate.ContinuationToken
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -1549,6 +1759,14 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 		// Result of a server-side call; carries no data Bifrost models beyond its signature.
 		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
+	case part.ExecutableCode != nil:
+		// Server-side code execution: Google runs it and reports the code it ran.
+		responses = append(responses, processGeminiExecutableCodePart(part, state, sequenceNumber)...)
+
+	case part.CodeExecutionResult != nil:
+		// Result of the code above; closes the call item it belongs to.
+		responses = append(responses, processGeminiCodeExecutionResultPart(part, state, sequenceNumber)...)
+
 	case part.FunctionResponse != nil:
 		// Function response (tool result)
 		responses = append(responses, processGeminiFunctionResponsePart(part, state, sequenceNumber)...)
@@ -1571,11 +1789,13 @@ func processGeminiTextPart(part *Part, state *GeminiResponsesStreamState, sequen
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	var outputIndex int
-	// If this is the first text, emit output_item.added and content_part.added
-	if !state.HasStartedText {
+	// If this is the first text, or text resumes after its item was closed, emit output_item.added and content_part.added
+	if !state.HasStartedText || state.TextItemClosed {
+		state.TextItemClosed = false
+		state.TextBuffer.Reset()
 		outputIndex = state.nextOutputIndex()
 		state.TextOutputIndex = outputIndex // Cache the text item's output index
-		itemID := state.generateItemID("item", outputIndex)
+		itemID := generateItemID(state.MessageID, "item", outputIndex)
 		state.ItemIDs[outputIndex] = itemID
 
 		// Emit output_item.added
@@ -1659,7 +1879,7 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 
 	// For Gemini thoughts/reasoning, we emit them as reasoning summary text deltas
 	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("reasoning", outputIndex)
+	itemID := generateItemID(state.MessageID, "reasoning", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
 	// Gemini hands over each thought part whole, so this item holds one summary block, at
@@ -1785,7 +2005,7 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 
 	// Create a new reasoning item for the thought signature
 	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("reasoning", outputIndex)
+	itemID := generateItemID(state.MessageID, "reasoning", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
 	// Convert thoughtSignature to string
@@ -1937,12 +2157,6 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 		OutputIndex:    &outputIndex,
 		ItemID:         &toolUseID,
 		Arguments:      &argsJSON,
-		Item: &schemas.ResponsesMessage{
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID: &toolUseID,
-				Name:   &part.FunctionCall.Name,
-			},
-		},
 	}
 
 	responses = append(responses, doneEvent)
@@ -1970,6 +2184,114 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 
 	state.HasStartedToolCall = true
 
+	return responses
+}
+
+// geminiCodeInterpreterItem rebuilds the code_interpreter_call item for the currently
+// open call, optionally carrying its result.
+func geminiCodeInterpreterItem(state *GeminiResponsesStreamState, result *CodeExecutionResult) *schemas.ResponsesMessage {
+	ci := &schemas.ResponsesCodeInterpreterToolCall{Code: schemas.Ptr(state.CodeExecCode)}
+	if result != nil {
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+	}
+	return &schemas.ResponsesMessage{
+		ID:     schemas.Ptr(state.CodeExecItemID),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr(geminiCodeExecutionStatus(result)),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                           schemas.Ptr(state.CodeExecItemID),
+			ResponsesCodeInterpreterToolCall: ci,
+		},
+	}
+}
+
+// geminiOpenCodeInterpreterItem is the item output_item.added announces: the run is still
+// in progress, and its final status is chosen when the result closes it.
+func geminiOpenCodeInterpreterItem(state *GeminiResponsesStreamState) *schemas.ResponsesMessage {
+	item := geminiCodeInterpreterItem(state, nil)
+	item.Status = schemas.Ptr("in_progress")
+	return item
+}
+
+// closeCodeExecItemIfOpen closes an open code_interpreter_call, folding result onto it
+// when one arrived. Returns nil when no call is open.
+func (state *GeminiResponsesStreamState) closeCodeExecItemIfOpen(result *CodeExecutionResult, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.CodeExecOutputIndex < 0 {
+		return nil
+	}
+	outputIndex := state.CodeExecOutputIndex
+	itemID := state.CodeExecItemID
+	done := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber,
+		OutputIndex:    &outputIndex,
+		ItemID:         &itemID,
+		Item:           geminiCodeInterpreterItem(state, result),
+	}
+	state.CodeExecOutputIndex = -1
+	state.CodeExecItemID = ""
+	state.CodeExecCode = ""
+	return []*schemas.BifrostResponsesStreamResponse{done}
+}
+
+// processGeminiExecutableCodePart opens a code_interpreter_call for the code Google ran.
+// The item stays open until its codeExecutionResult part arrives.
+func processGeminiExecutableCodePart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+	// A model that runs code twice without an intervening result still gets two items.
+	if closeResponses := state.closeCodeExecItemIfOpen(nil, sequenceNumber+len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
+	outputIndex := state.nextOutputIndex()
+	itemID := geminiCodeExecutionCallID()
+	state.ItemIDs[outputIndex] = itemID
+	state.CodeExecOutputIndex = outputIndex
+	state.CodeExecItemID = itemID
+	state.CodeExecCode = part.ExecutableCode.Code
+
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ItemID:         &itemID,
+		Item:           geminiOpenCodeInterpreterItem(state),
+	})
+
+	return responses
+}
+
+// processGeminiCodeExecutionResultPart closes the code_interpreter_call the result
+// belongs to. A result with no open call still produces a complete item of its own.
+func processGeminiCodeExecutionResultPart(part *Part, state *GeminiResponsesStreamState, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	if state.CodeExecOutputIndex < 0 {
+		if closeResponses := state.closeTextItemIfOpen(sequenceNumber); closeResponses != nil {
+			responses = append(responses, closeResponses...)
+		}
+		outputIndex := state.nextOutputIndex()
+		itemID := geminiCodeExecutionCallID()
+		state.ItemIDs[outputIndex] = itemID
+		state.CodeExecOutputIndex = outputIndex
+		state.CodeExecItemID = itemID
+		state.CodeExecCode = ""
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item:           geminiOpenCodeInterpreterItem(state),
+		})
+	}
+
+	responses = append(responses, state.closeCodeExecItemIfOpen(part.CodeExecutionResult, sequenceNumber+len(responses))...)
 	return responses
 }
 
@@ -2072,7 +2394,7 @@ func processGeminiInlineDataPart(part *Part, state *GeminiResponsesStreamState, 
 
 	// Create new output item for the inline data
 	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("item", outputIndex)
+	itemID := generateItemID(state.MessageID, "item", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
 	// Emit output_item.added with the inline data content block
@@ -2151,7 +2473,7 @@ func processGeminiFileDataPart(part *Part, state *GeminiResponsesStreamState, se
 
 	// Create new output item for the file data
 	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("item", outputIndex)
+	itemID := generateItemID(state.MessageID, "item", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
 	// Emit output_item.added with the file data content block
@@ -2309,6 +2631,11 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		responses = append(responses, annotationResponses...)
 	}
 
+	// Close a code_interpreter_call whose result never arrived
+	if closeResponses := state.closeCodeExecItemIfOpen(nil, sequenceNumber+len(responses)); closeResponses != nil {
+		responses = append(responses, closeResponses...)
+	}
+
 	// Close any open tool calls
 	for outputIndex := range state.ToolArgumentBuffers {
 		itemID := state.ItemIDs[outputIndex]
@@ -2343,7 +2670,7 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if isErrorFinishReason(finishReason) && finishMessage != "" {
 		errorText := fmt.Sprintf("Error: %s - %s", finishReason, finishMessage)
 		outputIndex := state.nextOutputIndex()
-		itemID := state.generateItemID("error", outputIndex)
+		itemID := generateItemID(state.MessageID, "error", outputIndex)
 		state.ItemIDs[outputIndex] = itemID
 		contentIndex := 0
 
@@ -2475,7 +2802,11 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	// Set stop reason from finish reason
-	if finishReason != "" {
+	if state.PromptBlockError != nil {
+		completedResp.StopReason = new(ConvertGeminiFinishReasonToBifrost(FinishReasonSafety))
+		completedResp.Status = new(schemas.ResponsesResponseStatusFailed)
+		completedResp.Error = state.PromptBlockError
+	} else if finishReason != "" {
 		stopReason := ConvertGeminiFinishReasonToBifrost(finishReason)
 		completedResp.StopReason = &stopReason
 
@@ -2498,6 +2829,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if completedResp.Status != nil && *completedResp.Status == schemas.ResponsesResponseStatusIncomplete {
 		terminalType = schemas.ResponsesStreamResponseTypeIncomplete
 		schemas.MarkTruncatedOutputItem(completedResp.Output)
+	} else if state.PromptBlockError != nil {
+		// A refused prompt ends in response.failed; candidate-level errors keep response.completed.
+		terminalType = schemas.ResponsesStreamResponseTypeFailed
 	}
 
 	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
@@ -2512,6 +2846,12 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 	if state.AvgLogprobs != 0 {
 		extraFields["avgLogprobs"] = state.AvgLogprobs
+	}
+	if state.URLContextMetadata != nil {
+		extraFields["urlContextMetadata"] = state.URLContextMetadata
+	}
+	if state.ContinuationToken != "" {
+		extraFields["continuationToken"] = state.ContinuationToken
 	}
 	if len(extraFields) > 0 {
 		completedResp.ProviderExtraFields = extraFields
@@ -2534,7 +2874,7 @@ func (state *GeminiResponsesStreamState) startEvents(sequenceNumber int) []*sche
 		return nil
 	}
 	if state.MessageID == nil {
-		messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+		messageID := "msg_" + schemas.GetRandomString(24)
 		state.MessageID = &messageID
 	}
 	var responses []*schemas.BifrostResponsesStreamResponse
@@ -2582,6 +2922,9 @@ func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content
 	var hasTextContent bool
 
 	for _, part := range systemInstruction.Parts {
+		if part == nil {
+			continue
+		}
 		if part.Text != "" {
 			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
 				Type: schemas.ResponsesInputMessageContentBlockTypeText,
@@ -2678,10 +3021,135 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 	return string(cleaned)
 }
 
+// geminiCallIDPairer gives every functionCall a unique ID and pairs each functionResponse with its call.
+// Gemini pairs by name and order; Claude and OpenAI pair only by ID.
+type geminiCallIDPairer struct {
+	contents []Content
+	track    bool                // some call or response omits its ID; otherwise nothing is queued
+	minted   int                 // counter behind bf_call_N
+	reserved map[string]struct{} // client-supplied IDs a minted ID must skip; built on first mint
+	answered map[string]struct{} // IDs some response names explicitly; those calls never join pending
+	pending  map[string][]string // unanswered call IDs per function name, oldest first
+	last     map[string]string   // most recent call ID per function name, fallback once pending is empty
+}
+
+func newGeminiCallIDPairer(contents []Content) geminiCallIDPairer {
+	p := geminiCallIDPairer{contents: contents, track: geminiContentsMissCallIDs(contents)}
+	if p.track {
+		p.answered = collectGeminiResponseIDs(contents)
+	}
+	return p
+}
+
+// callID returns the call's own ID, or mints bf_call_N (no tool name, so never a _ts_ separator).
+func (p *geminiCallIDPairer) callID(fc *FunctionCall) string {
+	id := fc.ID
+	if id == "" {
+		id = p.mint()
+	}
+	if !p.track {
+		return id
+	}
+	if p.last == nil {
+		p.last = make(map[string]string)
+	}
+	p.last[fc.Name] = id
+	if _, ok := p.answered[id]; !ok {
+		if p.pending == nil {
+			p.pending = make(map[string][]string)
+		}
+		p.pending[fc.Name] = append(p.pending[fc.Name], id)
+	}
+	return id
+}
+
+// responseID returns the response's own ID, else the oldest unanswered call of the same name, else
+// that name's last call. A willContinue response leaves its call pending for the responses that follow.
+func (p *geminiCallIDPairer) responseID(fr *FunctionResponse) string {
+	if !p.track || fr.ID != "" {
+		return fr.ID
+	}
+	queue := p.pending[fr.Name]
+	if len(queue) == 0 {
+		if id, ok := p.last[fr.Name]; ok {
+			return id
+		}
+		return fr.Name // no call of this name at all (malformed history)
+	}
+	if fr.WillContinue == nil || !*fr.WillContinue {
+		p.pending[fr.Name] = queue[1:]
+	}
+	return queue[0]
+}
+
+func (p *geminiCallIDPairer) mint() string {
+	if p.reserved == nil {
+		p.reserved = collectGeminiSuppliedCallIDs(p.contents)
+	}
+	for {
+		p.minted++
+		id := "bf_call_" + strconv.Itoa(p.minted)
+		if _, taken := p.reserved[id]; !taken {
+			return id
+		}
+	}
+}
+
+// collectGeminiSuppliedCallIDs returns every non-empty functionCall/functionResponse ID in contents.
+func collectGeminiSuppliedCallIDs(contents []Content) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if part.FunctionCall != nil && part.FunctionCall.ID != "" {
+				ids[part.FunctionCall.ID] = struct{}{}
+			}
+			if part.FunctionResponse != nil && part.FunctionResponse.ID != "" {
+				ids[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// collectGeminiResponseIDs returns every non-empty functionResponse ID in contents, or nil if none.
+func collectGeminiResponseIDs(contents []Content) map[string]struct{} {
+	var ids map[string]struct{}
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part != nil && part.FunctionResponse != nil && part.FunctionResponse.ID != "" {
+				if ids == nil {
+					ids = make(map[string]struct{})
+				}
+				ids[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// geminiContentsMissCallIDs reports whether any functionCall or functionResponse omits its ID.
+func geminiContentsMissCallIDs(contents []Content) bool {
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if (part.FunctionCall != nil && part.FunctionCall.ID == "") ||
+				(part.FunctionResponse != nil && part.FunctionResponse.ID == "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
-	// Track function call IDs by name to match with responses
-	functionCallIDs := make(map[string]string)
+
+	pairer := newGeminiCallIDPairer(contents)
 
 	for _, content := range contents {
 		// Determine the role for all messages from this Content
@@ -2698,6 +3166,9 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 
 		// Process each part - each part can become a separate message
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			switch {
 			case part.FunctionCall != nil:
 				// Function call message
@@ -2706,13 +3177,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					argsJSON = string(part.FunctionCall.Args)
 				}
 
-				callID := part.FunctionCall.ID
-				if callID == "" {
-					callID = part.FunctionCall.Name
-				}
-
-				// Track this function call ID by name for later matching with responses
-				functionCallIDs[part.FunctionCall.Name] = callID
+				callID := pairer.callID(part.FunctionCall)
 
 				msg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
@@ -2740,26 +3205,10 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 
 			case part.FunctionResponse != nil:
 				// Function response message
-				responseID := part.FunctionResponse.ID
-				if responseID == "" {
-					// Try to find the matching function call ID by name
-					if callID, ok := functionCallIDs[part.FunctionResponse.Name]; ok {
-						responseID = callID
-					} else {
-						// Fallback to function name if no matching call found
-						responseID = part.FunctionResponse.Name
-					}
-				}
+				responseID := pairer.responseID(part.FunctionResponse)
 
-				// Convert response to string — extract output field if present
-				responseStr := ""
-				if part.FunctionResponse.Response != nil {
-					if r := providerUtils.GetJSONField(part.FunctionResponse.Response, "output"); r.Exists() {
-						responseStr = r.String()
-					} else {
-						responseStr = string(part.FunctionResponse.Response)
-					}
-				}
+				// Convert response to string: unwrap a sole "output" key, keep sibling fields otherwise
+				responseStr := extractFunctionResponseOutput(part.FunctionResponse)
 
 				output := &schemas.ResponsesToolMessageOutputStruct{}
 				if len(part.FunctionResponse.Parts) > 0 {
@@ -2778,6 +3227,9 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						})
 					}
 					for _, p := range part.FunctionResponse.Parts {
+						if p == nil {
+							continue
+						}
 						var block *schemas.ResponsesMessageContentBlock
 						switch {
 						case p.InlineData != nil:
@@ -2881,6 +3333,14 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						},
 					}
 					messages = append(messages, msg)
+				}
+
+			case part.ExecutableCode != nil:
+				messages = append(messages, newGeminiCodeInterpreterCall(part.ExecutableCode, nil))
+
+			case part.CodeExecutionResult != nil:
+				if !attachGeminiCodeExecutionResult(messages, part.CodeExecutionResult) {
+					messages = append(messages, newGeminiCodeInterpreterCall(nil, part.CodeExecutionResult))
 				}
 			}
 		}
@@ -3022,6 +3482,55 @@ const (
 	geminiSearchContentTypeImage = "image"
 )
 
+// geminiNativeToolsExtraParamKey carries the Gemini tools that have no neutral Responses
+// tool through ExtraParams, from ToBifrostResponsesRequest to ToGeminiResponsesRequest.
+const geminiNativeToolsExtraParamKey = "gemini_native_tools"
+
+// geminiNativeOnlyTools returns, for each tools[] entry, a copy holding only the tool kinds
+// convertGeminiToolsToResponsesTools cannot express (retrieval with vertexAiSearch /
+// vertexRagStore / externalApi, googleSearchRetrieval, enterpriseWebSearch, googleMaps,
+// urlContext, computerUse). Dropping them silently turned a grounded /genai request into an
+// ungrounded 200, so they are carried verbatim and Google judges them. Returns nil when there
+// are none, so requests without such tools pay nothing.
+func geminiNativeOnlyTools(tools []Tool) []Tool {
+	var native []Tool
+	for _, tool := range tools {
+		if tool.Retrieval == nil && tool.GoogleSearchRetrieval == nil && tool.EnterpriseWebSearch == nil &&
+			tool.GoogleMaps == nil && tool.URLContext == nil && tool.ComputerUse == nil {
+			continue
+		}
+		native = append(native, Tool{
+			Retrieval:             tool.Retrieval,
+			GoogleSearchRetrieval: tool.GoogleSearchRetrieval,
+			EnterpriseWebSearch:   tool.EnterpriseWebSearch,
+			GoogleMaps:            tool.GoogleMaps,
+			URLContext:            tool.URLContext,
+			ComputerUse:           tool.ComputerUse,
+		})
+	}
+	return native
+}
+
+// extractGeminiNativeTools recovers the tools stored under geminiNativeToolsExtraParamKey,
+// from the in-memory slice or a JSON-decoded form.
+func extractGeminiNativeTools(v interface{}) []Tool {
+	if v == nil {
+		return nil
+	}
+	if tools, ok := v.([]Tool); ok {
+		return tools
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var tools []Tool
+	if err := sonic.Unmarshal(b, &tools); err != nil {
+		return nil
+	}
+	return tools
+}
+
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
 
@@ -3058,8 +3567,17 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 			}
 			responsesTools = append(responsesTools, responsesTool)
 		}
+		if tool.CodeExecution != nil {
+			responsesTools = append(responsesTools, schemas.ResponsesTool{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
+			})
+		}
 		if len(tool.FunctionDeclarations) > 0 {
 			for _, fn := range tool.FunctionDeclarations {
+				if fn == nil {
+					continue
+				}
 				responsesTool := schemas.ResponsesTool{
 					Type:                  schemas.ResponsesToolTypeFunction,
 					Name:                  schemas.Ptr(fn.Name),
@@ -3226,6 +3744,10 @@ func geminiPartIdentity(part *Part) string {
 		return "tr:" + geminiCallIDWithoutSignature(part.ToolResponse.ID) + ":" + part.ToolResponse.ToolType
 	case part.FunctionCall != nil:
 		return "fc:" + geminiCallIDWithoutSignature(part.FunctionCall.ID) + ":" + part.FunctionCall.Name
+	case part.ExecutableCode != nil:
+		return "ec:" + part.ExecutableCode.Code
+	case part.CodeExecutionResult != nil:
+		return "cr:" + string(part.CodeExecutionResult.Outcome) + ":" + part.CodeExecutionResult.Output
 	case part.Text != "":
 		if part.Thought {
 			return "th:" + part.Text
@@ -3397,8 +3919,124 @@ func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchTool
 }
 
 // Helper functions for Responses conversion
-// convertGeminiCandidatesToResponsesOutput converts Gemini candidates to Responses output messages
-func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas.ResponsesMessage {
+// geminiCodeExecutionOutputs renders a Gemini code execution result as neutral
+// code_interpreter logs. Gemini reports failures in the same output string, so a
+// non-OK outcome is prefixed rather than dropped.
+// geminiCodeExecutionErrorPrefix marks a failed result replayed as plain text, where no
+// status can carry the outcome.
+const geminiCodeExecutionErrorPrefix = "Error: "
+
+// geminiCodeExecutionStatus is the item status for a code execution result: anything but
+// OUTCOME_OK failed. A call whose result has not arrived is completed so far.
+func geminiCodeExecutionStatus(result *CodeExecutionResult) string {
+	if result != nil && result.Outcome != OutcomeOK {
+		return "failed"
+	}
+	return "completed"
+}
+
+// geminiCodeExecutionOutputs carries the result's output as raw logs; the outcome lives
+// on the item status.
+func geminiCodeExecutionOutputs(result *CodeExecutionResult) []schemas.ResponsesCodeInterpreterOutput {
+	return []schemas.ResponsesCodeInterpreterOutput{{
+		ResponsesCodeInterpreterOutputLogs: &schemas.ResponsesCodeInterpreterOutputLogs{
+			Type: "logs",
+			Logs: result.Output,
+		},
+	}}
+}
+
+// geminiPartsFromCodeInterpreterCall turns a replayed code_interpreter_call back into the
+// executableCode and codeExecutionResult parts. A result with no code to follow is sent as text.
+func geminiPartsFromCodeInterpreterCall(msg *schemas.ResponsesMessage) []*Part {
+	ci := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+	if ci == nil {
+		return nil
+	}
+	var logs strings.Builder
+	hasResult := false // an empty logs entry is still a result: the code ran and printed nothing
+	for _, out := range ci.Outputs {
+		if out.ResponsesCodeInterpreterOutputLogs != nil {
+			hasResult = true
+			logs.WriteString(out.ResponsesCodeInterpreterOutputLogs.Logs)
+		}
+	}
+	failed := msg.Status != nil && *msg.Status == "failed"
+	if ci.Code == nil || *ci.Code == "" {
+		if logs.Len() == 0 {
+			return nil
+		}
+		if failed {
+			return []*Part{{Text: geminiCodeExecutionErrorPrefix + logs.String()}}
+		}
+		return []*Part{{Text: logs.String()}}
+	}
+	parts := []*Part{{ExecutableCode: &ExecutableCode{Language: "PYTHON", Code: *ci.Code}}}
+	if !hasResult && !failed {
+		return parts
+	}
+	outcome := OutcomeOK
+	if failed {
+		outcome = OutcomeFailed
+	}
+	return append(parts, &Part{CodeExecutionResult: &CodeExecutionResult{Outcome: outcome, Output: logs.String()}})
+}
+
+// newGeminiCodeInterpreterCall builds a code_interpreter_call from an executableCode
+// part, optionally already carrying its result. Gemini assigns these parts no id, so
+// one is generated to keep the call addressable.
+func newGeminiCodeInterpreterCall(code *ExecutableCode, result *CodeExecutionResult) schemas.ResponsesMessage {
+	callID := geminiCodeExecutionCallID()
+	ci := &schemas.ResponsesCodeInterpreterToolCall{}
+	if code != nil {
+		ci.Code = schemas.Ptr(code.Code)
+	}
+	if result != nil {
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+	}
+	return schemas.ResponsesMessage{
+		ID:     schemas.Ptr(callID),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr(geminiCodeExecutionStatus(result)),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                           schemas.Ptr(callID),
+			ResponsesCodeInterpreterToolCall: ci,
+		},
+	}
+}
+
+// geminiCodeExecutionCallID mints an id for a code execution call, which Gemini does
+// not identify on the wire.
+func geminiCodeExecutionCallID() string {
+	return "ci_" + schemas.GetRandomString(24)
+}
+
+// attachGeminiCodeExecutionResult folds a codeExecutionResult onto the most recent
+// code_interpreter_call that has no outputs yet, reporting whether it found one.
+func attachGeminiCodeExecutionResult(msgs []schemas.ResponsesMessage, result *CodeExecutionResult) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := &msgs[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeCodeInterpreterCall {
+			continue
+		}
+		if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+			continue
+		}
+		ci := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+		if len(ci.Outputs) > 0 {
+			return false
+		}
+		ci.Outputs = geminiCodeExecutionOutputs(result)
+		msg.Status = schemas.Ptr(geminiCodeExecutionStatus(result))
+		return true
+	}
+	return false
+}
+
+// convertGeminiCandidatesToResponsesOutput converts Gemini candidates to Responses output
+// messages. messageID scopes the item ids, as the stream state's MessageID does.
+func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate, messageID string) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 
 	for _, candidate := range candidates {
@@ -3421,6 +4059,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 		var searchCallIndices []int
 
 		for _, part := range candidate.Content.Parts {
+			if part == nil {
+				continue
+			}
 			// Handle different types of parts
 			switch {
 			case part.Thought:
@@ -3438,6 +4079,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				if part.Text != "" || len(part.ThoughtSignature) > 0 {
 					text := part.Text
 					msg := schemas.ResponsesMessage{
+						ID:   schemas.Ptr(generateItemID(&messageID, "reasoning", len(messages))),
 						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
@@ -3448,6 +4090,12 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 							},
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						// A reasoning item always carries a summary array on the wire (the
+						// streaming path already emits one); a text-only thought left it nil
+						// and the item went out with no summary at all.
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary: []schemas.ResponsesReasoningSummary{},
+						},
 					}
 					if len(part.ThoughtSignature) > 0 {
 						// Stored base64-encoded, which is the form
@@ -3455,10 +4103,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 						// thoughtSignatureFromEncryptedContent decodes on the way
 						// back out -- so the round trip is symmetric by construction.
 						encoded := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
-							Summary:          []schemas.ResponsesReasoningSummary{},
-							EncryptedContent: &encoded,
-						}
+						msg.ResponsesReasoning.EncryptedContent = &encoded
 						msg.Content.ContentBlocks[0].Signature = &encoded
 					}
 					messages = append(messages, msg)
@@ -3467,7 +4112,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			case part.Text != "":
 				// Regular text message
 				msg := schemas.ResponsesMessage{
-					ID:     schemas.Ptr("msg_" + schemas.GetRandomString(50)),
+					ID:     schemas.Ptr(generateItemID(&messageID, "item", len(messages))),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: schemas.Ptr("completed"),
 					Content: &schemas.ResponsesMessageContent{
@@ -3630,48 +4275,20 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				messages = append(messages, msg)
 
 			case part.CodeExecutionResult != nil:
-				// Handle code execution results
-				output := part.CodeExecutionResult.Output
-				if part.CodeExecutionResult.Outcome != OutcomeOK {
-					output = "Error: " + output
+				// Always follows the executableCode part it belongs to, so fold it onto
+				// that open call rather than emitting a second item.
+				if !attachGeminiCodeExecutionResult(messages, part.CodeExecutionResult) {
+					messages = append(messages, newGeminiCodeInterpreterCall(nil, part.CodeExecutionResult))
 				}
-
-				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &output,
-							},
-						},
-					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
-				}
-				messages = append(messages, msg)
 
 			case part.ExecutableCode != nil:
-				// Handle executable code
-				codeContent := "```" + part.ExecutableCode.Language + "\n" + part.ExecutableCode.Code + "\n```"
-
-				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &codeContent,
-							},
-						},
-					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				}
-				messages = append(messages, msg)
+				messages = append(messages, newGeminiCodeInterpreterCall(part.ExecutableCode, nil))
 			case part.ToolCall != nil:
 				// Server-side tool invocation (Google executed it; we only report it).
 				// The part also carries a thoughtSignature, so keep emitting the reasoning
 				// item the thoughtSignature case below would have produced.
 				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					msg.ID = schemas.Ptr(generateItemID(&messageID, "reasoning", len(messages)))
 					messages = append(messages, msg)
 				}
 				if !isSearchToolType(part.ToolCall.ToolType) {
@@ -3705,6 +4322,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			case part.ToolResponse != nil:
 				// Result of a server-side ToolCall — completes the item its ID opened.
 				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					msg.ID = schemas.Ptr(generateItemID(&messageID, "reasoning", len(messages)))
 					messages = append(messages, msg)
 				}
 				if part.ToolResponse.ID != "" {
@@ -3725,6 +4343,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				// Handle thought signature
 				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 				msg := schemas.ResponsesMessage{
+					ID:   schemas.Ptr(generateItemID(&messageID, "reasoning", len(messages))),
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
@@ -3739,6 +4358,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 		// check if gemini used google search tool
 		if candidate.GroundingMetadata != nil {
 			webSearchmessage := schemas.ResponsesMessage{
+				ID:     schemas.Ptr(generateItemID(&messageID, "ws", len(messages))),
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
 				Status: schemas.Ptr("completed"),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
@@ -3979,6 +4599,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 	if params.MaxOutputTokens != nil {
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
+	// Not clamped: an out-of-range value is Google's to reject, not ours to rewrite.
+	// Gemini only honours logprobs when responseLogprobs is on, so a positive value
+	// turns it on (the GenAI ingress also carries an explicit response_logprobs below).
+	if params.TopLogProbs != nil {
+		config.Logprobs = schemas.Ptr(int32(*params.TopLogProbs))
+		if *params.TopLogProbs > 0 {
+			config.ResponseLogprobs = true
+		}
+	}
 	// Only set ThinkingConfig if the model actually supports thinking
 	caps := schemas.ResolveModelCaps(provider, capModel)
 	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(capModel)) {
@@ -3997,19 +4626,10 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
 			setThinkingBudgetZeroIfSupported(&config, caps)
 		} else if hasMaxTokens {
-			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
+			// User provided max_tokens - use thinkingBudget, or the nearest level on models without one
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
-			budget := *params.Reasoning.MaxTokens
-			switch budget {
-			case 0:
-				setThinkingBudgetZeroIfSupported(&config, caps)
-			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
-			default:
-				if err := validateThinkingBudget(caps, budget); err != nil {
-					return config, err
-				}
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
+			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
+				return config, err
 			}
 		} else if hasEffort {
 			// User provided effort only (no max_tokens)
@@ -4040,6 +4660,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
 			return config, err
 		}
+		dropJSONResponseFormatWithToolsIfUnsupported(&config, len(params.Tools) > 0, caps, capModel)
 	}
 
 	// Read-only: the request's ExtraParams are shared across retry and fallback
@@ -4073,6 +4694,25 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.MediaResolution = val
 			}
 		}
+		if candidateCount, ok := params.ExtraParams["candidate_count"]; ok {
+			if val, success := schemas.SafeExtractInt(candidateCount); success {
+				config.CandidateCount = int32(val)
+			}
+		}
+		if responseLogprobs, ok := params.ExtraParams["response_logprobs"]; ok {
+			if val, success := schemas.SafeExtractBool(responseLogprobs); success && val {
+				config.ResponseLogprobs = true
+			}
+		}
+		if seed, ok := params.ExtraParams["seed"]; ok {
+			if val, success := schemas.SafeExtractInt(seed); success {
+				config.Seed = schemas.Ptr(int32(val))
+			}
+		}
+	}
+	// top_logprobs 0 without responseLogprobs asks for nothing; do not send a bare logprobs.
+	if config.Logprobs != nil && *config.Logprobs == 0 && !config.ResponseLogprobs {
+		config.Logprobs = nil
 	}
 
 	return config, nil
@@ -4088,6 +4728,9 @@ var responsesGenerationConfigExtraParamKeys = []string{
 	"presence_penalty",
 	"stop_sequences",
 	"media_resolution",
+	"candidate_count",
+	"response_logprobs",
+	"seed",
 }
 
 // responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to
@@ -4152,6 +4795,7 @@ func modelSupportsToolCombination(model string) bool {
 func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string) ([]Tool, error) {
 	var functionDeclarations []*FunctionDeclaration
 	var googleSearch *GoogleSearch
+	var codeExecution *ToolCodeExecution
 
 	allowsMixedTools := includeServerSideToolInvocations ||
 		(provider == schemas.Vertex && modelSupportsToolCombination(model))
@@ -4165,7 +4809,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 		}
 	}
 
-	dropGoogleSearch := hasFunctionTool && !allowsMixedTools
+	// Google Search and code execution are both server-side tools, so both fall under
+	// the mixed-tool restriction described above.
+	dropServerSideTools := hasFunctionTool && !allowsMixedTools
 
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeFunction {
@@ -4192,7 +4838,12 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 				functionDeclarations = append(functionDeclarations, funcDecl)
 			}
 		}
-		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
+		if tool.Type == schemas.ResponsesToolTypeCodeInterpreter && !dropServerSideTools {
+			// Gemini's codeExecution takes no configuration; the OpenAI container and the
+			// Anthropic version on ResponsesToolCodeInterpreter have no Gemini equivalent.
+			codeExecution = &ToolCodeExecution{}
+		}
+		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropServerSideTools {
 			googleSearch = &GoogleSearch{}
 			if tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.Filters != nil {
 				if tool.ResponsesToolWebSearch.Filters.TimeRangeFilter != nil {
@@ -4229,6 +4880,9 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 	}
 	if googleSearch != nil {
 		geminiTools = append(geminiTools, Tool{GoogleSearch: googleSearch})
+	}
+	if codeExecution != nil {
+		geminiTools = append(geminiTools, Tool{CodeExecution: codeExecution})
 	}
 	if len(geminiTools) == 0 {
 		return []Tool{}, nil
@@ -4542,7 +5196,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// A reasoning message with no text still has nothing to add here, so it
 		// keeps being skipped.
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
-			parts := thoughtTextParts(msg.ResponsesReasoning)
+			parts := replayThoughtTextParts(&msg)
 
 			// The signature is carried by the PRECEDING function call's
 			// look-ahead - but only when there is one. A standalone signed
@@ -4678,8 +5332,13 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 								thoughtSig = parts[1] // Extract signature (after separator)
 							}
 						}
-						// Keep the full CallID as-is (don't strip thought signature)
-						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+						// Send Gemini the id it issued. The signature travels in the
+						// dedicated thoughtSignature field set below, so leaving it joined to
+						// the id as well would ship a ~500-char id whose base64 tail the model
+						// can read and echo into its own output. Stripping is deterministic,
+						// and FunctionResponse.ID below is stripped the same way, so
+						// orderFunctionResponsesByCallID still pairs the two.
+						part.FunctionCall.ID = providerUtils.StripThoughtSignature(*msg.ResponsesToolMessage.CallID)
 						pendingFunctionCallIDs = append(pendingFunctionCallIDs, part.FunctionCall.ID)
 					}
 					if thoughtSig != "" {
@@ -4710,6 +5369,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					content.Parts = append(content.Parts, part)
 				}
+
+			case schemas.ResponsesMessageTypeCodeInterpreterCall:
+				// The call carries code and logs, not content, so rebuild the parts Gemini produced.
+				content.Role = "model"
+				content.Parts = append(content.Parts, geminiPartsFromCodeInterpreterCall(&msg)...)
 
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
 				// Convert function response - collect for grouping
@@ -4749,7 +5413,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 								continue
 							}
 							if !supportsMultimodalToolOutput {
-								continue // older models can't accept media in a function response
+								// Older models reject media here; name it instead.
+								if placeholder, isMedia := schemas.ResponsesToolResultMediaPlaceholder(block); isMedia {
+									textParts = append(textParts, placeholder)
+								}
+								continue
 							}
 							mediaPart, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 							if err != nil {
@@ -4799,8 +5467,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						FunctionResponse: &FunctionResponse{
 							Name:     funcName,
 							Response: json.RawMessage(responseBytes),
-							ID:       *msg.ResponsesToolMessage.CallID,
-							Parts:    funcMediaParts,
+							// Stripped to match the FunctionCall.ID sent above. callIDToName
+							// is still keyed on the full id, so the name lookup is unaffected.
+							ID:    providerUtils.StripThoughtSignature(*msg.ResponsesToolMessage.CallID),
+							Parts: funcMediaParts,
 						},
 					}
 					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)
@@ -5243,7 +5913,7 @@ func emitWebSearchFromGroundingMetadata(
 		// Prefer the model's own tool-call ID so the item is traceable back to Gemini's call.
 		itemID := round.CallID
 		if itemID == "" {
-			itemID = state.generateItemID("ws", outputIndex)
+			itemID = generateItemID(state.MessageID, "ws", outputIndex)
 		}
 		state.ItemIDs[outputIndex] = itemID
 
@@ -5337,7 +6007,7 @@ func emitWebSearchFromGroundingMetadata(
 	// Emit rendered content if present
 	if metadata != nil && metadata.SearchEntryPoint != nil && metadata.SearchEntryPoint.RenderedContent != "" {
 		renderedIndex := state.nextOutputIndex()
-		renderedItemID := state.generateItemID("rc", renderedIndex)
+		renderedItemID := generateItemID(state.MessageID, "rc", renderedIndex)
 		state.ItemIDs[renderedIndex] = renderedItemID
 
 		// output_item.added with rendered_content

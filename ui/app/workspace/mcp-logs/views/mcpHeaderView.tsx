@@ -7,6 +7,7 @@ import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface McpHeaderViewProps {
 	filters: MCPToolLogFilters;
@@ -38,6 +39,7 @@ export function McpHeaderView({
 	onToggleColumnVisibility,
 	onResetColumns,
 }: McpHeaderViewProps) {
+	const { t } = useTranslation("observability");
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
@@ -73,40 +75,45 @@ export function McpHeaderView({
 	);
 
 	return (
-		<div className="flex grow flex-wrap items-center justify-between gap-2">
+		// Below @4xl the controls wrap: buttons on one row, search on its own, then the
+		// date picker with the icon button. Wrapped rows stretch so each fills evenly.
+		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/mcp-logs-header:flex-nowrap @4xl/mcp-logs-header:justify-between">
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/mcp-logs-header:flex-none"
 				onClick={onRefresh}
 				disabled={loading}
 				data-testid="mcp-logs-header-refresh-btn"
 			>
 				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
+				{t("labels.refresh")}
 			</Button>
 			<Button
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/mcp-logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 				data-testid="mcp-logs-header-live-btn"
 			>
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
-				Live
+				{t("labels.live")}
 			</Button>
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border @4xl/mcp-logs-header:basis-auto">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
-					placeholder="Search MCP logs"
+					placeholder={t("mcpLogs.searchPlaceholder")}
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}
+					data-testid="mcp-logs-header-search-input"
 				/>
 			</div>
 			<DateTimePickerWithRange
-				buttonClassName="w-full sm:w-auto"
+				className="flex-1 @4xl/mcp-logs-header:flex-none"
+				buttonClassName="w-full @4xl/mcp-logs-header:w-auto"
+				triggerTestId="mcp-logs-header-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}
 				showTimezone

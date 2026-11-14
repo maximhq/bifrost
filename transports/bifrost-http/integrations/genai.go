@@ -19,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -39,6 +39,20 @@ const genAIRawRequestBodyContextKey schemas.BifrostContextKey = "bifrost-genai-r
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
 	*GenericRouter
+}
+
+// GenAIRealtimePaths returns the WebSocket GET path a Google GenAI client opens for the Live API.
+func GenAIRealtimePaths(pathPrefix string) []string {
+	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
+}
+
+// GenAIVertexRealtimePaths returns the WebSocket GET paths a Google GenAI client in Vertex mode opens for the Live
+// API: the Vertex AI service, in the API versions the SDK uses.
+func GenAIVertexRealtimePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent",
+		pathPrefix + "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent",
+	}
 }
 
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
@@ -140,16 +154,14 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					}, nil
 				}
 			} else if geminiReq, ok := req.(*gemini.GeminiEmbeddingRequest); ok {
-				req := &gemini.GeminiGenerationRequest{
-					Model:    geminiReq.Model,
-					Requests: []gemini.GeminiEmbeddingRequest{*geminiReq},
+				embReq, err := geminiReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
 				}
-				return &schemas.BifrostRequest{
-					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
-				}, nil
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
 			} else if geminiReq, ok := req.(*gemini.GeminiBatchEmbeddingRequest); ok {
 				// :batchEmbedContents is Gemini's multi-input embedding call, not a batch job.
-				// Each entry's own params ride along on its input item.
+				// Identical entry params go request-level; differing ones stay per input item.
 				embReq, err := geminiReq.ToBifrostEmbeddingRequest(ctx)
 				if err != nil {
 					return nil, err
@@ -1666,7 +1678,8 @@ func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path
 	return collectErr
 }
 
-// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+// collectGenAIContentTextPaths selects text parts, function-call argument string values, and supported function-response
+// JSON values from one Gemini content object.
 func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
 	if !content.Exists() || content.Type == gjson.Null {
 		return nil
@@ -1691,6 +1704,13 @@ func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path st
 		}
 		if !includeFunctionResponses {
 			return true
+		}
+		if collectErr = collectRawRequestArgumentStringPaths(
+			paths,
+			part.Get("functionCall.args"),
+			rawRequestObjectPath(rawRequestObjectPath(partPath, "functionCall"), "args"),
+		); collectErr != nil {
+			return false
 		}
 		functionResponse := part.Get("functionResponse")
 		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {
@@ -1920,6 +1940,9 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Check all contents for audio input
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
 			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
 				return true

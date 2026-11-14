@@ -228,3 +228,64 @@ func TestMCPClientConfigMarshalMirrorsAllowOnAllVirtualKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPClientConfigServerTypeOnSlug pins the wire mapping of server_type_on_slug on both decode paths,
+// "inherit" read as the empty value, and that an unknown value is refused rather than read as inherit.
+func TestMCPClientConfigServerTypeOnSlug(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want MCPServerTypeOnSlug
+	}{
+		{"absent inherits", `{"name":"demo"}`, MCPServerTypeOnSlugInherit},
+		{"inherit", `{"name":"demo","server_type_on_slug":"inherit"}`, MCPServerTypeOnSlugInherit},
+		{"enabled", `{"name":"demo","server_type_on_slug":"enabled"}`, MCPServerTypeOnSlugEnabled},
+		{"disabled", `{"name":"demo","server_type_on_slug":"disabled"}`, MCPServerTypeOnSlugDisabled},
+		{"disabled with duration string", `{"name":"demo","tool_sync_interval":"10m","server_type_on_slug":"disabled"}`, MCPServerTypeOnSlugDisabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg MCPClientConfig
+			if err := sonic.Unmarshal([]byte(tc.raw), &cfg); err != nil {
+				t.Fatalf("unexpected unmarshal error: %v", err)
+			}
+			if cfg.ServerTypeOnSlug != tc.want {
+				t.Fatalf("server_type_on_slug: want %q, got %q (wire: %s)", tc.want, cfg.ServerTypeOnSlug, tc.raw)
+			}
+		})
+	}
+
+	for _, raw := range []string{
+		`{"name":"demo","server_type_on_slug":"on"}`,
+		`{"name":"demo","server_type_on_slug":""}`,
+		`{"name":"demo","tool_sync_interval":"10m","server_type_on_slug":"true"}`,
+	} {
+		var cfg MCPClientConfig
+		if err := sonic.Unmarshal([]byte(raw), &cfg); err == nil || !strings.Contains(err.Error(), "server_type_on_slug") {
+			t.Fatalf("expected a server_type_on_slug error for %s, got %v", raw, err)
+		}
+	}
+}
+
+// TestMCPClientConfigMarshalServerTypeOnSlug pins that the setting is always written as its wire value,
+// "inherit" included, and reads back to the same value.
+func TestMCPClientConfigMarshalServerTypeOnSlug(t *testing.T) {
+	for _, mode := range []MCPServerTypeOnSlug{MCPServerTypeOnSlugInherit, MCPServerTypeOnSlugEnabled, MCPServerTypeOnSlugDisabled} {
+		cfg := MCPClientConfig{Name: "demo", ConnectionType: MCPConnectionTypeHTTP, ServerTypeOnSlug: mode}
+		raw, err := sonic.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("unexpected marshal error: %v", err)
+		}
+		want := `"server_type_on_slug":"` + mode.String() + `"`
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("expected %s in output, got: %s", want, raw)
+		}
+		var got MCPClientConfig
+		if err := sonic.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+		if got.ServerTypeOnSlug != mode {
+			t.Fatalf("round-trip changed server_type_on_slug: want %q, got %q", mode, got.ServerTypeOnSlug)
+		}
+	}
+}

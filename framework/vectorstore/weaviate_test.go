@@ -2,13 +2,19 @@ package vectorstore
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-openapi/strfmt"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate/entities/models"
 )
@@ -354,6 +360,18 @@ func TestWeaviateStore_Integration(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup(t)
 
+	// Weaviate answers 404 for an id it does not have. Every other backend
+	// treats that as nothing to do, and a caller clearing out an id it may
+	// never have written cannot act on the difference.
+	t.Run("Delete of a missing object is not an error", func(t *testing.T) {
+		testKey := generateUUID()
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey))
+
+		require.NoError(t, setup.Store.Add(setup.ctx, TestClassName, testKey, generateTestEmbedding(TestEmbeddingDim), map[string]interface{}{"type": "document"}))
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey))
+		require.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, testKey), "deleting it a second time")
+	})
+
 	t.Run("Add and GetChunk", func(t *testing.T) {
 		testKey := generateUUID()
 		embedding := generateTestEmbedding(TestEmbeddingDim)
@@ -636,10 +654,11 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, results, 1) // user1_content
 
-		// Alice's similar content (semantic search with user filter)
+		// Alice's similar content (semantic search with user filter). The embeddings are random, so
+		// the threshold is -1, the loosest cosine similarity, and the user filter alone decides.
 		aliceFilter := []Query{{Field: "user", Operator: "Equal", Value: "alice"}}
 		queryEmbedding := userContent[0].embedding
-		vectorResults, err := setup.Store.GetNearest(setup.ctx, TestClassName, queryEmbedding, aliceFilter, filterFields, 0.1, 10)
+		vectorResults, err := setup.Store.GetNearest(setup.ctx, TestClassName, queryEmbedding, aliceFilter, filterFields, -1, 10)
 		require.NoError(t, err)
 		assert.Len(t, vectorResults, 2) // Both of Alice's content
 	})
@@ -809,4 +828,186 @@ func TestWeaviateStore_NamespaceDimensionHandling(t *testing.T) {
 			t.Logf("Warning: Failed to cleanup class: %v", err)
 		}
 	})
+}
+
+// TestWeaviateStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares: a
+// class that already holds vectors of one size cannot be reopened at another, so a dimension
+// change surfaces when the plugin loads rather than as failed writes and silent misses later.
+// Weaviate keeps no dimension on the class, so the stored vectors are what is compared.
+func TestWeaviateStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	className := "TestDimensionGuard"
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, className)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, className) }()
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 512, properties))
+	// An empty class has no vectors to compare, so reopening it at another size is allowed.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 1024, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), generateTestEmbedding(512), map[string]interface{}{"type": "doc"}))
+
+	// Reopening at the size it holds stays idempotent.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 512, properties))
+
+	err := setup.Store.CreateNamespace(setup.ctx, className, 1024, properties)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
+	assert.Contains(t, err.Error(), "already exists with dimension 512 but config requires 1024")
+}
+
+// TestWeaviateStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to
+// cosine similarity, the scale every store uses. Weaviate's certainty is (1 + cosine) / 2, so
+// filtering or scoring by it admits a vector at cosine 0.7 under a 0.8 threshold.
+func TestWeaviateStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	className := "TestCosineScore"
+	properties := map[string]VectorStoreProperties{"label": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, className)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, className) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 2, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), unitVectorAtCosine(2, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), unitVectorAtCosine(2, 0.7), map[string]interface{}{"label": "far"}))
+
+	results, err := setup.Store.GetNearest(setup.ctx, className, unitVectorAtCosine(2, 1), nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
+}
+
+// TestWeaviateStore_DeleteMissingIDSucceeds pins deleting an id that was never written as a
+// no-op, the contract every store shares so clearing an unknown cache entry is not a server error.
+func TestWeaviateStore_DeleteMissingIDSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
+	assert.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, generateUUID()))
+}
+
+// TestWeaviateStore_MissingClassIsNotFound pins reading a class that was never
+// created (or was dropped) as ErrNotFound, as on Chromem. Weaviate answers that
+// read with a GraphQL error, which callers cannot tell from a real failure, so
+// a capture namespace not yet written reads as a failed run instead of an
+// empty one. A query error on a class that exists stays a plain error.
+func TestWeaviateStore_MissingClassIsNotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	missing := "BifrostMissingClass" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	_, _, err := setup.Store.GetAll(setup.ctx, missing, nil, []string{"type"}, nil, 10)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = setup.Store.GetNearest(setup.ctx, missing, make([]float32, 384), nil, []string{"type"}, 0, 10)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
+	_, _, err = setup.Store.GetAll(setup.ctx, TestClassName, nil, []string{"not_a_property"}, nil, 10)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound, "an unknown field on a class that exists is not a missing class")
+}
+
+// A Weaviate with no classes at all has no GraphQL provider, and answers every
+// read with a 422 instead of a GraphQL error, so the class lookup never runs.
+// That is still nothing stored yet. Any other 422 stays a plain error.
+func TestWeaviateStore_EmptySchemaReadIsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		message  string
+		notFound bool
+	}{
+		{"no schema", "no graphql provider present, this is most likely because no schema is present. Import a schema first!", true},
+		{"other 422", "invalid query", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"error":[{"message":"` + tc.message + `"}]}`))
+			}))
+			defer srv.Close()
+			client, err := weaviate.NewClient(weaviate.Config{Scheme: "http", Host: strings.TrimPrefix(srv.URL, "http://")})
+			require.NoError(t, err)
+			store := &WeaviateStore{client: client, config: &WeaviateConfig{}, logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+			ctx := context.Background()
+
+			_, _, getAllErr := store.GetAll(ctx, "BifrostAnyClass", nil, []string{"type"}, nil, 10)
+			_, nearestErr := store.GetNearest(ctx, "BifrostAnyClass", make([]float32, 3), nil, []string{"type"}, 0, 10)
+			for _, err := range []error{getAllErr, nearestErr} {
+				require.Error(t, err)
+				if tc.notFound {
+					assert.ErrorIs(t, err, ErrNotFound)
+				} else {
+					assert.NotErrorIs(t, err, ErrNotFound)
+				}
+			}
+		})
+	}
+}
+
+// DeleteAll removes every match, not only the first batch: Weaviate deletes
+// at most QUERY_MAXIMUM_RESULTS objects (10,000 by default) per batch delete,
+// and a sweep that stopped there would fall behind for good.
+func TestWeaviateStore_DeleteAllPastTheBatchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+	const className = "TestDeleteAllPastTheBatchLimit"
+	ctx := setup.ctx
+	_ = setup.Store.DeleteNamespace(ctx, className)
+	require.NoError(t, setup.Store.CreateNamespace(ctx, className, 4, map[string]VectorStoreProperties{"kind": {DataType: VectorStorePropertyTypeString}}))
+	defer func() { _ = setup.Store.DeleteNamespace(context.Background(), className) }()
+
+	const n = 10_050
+	for start := 0; start < n; start += 1000 {
+		batch := setup.Store.client.Batch().ObjectsBatcher()
+		for i := start; i < min(start+1000, n); i++ {
+			batch = batch.WithObjects(&models.Object{
+				Class:      className,
+				ID:         strfmt.UUID(generateUUID()),
+				Properties: map[string]any{"kind": "sweep"},
+				Vector:     []float32{1, 0, 0, 0},
+			})
+		}
+		res, err := batch.Do(ctx)
+		require.NoError(t, err)
+		for _, obj := range res {
+			if obj.Result != nil && obj.Result.Errors != nil {
+				require.Empty(t, obj.Result.Errors.Error, "batch insert")
+			}
+		}
+	}
+
+	query := []Query{{Field: "kind", Operator: QueryOperatorEqual, Value: "sweep"}}
+	_, err := setup.Store.DeleteAll(ctx, className, query)
+	require.NoError(t, err)
+	left, _, err := setup.Store.GetAll(ctx, className, query, nil, nil, 10)
+	require.NoError(t, err)
+	assert.Empty(t, left, "every match is deleted, past the first batch")
 }

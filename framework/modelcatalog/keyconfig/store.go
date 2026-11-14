@@ -51,6 +51,16 @@ type providerState struct {
 	allowed     schemas.WhiteList
 	blacklisted schemas.BlackList
 	aliasIndex  map[string]AliasOwner
+	// aliasPatterns holds regex: aliases in match order, tried after an aliasIndex miss.
+	aliasPatterns []patternAlias
+}
+
+// patternAlias is one regex: alias with the lists of the key that owns it.
+type patternAlias struct {
+	pattern     string
+	owner       AliasOwner
+	allowed     schemas.WhiteList
+	blacklisted schemas.BlackList
 }
 
 type Store struct {
@@ -82,13 +92,15 @@ func New(logger schemas.Logger) *Store {
 // previous state but absent from snapshot are dropped. The new map is
 // swapped in atomically under the write lock: readers see either the full
 // old snapshot or the full new one, never an interleaving. Use on initial
-// load and on full cross-pod resyncs.
-func (s *Store) Replace(snapshot map[schemas.ModelProvider][]schemas.Key) {
+// load and on full cross-pod resyncs. keyless names the custom providers
+// configured as keyless (is_key_less); only those are unrestricted with zero
+// keys, any other provider with no routable key is dropped.
+func (s *Store) Replace(snapshot map[schemas.ModelProvider][]schemas.Key, keyless ...schemas.ModelProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := make(map[schemas.ModelProvider]*providerState, len(snapshot))
 	for p, keys := range snapshot {
-		if st := s.buildState(p, keys); st != nil {
+		if st := s.buildState(p, keys, slices.Contains(keyless, p)); st != nil {
 			next[p] = st
 		}
 	}
@@ -102,9 +114,20 @@ func (s *Store) WriteGen() uint64 {
 }
 
 // SetProvider replaces the cached state for one provider. Call after a
-// successful key add / update / delete for that provider.
+// successful key add / update / delete for that provider. A provider left with
+// no routable key is dropped; use SetKeylessProvider for a keyless one.
 func (s *Store) SetProvider(provider schemas.ModelProvider, keys []schemas.Key) {
-	st := s.buildState(provider, keys)
+	s.setProvider(provider, keys, false)
+}
+
+// SetKeylessProvider is SetProvider for a custom provider configured as
+// keyless (is_key_less), which stays unrestricted when it has no keys.
+func (s *Store) SetKeylessProvider(provider schemas.ModelProvider, keys []schemas.Key) {
+	s.setProvider(provider, keys, true)
+}
+
+func (s *Store) setProvider(provider schemas.ModelProvider, keys []schemas.Key, keyless bool) {
+	st := s.buildState(provider, keys, keyless)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if st == nil {
@@ -155,7 +178,7 @@ func (s *Store) EntryFor(provider schemas.ModelProvider, keyID string) (KeyEntry
 
 // AllowedFor returns the aggregated whitelist: union of enabled keys' Models
 // minus per-key Blacklisted, or ["*"] when any enabled key is unrestricted or
-// the provider is keyless non-standard.
+// the provider is a zero-key keyless custom provider.
 func (s *Store) AllowedFor(provider schemas.ModelProvider) schemas.WhiteList {
 	st := s.load(provider)
 	if st == nil {
@@ -184,7 +207,7 @@ func (s *Store) BlacklistedFor(provider schemas.ModelProvider) schemas.BlackList
 // no allowance). This mirrors KeysAllowingModel (true ⇔ KeysAllowingModel
 // returns a non-empty set), so it is safe to use as a routing pre-filter: a
 // true result guarantees a routable key exists. Keyless unrestricted providers
-// (custom providers configured without keys) allow everything, since there is
+// (keyless custom providers with no keys) allow everything, since there is
 // no per-key allow-list to route through.
 func (s *Store) IsAllowed(provider schemas.ModelProvider, model string) bool {
 	st := s.load(provider)
@@ -225,8 +248,22 @@ func (s *Store) ResolveAlias(provider schemas.ModelProvider, model string) (Alia
 	}
 	// aliasIndex is keyed lowercase; match the case-insensitive contract
 	// of schemas.KeyAliases.ResolveConfig.
-	owner, ok := st.aliasIndex[strings.ToLower(model)]
-	return owner, ok
+	if owner, ok := st.aliasIndex[strings.ToLower(model)]; ok {
+		return owner, true
+	}
+	if schemas.IsRegexEntry(model) {
+		return AliasOwner{}, false
+	}
+	for _, pa := range st.aliasPatterns {
+		// A pattern counts only when its own key can serve the model.
+		if !pa.allowed.IsAllowed(model) || pa.blacklisted.IsBlocked(model) {
+			continue
+		}
+		if cfg, ok := schemas.ExpandPatternAlias(pa.pattern, pa.owner.Config, model); ok {
+			return AliasOwner{KeyID: pa.owner.KeyID, Config: cfg}, true
+		}
+	}
+	return AliasOwner{}, false
 }
 
 // Providers returns every provider with cached state. Used by callers
@@ -276,15 +313,20 @@ func (s *Store) load(provider schemas.ModelProvider) *providerState {
 // blacklists, union allowed minus per-key blacklisted, intersect blacklists
 // across enabled keys for the provider-level set, last-enabled-key-wins on
 // alias collisions with a warning. Returns nil when the provider has no
-// routable keys (all disabled or fully block-all) and isn't a keyless
-// non-standard provider — such providers are dropped from the store
+// routable keys (all disabled or fully block-all) and isn't a zero-key
+// keyless custom provider — such providers are dropped from the store
 // entirely, since this cache exists for routing-time queries, not
 // inspection. The configstore remains the source of truth for the full
 // configured-key set.
 //
 // Safe to call without holding s.mu — it only reads its parameters and
 // s.logger, and writes only to local variables.
-func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *providerState {
+//
+// Only a provider the caller marks keyless is unrestricted with zero keys. A
+// custom provider that needs keys but has none (its only key was rejected at
+// save, or deleted) can serve nothing, so it must not claim every model and win
+// the catalog's pick for a bare model name over a provider that can serve it.
+func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key, keyless bool) *providerState {
 	var (
 		allModelsAllowed bool
 		enabledKeysCount int
@@ -297,13 +339,14 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			count int
 			name  string
 		})
-		aliasIndex = make(map[string]AliasOwner)
-		entries    = make([]KeyEntry, 0, len(keys))
+		aliasIndex    = make(map[string]AliasOwner)
+		aliasPatterns []patternAlias
+		entries       = make([]KeyEntry, 0, len(keys))
 	)
 
-	// Keyless non-standard providers (custom providers configured without keys)
-	// are unrestricted — there's no allow-list to derive from.
-	if len(keys) == 0 && !bifrost.IsStandardProvider(provider) {
+	// Keyless custom providers with no keys are unrestricted — there's no
+	// allow-list to derive from.
+	if len(keys) == 0 && keyless && !bifrost.IsStandardProvider(provider) {
 		allModelsAllowed = true
 	}
 
@@ -346,7 +389,18 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			}
 		}
 
+		for _, pattern := range key.Aliases.PatternKeys() {
+			aliasPatterns = append(aliasPatterns, patternAlias{
+				pattern:     pattern,
+				owner:       AliasOwner{KeyID: key.ID, Config: key.Aliases[pattern]},
+				allowed:     key.Models,
+				blacklisted: key.BlacklistedModels,
+			})
+		}
 		for aliasName, cfg := range key.Aliases {
+			if schemas.IsRegexEntry(aliasName) {
+				continue
+			}
 			// Normalize to lowercase so the cross-key alias index matches the
 			// case-insensitive semantic of schemas.KeyAliases.ResolveConfig
 			// and schemas.KeyAliases.Validate's intra-key uniqueness check.
@@ -378,9 +432,10 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 	}
 
 	return &providerState{
-		entries:     entries,
-		allowed:     allowed,
-		blacklisted: blacklisted,
-		aliasIndex:  aliasIndex,
+		entries:       entries,
+		allowed:       allowed,
+		blacklisted:   blacklisted,
+		aliasIndex:    aliasIndex,
+		aliasPatterns: aliasPatterns,
 	}
 }

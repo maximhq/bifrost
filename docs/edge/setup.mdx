@@ -1,21 +1,59 @@
 ---
 title: "Set up Edge"
-description: "Prepare Bifrost, configure Edge, install the agent directly or with MDM, and verify that AI traffic is governed."
+description: "Configure your identity provider, provision users and access, configure Edge, install the agent, and verify that AI traffic is governed."
 icon: "rocket"
 ---
 
-Use this section to take Bifrost Edge from an unconfigured deployment to a verified device. The setup has two parts: an administrator prepares Bifrost, then the agent is installed on each device.
+Use this section to take Bifrost Edge from an unconfigured deployment to a verified device. Every Edge user signs in through your organization's identity provider (IdP), so identity is configured first and the agent is installed last.
 
 ```mermaid
 flowchart LR
-    A[Prepare identity and access] --> B[Configure Edge and its CA]
-    B --> C{Choose an installation path}
-    C -->|Direct download| D[Install a package on one device]
-    C -->|MDM| E[Deploy package, config, and trust settings]
-    D --> F[Sign in and trust the CA]
-    E --> F
-    F --> G[Restart the computer and verify]
+    A[Configure the IdP] --> B[Provision users]
+    B --> C[Assign roles and access profiles]
+    C --> D[Configure Edge]
+    D --> E{Install}
+    E -->|Direct download| F[One device]
+    E -->|MDM| G[Managed fleet]
+    F --> H[Sign in with SSO and verify]
+    G --> H
 ```
+
+## Before you begin
+
+You need:
+
+- A running Bifrost Enterprise deployment with an Edge entitlement and an available device seat.
+- The externally reachable HTTPS URL of the Bifrost deployment.
+- A supported identity provider (Okta, Microsoft Entra ID, Keycloak, Zitadel, Google Workspace, Auth0, or a generic OIDC provider) and permission to register an application in it.
+- Access to **Governance** and **Edge Control** in the Bifrost dashboard.
+- The Edge agent package for each target operating system and architecture, from the organization-specific download location shared during Edge onboarding.
+
+<Warning>
+  An identity provider is required. Edge sign-in is unavailable until user provisioning is configured in Bifrost, and the tray reports **User provisioning not set up - contact your Bifrost admin**.
+</Warning>
+
+## Setup sequence
+
+<Steps>
+  <Step title="Configure the identity provider">
+    Enable OIDC sign-in under **Governance → User Provisioning**. See [Prepare identity and access](/edge/setup-bifrost#2-configure-the-identity-provider).
+  </Step>
+  <Step title="Provision users">
+    Import or sync the people who will run Edge. See [Provision Edge users](/edge/setup-bifrost#3-provision-edge-users).
+  </Step>
+  <Step title="Assign roles and access profiles">
+    Give each Edge user a role and an access profile so Bifrost can issue the governed virtual key that Edge traffic is attributed to. See [Assign roles and access profiles](/edge/setup-bifrost#4-assign-roles-and-access-profiles).
+  </Step>
+  <Step title="Configure Edge">
+    Create the Edge certificate and review the fleet settings in **Edge Control → Edge Settings**. See [Configure Edge](/edge/setup-edge-control).
+  </Step>
+  <Step title="Install the agent">
+    Follow either the [direct installation](/edge/install-direct) or [MDM deployment](/edge/install-mdm) path.
+  </Step>
+  <Step title="Sign in and verify">
+    Sign in with SSO, trust the certificate, restart the computer, and confirm that a supported AI request reaches Bifrost. See [Sign in and verify](/edge/sign-in-and-verify).
+  </Step>
+</Steps>
 
 ## Choose an installation path
 
@@ -28,57 +66,26 @@ flowchart LR
   </Card>
 </CardGroup>
 
-Both paths install the same Edge agent. They differ in how the device receives its Bifrost URL, how certificate trust is established, and how much the user must do during setup.
+Both paths install the same agent and use the same SSO sign-in. They differ in how the device receives its Bifrost URL and certificate trust.
 
 | | Direct installation | MDM deployment |
 | --- | --- | --- |
 | Best for | Pilots and individual devices | Managed fleets |
 | Bifrost URL | Entered from the tray, or supplied in `config.json` | Supplied in managed `config.json` |
 | Agent package | Installed locally | Pushed by the device-management platform |
-| macOS CA trust | User approves the administrator prompt | MDM pushes a device-scoped trusted-root profile |
-| User sign-in | Required for IdP mode | Required for IdP mode |
-
-## Before you begin
-
-You need:
-
-- A running Bifrost Enterprise deployment with an Edge entitlement and an available device seat.
-- The HTTPS URL users and devices use to reach Bifrost.
-- Access to **Governance** settings and **Edge Control** in the Bifrost dashboard.
-- An Edge agent package for the target operating system and architecture. Bifrost provides packages through the organization-specific download location shared during Edge onboarding.
-- For the recommended identity flow, a configured identity provider and a provisioned user with access to an active virtual key.
-
-<Note>
-  If your deployment does not have an identity provider, Edge can use a user-entered Bifrost virtual key when **Allow virtual key sign-in** is enabled in Edge Settings. This is a separate sign-in path; it does not create an IdP user session.
-</Note>
-
-## Setup sequence
-
-<Steps>
-  <Step title="Prepare Bifrost identity and access">
-    Configure user provisioning, roles, access profiles, and the users who will run Edge. Confirm that each intended user can resolve to an active virtual key.
-  </Step>
-  <Step title="Configure Edge">
-    Set up the interception certificate authority, choose the initial approval behavior, and review the agent sync and sign-in settings.
-  </Step>
-  <Step title="Install the agent">
-    Follow either the [direct installation](/edge/install-direct) or [MDM deployment](/edge/install-mdm) path.
-  </Step>
-  <Step title="Sign in and verify">
-    After the active CA is trusted, restart the computer so the certificate change takes effect. Then confirm the tray reports a connected state, the device appears in Edge Devices, Diagnostics is healthy, and a supported AI request reaches Bifrost.
-  </Step>
-</Steps>
+| macOS certificate trust | User approves the administrator prompt | MDM pushes a device-scoped trusted-root profile |
+| User sign-in | SSO through the identity provider | SSO through the identity provider |
 
 ## Verify setup
 
 Do not treat installation alone as a successful rollout. A device is ready when:
 
-- The tray shows **Connected** or **Connected (virtual key)**.
-- The computer was restarted after the active CA was first trusted or last changed.
-- Edge Diagnostics confirms that the service, credential, configuration, certificate, traffic capture, and gateway checks are healthy.
+- The tray shows the signed-in user and **Connected**.
+- The computer was restarted after the Edge certificate was first trusted or last replaced.
+- Edge Diagnostics reports **Healthy**.
 - The device appears under **Edge Control → Devices** with the expected owner and hostname.
-- A request from a [supported application](/edge/supported-applications) is visible in Bifrost.
+- A request from a [supported application](/edge/supported-applications) is visible in Bifrost logs, attributed to the signed-in user.
 
 ## Next step
 
-Start with [Prepare Bifrost](/edge/setup-bifrost).
+Start with [Prepare identity and access](/edge/setup-bifrost).

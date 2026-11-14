@@ -337,6 +337,18 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 		}
 	})
 
+	t.Run("from passthrough usage", func(t *testing.T) {
+		entry := &logstore.Log{}
+		applyServedTierToEntry(entry, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{ServiceTier: &flex},
+			},
+		}, nil)
+		if entry.ServiceTier == nil || *entry.ServiceTier != "flex" {
+			t.Fatalf("expected service_tier flex, got %v", entry.ServiceTier)
+		}
+	})
+
 	t.Run("a later usage-only chunk does not blank an established tier", func(t *testing.T) {
 		entry := &logstore.Log{}
 		applyServedTierToEntry(entry, &schemas.BifrostResponse{
@@ -959,7 +971,6 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 // calculateBatchAggregateCost reprices per model_breakdown entry instead, the
 // same way settlement originally priced each result item.
 
-
 // repriceAggregate drives the production seam: RepriceLog asks whichever job kind
 // owns the row to recompute it. Returns the cost and the kind's re-serialized
 // debug blob, matching the shape the old plugin-local helper returned.
@@ -1449,6 +1460,25 @@ func TestCalculateVideoAggregateCost_RepricesFromCapturedDimensions(t *testing.T
 	assert.Equal(t, "1792x1024", roundTripped.Accounting.Size)
 }
 
+// Seedance settles on the task's metered tokens, so repricing must read them back
+// from the accounting record rather than fall to a per-second rate it lacks.
+func TestCalculateVideoAggregateCost_RepricesFromOutputTokens(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v-seedance", &schemas.VideoAccountingDebug{
+		Seconds:      new(5),
+		Size:         "720p",
+		OutputCount:  1,
+		OutputTokens: 108900,
+		RequestType:  schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusCompleted)
+	entry.Provider = "byteplus"
+	entry.Model = "dreamina-seedance-2-0-260128"
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "per-video-token reprice", cost, 108900*0.000007)
+}
+
 // A provider that reported its own cost is right about its own bill. Without this
 // a full reprice would replace an exact figure with a catalog estimate — Runware
 // bills exactly, and its rows must survive a repricing pass untouched.
@@ -1467,6 +1497,24 @@ func TestCalculateVideoAggregateCost_KeepsProviderReportedCost(t *testing.T) {
 	require.NoError(t, err)
 	assertCostsEqual(t, "provider cost preserved", cost, providerCost)
 	assert.NotEqual(t, 0.5*4, cost, "the catalog rate must not override the provider's own figure")
+}
+
+// A provider configured to ignore its reported cost reprices the saved video from the catalog.
+func TestCalculateVideoAggregateCost_IgnoredProviderCostReprices(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	providerCost := 0.0432
+	entry := videoSettlementRow("v-ignored", &schemas.VideoAccountingDebug{
+		Seconds:      new(4),
+		Size:         "1792x1024",
+		OutputCount:  1,
+		RequestType:  schemas.VideoGenerationRequest,
+		ProviderCost: &providerCost,
+	}, schemas.VideoStatusCompleted)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "catalog rate applies", cost, 0.5*4)
 }
 
 // A failed generation settled at a real price of zero. Repricing must not turn that
@@ -1590,4 +1638,169 @@ func TestPricingScopesForLogNilEntry(t *testing.T) {
 	if got := pricingScopesForLog(nil); !got.BilledAt.IsZero() {
 		t.Fatalf("BilledAt = %v, want zero", got.BilledAt)
 	}
+}
+
+// providerCostResponse mimics a provider that reports usage.cost in its own units (Cortecs credits).
+func providerCostResponse() *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				Cost:             &schemas.BifrostCost{TotalCost: 1067},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+}
+
+func TestAttachCostBreakdownKeepsProviderCostByDefault(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	result := providerCostResponse()
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+	plugin.attachCostBreakdown(ctx, entry, result)
+
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, 1067, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+}
+
+func TestAttachCostBreakdownIgnoresProviderCostWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	result := providerCostResponse()
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+	plugin.attachCostBreakdown(ctx, entry, result)
+
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, 100*2.5e-6, entry.TokenUsageParsed.Cost.InputCost, 1e-12)
+	assert.InDelta(t, 50*1e-5, entry.TokenUsageParsed.Cost.OutputCost, 1e-12)
+	assert.InDelta(t, 100*2.5e-6+50*1e-5, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+	// The client-facing usage keeps the provider's figure.
+	assert.InDelta(t, 1067, result.ChatResponse.Usage.Cost.TotalCost, 1e-12)
+}
+
+func TestCalculateCostForLogIgnoresStoredProviderCostWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := &logstore.Log{
+		ID:               "req-provider-cost",
+		Timestamp:        time.Now().UTC(),
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+			Cost:             &schemas.BifrostCost{TotalCost: 1067},
+		},
+	}
+
+	got, err := plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "provider cost trusted by default", got, 1067)
+
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	got, err = plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "recalc ignores provider cost", got, 100*2.5e-6+50*1e-5)
+}
+
+// A stream error with a response chunk prices BilledUsage first; the later
+// attachCostBreakdown must not discard that catalog-priced breakdown.
+func TestErrorBillingBreakdownSurvivesAttachWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		Cost:             &schemas.BifrostCost{TotalCost: 1067},
+	}
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	want := 100*2.5e-6 + 50*1e-5
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, want, *entry.Cost, 1e-12)
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+	assert.InDelta(t, 1067, billed.Cost.TotalCost, 1e-12, "caller's billed usage is untouched")
+
+	// The response chunk carries no usage, so it prices to nothing.
+	chunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+	plugin.attachCostBreakdown(ctx, entry, chunk)
+
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+}
+
+// TestTypedPassthroughRowRepricesAsItsType pins that a passthrough row stored under its inferred type
+// (object_type=responses, is_passthrough=true) reprices from its tokens exactly like a typed row of
+// that type. A row still stored as passthrough has no typed shape to price from and reprices to 0,
+// as it always has; typing is what makes these rows repriceable.
+func TestTypedPassthroughRowRepricesAsItsType(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500}
+	row := func(object string, isPassthrough, stream bool) *logstore.Log {
+		return &logstore.Log{
+			ID:               "req-typed-passthrough",
+			Timestamp:        time.Now().UTC(),
+			Object:           object,
+			IsPassthrough:    isPassthrough,
+			Stream:           stream,
+			Provider:         string(schemas.Anthropic),
+			Model:            "claude-sonnet-4-20250514",
+			Status:           "success",
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+			TokenUsageParsed: usage.DeepCopy(),
+		}
+	}
+
+	for _, tc := range []struct {
+		object string
+		stream bool
+	}{
+		{string(schemas.ResponsesRequest), false},
+		{string(schemas.ResponsesStreamRequest), true},
+		{string(schemas.ChatCompletionStreamRequest), true},
+	} {
+		t.Run(tc.object, func(t *testing.T) {
+			want, err := plugin.calculateCostForLog(row(tc.object, false, tc.stream))
+			require.NoError(t, err)
+			require.Positive(t, want)
+			got, err := plugin.calculateCostForLog(row(tc.object, true, tc.stream))
+			require.NoError(t, err)
+			assertCostsEqual(t, "typed passthrough row", got, want)
+		})
+	}
+
+	legacy, err := plugin.calculateCostForLog(row(string(schemas.PassthroughRequest), true, false))
+	require.NoError(t, err)
+	assert.Zero(t, legacy, "an untyped passthrough row has nothing to reprice from")
 }

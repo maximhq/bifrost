@@ -74,6 +74,153 @@ The cases are skipped unless `azureStreamPreambleFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Fixed-length response truncation
+
+Folder 196 pins Content-Length validation through both native and OpenAI SDK chat streaming
+routes. The local fixture sends valid SSE with `finish_reason: "stop"`, declares 100 extra
+bytes, then closes without a `Connection: close` header. The gateway must emit a structured
+`unexpected EOF` error. A control case with the exact body length must complete normally.
+The connection-disposal regression is covered by the Go transport tests. These cases make
+no live provider calls and are skipped unless `providerErrorFixture=1`.
+
+Run from the repository root. Check that ports 8790 and 8791 are free before starting:
+
+```bash
+lsof -nP -iTCP:8790 -iTCP:8791 -sTCP:LISTEN
+```
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/provider-error-fixture.mjs
+```
+
+Prepare a fresh isolated profile and start the gateway in another terminal:
+
+```bash
+mkdir -p tmp
+TASK_CONTENT_LENGTH_APP_DIR=$(mktemp -d "$PWD/tmp/content-length-truncation.XXXXXX")
+cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$TASK_CONTENT_LENGTH_APP_DIR/config.json"
+printf '%s\n' "$TASK_CONTENT_LENGTH_APP_DIR" > tmp/content-length-truncation-app-dir
+printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/content-length-truncation.env.json
+make dev PORT=8790 APP_DIR="$TASK_CONTENT_LENGTH_APP_DIR"
+```
+
+The isolated profile obtains pricing metadata from the fixture and uses dummy provider
+keys. It does not require the backing services used by the normal integration profile.
+After `/health` responds, run the three cases in a third terminal:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncation" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Sonnet 5.5 caller request surface
+
+These fourteen deterministic cases use a local synthetic Anthropic endpoint and an
+isolated gateway. They make no live provider calls, need no key, no quota and no
+subscription entitlement, and they assert **what Bifrost forwards** — a passing
+case is not evidence that the live Claude API accepts any of these request shapes.
+Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/anthropic-request-surface-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+surface_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/anthropic-request-surface.config.json "$surface_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$surface_fixture_dir" -host 127.0.0.1 -port 8792
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
+  --env-var baseUrl=http://127.0.0.1:8792 \
+  --env-var anthropicRequestSurfaceFixture=1
+```
+
+Each request carries its case name in the user message. The fixture looks the case
+up in `runners/lib/anthropic-request-surface.mjs`, compares the reasoning and
+sampling surface it received — `thinking` and its `budget_tokens`,
+`output_config.effort`, `temperature`, `top_p`, `top_k`, and the
+`interleaved-thinking-2025-05-14` beta header — against the request the caller
+sent, and answers 200 only on an exact match. Otherwise it answers 400 naming
+every field that drifted, so a wrong forwarded request fails loudly instead of
+passing on an uninspected 200.
+
+Four cases are red before the caller-request-surface fix and green after:
+`between_tools` thinking carrying a sibling `thinking.display`; `enabled` +
+`budget_tokens` on both the typed path and the `claude-cli` raw path; and a
+caller-sent effort. Ten are invariance controls that must pass on both trees:
+bare `between_tools` on unary, streaming and `count_tokens`, the raw path's
+already-correct sampling tuple, the three typed sampling cases, and
+`claude-sonnet-5` keeping its adaptive rewrite, its raw-path asymmetry and its
+dropped count sampling. `count_tokens` still deletes `temperature` for every
+model on both paths; the count cases pin that deletion rather than change it.
+
+The three typed sampling cases are controls rather than fixes: this model family
+is adaptive-only, and the typed converter drops `temperature`/`top_p` and deletes
+`top_k` for it because the provider is recorded as rejecting the three. This
+change therefore leaves sampling stripped and expects the same wire stock
+produces. The `sampling-raw` control still forwards all three, so the typed/raw
+divergence stays visible in the table rather than being resolved in the direction
+that could only add provider rejections.
+
+The three bare `between_tools` cases are controls rather than fixes because
+upstream PR #7665 landed while this change was in review: it carries
+`thinking.type` through the neutral reasoning parameters, so that shape is
+already forwarded. What those parameters still cannot carry is a sibling
+`thinking.display`, which stock's typed path drops and its raw path forwards —
+that is the one `between_tools` case still counted as a fix above: red on the
+stock tree, green on this one. The `stock` column in
+`runners/lib/anthropic-request-surface.mjs` records both baselines so this
+distinction is checked rather than described.
+
+Folder `118. Claude Sonnet 5.5 between_tools thinking type (between-tools)`
+already covers bare `between_tools` against live providers through
+`x-bf-send-back-raw-request`, and this folder does not duplicate it: its three
+bare `between_tools` cases are the controls described above, and the eleven
+others pin shapes folder 118 does not send — a sibling `thinking.display`, the
+legacy `enabled` + `budget_tokens` form, a caller-sent effort beside a restored
+thinking, and the `temperature`/`top_p`/`top_k` tuple. The two folders also
+carry different feature keywords (`between-tools` and `sonnet-5-5-surface`), so
+a scoped run selects one or the other.
+
+The cases are skipped unless `anthropicRequestSurfaceFixture=1`.
+
+The fixture's verdict logic is pure and covered offline by
+`runners/lib/anthropic-request-surface.test.mjs` (`make test-harness-runner-lib`),
+which drives every case three ways: the request the caller sent is accepted, each
+single-field drift off it is rejected, and the body upstream forwards today is
+rejected for exactly the four cases above. The same file drives the fixture's
+HTTP handler directly, with no port bound, so an unknown or malformed request
+target is answered 404 rather than thrown on — a throw there rejects the async
+listener's promise, answers nothing, and takes the fixture down mid-folder.
+
+## Extra-content-only stream deltas
+
+Folder 266 pins that OpenAI-compatible chat streams forward chunks whose delta carries only
+`extra_content`. The fixture model `upstream-extra-content` streams `hello`, one
+`extra_content`-only delta before `finish_reason: "stop"`, and one after it. On the native and
+OpenAI SDK chat routes, both payloads must arrive in order and the stream must still end with
+`finish_reason` and `[DONE]`. These cases make no live provider calls and are skipped unless
+`providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
@@ -102,12 +249,23 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixture=1
 ```
 
-The fixture answers by model name: `upstream-503` returns HTTP 503, `upstream-429` returns 429
-with `Retry-After: 7`, `upstream-429-ms` returns 429 with `retry-after-ms: 2500`, and
-`upstream-ok` returns a chat completion. Bifrost does not emit a `Retry-After` HTTP header; it
-carries the provider hint in the error body as `extra_fields.retry_after_ms`, which the cases
-assert. The fixture also counts hits per model (`GET /__hits`, `POST /__reset`), so a failover
-case can prove the primary was tried once and the fallback once.
+The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
+`upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
+`retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the
+same completion after two seconds. A request with `"stream": true` that a model answers with a
+completion gets it as server-sent chunks ending in `data: [DONE]`. Bifrost does not emit a
+`Retry-After` HTTP header; it carries the provider hint in the error body as
+`extra_fields.retry_after_ms`, which the cases assert. The fixture also counts hits per model
+(`GET /__hits`, `POST /__reset`), so a failover case can prove the primary was tried once and the
+fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the part before `~`
+picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
+`test-key` is the only credential it accepts: a request whose `Authorization` header carries any
+other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.
@@ -116,6 +274,26 @@ The cases are skipped unless `providerErrorFixture=1`.
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+Folder 185 (`routing-error-fixture`) uses the same fixture for routing cases that need an upstream to
+fail on demand: a 500 retried three times, a first token held past a 500ms deadline, a caller key
+the upstream refuses. Its rows create their own run-scoped providers whose base URL is the fixture,
+and need the management API, governance, the logs and the gateway's OpenAI key, so they run against
+an ordinary gateway rather than the isolated one, for example the python integration profile on
+port 8080, with the fixture running next to it:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "185. Routing retries, first-token cutoffs and refused keys against the provider error fixture (routing-error-fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8080 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
+  --env-var openaiKey="$OPENAI_API_KEY"
+```
+
+When the gateway needs a setup token for its management API, run the folder through
+`make run-provider-harness-test FEATURE=routing-error-fixture ENV_FILE=<an environment setting
+providerErrorFixture=1>` instead, which adds the token to every management call.
 
 ## Vertex endpoint selection and header forwarding
 
@@ -210,6 +388,117 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Workload identity federation
+
+These deterministic cases run Anthropic Workload Identity Federation end to end against a local
+stand-in for the token endpoint and the Messages API. They make no live call and need no key and no
+federation rule. Folder 297 pins what real Anthropic answers to an unregistered federation; this
+folder pins the success path, the token lifecycle and the failure modes. Run the following commands
+from the repository root.
+
+The gateway reads identity token files only from `BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS`, an
+environment variable on purpose, so the cases run on their own gateway rather than on `make dev`.
+
+Start the fixture in one terminal. It writes the identity token files the config names under
+`tmp/wif-fixture`, so start it before the gateway:
+
+```bash
+node tests/e2e/api/runners/wif-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+wif_dir=$(pwd)/tmp/wif-fixture
+wif_app_dir=$(mktemp -d)
+sed "s#__WIF_FIXTURE_DIR__#$wif_dir#g" tests/e2e/api/provider_config/workload-identity.config.json > "$wif_app_dir/config.json"
+BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS="$wif_dir/tokens" WIF_FIXTURE_TOKEN_FILE="$wif_dir/tokens/config-file.jwt" \
+  go run ./transports/bifrost-http -app-dir "$wif_app_dir" -host 127.0.0.1 -port 8801
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "298. Workload identity federation against a local token endpoint (workload identity fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8801 \
+  --env-var workloadIdentityFixture=1
+```
+
+Every provider in the config is an `anthropic`-based custom provider whose base URL is the fixture's
+`/anthropic` profile. The main key, `wif-config-file`, reads its token from a file named by an `env.`
+reference, the shape a Kubernetes deployment uses. The other keys each pin one behaviour, chosen by
+an `fx` claim inside their identity token: a denied or unavailable exchange, a 200 without a token,
+a redirect, a file outside the allowlist, a rotating file and a single-use (`jti`) file. Cases that
+need a cold credential add a run-scoped inline key and select it with `x-bf-api-key`.
+
+Assertions read what the fixture recorded for an identity (`GET /__wif/hits?sub=...`): exchanges,
+the assertion each one presented, the API routes it reached, and the credential and betas each call
+carried. Cases compare counts before and after, so they rerun against a warm gateway. Three cases
+wait for a short-lived token to reach its refresh window, so the folder takes about 30 seconds.
+
+The fixture's logic is in `runners/lib/wif-fixture.mjs` and is covered offline by
+`runners/lib/wif-fixture.test.mjs` (`make test-harness-runner-lib`): it refuses what Anthropic
+refuses (an exchange without both betas, a reused single-use token, a bearer without the OAuth beta
+or beside `x-api-key`), so a green case means the gateway sent what the real endpoint accepts.
+Another provider gaining workload identity adds a profile there, its providers to the config, and
+cases to the folder named after it.
+
+The cases are skipped unless `workloadIdentityFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Relay and log-store matrix
+
+`runners/run-log-store-matrix.mjs` checks that relays behave as documented and that relay rows
+follow every logging setting the way LLM rows do, on every log store. It is hermetic: every
+upstream is a local server (an echo LLM provider, a programmable relay upstream, an HTTPS twin,
+local HTTP and SOCKS5 proxies, and an S3-compatible bucket), so it needs no keys and makes no
+paid calls.
+
+```bash
+make run-log-store-matrix POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres PARALLEL=3
+make run-log-store-matrix BINARY=tmp/bifrost-http CELLS=sqlite SUITES=pricing,proxy SKIP_CONTENT_MATRIX=1
+```
+
+It boots one gateway per log-store cell, because the store is read at boot only:
+
+| Cell | Log store |
+|---|---|
+| `sqlite`, `postgres` | RDB store |
+| `sqlite+s3`, `postgres+s3` | Hybrid store over `lib/fake-s3.mjs` |
+| `sqlite+s3-exclude-types` | Hybrid, `relay` and `chat_completion` in `object_storage_exclude_request_types` |
+| `sqlite+s3-exclude-fields` | Hybrid, `request_body` in `object_storage_exclude_fields` |
+
+Postgres cells need `POSTGRES_URL` (an admin connection; each cell gets a fresh database) and are
+skipped without it. Against each cell it runs:
+
+- `run-content-logging-matrix.mjs`: every combination of client, virtual key, per-request
+  header and OTel connector content settings. Each case sends an LLM request and a relay request
+  on the same key and header, and the relay row must keep or drop content exactly as its LLM twin,
+  checked through the API and in the raw `logs` and `relay_logs` rows.
+- `run-relay-matrix.mjs`: the relay suites below. Run it alone against any gateway with
+  `BIFROST_E2E_BASE_URL` (and `--suites`).
+
+| Suite | Covers |
+|---|---|
+| `pricing` | Every usage mapping (source, measure, rate, fee, block, minimum, reported cost, `ignore_upstream_cost`) through an inherit, an override and a waive route, checked against an independent reference of the pricing rules (`lib/relay-matrix.mjs`) |
+| `streaming` | Route `stream` flag, `streaming.paths` and upstream content type, with SSE last-value usage and byte-priced bodies |
+| `billing` | Method, `billable` flag and upstream status |
+| `routes` | Path globs, header matchers, operator headers, route order, disabled routes, `skip_route_check` |
+| `auth` | `bearer`, `header`, `query`, `basic`, `none`, `aws_sigv4`, extra headers, credential stripping |
+| `governance` | Grants, inactive and unknown keys, inference auth, attribution parity with LLM rows, budgets and request limits at key, team and customer level, the request counter LLM and relay traffic share |
+| `settings` | `logging_headers`, `x-bf-lh-*`, `x-bf-dim-*`, key metadata, session ids, user agent and app, `hide_deleted_virtual_keys_in_filters`, query-string redaction, each compared with an LLM row |
+| `logsapi` | Shared filters, stats, histogram bucket sizes, sort, paging and delete on `/api/logs` and `/api/relay-logs` |
+| `network` | Timeouts, stream idle timeout, redirects, TLS with a private CA, unreachable upstreams, a reply past the old 64 MiB cap, a caller that hangs up mid-stream |
+| `proxy` | A relay's `proxy_config` (`http`, `socks5`, `none`, credentials, an HTTPS upstream through CONNECT) and the inherited global proxy |
+| `hybrid` | Offload, previews, hydration, hidden retention, exclusions and deletes, each compared with an LLM row (hybrid cells only) |
+
+A parity check that differs by design is listed in `KNOWN_GAPS` (`lib/relay-matrix.mjs`) and
+reports `GAP`; a listed gap that stops reproducing fails the run as `STALE`. The squid, stunnel
+and microsocks proxy matrix (`make run-e2e-api PROXY=1`) also sends the relays-e2e rows through
+every proxy cell, with the profile's relays given each cell's proxy.
+
 ## Contents
 
 ### V1 Endpoint Tests
@@ -239,8 +528,26 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 | Path | Description |
 |------|-------------|
 | `collections/bifrost-model-catalog-wiring.postman_collection.json` | Generated collection asserting that management-API mutations (add/update/delete provider and key, toggle key, alias) propagate into the model catalog read endpoints. **Generated — do not hand-edit.** |
-| `runners/build-model-catalog-wiring-collection.py` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
-| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection. |
+| `runners/build-model-catalog-wiring.mjs` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
+| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection; `--binary` boots a clean server for the run. |
+
+### Routing Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection asserting how virtual-key gates and per-key catalog gates compose on the routing path: the route each request takes, the error on a refusal, and the stored log. **Generated — do not hand-edit.** |
+| `runners/build-routing-wiring.mjs` | Generator for the collection above; its scenario table is the source of truth. |
+| `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
+| `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
+
+### Semantic Cache Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-semantic-cache-wiring.postman_collection.json` | Generated collection covering the `semantic_cache` plugin end to end on one vector store: plugin management, direct and semantic caching on every cacheable request type, streams, per-request headers, the clear endpoints, `x-bifrost-cache-*` response headers, identity scoping and the logs. **Generated — do not hand-edit.** |
+| `runners/build-semantic-cache-wiring.mjs` | Generator for the collection above. Its folders are the scenario table and the source of truth. |
+| `runners/lib/semantic-cache-wiring.mjs` | Assertion library embedded in the collection: cache_debug outcomes, SSE parsing, header and log checks, polled reads. Unit tests: `runners/lib/semantic-cache-wiring.test.mjs`. |
+| `runners/individual/run-newman-semantic-cache-wiring-tests.sh` | Boots one clean server per vector store (Redis, Weaviate, or both concurrently) and runs the collection against each. |
 
 ### Shared Resources
 
@@ -475,6 +782,34 @@ key-endpoint case targets the `azure` provider (part of the shared
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 
+### Extra fields placement tests
+
+`collections/bifrost-v1-extra-fields-placement.postman_collection.json` pins
+`client.extra_fields_placement`, streaming and non-streaming. Body mode (the
+default) keeps `extra_fields` in JSON bodies and SSE chunks and adds no new
+headers. Headers mode removes `extra_fields` from every body, chunk and error
+body and carries the routed identity and scalar fields as `x-bifrost-*` headers
+on `/v1/chat/completions`, `/v1/responses` and `/openai/v1/chat/completions`,
+each unary and streaming, plus a provider 4xx. Streams carry only what is known
+before the first chunk, so the stream checks assert the identity headers and not
+`x-bifrost-latency-ms`. A request with an `Origin` checks that
+`Access-Control-Expose-Headers` lists the `x-bifrost-*` headers. The routing
+identity headers that existed before this setting (`x-bifrost-provider`, original
+and resolved model, request type, `x-bifrost-fallback-index` and every
+`x-bifrost-routing-info-*`) are pinned against regression: in body mode each must
+equal its `extra_fields` value, and the same unary, streaming and fallback
+requests must return the same values in headers mode. Setup snapshots
+`client_config` and Teardown restores it.
+
+It makes about ten small live completions against the configured provider
+(`openai` by default). `runners/run-newman-api-tests.sh` runs it after the
+request guard tests; set `BIFROST_E2E_SKIP_EXTRA_FIELDS_PLACEMENT=1` to skip it.
+Standalone, against a gateway with dashboard auth disabled:
+
+```bash
+BIFROST_BASE_URL=http://localhost:8080 ./runners/individual/run-newman-extra-fields-placement-tests.sh
+```
+
 ### Integration Endpoint Tests
 
 ```bash
@@ -501,8 +836,8 @@ These tests cover the path **HTTP mutation → config write → server-side cata
 hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
 `/api/models/details`) in sync with provider and key changes made through the
 management API. Each scenario stands up an isolated custom provider backed by a
-real upstream (OpenAI), drives a sequence of mutations, and asserts the catalog
-reflects each one.
+real upstream (the per-provider scenarios run once each for OpenAI, Anthropic and
+Gemini), drives a sequence of mutations, and asserts the catalog reflects each one.
 
 What it covers (one scenario per contract):
 
@@ -516,16 +851,20 @@ What it covers (one scenario per contract):
 Run locally (from this directory):
 
 ```bash
-./runners/individual/run-newman-model-catalog-wiring-tests.sh
+./runners/individual/run-newman-model-catalog-wiring-tests.sh                                 # against a running server
+./runners/individual/run-newman-model-catalog-wiring-tests.sh --binary /path/to/bifrost-http  # boots a clean one (--port, default 8095)
 ```
+
+CI runs it with `--binary` from `.github/workflows/scripts/test-api-integrations.sh`.
 
 Requirements:
 
-- Bifrost running at `{{base_url}}` (default `http://localhost:8080`), ideally
+- With `--binary`, a built `bifrost-http`. Without it, Bifrost running at
+  `$BIFROST_BASE_URL`, else `{{base_url}}` (default `http://localhost:8080`), ideally
   against a clean config store so no pre-existing `catwiring-*` providers linger.
-- `openai_api_key` available — either in the seed env file (`generated/seed.env`
-  or `$BIFROST_E2E_SEED_ENV`) or exported in the shell. Scenarios whose required
-  credentials are missing skip themselves rather than fail.
+- The server's environment needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
+  `GEMINI_API_KEY`: the collection's keys use `env.<NAME>` values, which Bifrost
+  resolves from its own process environment, so the runner forwards no credentials.
 
 Notes:
 
@@ -533,22 +872,47 @@ Notes:
   run-id is built once per run from `e2e_seed_prefix` plus a timestamp nonce, so
   parallel runs never collide and a failed run leaves no blocking state.
 - The catalog's live-model cache is populated asynchronously by the key hooks, so
-  every post-mutation read polls with exponential backoff (up to 8 attempts)
-  instead of asserting immediately.
+  every post-mutation catalog read polls with exponential backoff (up to 8 attempts)
+  instead of asserting immediately. The alias inference request is sent once, after
+  a read has seen the alias listed, so an alias that resolves only on a retry fails.
 - Each scenario has a cleanup folder that deletes its provider (cascading to its
   keys); it runs even when a mid-scenario step fails, and accepts 200/204/404.
 - To change or extend the scenarios, edit
-  `runners/build-model-catalog-wiring-collection.py` and re-run it, then commit
+  `runners/build-model-catalog-wiring.mjs` and re-run it, then commit
   both the script and the regenerated collection:
 
   ```bash
-  python3 runners/build-model-catalog-wiring-collection.py
+  node runners/build-model-catalog-wiring.mjs
   ```
 
-Required seed-env vars: `openai_api_key`, plus `e2e_seed_prefix` for
-run-id namespacing. The runner also forwards the full per-provider credential set
-(`anthropic_api_key`, `azure_*`, `bedrock_*`, `vertex_*`, etc.) so per-provider
-expansion needs no runner change.
+The only seed-env var it reads is `e2e_seed_prefix`, for run-id namespacing.
+
+### Routing Wiring Tests
+
+These tests cover how governance and the model catalog compose on the routing
+path. Each scenario creates providers and keys, gates them with a virtual key,
+sends inference, and asserts the route taken (`extra_fields.routing_info`), the
+error on a refusal, and the stored log. Before a scenario's first inference
+request, one step polls until the model catalog lists every provider's models and
+asserts nothing about routing; each routing request after it is sent once and
+judged once, so a route that only shows up on a retry fails.
+
+Some scenarios create the global standard providers (openai, anthropic, gemini,
+azure, bedrock, vertex), so run it against a server nothing else has configured. `--binary` boots
+one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards;
+CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
+
+```bash
+./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
+node runners/build-routing-wiring.mjs                                                  # regenerate after editing scenarios
+```
+
+It calls real providers through `env.<NAME>` keys, so the server's environment
+needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `AZURE_API_KEY` and
+`AZURE_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`,
+and `VERTEX_PROJECT_ID` and `VERTEX_CREDENTIALS`. Both wiring collections send the
+setup token on `/api` calls (`BIFROST_SETUP_TOKEN`, default
+`bifrost-e2e-setup-token`), which a server with a setup token and no admin requires.
 
 ### Auth Matrix Tests
 
@@ -581,46 +945,6 @@ Run locally (from this directory):
 ```bash
 ./runners/individual/run-newman-auth-matrix-tests.sh --binary /path/to/bifrost-http
 # options: --port <port> (default 8090), --html, --json, --verbose, --bail
-```
-
-### MCP Auth Tests
-
-| Path | Description |
-|------|-------------|
-| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
-| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
-
-Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
-different boot config. It also builds and starts the upstream MCP server
-(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
-as an MCP client plus two virtual keys (one active, one inactive). It requires a
-built `bifrost-http` binary.
-
-The collection's test scripts branch on the `auth_mode` env-var, so a single
-collection encodes the full matrix. Per mode it asserts:
-
-- **`headers` (default):** discovery endpoints 404; every virtual-key credential
-  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
-  anonymous connects when auth is not enforced; an inactive key never connects. The
-  OAuth surface is invisible.
-- **`both`:** every header-credential outcome is identical to `headers`, and only
-  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
-  `WWW-Authenticate`.
-- **`oauth`:** header credentials and anonymous are rejected (401 +
-  `WWW-Authenticate`); only issued JWTs connect.
-
-In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
-registration, PKCE-S256 authorize, consent bound to a virtual key or to a
-server-minted session, token exchange, JWT connect), then refresh rotation with
-stolen-token family revocation, the revocation window (a revoked grant stops refresh
-while its already-issued access token keeps working until expiry), and — from the
-`headers` boot — the runtime `headers`→`both` upgrade.
-
-Run locally (from this directory):
-
-```bash
-./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
-# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
 ### Warp Tests
@@ -670,6 +994,57 @@ regenerate:
 ```bash
 node runners/build-warp-collection.mjs
 node runners/lib/warp-case.test.mjs
+```
+
+### Semantic Cache Wiring Tests
+
+The collection drives the `semantic_cache` plugin through the HTTP API and checks
+what a client sees: `extra_fields.cache_debug` on JSON bodies, the final chunk of
+every stream, the `x-bifrost-cache-*` response headers on routes whose bodies carry
+no cache_debug (Anthropic, GenAI, Cohere, Bedrock, speech), and the log row found
+through `x-bifrost-request-id`. Folders run in order: P (preconditions and providers),
+M (plugin management), D (direct cache on chat completions), X (every other request
+type), T (streams), H (per-request headers), C (clear endpoints), K (response
+headers), G (identity scoping by virtual key), S (semantic mode), O (logs).
+
+The runner **boots its own servers**, one per vector store, each on a temp app dir
+with SQLite config and logs stores, so the provider list and the logs table hold
+only this run's traffic. With `--store both` (the default) the Redis and Weaviate
+runs go concurrently on `--port` and `--port`+1, and the runner fails if either
+does. Every cache key carries the run id and every vector store namespace its
+alphanumeric form, so repeated runs never read each other's entries; the runner
+drops the run's Weaviate classes on exit.
+
+Reads that must hit are polled with backoff and send `x-bf-cache-no-store: true`, so
+a read that misses never writes the entry it is waiting for. A read that must miss
+is only issued after the entry it is isolated from was seen to hit. The only fixed
+waits are the TTL rows (TTL plus two seconds) and the "nothing was written" rows
+(two seconds).
+
+It is **live and paid**: OpenAI (chat, responses, embeddings, tts-1, whisper-1,
+gpt-image-1), Anthropic, Gemini, Cohere, OpenRouter (text completions, since OpenAI
+retired every `/v1/completions` model) and Bedrock. Every key is `env.<NAME>`, read
+from the environment of the server the runner boots; the runner refuses to start
+when one is missing. It needs Redis Stack and Weaviate (both in
+`tests/docker-compose.yml`) and a built `bifrost-http` binary. CI runs it from
+`.github/workflows/scripts/test-api-integrations.sh`.
+
+Run locally (from this directory):
+
+```bash
+docker compose -f ../../docker-compose.yml up -d redis-stack weaviate
+./runners/individual/run-newman-semantic-cache-wiring-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8096), --store redis|weaviate|both, --folder <name> (repeatable; Setup and P always run, O also runs D, X and S), --html, --json, --verbose
+# env: OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY COHERE_API_KEY OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION, REDIS_ADDR (default localhost:6379), WEAVIATE_HOST (default localhost:9000)
+```
+
+Reports land in `newman-reports/semantic-cache-wiring-<store>/`, with the server
+log next to a failed run's report. To change a scenario, edit
+`runners/build-semantic-cache-wiring.mjs` and regenerate:
+
+```bash
+node runners/build-semantic-cache-wiring.mjs
+node runners/lib/semantic-cache-wiring.test.mjs
 ```
 
 ### Test Success Criteria

@@ -34,6 +34,7 @@ const (
 	effortTestModelOpus5   = "claude-opus-5"
 	effortTestModelOpus47  = "claude-opus-4-7"
 	effortTestModelOpus45  = "claude-opus-4-5-20251101"
+	effortTestModelHaiku55 = "claude-haiku-5-5"
 	effortTestUserQuestion = "What is 1+1? Answer in one word."
 )
 
@@ -85,7 +86,7 @@ func TestAnthropicIngress_EffortSurvivesWithoutThinking(t *testing.T) {
 func TestAnthropicRoundTrip_EffortWithoutThinkingDoesNotInventThinking(t *testing.T) {
 	t.Parallel()
 
-	for _, model := range []string{effortTestModelOpus5, effortTestModelOpus47, effortTestModelOpus45} {
+	for _, model := range []string{effortTestModelOpus5, effortTestModelOpus47, effortTestModelOpus45, effortTestModelHaiku55} {
 		t.Run(model, func(t *testing.T) {
 			ctx := effortTestCtx(t)
 

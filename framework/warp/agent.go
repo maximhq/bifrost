@@ -45,10 +45,16 @@ const (
 const (
 	ErrNotConfigured = "not_configured"
 	ErrUpstream      = "upstream_error"
-	ErrToolFailed    = "tool_error"
-	ErrMaxIterations = "max_iterations"
-	ErrTimeout       = "timeout"
-	ErrCancelled     = "cancelled"
+	ErrAccessDenied  = "access_denied"
+	// Governance refusals other than missing access, split out so the client
+	// does not headline a spent budget as having no access.
+	ErrBudgetExceeded = "budget_exceeded"
+	ErrRateLimited    = "rate_limited"
+	ErrModelBlocked   = "model_blocked"
+	ErrToolFailed     = "tool_error"
+	ErrMaxIterations  = "max_iterations"
+	ErrTimeout        = "timeout"
+	ErrCancelled      = "cancelled"
 )
 
 // FinishReasonPartial marks an answer given on the last research step, after
@@ -152,6 +158,14 @@ type Agent struct {
 // rather than re-validating, since Turn is the one place a raw client value
 // exists.
 func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
+	return NewAgentWithTopics(chat, cost, logs, governance, scope, config, utcOffsetMinutes, timezone, nil, semantic...)
+}
+
+// NewAgentWithTopics is NewAgent for a caller that has computed topics to
+// offer: list_topics answers from topics, and reports itself unavailable when
+// it is nil. A separate constructor so NewAgent's signature stays what
+// released callers compile against.
+func NewAgentWithTopics(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, topics TopicLister, semantic ...*SemanticSearcher) *Agent {
 	var searcher *SemanticSearcher
 	if len(semantic) > 0 {
 		searcher = semantic[0]
@@ -160,7 +174,7 @@ func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance Governanc
 		chat:             chat,
 		cost:             cost,
 		tools:            buildToolsFor(searcher, false),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry()},
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance, charts: newChartRegistry(), topics: topics},
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
@@ -293,6 +307,8 @@ func mergeCachedWriteTokenDetails(total, next *schemas.ChatCachedWriteTokenDetai
 	}
 	total.CachedWriteTokens5m += next.CachedWriteTokens5m
 	total.CachedWriteTokens1h += next.CachedWriteTokens1h
+	total.CachedWriteTokens30m += next.CachedWriteTokens30m
+	total.CachedWriteTokens12h += next.CachedWriteTokens12h
 	return total
 }
 
@@ -522,10 +538,18 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
+	// The clock is read once, here, and that reading is both the "current
+	// time" the prompt states and the instant every tool call measures from,
+	// so the model and the tools never disagree about what "today" or "-7d"
+	// covers. It carries the asker's zone for the tools' calendar dates.
+	now := Now()
+	if a.deps != nil {
+		a.deps.clock = now.In(askerLocation(a.timezone, a.utcOffsetMinutes))
+	}
 	instructions := systemInstructionsFor(a.config, toolAvailability{
 		semantic:   a.deps != nil && a.deps.semantic != nil,
 		userLimits: a.deps != nil && a.deps.userGovernance != nil,
-	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes, now: now})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind
@@ -642,15 +666,17 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			Params:   params,
 		})
 		if bifrostErr != nil {
-			code := ErrUpstream
+			code, message := ErrUpstream, errorMessage(bifrostErr)
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				code = ErrTimeout
 			} else if ctx.Err() != nil {
 				code = ErrCancelled
+			} else if refusalCode, refusal, refused := governanceRefusal(bifrostErr); refused {
+				code, message = refusalCode, refusal
 			}
 			// An error frame is terminal. Never emit done after it, or a client
 			// keyed on done reads a failed request as a successful one.
-			emit(Event{Type: EventError, Code: code, Message: errorMessage(bifrostErr), Usage: usage})
+			emit(Event{Type: EventError, Code: code, Message: message, Usage: usage})
 			return
 		}
 		// Counted before the reply is judged, so an empty one is still paid for
@@ -1079,6 +1105,44 @@ func errorMessage(err *schemas.BifrostError) string {
 		return err.Error.Message
 	}
 	return "the model provider returned an error"
+}
+
+// governanceRefusal reports whether a failed model call was refused by this
+// deployment's own governance rather than by the provider, and what to tell
+// the person asking.
+//
+// Warp's model calls are governed as whoever asked (see WithGrant), so a
+// signed-in user with no model access, an exhausted budget or a blocked model
+// is refused before any provider is reached. Reported as an upstream error,
+// that read as an outage and sent the reader to check the provider's key.
+//
+// Each kind of refusal carries its own code, so the client can headline a
+// spent budget or a rate limit as what it is rather than as having no access.
+//
+// The refusal's own reason is always kept: it is what an administrator needs.
+// The case of no access at all gets a sentence in front of it, because its
+// reason speaks of a revoked credential to someone who is signed in, and names
+// nothing they could ask for.
+func governanceRefusal(err *schemas.BifrostError) (code, message string, refused bool) {
+	if err == nil {
+		return "", "", false
+	}
+	switch err.ExtraFields.ErrorType {
+	case schemas.ErrorTypePolicyAccessDenied:
+		if err.Type != nil && *err.Type == "access_not_found" {
+			return ErrAccessDenied, "Your account has no model access on this deployment, so Warp could not call its model for you. Ask an administrator to give you access, such as an access profile that allows Warp's model. Governance said: " + errorMessage(err), true
+		}
+		code = ErrAccessDenied
+	case schemas.ErrorTypePolicyBudgetExceeded:
+		code = ErrBudgetExceeded
+	case schemas.ErrorTypePolicyRateLimited:
+		code = ErrRateLimited
+	case schemas.ErrorTypePolicyModelBlocked, schemas.ErrorTypePolicyProviderBlocked:
+		code = ErrModelBlocked
+	default:
+		return "", "", false
+	}
+	return code, "This deployment's governance rules refused Warp's model call for your account: " + errorMessage(err), true
 }
 
 // responsesText concatenates the assistant prose in an output list.

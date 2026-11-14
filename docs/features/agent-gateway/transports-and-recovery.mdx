@@ -1,0 +1,97 @@
+---
+title: "Transport selection and recovery"
+description: "Understand which agent interface Bifrost chooses, when it tries another endpoint, and how to recover interrupted work."
+icon: "arrows-rotate"
+---
+
+Your client chooses how to reach Bifrost. Bifrost independently chooses an interface advertised by your agent's card. A REST client can therefore reach an agent that only exposes JSON-RPC, or a JSON-RPC client can reach a gRPC agent.
+
+## How Bifrost chooses the upstream
+
+Bifrost reads the card's `supportedInterfaces` and keeps interfaces with a supported A2A v1 version, binding, and valid endpoint. It supports `JSONRPC`, `HTTP+JSON`, and `GRPC`.
+
+Eligible interfaces are ordered by protocol version, highest first. Equal versions preserve their order in the card. Currently, eligible interfaces use the supported v1 version, so **card order determines the initial preference**. There is no fixed rule that prefers gRPC over HTTP or matches the caller's transport.
+
+To choose the initial transport, update the **agent card served by your A2A server**. Put the preferred interface first in its `supportedInterfaces` list. For example, this card advertises JSON-RPC as the first choice and gRPC as an alternative:
+
+```json
+{
+  "supportedInterfaces": [
+    {
+      "url": "https://research.example.com/json-rpc",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "research.example.com:443",
+      "protocolBinding": "GRPC",
+      "protocolVersion": "1.0"
+    }
+  ]
+}
+```
+
+The example shows only the `supportedInterfaces` part of the card.
+
+In **Bifrost → Agent Gateway**, register the URL where that server serves its agent card and configure authentication if needed. Bifrost fetches the card and discovers the available transports from it.
+
+<Note>
+Switching transports changes how Bifrost reaches the agent. For example, if JSON-RPC creates a task and a later `GetTask` call uses gRPC, the gRPC endpoint needs access to that same task. Bifrost does not copy task state between endpoints, so interfaces advertised on one card should use a shared task store or the same agent process.
+</Note>
+
+## What happens when an interface fails?
+
+Bifrost keeps the currently selected interface for subsequent operations. An endpoint failure can move future requests to the next eligible interface. After the final candidate, selection wraps so an earlier endpoint can recover.
+
+For a unary operation, Bifrost retries the current operation only for failures that indicate the endpoint was not reached or cannot serve that operation. Each candidate gets at most one attempt for that operation.
+
+| Failure | Current unary operation | Later operations |
+| --- | --- | --- |
+| Dial failure before delivery | Try the next candidate, if available. | Start with the advanced candidate. |
+| HTTP `404`, `405`, `410`, or `426` | Try the next candidate. | Advance and refresh the cached card in the background. |
+| A2A method not found or gRPC `Unimplemented` | Try the next candidate. | Advance to another interface. |
+| HTTP `5xx`, broken response, or ambiguous network failure | Return the error without replaying the operation. | May advance to another interface. |
+| Caller cancellation or deadline | Return the error. | Keep the current preference. |
+| Authentication, validation, or other protocol error | Return the error. | Do not treat it as transport failover. |
+
+An ambiguous failure may happen after the agent started work. Replaying it could create a second task. Retrieve the known task first, or use your application's retry and deduplication policy if no task ID was returned.
+
+<Accordion title="Example: the first endpoint starts work, then returns an error">
+The card advertises JSON-RPC first and REST second. JSON-RPC receives your message, but its connection closes before Bifrost receives the result.
+
+Bifrost returns that error and moves later traffic toward REST. It does not send the same message again automatically. Your application still needs to determine whether the original task exists before submitting more work.
+
+An explicit endpoint failure, such as a refused connection, can instead try REST within the original unary operation.
+</Accordion>
+
+## Streaming recovery
+
+Bifrost does not automatically replay a streaming operation, even if it fails before the first event. Replaying a stream can duplicate work or output.
+
+An interface failure can change the choice for later requests. If you received a task ID, use `GetTask` to inspect it and `SubscribeToTask` to observe further updates. Subscription follows the capabilities and behavior of your agent; Bifrost does not promise to replay every event missed during a disconnect.
+
+Disconnecting the client stops the upstream stream connection. It does not cancel the agent's task. Use `CancelTask` when you intend to stop the work.
+
+## When the agent card changes
+
+Each client request to the gateway's agent card URL fetches the current card from your agent server. Bifrost rewrites its interfaces to gateway endpoints and exposes the authentication callers use with Bifrost. It does not serve a cached card if that fetch fails; the client receives an error.
+
+Agent request clients can reuse previously discovered interfaces. Endpoint statuses suggesting a stale address trigger a background card refresh. That refresh is throttled; it does not guarantee the current failed operation succeeds. If the card cannot be refreshed, investigate discovery authentication and reachability.
+
+<AccordionGroup>
+<Accordion title="Why are the original card signatures absent?">
+Bifrost changes endpoints and authentication requirements in the card it serves. Those changes invalidate signatures over the upstream document, so Bifrost removes the original signatures from its rewritten card. The registration preview can still show the upstream signatures; raw HTTP capture can preserve the original document when enabled.
+</Accordion>
+<Accordion title="Which endpoints are eligible?">
+HTTP interfaces require absolute HTTP or HTTPS URLs without embedded credentials. gRPC interfaces require an explicit host and port with no path, query, or embedded credentials. A bare gRPC `host:port` and `https://host:port` use TLS; `http://host:port` explicitly requests plaintext.
+
+An HTTPS card cannot downgrade agent traffic to plaintext, except for loopback development endpoints. Unsupported bindings, incompatible protocol versions, and invalid endpoints do not become fallback candidates. Registration requires at least one eligible interface.
+</Accordion>
+<Accordion title="Does updating or disabling an agent affect a running stream?">
+Changing a registration can replace its runtime and end in-flight streams. Disabling or deleting the registration stops new traffic and can terminate its active connections. The upstream agent still owns task state. Retrieve the task after the agent becomes reachable again rather than assuming the gateway connection's end canceled the work.
+</Accordion>
+</AccordionGroup>
+
+Open [Agent Logs](./observability) to compare the recorded downstream and upstream transports. Upstream latency can include multiple candidate attempts within one unary operation. For deployment settings, see [gateway settings](./configuration).
+
+For callback-based updates, continue with [Push notifications](./push-notifications).

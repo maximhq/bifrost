@@ -96,6 +96,10 @@ var reviewedSites = map[string]siteReview{
 	// this way.
 	//
 	// --- payload-scaling: N grows with the request, so these need assertions ---
+	"anthropic.MarshalJSON": {
+		status: bounded,
+		reason: "AnthropicUsage.MarshalJSON loops over the 4-entry anthropicPromptCounterKeys package var and edits only the small usage object, never a request body",
+	},
 	"anthropic.StripEmptyThinkingBlocks": {
 		status: covered,
 		test:   "TestStripEmptyThinkingBlocks_AllocationScaling",
@@ -103,6 +107,10 @@ var reviewedSites = map[string]siteReview{
 	"anthropic.RemapRawToolVersionsForProvider": {
 		status: covered,
 		test:   "TestRemapRawToolVersionsForProvider_AllocationScaling",
+	},
+	"anthropic.ApplyDefaultEagerInputStreamingToRawBody": {
+		status: covered,
+		test:   "TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling",
 	},
 	"anthropic.StripUnsupportedFieldsFromRawBody": {
 		status: covered,
@@ -130,6 +138,10 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over the 3-element literal {name, strict, schema}",
 	},
+	"handlers.toolMeta": {
+		status: bounded,
+		reason: "loops over the fixed 3-element uiResourcePaths package var and edits a copy of one tool's _meta, never a request body",
+	},
 	"integrations.createAnthropicMessagesRouteConfig": {
 		status: bounded,
 		reason: "the sjson call sits in a ResponsesResponseConverter closure defined inside a " +
@@ -143,6 +155,11 @@ var reviewedSites = map[string]siteReview{
 	"mistral.normalizeMistralStreamContent": {
 		status: elementSized,
 		reason: "rewrites each choice-sized delta once, then replaces the choices array outside the loop",
+	},
+	"schemas.applyObjects": {
+		status: elementSized,
+		reason: "each write rewrites one provider stream frame's own bytes (frames are capped at their own end by " +
+			"splitRawJSONFrames); the reassembled raw response is never rewritten inside the loop",
 	},
 	"anthropic.BuildAnthropicChatRequestBody": {
 		status: bounded,
@@ -160,6 +177,18 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over a 5-element literal slice of generationConfig paths",
 	},
+	"gemini.rewriteRawThinkingBudgetToLevel": {
+		status: bounded,
+		reason: "loops over the 2 generationConfig spellings and returns after the first one present",
+	},
+	"gemini.rewriteGenerationConfigThinkingBudget": {
+		status: bounded,
+		reason: "loops over the 2 thinkingConfig spellings and the 2-entry rawThinkingBudgetKeys array, and returns after the first budget it finds",
+	},
+	"gemini.rewriteRawBatchThinkingBudgets": {
+		status: elementSized,
+		reason: "each write edits one inline batch item's own bytes; the rebuilt items array is set on the body once, after the loop",
+	},
 	"gemini.wrapGeminiCountTokensBody": {
 		status: bounded,
 		reason: "loops over the fixed geminiCountTokensUnsupportedFields package var",
@@ -167,6 +196,19 @@ var reviewedSites = map[string]siteReview{
 	"vertex.stripVertexCountTokensUnsupportedFields": {
 		status: bounded,
 		reason: "loops over the fixed vertexCountTokensUnsupportedFields package var",
+	},
+	"configstore.migrationMovePricingOverrideSearchContextToWebSearch": {
+		status: elementSized,
+		reason: "one-time startup migration; each iteration rewrites that row's own small pricing_patch_json, " +
+			"never a request body",
+	},
+	"logstore.moveErrorRawBodiesToObject": {
+		status: bounded,
+		reason: "loops over the fixed 2-element errorRawBodyPaths package var",
+	},
+	"xai.ToProviderRealtimeEvent": {
+		status: bounded,
+		reason: "loops over a 4-element literal of server-owned session.update paths",
 	},
 }
 

@@ -8,6 +8,7 @@ import { getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";
 import { convertRuleGroupToCEL, validateRegexPattern } from "@/lib/utils/celConverterRouting";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { RuleGroupType } from "react-querybuilder";
 
 interface CELRuleBuilderProps {
@@ -37,7 +38,9 @@ export function CELRuleBuilder({
 	onModeChange,
 	celError = null,
 }: CELRuleBuilderProps) {
-	const fields = useMemo(() => getRoutingFields(providers, models), [providers, models]);
+	const { i18n } = useTranslation();
+	// getRoutingFields copies the translated getters into plain strings, so rebuild on language change.
+	const fields = useMemo(() => getRoutingFields(providers, models), [providers, models, i18n.language]);
 
 	return (
 		<BaseCELRuleBuilder

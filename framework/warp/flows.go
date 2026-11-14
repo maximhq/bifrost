@@ -68,22 +68,28 @@ func semanticSearchLogsTool() Tool {
 	return Tool{
 		name: SemanticSearchToolName,
 		description: "Find logged conversations by meaning. Use this when the question is about what users discussed, wanted, reported, or what assistants answered, even when the wording differs. " +
+			"Give several phrasings of the same topic in one call; they are searched together and each conversation keeps its closest score. " +
+			"Results are ranked by similarity, not judged: real matches often score only 0.6 to 0.75, and unrelated conversations can score close to them. " +
+			"Read each row's content and keep only the rows actually about what was asked before you count, quote or summarize them; if none are, report that no matching conversations were found. " +
 			"Use query_logs, count_logs, or query_metrics for exact fields, counts, latency, cost, and trends.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
-    "query": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `, "description": "A natural-language description of the conversations to find."},
+    "queries": {"type": "array", "minItems": 1, "maxItems": ` + strconv.Itoa(MaxSemanticQueries) + `, "items": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `}, "description": "2 to ` + strconv.Itoa(MaxSemanticQueries) + ` phrasings of the conversations to find, searched together. Describe the requests themselves (\"users asking for help planning a trip\", \"travel itinerary for a city\"), not a bare keyword (\"travel\") - a description scores far closer to a logged conversation."},
     "filters": ` + FilterSchema + `,
     "limit": {"type": "integer", "minimum": 1, "maximum": 25, "description": "Matches to return. Also capped by the configured semantic search limit."}
   },
-  "required": ["query", "filters"]
+  "required": ["queries", "filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			query, _ := args["query"].(string)
+			queries, err := stringSliceArg(args, "queries")
+			if err != nil {
+				return nil, err
+			}
 			if deps.semantic == nil {
 				return nil, fmt.Errorf("semantic log search is not configured")
 			}
-			filters, err := filterArg(args, Now(), deps.scope)
+			filters, err := filterArg(args, deps.now(), deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -95,7 +101,7 @@ func semanticSearchLogsTool() Tool {
 			}
 			// The caller's visibility rides along so the index is asked for
 			// their rows, rather than for the deployment's and then filtered.
-			result, err := deps.semantic.SearchVisible(ctx, query, filters, deps.scope.Visible, limit)
+			result, err := deps.semantic.SearchVisible(ctx, queries, filters, deps.scope.Visible, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -113,7 +119,7 @@ func semanticSearchLogsTool() Tool {
 				// happened and what the legitimate next moves are.
 				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
 					"For a topic question - one that names something to look for - do not fall back to count_logs or query_logs to answer a question about meaning: "+
-					"widen the time range once, rephrase the query, or report that no matching conversations were found. "+
+					"widen the time range once, try other phrasings, or report that no matching conversations were found. "+
 					"For a survey question - what someone was doing, what the themes or topics are - this was the wrong first step, because a description of activity is not a conversation and does not embed near one: "+
 					"take the sample with query_logs using include_content and limit 25, and say in the answer that it was drawn from a sample and is not representative of the entire traffic.", result.Threshold)
 			}
@@ -140,7 +146,7 @@ func queryLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -167,6 +173,9 @@ func queryLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
+			if includeContent {
+				hydrateConversations(ctx, deps.logManager, result.Logs)
+			}
 			rows := make([]logRow, 0, len(result.Logs))
 			for i := range result.Logs {
 				rows = append(rows, projectLog(&result.Logs[i], includeContent, LogContentChars))
@@ -186,6 +195,48 @@ func queryLogsTool() Tool {
 				"window":  resolvedWindow(filters),
 			}, filters), nil
 		},
+	}
+}
+
+// hydrateConversations fills list rows in with their message history, so a
+// content preview is read from the conversation and not from the list query's
+// content_summary column - which on the plain store is every message joined
+// from the top, and for a coding agent nothing but its setup.
+//
+// Only the history and output are copied in; every other field stays the list
+// row's. A reader that cannot hydrate, or a failed read, leaves the rows as
+// they were and their previews fall back to the summary.
+func hydrateConversations(ctx context.Context, reader LogReader, logs []logstore.Log) {
+	hydrator, ok := reader.(SemanticHydrator)
+	if !ok {
+		return
+	}
+	ids := make([]string, 0, len(logs))
+	for i := range logs {
+		if !logs[i].ContentHidden {
+			ids = append(ids, logs[i].ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	full, err := hydrator.GetLogsByIDs(ctx, ids)
+	if err != nil {
+		return
+	}
+	byID := make(map[string]*logstore.Log, len(full))
+	for i := range full {
+		byID[full[i].ID] = &full[i]
+	}
+	for i := range logs {
+		entry := byID[logs[i].ID]
+		if entry == nil || entry.ContentHidden {
+			continue
+		}
+		logs[i].InputHistoryParsed = entry.InputHistoryParsed
+		logs[i].ResponsesInputHistoryParsed = entry.ResponsesInputHistoryParsed
+		logs[i].OutputMessageParsed = entry.OutputMessageParsed
+		logs[i].ResponsesOutputParsed = entry.ResponsesOutputParsed
 	}
 }
 
@@ -255,7 +306,7 @@ func countLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -345,7 +396,7 @@ func queryMetricsTool() Tool {
   "required": ["filters", "metrics"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -406,7 +457,7 @@ func queryMetricsTool() Tool {
 				if interval == "day" {
 					bucket = 86400
 				}
-				if span := filters.EndTime.Sub(*filters.StartTime).Seconds(); span/float64(bucket) > MaxHistogramBuckets {
+				if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 					return nil, fmt.Errorf(`interval %q over this range produces more than %d buckets; use interval "day" or a shorter range`, interval, MaxHistogramBuckets)
 				}
 			}
@@ -897,6 +948,7 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionApp, "the client app that sent the request"},
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
 	{logstore.RankingDimensionRoutingRule, "the routing rule that handled the request, by name - requests no rule handled are left out, so compare against count_logs for the share"},
+	{logstore.RankingDimensionModelRouter, "the model router that classified the request for its complexity tier, by name - only requests a router classified"},
 	{logstore.RankingDimensionRoutingEngine, "the routing engines a request passed through, e.g. routing-rule, governance, loadbalancing - one request can pass through several, so totals can exceed the request count"},
 	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not the provider and not a virtual key; pair with status error to find a failing key"},
 	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it - empty when a request named its model directly - never a stand-in for the model; for which models were involved use query_model_performance"},
@@ -957,7 +1009,7 @@ func queryUsageByTool() Tool {
 				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
 			}
 
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, rankingScope(deps.scope, string(dimension)))
 			if err != nil {
 				return nil, err
@@ -1033,7 +1085,7 @@ func queryModelsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err

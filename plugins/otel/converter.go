@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -93,12 +94,100 @@ func hexToBytes(hexStr string, length int) []byte {
 	return bytes
 }
 
+// convertOptions carries the per-profile export settings for convertTraceToResourceSpan.
+type convertOptions struct {
+	requestHeaders                   []string // header name patterns captured on the root span
+	disableContentLogging            bool     // drop content attributes from every span
+	applyTraceDimensionsToChildSpans bool     // merge x-bf-dim-* dimensions onto every exported span
+	exportRawPayloads                bool     // attach raw provider/agent bodies
+	groupTracesBySession             bool     // pin requests sharing x-bf-session-id to one trace
+	disableRootSpanContent           bool     // drop content from the root span only
+}
+
+// reservedDimensionPrefixes lists attribute namespaces a client-supplied x-bf-dim-*
+// header may not write onto exported spans. Observability backends derive cost, usage,
+// model, observation type, session and resource identity from these namespaces, so a
+// dimension landing there would let a caller rewrite what the backend aggregates on.
+var reservedDimensionPrefixes = []string{
+	"gen_ai.", "llm.", "bifrost.", "http.", "url.", "session.", "service.", "k8s.",
+	"langfuse.", "openinference.", "otel.",
+}
+
+// traceDimensionKeyValues returns the x-bf-dim-* dimensions on trace as OTEL key-values,
+// built once per trace and sorted by key so exported attribute order is deterministic.
+// It skips the reserved suffixes path and method (kept for the standard http.*
+// attributes), keys in reservedDimensionPrefixes, and empty values (anyToKeyValue
+// returns nil for them, and a nil KeyValue would break OTLP marshaling).
+func traceDimensionKeyValues(trace *schemas.Trace) []*KeyValue {
+	dims := schemas.TraceDimensions(trace.Attributes)
+	if len(dims) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(dims))
+	for k := range dims {
+		if isReservedDimensionKey(k) {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	kvs := make([]*KeyValue, 0, len(keys))
+	for _, k := range keys {
+		if kv := anyToKeyValue(k, dims[k]); kv != nil {
+			kvs = append(kvs, kv)
+		}
+	}
+	return kvs
+}
+
+// isReservedDimensionKey reports whether a dimension name must stay off exported spans.
+func isReservedDimensionKey(key string) bool {
+	lower := strings.ToLower(key)
+	if lower == "path" || lower == "method" {
+		return true
+	}
+	for _, prefix := range reservedDimensionPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeDimensionAttributes appends each dimension the span does not already carry.
+// Span attributes win on conflict. A linear scan is used because a request carries
+// only a handful of dimensions, which keeps the merge allocation-free per span.
+func mergeDimensionAttributes(attrs []*KeyValue, dims []*KeyValue) []*KeyValue {
+	existing := len(attrs)
+	for _, dim := range dims {
+		present := false
+		for _, kv := range attrs[:existing] {
+			if kv != nil && kv.Key == dim.Key {
+				present = true
+				break
+			}
+		}
+		if !present {
+			attrs = append(attrs, dim)
+		}
+	}
+	return attrs
+}
+
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, applyTraceDimensionsToChildSpans bool, exportRawPayloads bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
+//
+// With opts.applyTraceDimensionsToChildSpans, the trace's x-bf-dim-* dimensions are merged
+// onto every exported span; see traceDimensionKeyValues for the keys that are skipped. The
+// filtered list is built once per trace, so a profile with the flag off pays nothing.
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, opts convertOptions) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMapWithOverhead(trace.Spans, p.exportOverheadSpans)
-	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
+	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, opts.requestHeaders)
+	var dimensionKVs []*KeyValue
+	if opts.applyTraceDimensionsToChildSpans {
+		dimensionKVs = traceDimensionKeyValues(trace)
+	}
 
 	// The x-bf-session-id header is a trace-level attribute, so it is not emitted as a span
 	// attribute by default. Surface it on the root span as the OTEL-conventional session.id
@@ -113,7 +202,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	// a top-level sibling under one trace. An inbound traceparent sets RootSpan.ParentID, so
 	// it takes precedence and the request stays on its distributed trace.
 	traceID := trace.TraceID
-	groupBySession := groupTracesBySession && sessionID != "" && trace.RootSpan != nil && trace.RootSpan.ParentID == ""
+	groupBySession := opts.groupTracesBySession && sessionID != "" && trace.RootSpan != nil && trace.RootSpan.ParentID == ""
 	if groupBySession {
 		traceID = sessionTraceID(sessionID)
 	}
@@ -121,7 +210,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	// A virtual key that turned content logging off marks the root span; it tightens this profile's
 	// own flag for this trace only and, like the flag, covers content attributes and raw payloads.
 	// The mark is never written as false, so it cannot loosen a profile that disables content.
-	traceDisableContent := disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
+	traceDisableContent := opts.disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
 
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
@@ -130,8 +219,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
-		spanDisableContent := traceDisableContent || (disableRootSpanContent && span == trace.RootSpan)
-		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, exportRawPayloads)
+		spanDisableContent := traceDisableContent || (opts.disableRootSpanContent && span == trace.RootSpan)
+		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, opts.exportRawPayloads)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -141,37 +230,10 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 				otelSpan.ParentSpanId = hexToBytes(effectiveParent, 8)
 			}
 		}
-		// Merge x-bf-dim-* dimensions onto every exported span when
-		// applyTraceDimensionsToChildSpans is enabled. Dims live on
-		// trace.Attributes[TraceAttrDimensions] (set at ingress); other
-		// trace-level keys (session id, nested maps) stay off spans.
-		// Span-level attributes win on conflict. Reserved suffixes path
-		// and method are skipped so they cannot collide with http.*.
-		// Runs BEFORE the root-span block so AttrRequestID/instanceAttrs
-		// remain authoritative on the root span.
-		if applyTraceDimensionsToChildSpans {
-			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok && len(dims) > 0 {
-				present := make(map[string]struct{}, len(otelSpan.Attributes))
-				for _, kv := range otelSpan.Attributes {
-					present[kv.Key] = struct{}{}
-				}
-				for k, v := range dims {
-					if k == "path" || k == "method" {
-						continue
-					}
-					if _, exists := present[k]; exists {
-						continue
-					}
-					kv := anyToKeyValue(k, v)
-					if kv == nil {
-						// anyToKeyValue returns nil for empty strings and other
-						// unrepresentable values; appending nil here would crash
-						// OTLP marshaling, so skip them silently.
-						continue
-					}
-					otelSpan.Attributes = append(otelSpan.Attributes, kv)
-				}
-			}
+		// Root-span additions below (session.id, request id, instance attrs, captured
+		// headers) use reserved namespaces, so a merged dimension cannot duplicate them.
+		if len(dimensionKVs) > 0 {
+			otelSpan.Attributes = mergeDimensionAttributes(otelSpan.Attributes, dimensionKVs)
 		}
 		if span == trace.RootSpan {
 			if sessionID != "" {
@@ -220,13 +282,14 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
 
-	// Raw lives on span.LLM, never in Attributes, so non-opted connectors cannot see it.
-	if exportRawPayloads && !disableContentLogging && span.LLM != nil {
-		if span.LLM.RawRequest != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, span.LLM.RawRequest))
+	// Raw bodies never live in Attributes, so export always requires an opt-in.
+	if exportRawPayloads && !disableContentLogging {
+		request, response := span.RawPayloads()
+		if request != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, request))
 		}
-		if span.LLM.RawResponse != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, span.LLM.RawResponse))
+		if response != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, response))
 		}
 	}
 
@@ -401,6 +464,10 @@ func convertSpanKind(kind schemas.SpanKind) tracepb.Span_SpanKind {
 	case schemas.SpanKindMCPTool:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindMCPClient:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindA2AOperation:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindRelay:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindEmbedding:
 		return tracepb.Span_SPAN_KIND_CLIENT

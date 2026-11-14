@@ -31,6 +31,7 @@ Key characteristics:
 | Responses API | ✅ | ✅ | `/serving-endpoints/responses` where the endpoint supports it; emulated via chat everywhere else |
 | Embeddings | ✅ | - | `<base>/embeddings` |
 | List Models | ✅ | - | Served from Bifrost's model catalog; no workspace API is called |
+| Decisions | ✅ | - | `/api/2.0/ai-functions/ai-decide` (`ai_decide`), `/ai-gateway/typesafe/v1/systemone` (System One models such as OpenJev and TypeSafe AI Jev) |
 | Text Completions | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
@@ -62,7 +63,7 @@ Custom MLflow models served at `/serving-endpoints/{name}/invocations` take a pe
 5. Choose an **Inference Surface**. Leave it on **Auto** unless you want to pin one surface — see [Choosing a surface](#choosing-a-surface).
 6. Pick an **Authentication Method**:
    - **Personal Access Token** - paste the token or use `env.DATABRICKS_TOKEN`.
-   - **OAuth M2M (Service Principal)** - enter the client ID and secret. Leave the token blank.
+   - **OAuth M2M (Service Principal)** - enter the client ID and secret. Leave the token blank. If the secret was created with scopes, list them under **Scopes**. See [OAuth scopes](#oauth-scopes).
 7. Optionally enable **Forward Governance Tags** to attribute usage on the Databricks side.
 8. Set **Allowed Models** to **All Models** (default) or a specific allowlist.
 9. Save the provider configuration.
@@ -146,8 +147,42 @@ schemas.Key{
 | `client_id` | | OAuth M2M service principal client ID. Set with `client_secret`. |
 | `client_secret` | | OAuth M2M service principal secret. Set with `client_id`. |
 | `forward_gateway_tags` | | Forward Bifrost governance labels as Databricks request tags. Default `false`. |
+| `scopes` | | OAuth M2M scopes to request. Default `["all-apis"]`. See [OAuth scopes](#oauth-scopes). |
 
-A key needs either a `value` (personal access token) or both `client_id` and `client_secret`. Setting only one half of the service principal pair is rejected at configuration time.
+A key needs either a `value` (personal access token) or both `client_id` and `client_secret`. Bifrost rejects a key that sets only one half of the service principal pair when you save it.
+
+### OAuth scopes
+
+Bifrost asks for `all-apis` by default when it mints a token. A service principal secret created without scopes has `all-apis`, so most keys need nothing here.
+
+Databricks also lets an admin limit a secret to specific scopes when creating it, and the scopes can't be changed afterwards. A token request that names any scope the secret lacks fails with a 403 like this one:
+
+```
+access_denied Scopes 'all-apis' are not assigned to the client ...; the client has scope(s) [all-apis:read] that cannot send this request
+```
+
+For a secret like that, set `scopes` to what the secret has. Bifrost sends them space-separated in the token request. A read-only scope such as `all-apis:read` can't run inference, because querying a serving endpoint is a POST. Pick from the [Databricks API scopes](https://docs.databricks.com/api/workspace/scopes) by what the key does:
+
+| Bifrost feature | Databricks API | Scope |
+|-----------------|----------------|-------|
+| Chat, Responses, embeddings on Model Serving | `/serving-endpoints/chat/completions`, `/responses`, `/embeddings` | `model-serving` |
+| Unity AI Gateway | `/ai-gateway/mlflow/v1/...` | `ai-gateway` |
+| [Decisions](#decisions) | `/api/2.0/ai-functions/ai-decide` | `ai-functions` |
+
+`model-serving-inference` doesn't work for Bifrost. It only covers the per-endpoint `/serving-endpoints/{name}/invocations` path, which Bifrost doesn't call, so Bifrost's paths answer its token with `Invalid scope, required scopes: model-serving`.
+
+Model listing needs no scope. Bifrost lists Databricks models from its own catalog and never calls the workspace for them.
+
+```json
+"databricks_key_config": {
+  "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+  "client_id": "env.DATABRICKS_CLIENT_ID",
+  "client_secret": "env.DATABRICKS_CLIENT_SECRET",
+  "scopes": ["model-serving"]
+}
+```
+
+Bifrost doesn't try other scopes on its own. If the token mints but doesn't cover a call, for example a secret with only `ai-gateway` on a Model Serving request, Databricks rejects that call with `Invalid scope, required scopes: ...`.
 
 ## Choosing a surface
 
@@ -290,6 +325,61 @@ Anthropic-native fields — `context_management`, `cache_control`, `speed`, `inf
 
 A provisioned-throughput endpoint uses the same request format as a pay-per-token one. Address it by its endpoint name on the Model Serving surface — no separate configuration.
 
+## Decisions
+
+Two kinds of Databricks model answer [`/v1/decisions`](/quickstart/gateway/decisions) natively, neither of them a serving endpoint: the `ai_decide` AI Function and the System One models a workspace's Unity Gateway serves.
+
+### ai_decide
+
+Databricks' [`ai_decide`](https://docs.databricks.com/api/ai-functions/v1/ai-decide) AI Function (Beta) is a workspace function rather than a serving endpoint, so address it as `databricks/ai_decide`:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/ai_decide",
+    "input": "The API returns 500 on every call.",
+    "questions": [
+      { "type": "choice", "name": "team", "instructions": "Which team should handle this ticket?",
+        "choices": [{ "value": "billing" }, { "value": "engineering" }, { "value": "support" }] }
+    ]
+  }'
+```
+
+Bifrost calls `POST {workspace_url}/api/2.0/ai-functions/ai-decide` with the key's personal access token or service principal. The workspace needs the AI Functions preview enabled, and the token needs the `ai-functions` scope (or `all-apis` for OAuth). The body is TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Differences from TypeSafe:
+
+- **No model on the wire.** `ai_decide` rejects a `model` field, so none is sent; the response reports `ai_decide`. Bifrost pins the function version with `options.version: "1.0"`.
+- **Text only.** An `input_image` part is rejected by Bifrost with a `400`; the function would otherwise read it as text. An empty input is also a `400`, since `ai_decide` answers a null state with no answers.
+- **Strict fields.** An extra top-level or question field forwarded with `x-bf-passthrough-extra-params` comes back as Databricks' `400` (`Unexpected parameters`).
+- **Limits.** Choice questions take 1-255 options and score questions 2-10 levels; every question needs `instructions`.
+- **No usage or response `id`.** Databricks' `x-request-id` is in `extra_fields.provider_response_headers`, and a decision is priced at $0 unless you add a [pricing override](/providers/custom-pricing) for the Decisions request type.
+
+### System One models
+
+A workspace with Unity Catalog and Unity Gateway serves [System One models](https://docs.databricks.com/gcp/en/machine-learning/model-serving/query-systemone-models), such as OpenJev and TypeSafe AI Jev, by their Unity Catalog name:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/system.ai.openjev-qwen35-4b",
+    "input": "I was charged twice and need a refund today.",
+    "questions": [
+      { "type": "choice", "name": "intent", "instructions": "Classify the primary intent.",
+        "choices": [{ "value": "billing" }, { "value": "refund" }, { "value": "other" }] }
+    ]
+  }'
+```
+
+Bifrost calls `POST {workspace_url}/ai-gateway/typesafe/v1/systemone` with the key's personal access token or service principal, which needs permission to execute the model service. The body and response are TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference) and the Unity Catalog name is sent as the model. Bifrost recognizes OpenJev and TypeSafe AI Jev models by their Unity Catalog names (`system.ai.openjev-*` and `system.ai.typesafeai-jev-*`, such as `system.ai.typesafeai-jev-1-14-0`); their serving endpoint names, such as `databricks-openjev-qwen35-4b`, are not accepted on this route. Another System One model service needs a model catalog entry with `supports_decisions`. TypeSafe AI Jev is hosted by TypeSafe and needs the account's TypeSafe AI Models preview. Differences from TypeSafe:
+
+- **Images by reference.** An `input_image` part with an `id` reaches the model as TypeSafe `assets`, as on [TypeSafe](/providers/supported-providers/typesafe#images-and-box), and Bifrost adds the `TypeSafe-Danger-Zone-Images: true` header that Jev requires. Overriding it to unsupported in the provider's **Beta Headers** settings, or setting `network_config.beta_header_overrides` to `{"typesafe-danger-zone-images": false}`, stops it. An inline `input_image` part without an `id` is rejected by Bifrost with a `400`.
+- **Errors.** Databricks' own errors pass through with their status, `error_code`, and message, such as a `422` for an invalid request or a `400` for an image the model rejects (`Invalid image dimensions`).
+- **Reported model.** The response names the model the gateway served, such as `databricks-openjev-qwen35-4b` or `jev-1.14.0`.
+- **Usage.** Input and output tokens are reported, images included, and a decision is priced from the model catalog, at $0 until it lists the model's rates.
+
+Any other Databricks model returns `unsupported_operation` for decisions; with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, it is emulated on the endpoint's Responses API instead. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `ai_decide` or a System One model as its classifier.
+
 ## Usage attribution
 
 With `forward_gateway_tags` enabled, Bifrost sends the resolved governance labels to Databricks on each request:
@@ -312,6 +402,8 @@ Databricks pricing depends on the model, the serving configuration (pay-per-toke
 |---------|-------|
 | `databricks workspace url is not set` | No `workspace_url` on the key. `config.json` and the UI require it; only the Go SDK also accepts a provider-level `base_url` as the workspace host. |
 | `databricks key has no credentials` | Neither a key `value` nor a complete service principal pair. |
+| 403 `access_denied Scopes 'all-apis' are not assigned to the client` | The service principal's secret was created with scopes. Set `scopes` on the key. See [OAuth scopes](#oauth-scopes). |
+| 403 `Invalid scope, required scopes: ...` | The token's scopes don't cover this call. Add the named scope to `scopes`, which needs a secret that has it. See [OAuth scopes](#oauth-scopes). |
 | 403 with `PERMISSION_DENIED` | The principal lacks `EXECUTE` on the model service, or query access to the serving endpoint. Bifrost surfaces this as an authorization error rather than a missing model. |
 | 404 on a model that exists | The request went to the wrong surface. Set `api_format` explicitly. |
 | A model is missing from the model list | Databricks models are listed from Bifrost's model catalog, not from the workspace. Any serving endpoint or model service can still be called by name; `api_format` only affects routing, not listing. |

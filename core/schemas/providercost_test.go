@@ -253,3 +253,29 @@ func TestUsageConversions_CarryCostFields(t *testing.T) {
 	assert.Equal(t, int64(200000000), *back.CostInUsdTicks)
 	assert.Equal(t, 0.02, back.Cost.TotalCost)
 }
+
+// DeepCopy must not share the Laya decision usage fields with the original, since
+// the logging path mutates its copy independently of the client response.
+func TestBifrostLLMUsage_DeepCopyLayaFields(t *testing.T) {
+	usage := &BifrostLLMUsage{
+		StateTokens:        new(10),
+		StateTokensDropped: new(2),
+		Truncated:          new(true),
+		TruncatedQuestions: []string{"q1", "q2"},
+	}
+
+	copied := usage.DeepCopy()
+	assert.NotSame(t, usage.StateTokens, copied.StateTokens)
+	assert.NotSame(t, usage.StateTokensDropped, copied.StateTokensDropped)
+	assert.NotSame(t, usage.Truncated, copied.Truncated)
+
+	*copied.StateTokens = 99
+	*copied.StateTokensDropped = 99
+	*copied.Truncated = false
+	copied.TruncatedQuestions[0] = "changed"
+
+	assert.Equal(t, 10, *usage.StateTokens)
+	assert.Equal(t, 2, *usage.StateTokensDropped)
+	assert.True(t, *usage.Truncated)
+	assert.Equal(t, []string{"q1", "q2"}, usage.TruncatedQuestions)
+}

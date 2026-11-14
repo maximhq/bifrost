@@ -1,8 +1,10 @@
 package streaming
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -46,12 +48,16 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		accumulator.PassthroughPath = result.PassthroughResponse.ExtraFields.PassthroughPath
 	}
 
-	// Accumulate the body bytes from this chunk
+	// Accumulate the body bytes from this chunk once: several plugins feed the same chunk, some from goroutines
 	if result != nil && result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
-		// Make a copy of the body bytes to avoid referencing pooled memory
-		bodyBytes := make([]byte, len(result.PassthroughResponse.Body))
-		copy(bodyBytes, result.PassthroughResponse.Body)
-		accumulator.PassthroughBody = append(accumulator.PassthroughBody, bodyBytes...)
+		chunkIndex := result.PassthroughResponse.ExtraFields.ChunkIndex
+		if _, seen := accumulator.PassthroughChunks[chunkIndex]; !seen {
+			if accumulator.PassthroughChunks == nil {
+				accumulator.PassthroughChunks = make(map[int][]byte)
+			}
+			// Make a copy of the body bytes to avoid referencing pooled memory
+			accumulator.PassthroughChunks[chunkIndex] = bytes.Clone(result.PassthroughResponse.Body)
+		}
 	}
 
 	// For non-final chunks, return early without processing
@@ -84,7 +90,7 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 	passthroughResp := &schemas.BifrostPassthroughResponse{
 		StatusCode:       accumulator.PassthroughStatusCode,
 		Headers:          accumulator.PassthroughHeaders,
-		Body:             accumulator.PassthroughBody,
+		Body:             accumulator.passthroughBody(),
 		Path:             accumulator.PassthroughPath,
 		PassthroughUsage: passthroughUsage,
 	}
@@ -103,6 +109,9 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 	}
 	if passthroughUsage != nil && passthroughUsage.LLMUsage != nil {
 		data.TokenUsage = passthroughUsage.LLMUsage
+	}
+	if passthroughUsage != nil && passthroughUsage.ServiceTier != nil {
+		data.ServiceTier = passthroughUsage.ServiceTier
 	}
 
 	// Set error status if there was an error
@@ -140,4 +149,41 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 		Data:           data,
 		RawRequest:     &rawRequest,
 	}, nil
+}
+
+// passthroughBody joins the accumulated passthrough chunks in ChunkIndex order, or returns nil when none arrived.
+// Callers hold sa.mu.
+func (sa *StreamAccumulator) passthroughBody() []byte {
+	if len(sa.PassthroughChunks) == 0 {
+		return nil
+	}
+	size := 0
+	for _, chunk := range sa.PassthroughChunks {
+		size += len(chunk)
+	}
+	body := make([]byte, 0, size)
+	for _, chunkIndex := range slices.Sorted(maps.Keys(sa.PassthroughChunks)) {
+		body = append(body, sa.PassthroughChunks[chunkIndex]...)
+	}
+	return body
+}
+
+// passthroughSnapshot returns the passthrough response accumulated so far, or nil when none has. Body and headers are
+// copies, so the caller may read them while chunks keep arriving.
+func (sa *StreamAccumulator) passthroughSnapshot() *schemas.BifrostResponse {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	if len(sa.PassthroughChunks) == 0 {
+		return nil
+	}
+	return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode: sa.PassthroughStatusCode,
+		Headers:    maps.Clone(sa.PassthroughHeaders),
+		Body:       sa.passthroughBody(),
+		Path:       sa.PassthroughPath,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:     schemas.PassthroughStreamRequest,
+			PassthroughPath: sa.PassthroughPath,
+		},
+	}}
 }

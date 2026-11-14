@@ -60,6 +60,7 @@ providers:
     file_delete: "gpt-4o-mini"
     file_content: "gpt-4o-mini"
     count_tokens: "gpt-4o-mini"
+    decisions: "gpt-6-luna"
     video: "sora-2"
     alternatives:
       - "gpt-4"
@@ -218,7 +219,7 @@ providers:
     streaming: "command-a-03-2025"
     count_tokens: "command-a-03-2025"
     alternatives:
-      - "command-r-plus"
+      - "command-a-03-2025"
   
   huggingface:
     image_generation: "fal-ai/fal-ai/flux/dev"

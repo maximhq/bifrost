@@ -13,9 +13,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -342,9 +343,15 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: secret("mantle-secret-key-current"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: secret("sagemaker-access-key-current"),
+			SecretKey: secret("sagemaker-secret-key-current"),
+			RoleARN:   secretPtr("arn:aws:iam::123456789012:role/sagemaker-current"),
+		},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: secret("0123456789abcdef0123456789abcdef")},
 	}
 	update := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
@@ -361,9 +368,15 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: staleMask("mant", "0006"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: staleMask("sage", "0010"),
+			SecretKey: staleMask("sags", "0011"),
+			RoleARN:   secretPtr(staleMaskValue("arn:", "rent")),
+		},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: staleMask("0123", "cdef")},
 	}
 
 	merged := merge(oldRaw, update)
@@ -378,9 +391,13 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"bedrock access key", merged.BedrockKeyConfig.AccessKey.GetValue(), oldRaw.BedrockKeyConfig.AccessKey.GetValue()},
 		{"bedrock session token", merged.BedrockKeyConfig.SessionToken.GetValue(), oldRaw.BedrockKeyConfig.SessionToken.GetValue()},
 		{"mantle secret key", merged.BedrockMantleKeyConfig.SecretKey.GetValue(), oldRaw.BedrockMantleKeyConfig.SecretKey.GetValue()},
+		{"sagemaker access key", merged.SageMakerKeyConfig.AccessKey.GetValue(), oldRaw.SageMakerKeyConfig.AccessKey.GetValue()},
+		{"sagemaker secret key", merged.SageMakerKeyConfig.SecretKey.GetValue(), oldRaw.SageMakerKeyConfig.SecretKey.GetValue()},
+		{"sagemaker role arn", merged.SageMakerKeyConfig.RoleARN.GetValue(), oldRaw.SageMakerKeyConfig.RoleARN.GetValue()},
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
+		{"cloudflare account id", merged.CloudflareKeyConfig.AccountID.GetValue(), oldRaw.CloudflareKeyConfig.AccountID.GetValue()},
 	}
 	for _, check := range checks {
 		if check.got != check.want {
@@ -393,98 +410,6 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	if !merged.VLLMKeyConfig.URL.IsFromEnv() || merged.VLLMKeyConfig.URL.GetRawRef() != "env.NEW_VLLM_URL" {
 		t.Fatalf("expected nested env ref applied, got ref=%q", merged.VLLMKeyConfig.URL.GetRawRef())
 	}
-}
-
-// TestMergeUpdatedKey_GithubCopilotKeyConfig covers the masked-update path for the GitHub
-// App bundle. The API renders keys redacted on GET, so a client that edits one field and
-// submits the form sends back a mask for every field it did not touch. Getting the merge
-// wrong here either persists the literal mask as a credential, or silently drops the four
-// App fields, and both failures look like a working save.
-func TestMergeUpdatedKey_GithubCopilotKeyConfig(t *testing.T) {
-	h := &ProviderHandler{}
-	secret := func(v string) schemas.SecretVar { return *schemas.NewSecretVar(v) }
-	mask := func(prefix, suffix string) schemas.SecretVar {
-		return secret(prefix + strings.Repeat("*", 24) + suffix)
-	}
-
-	stored := func() schemas.Key {
-		return schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          secret("123456"),
-			InstallationID: secret("87654321"),
-			RepositoryID:   secret("999000111"),
-			PrivateKey:     secret(pkcs1TestPEM(t)),
-			GithubDomain:   secret("acme.ghe.com"),
-		}}
-	}
-
-	t.Run("masks resolve back to the stored values", func(t *testing.T) {
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          mask("1234", "3456"),
-			InstallationID: mask("8765", "4321"),
-			RepositoryID:   mask("9990", "0111"),
-			PrivateKey:     mask("----", "----"),
-			GithubDomain:   mask("acme", ".com"),
-		}}
-
-		merged, err := h.mergeUpdatedKey(stored(), update)
-		if err != nil {
-			t.Fatalf("mergeUpdatedKey returned error: %v", err)
-		}
-		cfg := merged.GithubCopilotKeyConfig
-		if cfg == nil {
-			t.Fatal("the App config was dropped by the merge")
-		}
-		for _, c := range []struct{ name, got, want string }{
-			{"app_id", cfg.AppID.GetValue(), "123456"},
-			{"installation_id", cfg.InstallationID.GetValue(), "87654321"},
-			{"repository_id", cfg.RepositoryID.GetValue(), "999000111"},
-			{"private_key", cfg.PrivateKey.GetValue(), pkcs1TestPEM(t)},
-			{"github_domain", cfg.GithubDomain.GetValue(), "acme.ghe.com"},
-		} {
-			if c.got != c.want {
-				t.Errorf("%s: got %q, want the stored value %q", c.name, c.got, c.want)
-			}
-			if strings.Contains(c.got, "****") {
-				t.Errorf("%s: the mask was persisted as a credential", c.name)
-			}
-		}
-	})
-
-	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
-		// Nothing to restore from, so accepting it would write asterisks as the App ID.
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID: mask("1234", "3456"),
-		}}
-
-		if _, err := h.mergeUpdatedKey(schemas.Key{}, update); err == nil {
-			t.Fatal("expected an error when a mask has no stored value behind it")
-		}
-	})
-
-	t.Run("unmasked literals overwrite the stored values", func(t *testing.T) {
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          secret("Iv1.b507a08c87ecfe98"),
-			InstallationID: secret("11112222"),
-			RepositoryID:   secret("333344445"),
-			PrivateKey:     secret(pkcs8TestPEM(t)),
-			GithubDomain:   secret(""),
-		}}
-
-		merged, err := h.mergeUpdatedKey(stored(), update)
-		if err != nil {
-			t.Fatalf("mergeUpdatedKey returned error: %v", err)
-		}
-		cfg := merged.GithubCopilotKeyConfig
-		if cfg.AppID.GetValue() != "Iv1.b507a08c87ecfe98" {
-			t.Errorf("app_id: got %q, want the new literal", cfg.AppID.GetValue())
-		}
-		if cfg.InstallationID.GetValue() != "11112222" {
-			t.Errorf("installation_id: got %q, want the new literal", cfg.InstallationID.GetValue())
-		}
-		if cfg.PrivateKey.GetValue() != pkcs8TestPEM(t) {
-			t.Error("private_key: the rotated key did not take effect")
-		}
-	})
 }
 
 func TestMergeUpdatedKey_RejectsMaskWithoutStoredCounterpart(t *testing.T) {
@@ -554,6 +479,9 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 		{"bedrock ok", schemas.Bedrock, schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: region}}, ""},
 		{"mantle missing region", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{}}, "bedrock_mantle_key_config.region"},
 		{"mantle ok", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Region: region}}, ""},
+		{"sagemaker missing region", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{}}, "sagemaker_key_config.region"},
+		{"sagemaker nil config", schemas.SageMaker, schemas.Key{}, "sagemaker_key_config.region"},
+		{"sagemaker ok", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: region}}, ""},
 		{"vllm missing url", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{ModelName: "m"}}, "vllm_key_config.url"},
 		{"vllm missing model_name", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000")}}, "vllm_key_config.model_name"},
 		{"vllm ok", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000"), ModelName: "m"}}, ""},
@@ -575,200 +503,598 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 	}
 }
 
-// TestValidateProviderKeyGithubCopilotFormats pins that a literal GitHub App credential is
-// checked for shape at save time, not just for presence. A non-numeric installation_id or a
-// mangled PEM otherwise persists happily and fails on the first inference call, where it
-// reads as a runtime fault rather than a typo in a form.
-//
-// Environment and vault references are exempt: their values are not available here, so
-// checking them would reject every legitimate headless configuration.
-func TestValidateProviderKeyGithubCopilotFormats(t *testing.T) {
-	pemBody := pkcs1TestPEM(t)
+// TestMergeUpdatedKey_OAuthKeyConfig covers the masked-update path for oauth_key_config: a
+// client that edits one field sends back a mask for every secret it did not touch, and the
+// merge must restore the stored secret rather than persist the asterisks.
+func TestMergeUpdatedKey_OAuthKeyConfig(t *testing.T) {
+	h := &ProviderHandler{}
+	secret := func(v string) *schemas.SecretVar { return schemas.NewSecretVar(v) }
+	mask := func(prefix, suffix string) *schemas.SecretVar {
+		return secret(prefix + strings.Repeat("*", 24) + suffix)
+	}
+	stored := func() schemas.Key {
+		return schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantJWTBearer,
+			TokenURL:     *secret("https://idp.example/oauth2/token"),
+			ClientID:     secret("client-123"),
+			ClientSecret: secret("client-secret-456"),
+			PrivateKey:   secret(pkcs1TestPEM(t)),
+			Issuer:       "client-123",
+			Audience:     "api://acme",
+		}}
+	}
 
-	appConfig := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
-		c := &schemas.GithubCopilotKeyConfig{
-			AppID:          *schemas.NewSecretVar("123456"),
-			InstallationID: *schemas.NewSecretVar("87654321"),
-			RepositoryID:   *schemas.NewSecretVar("999000111"),
-			PrivateKey:     *schemas.NewSecretVar(pemBody),
+	t.Run("masks resolve back to the stored values", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantJWTBearer,
+			TokenURL:     *mask("http", "oken"),
+			ClientID:     mask("clie", "-123"),
+			ClientSecret: mask("clie", "-456"),
+			PrivateKey:   mask("----", "----"),
+			Issuer:       "client-123",
+			Audience:     "api://other",
+		}}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		cfg := merged.OAuthKeyConfig
+		if cfg == nil {
+			t.Fatal("the oauth config was dropped by the merge")
+		}
+		for _, c := range []struct{ name, got, want string }{
+			{"token_url", cfg.TokenURL.GetValue(), "https://idp.example/oauth2/token"},
+			{"client_id", cfg.ClientID.GetValue(), "client-123"},
+			{"client_secret", cfg.ClientSecret.GetValue(), "client-secret-456"},
+			{"private_key", cfg.PrivateKey.GetValue(), pkcs1TestPEM(t)},
+		} {
+			if c.got != c.want {
+				t.Errorf("%s: got %q, want the stored value %q", c.name, c.got, c.want)
+			}
+		}
+		if cfg.Audience != "api://other" {
+			t.Errorf("audience: got %q, want the updated literal", cfg.Audience)
+		}
+	})
+
+	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("https://idp.example/token"),
+			ClientID: secret("id"), ClientSecret: mask("abcd", "wxyz"),
+		}}
+		if _, err := h.mergeUpdatedKey(schemas.Key{}, update); err == nil {
+			t.Fatal("expected an error when a mask has no stored value behind it")
+		}
+	})
+
+	t.Run("unmasked literals overwrite the stored values", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("https://idp2.example/token"),
+			ClientID: secret("new-id"), ClientSecret: secret("new-secret"),
+		}}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		cfg := merged.OAuthKeyConfig
+		if cfg.ClientSecret.GetValue() != "new-secret" || cfg.TokenURL.GetValue() != "https://idp2.example/token" {
+			t.Errorf("literals were not applied: %q %q", cfg.ClientSecret.GetValue(), cfg.TokenURL.GetValue())
+		}
+		if cfg.PrivateKey != nil {
+			t.Errorf("a field the update left out must not be resurrected from the stored config")
+		}
+	})
+
+	t.Run("masked extra_params values resolve back to the stored values", func(t *testing.T) {
+		storedWithParams := stored()
+		storedWithParams.OAuthKeyConfig.ExtraParams = map[string]string{"client_assertion": "assertion-secret", "resource": "api://acme"}
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantJWTBearer, TokenURL: *secret("https://idp.example/oauth2/token"),
+			PrivateKey: secret(pkcs1TestPEM(t)), Issuer: "client-123", Audience: "api://acme",
+			ExtraParams: map[string]string{"client_assertion": "asse" + strings.Repeat("*", 24) + "cret", "resource": "api://other"},
+		}}
+		merged, err := h.mergeUpdatedKey(storedWithParams, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if merged.OAuthKeyConfig.ExtraParams["client_assertion"] != "assertion-secret" {
+			t.Errorf("client_assertion: got %q, want the stored value", merged.OAuthKeyConfig.ExtraParams["client_assertion"])
+		}
+		if merged.OAuthKeyConfig.ExtraParams["resource"] != "api://other" {
+			t.Errorf("resource: got %q, want the new literal", merged.OAuthKeyConfig.ExtraParams["resource"])
+		}
+	})
+
+	t.Run("a masked extra_params value that looks like a secret reference restores the stored string", func(t *testing.T) {
+		// "env.production" is sent to the token endpoint verbatim; it is not a Bifrost reference.
+		// The GET masks it, and the masked form must resolve back to the stored string.
+		storedWithParams := stored()
+		storedWithParams.OAuthKeyConfig.ExtraParams = map[string]string{"resource": "env.production"}
+		masked := storedWithParams.OAuthKeyConfig.Redacted().ExtraParams["resource"]
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantJWTBearer, TokenURL: *secret("https://idp.example/oauth2/token"),
+			PrivateKey: secret(pkcs1TestPEM(t)), Issuer: "client-123", Audience: "api://acme",
+			ExtraParams: map[string]string{"resource": masked},
+		}}
+		merged, err := h.mergeUpdatedKey(storedWithParams, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if merged.OAuthKeyConfig.ExtraParams["resource"] != "env.production" {
+			t.Errorf("resource: got %q, want the stored string restored from its mask %q", merged.OAuthKeyConfig.ExtraParams["resource"], masked)
+		}
+	})
+
+	// The UI switches auth methods by sending an explicit empty value (API key -> OAuth) or an
+	// explicit null section (OAuth -> API key). Both must clear the stored half; an omitted
+	// field keeps it. resolveKey prefers a static value, so a surviving one silently wins.
+	t.Run("an explicit empty value clears the stored static key", func(t *testing.T) {
+		old := stored()
+		old.Value = *secret("sk-old")
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":""}`), old)
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		merged, err := h.mergeUpdatedKey(old, decoded)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey: %v", err)
+		}
+		if merged.Value.GetValue() != "" {
+			t.Fatalf("value = %q, want cleared", merged.Value.GetValue())
+		}
+	})
+
+	t.Run("an explicit null clears the stored oauth block", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":"sk-new","oauth_key_config":null}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.OAuthKeyConfig != nil {
+			t.Fatal("an explicit null must clear the stored oauth_key_config")
+		}
+	})
+
+	t.Run("an update without the section keeps the stored one", func(t *testing.T) {
+		body := []byte(`{"name":"renamed"}`)
+		decoded, err := decodeKeyUpdate(body, stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.OAuthKeyConfig == nil || decoded.OAuthKeyConfig.ClientSecret.GetValue() != "client-secret-456" {
+			t.Fatal("an omitted oauth_key_config must keep the stored section")
+		}
+	})
+}
+
+// TestValidateProviderKeyOAuthKeyConfig pins the setup-time checks on oauth_key_config: it is
+// accepted on any provider's key, must be whole for its grant, and literal values are
+// shape-checked so a typo fails at save rather than at the first inference call.
+func TestValidateProviderKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
 		}
 		if mutate != nil {
 			mutate(c)
 		}
 		return c
 	}
-
-	cases := []struct {
-		name    string
-		key     schemas.Key
-		wantErr string
-	}{
-		{"valid literal app config", schemas.Key{GithubCopilotKeyConfig: appConfig(nil)}, ""},
-		{"direct token needs no app config", schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}, ""},
-		{
-			"non-numeric installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = *schemas.NewSecretVar("my-install")
-			})},
-			"installation_id",
-		},
-		{
-			"path traversal in installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = *schemas.NewSecretVar("1/../../../user")
-			})},
-			"installation_id",
-		},
-		{
-			"non-numeric repository_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.RepositoryID = *schemas.NewSecretVar("my-repo")
-			})},
-			"repository_id",
-		},
-		{
-			"private key that is not PEM",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("not a key")
-			})},
-			"private_key",
-		},
-		{
-			"valid PKCS#8 private key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(pkcs8TestPEM(t))
-			})},
-			"",
-		},
-		{
-			// An EC key is a perfectly well-formed PEM, so an envelope-only check waves it
-			// through. GitHub App JWTs are RS256, so it fails at the first request instead.
-			"EC private key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(ecTestPEM(t))
-			})},
-			"private_key",
-		},
-		{
-			// Passphrase-protected keys cannot be used unattended, and the envelope alone
-			// does not say so.
-			"encrypted private key envelope",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("-----BEGIN ENCRYPTED PRIVATE KEY-----\nZm9v\n-----END ENCRYPTED PRIVATE KEY-----")
-			})},
-			"private_key",
-		},
-		{
-			"well-formed envelope with a garbage DER payload",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----\nZm9vYmFy\n-----END RSA PRIVATE KEY-----")
-			})},
-			"private_key",
-		},
-		{
-			"PEM whose newlines survived as literal backslash-n",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(strings.ReplaceAll(pkcs1TestPEM(t), "\n", `\n`))
-			})},
-			"",
-		},
-		{
-			"no token and no app config at all",
-			schemas.Key{},
-			"github_copilot_key_config is required",
-		},
-		{
-			"no token, missing app_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.AppID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.app_id is required",
-		},
-		{
-			"no token, missing installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.installation_id is required",
-		},
-		{
-			"no token, missing repository_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.RepositoryID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.repository_id is required",
-		},
-		{
-			"no token, missing private_key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.private_key is required",
-		},
-		{
-			// A token does not excuse a half-filled App block: it persists silently and only
-			// breaks later, when the token expires or is removed.
-			"direct token alongside an incomplete app config",
-			schemas.Key{
-				Value: *schemas.NewSecretVar("tid=abc"),
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID: *schemas.NewSecretVar("123456"),
-				},
-			},
-			"installation_id",
-		},
-		{
-			"direct token alongside a malformed app config",
-			schemas.Key{
-				Value: *schemas.NewSecretVar("tid=abc"),
-				GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-					c.RepositoryID = *schemas.NewSecretVar("not-a-number")
-				}),
-			},
-			"repository_id",
-		},
-		{
-			"direct token alongside a complete app config",
-			schemas.Key{Value: *schemas.NewSecretVar("tid=abc"), GithubCopilotKeyConfig: appConfig(nil)},
-			"",
-		},
-		{
-			// GitHub documents the JWT issuer as "the client ID or application ID", and says
-			// "use of the client ID is recommended". Client IDs look like Iv1.b507a08c87ecfe98,
-			// so a digits-only rule on app_id would reject the recommended configuration.
-			// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
-			"client ID as app_id is accepted",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.AppID = *schemas.NewSecretVar("Iv1.b507a08c87ecfe98")
-			})},
-			"",
-		},
-		{
-			"env references are not format-checked",
-			schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-				AppID:          *schemas.NewSecretVar("env.COPILOT_APP_ID"),
-				InstallationID: *schemas.NewSecretVar("env.COPILOT_INSTALLATION_ID"),
-				RepositoryID:   *schemas.NewSecretVar("env.COPILOT_REPOSITORY_ID"),
-				PrivateKey:     *schemas.NewSecretVar("env.COPILOT_PRIVATE_KEY"),
-			}},
-			"",
-		},
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar(pkcs1TestPEM(t)),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateProviderKeyURL(schemas.GithubCopilot, tc.key)
-			if tc.wantErr == "" {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		key      schemas.Key
+		wantErr  string
+	}{
+		{"client_credentials on openai", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(nil)}, ""},
+		{"jwt_bearer on openai", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(nil)}, ""},
+		{"jwt_bearer with a PKCS#8 key", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t)) })}, ""},
+		{"http on loopback is allowed", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}, ""},
+		{"http on localhost in any letter case is allowed, as in core", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://LOCALHOST:8080/token") })}, ""},
+		{"env-backed token url is not shape checked", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL") })}, ""},
+		{"userinfo in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"a query in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"a fragment in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"plain http is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, "https"},
+		{"missing client secret", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}, "client_secret"},
+		{"jwt_bearer missing audience", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, "audience is required"},
+		{"jwt_bearer literal key is not a PEM", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("not a key") })}, "RSA or EC private key"},
+		{"jwt_bearer env-backed key is not shape checked", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("env.IDP_KEY") })}, ""},
+		{"an EC key under the default RS256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "" })}, "signing_algorithm"},
+		{"an RSA key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs1TestPEM(t)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
+		{"a P-384 key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), false)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
+		{"a P-256 key with ES256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "ES256" })}, ""},
+		{"a P-384 PKCS#8 key with ES384 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), true)); c.SigningAlgorithm = "ES384" })}, ""},
+		{"a P-521 key with ES512 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P521(), false)); c.SigningAlgorithm = "ES512" })}, ""},
+		{"an RSA key with PS256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t)); c.SigningAlgorithm = "PS256" })}, ""},
+		{"a half block behind a value is still refused", schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, "grant_type is required"},
+		{"refused on a provider that does not resolve it", schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(nil)}, "only supported on openai"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderKeyURL(tt.provider, tt.key)
+			if tt.wantErr == "" {
 				if err != nil {
-					t.Fatalf("expected no error, got %v", err)
+					t.Fatalf("unexpected error: %v", err)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}
+
+	t.Run("the token url is a dial target", func(t *testing.T) {
+		targets := keyDialTargets(schemas.Key{OAuthKeyConfig: cc(nil)})
+		if targets["oauth_key_config.token_url"] == nil {
+			t.Fatal("oauth_key_config.token_url must be guarded as a caller-chosen dial target")
+		}
+	})
+}
+
+// anthropicWIFTestConfig is a complete workload identity block reading its token from a file.
+func anthropicWIFTestConfig(mutate func(*schemas.AnthropicWorkloadIdentityConfig)) *schemas.AnthropicKeyConfig {
+	wif := &schemas.AnthropicWorkloadIdentityConfig{
+		FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+		OrganizationID:   *schemas.NewSecretVar("8c1d0f5e-0000-4000-8000-000000000001"),
+		ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+		IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceFile, Path: schemas.NewSecretVar("/var/run/secrets/anthropic/token")},
+	}
+	if mutate != nil {
+		mutate(wif)
+	}
+	return &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}
+}
+
+func inlineIdentitySource(token *schemas.SecretVar) *schemas.IdentitySource {
+	return &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: token}
+}
+
+// TestValidateProviderKeyAnthropicWorkloadIdentity pins the setup-time checks on
+// anthropic_key_config.workload_identity, which mirror core's validateKey: anthropic-based
+// providers only, and a whole block whenever the key has no static value.
+func TestValidateProviderKeyAnthropicWorkloadIdentity(t *testing.T) {
+	withToken := func(c *schemas.AnthropicWorkloadIdentityConfig) {
+		c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar("eyJhbGciOiJSUzI1NiJ9.e30.c2ln"))
+	}
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		key      schemas.Key
+		wantErr  string
+	}{
+		{"token file on anthropic", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, ""},
+		{"literal token on anthropic", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(withToken)}, ""},
+		{"env-backed identifiers are accepted unresolved", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.OrganizationID = *schemas.NewSecretVar("env.WIF_TEST_UNSET_ORG_ID")
+		})}, ""},
+		{"missing organization", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.OrganizationID = schemas.SecretVar{}
+		})}, "organization_id is required"},
+		{"a file source that also carries a token", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource.Token = schemas.NewSecretVar("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")
+		})}, "of type file needs path and no token"},
+		{"no identity source", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = nil
+		})}, "identity_source is required"},
+		{"an unknown source type", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource.Type = "gcp_metadata"
+		})}, "identity_source.type must be file or inline"},
+		{"a half block behind a static value is accepted, as in core", schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = schemas.SecretVar{}
+		})}, ""},
+		{"refused on openai", schemas.OpenAI, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, "only supported on anthropic"},
+		{"refused on openai behind a value", schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk"), AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, "only supported on anthropic"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderKeyURL(tt.provider, tt.key)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("the identity source path is guarded like a dial target", func(t *testing.T) {
+		targets := keyDialTargets(schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)})
+		if targets["anthropic_key_config.workload_identity.identity_source.path"] == nil {
+			t.Fatal("identity_source.path picks the local file posted upstream and must need a genuine admin session")
+		}
+		inline := keyDialTargets(schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(withToken)})
+		if len(inline) != 0 {
+			t.Fatalf("an inline identity token reads no local file and dials nothing new, got %v", inline)
+		}
+	})
+}
+
+// TestMergeUpdatedKey_AnthropicWorkloadIdentity covers the masked-update path: the UI sends back
+// the mask it was shown for the identity token, and for identifiers that came back masked because
+// they were secret-backed, and the merge must restore the stored values.
+func TestMergeUpdatedKey_AnthropicWorkloadIdentity(t *testing.T) {
+	h := &ProviderHandler{}
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	stored := func() schemas.Key {
+		return schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar(jwt))
+			c.WorkspaceID = schemas.NewSecretVar("wrkspc_01ghi")
+		})}
+	}
+	masked := func(v string) *schemas.SecretVar {
+		return schemas.NewSecretVar(v[:4] + strings.Repeat("*", 24) + v[len(v)-4:])
+	}
+
+	t.Run("masks resolve back to the stored values", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = inlineIdentitySource(masked(jwt))
+			c.WorkspaceID = masked("wrkspc_01ghi")
+			c.ServiceAccountID = *schemas.NewSecretVar("svac_02new")
+		})}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		wif := merged.AnthropicKeyConfig.WorkloadIdentity
+		if got := wif.IdentitySource.Token.GetValue(); got != jwt {
+			t.Errorf("identity_source.token: got %q, want the stored token", got)
+		}
+		if got := wif.WorkspaceID.GetValue(); got != "wrkspc_01ghi" {
+			t.Errorf("workspace_id: got %q, want the stored value", got)
+		}
+		if got := wif.ServiceAccountID.GetValue(); got != "svac_02new" {
+			t.Errorf("service_account_id: got %q, want the new literal", got)
+		}
+	})
+
+	t.Run("the redacted GET body round-trips to the stored token", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: stored().AnthropicKeyConfig.Redacted()}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if got := merged.AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(); got != jwt {
+			t.Errorf("identity_source.token: got %q, want the stored token", got)
+		}
+	})
+
+	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = inlineIdentitySource(masked(jwt))
+		})}
+		_, err := h.mergeUpdatedKey(schemas.Key{Name: "k"}, update)
+		if err == nil || !strings.Contains(err.Error(), "anthropic_key_config.workload_identity.identity_source.token") {
+			t.Fatalf("expected the mask to be refused naming the field, got %v", err)
+		}
+	})
+
+	t.Run("an update without the section keeps the stored one", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"renamed"}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if !decoded.AnthropicKeyConfig.HasWorkloadIdentity() || decoded.AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue() != jwt {
+			t.Fatal("an omitted anthropic_key_config must keep the stored section")
+		}
+	})
+
+	t.Run("an explicit null clears the stored section", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":"sk-ant","anthropic_key_config":null}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.AnthropicKeyConfig != nil {
+			t.Fatal("an explicit null must clear the stored anthropic_key_config")
+		}
+	})
+}
+
+// TestProviderKeyWrites_AnthropicWorkloadIdentity drives both write handlers: a valueless key is
+// accepted when it federates on an anthropic-based provider and refused everywhere else, an
+// incomplete block is a 400, and an update echoing the masked token keeps the stored token.
+func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	const block = `{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"8c1d0f5e-0000-4000-8000-000000000001","service_account_id":"svac_01def","identity_source":{"type":"inline","token":"` + jwt + `"}}}`
+
+	createCases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		config     configstore.ProviderConfig
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"valueless federated key on anthropic", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"federated key with the UI's empty value object", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","value":{"value":""},"weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"valueless federated key on a custom anthropic provider", "acme-anthropic",
+			configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"federated key on openai", schemas.OpenAI, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusBadRequest, "only supported on anthropic"},
+		{"a source carrying both a path and a token", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"org","service_account_id":"svac_01def","identity_source":{"type":"file","path":"/f","token":"t"}}}}`,
+			fasthttp.StatusBadRequest, "of type file needs path and no token"},
+		{"the flat identity_token_file field is no longer accepted", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"org","service_account_id":"svac_01def","identity_token_file":"/f"}}}`,
+			fasthttp.StatusBadRequest, `unknown field \"identity_token_file\"`},
+		{"missing federation rule", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{"workload_identity":{"organization_id":"org","service_account_id":"svac_01def","identity_source":{"type":"file","path":"/f"}}}}`,
+			fasthttp.StatusBadRequest, "federation_rule_id is required"},
+		{"an empty key is still refused", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{}}`, fasthttp.StatusBadRequest, "Key value must not be empty"},
+	}
+	for _, tc := range createCases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: tc.config}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			h.createProviderKey(ctx)
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			body := string(ctx.Response.Body())
+			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			if tc.wantStatus != fasthttp.StatusOK {
+				if !strings.Contains(body, tc.wantBody) {
+					t.Fatalf("expected the error to contain %q, got %s", tc.wantBody, body)
+				}
+				if len(keys) != 0 {
+					t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
+				}
+				return
+			}
+			if strings.Contains(body, jwt) {
+				t.Fatalf("the response must not echo the identity token: %s", body)
+			}
+			if len(keys) != 1 || !keys[0].AnthropicKeyConfig.HasWorkloadIdentity() || keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue() != jwt {
+				t.Fatalf("expected the federated key stored with its token, got %+v", keys)
+			}
+		})
+	}
+
+	t.Run("update echoing the masked token keeps the stored token", func(t *testing.T) {
+		stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar(jwt))
+		})}
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		masked := jwt[:4] + strings.Repeat("*", 24) + jwt[len(jwt)-4:]
+		ctx := newTestRequestCtx(`{"name":"wif","weight":2,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"8c1d0f5e-0000-4000-8000-000000000001","service_account_id":"svac_01def","identity_source":{"type":"inline","token":"` + masked + `"}}}}`)
+		ctx.SetUserValue("provider", string(schemas.Anthropic))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		if got.Weight != 2 {
+			t.Fatalf("weight got %v, want the update applied", got.Weight)
+		}
+		if !got.AnthropicKeyConfig.HasWorkloadIdentity() || got.AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue() != jwt {
+			t.Fatalf("the stored identity token must survive a masked update, got %+v", got.AnthropicKeyConfig)
+		}
+	})
+
+	// The UI edits a key by sending back the GET body it was shown: value as {"value":""}, the
+	// masked token, and env-backed identifiers in their redacted object form.
+	t.Run("update sending the redacted GET body back keeps every stored secret", func(t *testing.T) {
+		t.Setenv("WIF_HANDLER_TEST_SVAC", "svac_from_environment_0123")
+		stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = *schemas.NewSecretVar("env.WIF_HANDLER_TEST_SVAC")
+			c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar(jwt))
+		})}
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		redacted, err := h.inMemoryStore.GetProviderKeyRedacted(schemas.Anthropic, "key-1")
+		if err != nil {
+			t.Fatalf("GetProviderKeyRedacted: %v", err)
+		}
+		redacted.Weight = 3
+		body, err := sonic.Marshal(redacted)
+		if err != nil {
+			t.Fatalf("marshal redacted key: %v", err)
+		}
+		if strings.Contains(string(body), jwt) || strings.Contains(string(body), "from_environment") {
+			t.Fatalf("precondition: the GET body must not carry the secrets: %s", body)
+		}
+		if !strings.Contains(string(body), `"value":{"value":""`) {
+			t.Fatalf("precondition: a federated key's value is sent as an empty SecretVar object: %s", body)
+		}
+		ctx := newTestRequestCtx(string(body))
+		ctx.SetUserValue("provider", string(schemas.Anthropic))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		if got.Weight != 3 {
+			t.Fatalf("weight got %v, want the update applied", got.Weight)
+		}
+		wif := got.AnthropicKeyConfig.WorkloadIdentity
+		if wif.IdentitySource.Token.GetValue() != jwt {
+			t.Errorf("identity_source.token: got %q, want the stored token", wif.IdentitySource.Token.GetValue())
+		}
+		if !wif.ServiceAccountID.IsFromEnv() || wif.ServiceAccountID.GetRawRef() != "env.WIF_HANDLER_TEST_SVAC" {
+			t.Errorf("service_account_id: got %+v, want the stored env reference", wif.ServiceAccountID)
+		}
+		if wif.FederationRuleID.GetValue() != "fdrl_01abc" || wif.OrganizationID.GetValue() != "8c1d0f5e-0000-4000-8000-000000000001" {
+			t.Errorf("plain identifiers changed: %q %q", wif.FederationRuleID.GetValue(), wif.OrganizationID.GetValue())
+		}
+	})
+
+	t.Run("update patch semantics for the section", func(t *testing.T) {
+		newHandler := func(t *testing.T) *ProviderHandler {
+			stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(nil)}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			return h
+		}
+		update := func(t *testing.T, h *ProviderHandler, body string) schemas.Key {
+			ctx := newTestRequestCtx(body)
+			ctx.SetUserValue("provider", string(schemas.Anthropic))
+			ctx.SetUserValue("key_id", "key-1")
+			h.updateProviderKey(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			return h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		}
+
+		if got := update(t, newHandler(t), `{"weight":2}`); !got.AnthropicKeyConfig.HasWorkloadIdentity() {
+			t.Fatal("an update omitting anthropic_key_config must keep the stored section")
+		}
+		got := update(t, newHandler(t), `{"value":"sk-ant-api","anthropic_key_config":null}`)
+		if got.AnthropicKeyConfig != nil {
+			t.Fatalf("an explicit null must clear the stored section, got %+v", got.AnthropicKeyConfig)
+		}
+		if got.Value.GetValue() != "sk-ant-api" {
+			t.Fatalf("value got %q, want the new API key", got.Value.GetValue())
+		}
+	})
 }
 
 // refreshHandlerForTest builds a ProviderHandler with one keyed provider and a
@@ -865,6 +1191,45 @@ func TestRefreshProviderModels_UnknownProviderReturns404(t *testing.T) {
 	}
 	if len(mgr.refreshProviderCalls) != 0 {
 		t.Fatalf("expected no upstream refresh for an unknown provider, got %v", mgr.refreshProviderCalls)
+	}
+}
+
+// TestDeleteProviderKey_KeylessProviderRemovesResidualKey is the recovery
+// half of issue #8500. A provider switched from keyed to keyless keeps its old
+// keys, and adding or updating keys there is rightly refused, but refusing the
+// DELETE too left no API or UI path to ever remove them. Deleting can only
+// shrink the key set of a provider that ignores keys, so it must go through.
+func TestDeleteProviderKey_KeylessProviderRemovesResidualKey(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const provider schemas.ModelProvider = "keyless-custom"
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				provider: {
+					Keys: []schemas.Key{{ID: "residual-key", Name: "residual", Value: *schemas.NewSecretVar("sk-residual"), Weight: 1, Enabled: schemas.Ptr(false)}},
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						IsKeyLess:        true,
+						BaseProviderType: schemas.OpenAI,
+					},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+	attachBifrostClient(t, h.inMemoryStore)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", string(provider))
+	ctx.SetUserValue("key_id", "residual-key")
+	h.deleteProviderKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("delete residual key on keyless provider: status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if keys := h.inMemoryStore.Providers[provider].Keys; len(keys) != 0 {
+		t.Fatalf("residual key still stored after delete: %+v", keys)
 	}
 }
 
@@ -970,6 +1335,69 @@ func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
 	}
 }
 
+// TestProviderKeyWeight_RejectsNegative pins that neither key write path stores a negative weight.
+// Key selection draws a key by its share of the pool's total weight, and a negative weight once
+// drove that total below zero, which panicked inside the request worker and took the gateway down.
+func TestProviderKeyWeight_RejectsNegative(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		create     bool
+		body       string
+		wantStatus int
+		wantWeight float64 // the stored weight of key-1 after the call
+	}{
+		{name: "create with a negative weight", create: true, body: `{"name":"new-key","value":"sk-test","weight":-1}`, wantStatus: fasthttp.StatusBadRequest, wantWeight: 1},
+		{name: "create with a zero weight", create: true, body: `{"name":"new-key","value":"sk-test","weight":0}`, wantStatus: fasthttp.StatusOK, wantWeight: 1},
+		{name: "update to a negative weight", body: `{"name":"openai-key","weight":-0.5}`, wantStatus: fasthttp.StatusBadRequest, wantWeight: 1},
+		{name: "update to a zero weight", body: `{"name":"openai-key","weight":0}`, wantStatus: fasthttp.StatusOK, wantWeight: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.OpenAI: {Keys: []schemas.Key{{
+							ID:     "key-1",
+							Name:   "openai-key",
+							Value:  *schemas.NewSecretVar("sk-stored"),
+							Weight: 1,
+						}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			if tc.create {
+				h.createProviderKey(ctx)
+			} else {
+				ctx.SetUserValue("key_id", "key-1")
+				h.updateProviderKey(ctx)
+			}
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusBadRequest && !strings.Contains(string(ctx.Response.Body()), "weight") {
+				t.Fatalf("expected the error to name the weight, got %s", ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			if tc.create && tc.wantStatus == fasthttp.StatusBadRequest && len(keys) != 1 {
+				t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
+			}
+			if keys[0].Weight != tc.wantWeight {
+				t.Fatalf("stored weight of key-1 got %v, want %v", keys[0].Weight, tc.wantWeight)
+			}
+		})
+	}
+}
+
 // TestProviderKeyEndpointGuard_CoversEveryDialTarget pins that the fail-open bypass guard
 // keys off the fields Bifrost dials, not a provider-type list. Each of these fields sends the
 // key's credential to the configured host, so a bypassed caller must not be able to set or
@@ -979,17 +1407,34 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 
-	copilotPEM := pkcs1TestPEM(t)
-	copilotConfig := func(domain string) string {
-		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
+	// A Vertex credential JSON names where the Google client dials: a service account's
+	// token_uri, and for an external account the token_url plus a credential_source the client
+	// reads (here a local file) and posts there. Swapping the JSON therefore moves the key's
+	// destination as surely as moving an Azure endpoint does.
+	const vertexServiceAccountJSON = `{"type":"service_account","project_id":"p","client_email":"sa@p.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n","token_uri":"https://oauth2.googleapis.com/token"}`
+	const vertexExternalAccountJSON = `{"type":"external_account","audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://evil.example.com/token","credential_source":{"file":"/etc/bifrost/config.json"}}`
+	vertexConfig := func(credentials string) string {
+		return `{"project_id":"p","region":"us-central1","auth_credentials":` + strconv.Quote(credentials) + `}`
+	}
+	vertexStored := func() *schemas.Key {
+		return &schemas.Key{
+			ID: "key-1", Name: "vertex-key", Weight: 1,
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				ProjectID:       *schemas.NewSecretVar("p"),
+				Region:          *schemas.NewSecretVar("us-central1"),
+				AuthCredentials: *schemas.NewSecretVar(vertexServiceAccountJSON),
+			},
+		}
 	}
 
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		stored   *schemas.Key // nil means the request creates the key
-		body     string
-		want403  bool
+		name        string
+		provider    schemas.ModelProvider
+		stored      *schemas.Key // nil means the request creates the key
+		genuineAuth bool         // the request carries a real credential, not the fail-open bypass
+		body        string
+		want403     bool
+		wantNamed   string // a 403 must name this field
 	}{
 		{
 			name:     "create bedrock key with region only",
@@ -1025,20 +1470,13 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			want403: true,
 		},
 		{
-			name:     "update github copilot github_domain",
-			provider: schemas.GithubCopilot,
+			name:     "update sagemaker runtime endpoint override",
+			provider: schemas.SageMaker,
 			stored: &schemas.Key{
-				ID: "key-1", Name: "copilot-key", Weight: 1,
-				Value: *schemas.NewSecretVar("ghu_copilot_token"),
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID:          *schemas.NewSecretVar("123"),
-					InstallationID: *schemas.NewSecretVar("456"),
-					RepositoryID:   *schemas.NewSecretVar("789"),
-					PrivateKey:     *schemas.NewSecretVar(copilotPEM),
-					GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
-				},
+				ID: "key-1", Name: "sagemaker-key", Weight: 1,
+				SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: schemas.NewSecretVar("us-east-1")},
 			},
-			body:    `{"value":"ghu_copilot_token","weight":1,"github_copilot_key_config":` + copilotConfig("evil.example.com") + `}`,
+			body:    `{"weight":1,"sagemaker_key_config":{"region":"us-east-1","endpoints":{"runtime":"evil.example.com"}}}`,
 			want403: true,
 		},
 		{
@@ -1051,6 +1489,54 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			},
 			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
 			want403: true,
+		},
+		{
+			name:     "update baseten key adding a per-alias deployment url",
+			provider: schemas.Baseten,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "baseten-key", Weight: 1,
+				Value: *schemas.NewSecretVar("baseten-api-key"),
+			},
+			body:      `{"value":"baseten-api-key","weight":1,"aliases":{"dedicated":{"model_id":"not-required","deployment_url":"https://evil.example.com/sync/v1"}}}`,
+			want403:   true,
+			wantNamed: "aliases.dedicated.deployment_url",
+		},
+		{
+			name:      "create vertex key with a credential json",
+			provider:  schemas.Vertex,
+			body:      `{"name":"vertex-key","weight":1,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:      "update vertex key swapping the credential json for an external account",
+			provider:  schemas.Vertex,
+			stored:    vertexStored(),
+			body:      `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:     "update vertex key removing the credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":1,"vertex_key_config":{"project_id":"p","region":"us-central1","auth_credentials":""}}`,
+			want403:  true,
+		},
+		{
+			name:     "update vertex key keeping its stored credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":2,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:  false,
+		},
+		{
+			name:        "genuinely authenticated update vertex key swapping the credential json",
+			provider:    schemas.Vertex,
+			stored:      vertexStored(),
+			genuineAuth: true,
+			body:        `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:     false,
 		},
 	}
 
@@ -1068,7 +1554,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
-			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if !tc.genuineAuth {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
 			if tc.stored != nil {
 				ctx.SetUserValue("key_id", tc.stored.ID)
 				h.updateProviderKey(ctx)
@@ -1079,6 +1567,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
 			if got403 != tc.want403 {
 				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			if tc.wantNamed != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantNamed) {
+				t.Fatalf("the refusal must name %s, got %s", tc.wantNamed, ctx.Response.Body())
 			}
 			keys := h.inMemoryStore.Providers[tc.provider].Keys
 			switch {
@@ -1188,6 +1679,8 @@ func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
 		{name: "bedrock alias valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"eu-west-1"}}}`, wantStatus: fasthttp.StatusOK},
 		{name: "vertex host-shaped region", provider: schemas.Vertex, body: `{"name":"k","weight":1,"vertex_key_config":{"project_id":"p","region":"attacker.example/x?","auth_credentials":"{}"}}`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "mantle host-shaped region", provider: schemas.BedrockMantle, body: `{"name":"k","weight":1,"bedrock_mantle_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker host-shaped region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker valid region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"us-east-1"}}`, wantStatus: fasthttp.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1246,11 +1739,19 @@ func pkcs8TestPEM(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 }
 
-func ecTestPEM(t *testing.T) string {
+// ecCurveTestPEM returns an EC private key on the given curve, as SEC1 or as PKCS#8.
+func ecCurveTestPEM(t *testing.T, curve elliptic.Curve, pkcs8 bool) string {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		t.Fatalf("generate ec: %v", err)
+	}
+	if pkcs8 {
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatalf("marshal pkcs8: %v", err)
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	}
 	der, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
@@ -1390,4 +1891,127 @@ func TestValidateVertexKeyAuth(t *testing.T) {
 	if err := validateVertexKeyAuth(schemas.OpenAI, vertex(&schemas.VertexKeyConfig{AuthCredentials: secret("x"), AWSWorkloadIdentity: wif})); err != nil {
 		t.Errorf("non-vertex provider must not be validated: %v", err)
 	}
+}
+
+// TestRejectUnknownOAuthKeyConfigFields pins API parity with config.schema.json, which sets
+// additionalProperties:false on oauth_key_config: sonic drops unknown fields, so a misspelled
+// "scope" would otherwise save a block that never requests its scopes.
+func TestRejectUnknownOAuthKeyConfigFields(t *testing.T) {
+	valid := `"grant_type":"client_credentials","token_url":"https://idp.example/oauth2/token","client_id":"id","client_secret":"s"`
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"no block", `{"value":"sk","weight":1}`, ""},
+		{"null block", `{"value":"sk","oauth_key_config":null}`, ""},
+		{"known fields only", `{"oauth_key_config":{` + valid + `,"scopes":["inference"],"extra_params":{"resource":"r"}}}`, ""},
+		{"secret references", `{"oauth_key_config":{` + valid + `,"client_secret":{"ref":"OAUTH_SECRET","type":"env"}}}`, ""},
+		{"misspelled scopes", `{"oauth_key_config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"unknown nested field", `{"oauth_key_config":{` + valid + `,"client_secrett":"s"}}`, `unknown field "client_secrett"`},
+		{"unknown field outside the block is not this check's job", `{"oauth_key_config":{` + valid + `},"colour":"blue"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnknownOAuthKeyConfigFields([]byte(tc.body))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error got %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestRejectUnknownAnthropicKeyConfigFields pins the same parity for anthropic_key_config: a
+// misspelled workspace_id would otherwise save and mint for the rule's default workspace.
+func TestRejectUnknownAnthropicKeyConfigFields(t *testing.T) {
+	valid := `"federation_rule_id":"fdrl_x","organization_id":"org","service_account_id":"svac_x","identity_source":{"type":"file","path":"/var/run/secrets/anthropic.com/token"}`
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"no block", `{"value":"sk","weight":1}`, ""},
+		{"null block", `{"value":"sk","anthropic_key_config":null}`, ""},
+		{"known fields only", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"workspace_id":"wrkspc_x"}}}`, ""},
+		{"secret references", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"federation_rule_id":{"ref":"env.ANTHROPIC_FEDERATION_RULE_ID","type":"env"}}}}`, ""},
+		{"misspelled workspace", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"workspace":"wrkspc_x"}}}`, `unknown field "workspace"`},
+		{"unknown block field", `{"anthropic_key_config":{"workload_identity_v2":{}}}`, `unknown field "workload_identity_v2"`},
+		{"unknown identity source field", `{"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_x","organization_id":"org","service_account_id":"svac_x","identity_source":{"type":"file","file":"/f"}}}}`, `unknown field "file"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnknownAnthropicKeyConfigFields([]byte(tc.body))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error got %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields pins that both write paths refuse a
+// block carrying a field the schema does not know, naming the field, instead of saving it
+// without that setting.
+func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	block := `{"grant_type":"client_credentials","token_url":"https://idp.example/oauth2/token","client_id":"id","client_secret":"s","scope":["inference"]}`
+
+	t.Run("create", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		ctx := newTestRequestCtx(`{"name":"oauth","weight":1,"oauth_key_config":` + block + `}`)
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+		h.createProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status got %d, want 400; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		// The JSON error body escapes the quotes around the field name.
+		if body := string(ctx.Response.Body()); !strings.Contains(body, `oauth_key_config: unknown field \"scope\"`) {
+			t.Fatalf("the response must name the unknown field, got %s", body)
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "oauth", Weight: 1, OAuthKeyConfig: &schemas.OAuthKeyConfig{
+					GrantType:    schemas.OAuthGrantClientCredentials,
+					TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+					ClientID:     schemas.NewSecretVar("id"),
+					ClientSecret: schemas.NewSecretVar("s"),
+				}}}},
+			}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		ctx := newTestRequestCtx(`{"oauth_key_config":` + block + `}`)
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status got %d, want 400; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		// The JSON error body escapes the quotes around the field name.
+		if body := string(ctx.Response.Body()); !strings.Contains(body, `oauth_key_config: unknown field \"scope\"`) {
+			t.Fatalf("the response must name the unknown field, got %s", body)
+		}
+		if stored := h.inMemoryStore.Providers[schemas.OpenAI].Keys[0]; len(stored.OAuthKeyConfig.Scopes) != 0 || stored.OAuthKeyConfig.ClientID.GetValue() != "id" {
+			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
+		}
+	})
 }

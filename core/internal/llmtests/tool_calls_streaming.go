@@ -246,7 +246,7 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			Model:    testConfig.ChatModel,
 			Input:    chatMessages,
 			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(500),
+				MaxCompletionTokens: bifrost.Ptr(1024),
 				Tools:               []schemas.ChatTool{*chatTool},
 			},
 			Fallbacks: testConfig.Fallbacks,

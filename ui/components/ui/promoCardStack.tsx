@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader } from "./card";
 
 interface PromoCardItem {
@@ -19,6 +20,7 @@ interface PromoCardStackProps {
 }
 
 export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss }: PromoCardStackProps) {
+	const { t } = useTranslation("common");
 	const [items, setItems] = useState(() => {
 		// Sort so non-dismissible cards appear at the top
 		return [...cards].sort((a, b) => {
@@ -107,7 +109,9 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 							className={cn(
 								"flex h-full w-full flex-col gap-0 rounded-lg px-2.5 py-2",
 								visibleCards.length < 2 ? "shadow-none" : "shadow-md",
-								card.variant === "warning" && "border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-amber-950/20",
+								// Opaque: the same 20% amber tint pre-mixed onto the card color, so stacked cards do not show through.
+								card.variant === "warning" &&
+									"border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-[color-mix(in_oklab,var(--color-amber-950)_20%,var(--color-card))]",
 							)}
 						>
 							<CardHeader
@@ -120,7 +124,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 									<div className="min-w-0 flex-1">{typeof card.title === "string" ? card.title : card.title}</div>
 									{card.dismissible !== false && isTopCard && (
 										<button
-											aria-label="Dismiss"
+											aria-label={t("promoCard.dismiss")}
 											type="button"
 											onClick={() => handleDismiss(card.id)}
 											disabled={isAnimating}

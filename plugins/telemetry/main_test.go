@@ -15,7 +15,11 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // newTestPlugin builds a PrometheusPlugin on a fresh registry with no pricing manager (cost
@@ -175,6 +179,149 @@ func TestTokenExtractionParityWithLogging(t *testing.T) {
 
 			waitForCounter(t, p.registry, "bifrost_input_tokens_total", tc.wantIn)
 			waitForCounter(t, p.registry, "bifrost_output_tokens_total", tc.wantOut)
+		})
+	}
+}
+
+// TestCancelledStreamRecordsBilledUsage pins Prometheus to the BilledUsage that logging and
+// governance already bill on a mid-stream cancel: a terminal error with no result must still
+// add its tokens, cache tokens and cost, not just the error count.
+func TestCancelledStreamRecordsBilledUsage(t *testing.T) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+	})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Anthropic message_start usage: exact input and cache tokens, placeholder output token.
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     30,
+		CompletionTokens: 1,
+		TotalTokens:      31,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:        6,
+			CachedWriteTokens:       4,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 4},
+		},
+	}
+	cancelErr := &schemas.BifrostError{
+		StatusCode: new(499),
+		Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+	}
+	cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	cancelErr.ExtraFields.Provider = schemas.Anthropic
+	cancelErr.ExtraFields.OriginalModelRequested = "claude-test"
+	cancelErr.ExtraFields.BilledUsage = billed
+
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+	waitForCounter(t, p.registry, "bifrost_input_tokens_total", 30)
+	waitForCounter(t, p.registry, "bifrost_output_tokens_total", 1)
+	waitForCounter(t, p.registry, "bifrost_cache_read_input_tokens_total", 6)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_total", 4)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_5m_total", 4)
+
+	wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+	if wantCost <= 0 {
+		t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+	}
+	waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
+}
+
+// TestCancelledStreamPricesResolvedModel pins billed-usage pricing to the wire model, matching
+// the logs table: the requested model is an unpriced alias name, or the primary's model on a
+// fallback attempt, and pricing it records zero cost.
+func TestCancelledStreamPricesResolvedModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+	}{
+		{name: "key alias", requested: "fast"},
+		{name: "fallback attempt", requested: "gpt-test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := datasheet.NewTestStore(nil)
+			ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+				{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+			})
+			mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+			p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			billed := &schemas.BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31}
+			cancelErr := &schemas.BifrostError{
+				StatusCode: new(499),
+				Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+			}
+			cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+			cancelErr.ExtraFields.Provider = schemas.Anthropic
+			cancelErr.ExtraFields.OriginalModelRequested = tc.requested
+			cancelErr.ExtraFields.ResolvedModelUsed = "claude-test"
+			cancelErr.ExtraFields.BilledUsage = billed
+
+			ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+
+			wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+			if wantCost <= 0 {
+				t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+			}
+			waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
+		})
+	}
+}
+
+// TestDroppedRequestSkipsUpstreamMetrics pins that a request dropped on a full queue counts as
+// an error but not as upstream traffic, while any other 503 still counts as both.
+func TestDroppedRequestSkipsUpstreamMetrics(t *testing.T) {
+	cases := []struct {
+		name         string
+		errType      string
+		wantUpstream float64
+	}{
+		{"request_dropped skips upstream metrics", schemas.RequestDropped, 0},
+		{"a provider 503 still counts as upstream", "overloaded_error", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			bErr := &schemas.BifrostError{
+				StatusCode: new(503),
+				Error:      &schemas.ErrorField{Message: "unavailable", Type: new(tc.errType)},
+			}
+			bErr.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+			// Upstream latency is only observed when the attempt timed an outbound call.
+			ctx := newHookContext(schemas.ChatCompletionRequest)
+			ctx.ResetUpstreamLatency()
+			runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+				schemas.AddUpstreamLatency(ctx, 40*time.Millisecond)
+			}, nil, bErr)
+			// The upstream metrics are written before this counter in the same goroutine.
+			waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+
+			if got := counterTotal(t, p.registry, "bifrost_upstream_requests_total"); got != tc.wantUpstream {
+				t.Errorf("bifrost_upstream_requests_total = %v, want %v", got, tc.wantUpstream)
+			}
+			for _, name := range []string{"bifrost_upstream_latency_seconds", "bifrost_request_retries"} {
+				if got := histogramSampleCount(t, p.registry, name); float64(got) != tc.wantUpstream {
+					t.Errorf("%s sample count = %d, want %v", name, got, tc.wantUpstream)
+				}
+			}
 		})
 	}
 }
@@ -716,7 +863,9 @@ func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, labels map[
 // docs describe: a failed attempt marks its key 0, except when the failure says nothing about
 // the key's health: a model this key cannot reach or that was retired (model_access,
 // model_gone), or a region block that may be the gateway's location (region_blocked). Those
-// leave the key's gauge untouched. The key that finally served is marked 1 either way.
+// leave the key's gauge untouched. A caller's cancellation carries no fail_reason, since the caller
+// leaving says nothing about the key, so it leaves the gauge untouched too; a timeout carries one and
+// marks the key down. The key that finally served is marked 1 either way.
 func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -730,6 +879,8 @@ func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 		{"model_access leaves the key untouched", schemas.FailureClassModelAccess, "model_access_error", 404, false},
 		{"model_gone leaves the key untouched", schemas.FailureClassModelGone, "model_retired_error", 404, false},
 		{"region_blocked leaves the key untouched", schemas.FailureClassRegionBlocked, "region_blocked_error", 400, false},
+		{"timeout marks the key down", schemas.FailureClassTimeout, schemas.RequestTimedOut, 504, true},
+		{"a cancellation, with no fail_reason, leaves the key untouched", schemas.FailureClassCancelled, "", 499, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -740,13 +891,16 @@ func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 			resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
 
 			status := tc.status
-			failReason := tc.failReason
+			var failReason *string
+			if tc.failReason != "" {
+				failReason = &tc.failReason
+			}
 			ctx := newHookContext(schemas.ChatCompletionRequest)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-b")
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "Key B")
 			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
-				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: &failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
+				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
 				{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
 			})
 			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
@@ -785,6 +939,11 @@ func TestLabelSetsAreNotAliased(t *testing.T) {
 		{"neither", false, nil},
 		{"several custom", true, []string{"user-email", "tenant", "region"}},
 		{"many custom", true, manyLabels(50)},
+		// A custom label naming one of the per-metric labels used to duplicate it on that
+		// metric and panic during registration, which took the gateway down at boot.
+		{"collides with spliced label", true, []string{"is_success"}},
+		{"collides with error metric labels", false, []string{"status_code", "error_type"}},
+		{"collides with cache label", false, []string{"cache_type"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{CustomLabels: tc.custom}
@@ -822,4 +981,493 @@ func manyLabels(n int) []string {
 		out[i] = "custom_" + strconv.Itoa(i)
 	}
 	return out
+}
+
+// Init registers every metric through promauto, which panics rather than returning an
+// error. At boot that killed the process over a stored config value, so Init recovers and
+// reports the failure instead.
+func TestInitReturnsErrorOnRegistrationConflict(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "conflicting registration"},
+		[]string{"path", "method", "status"},
+	))
+
+	p, err := Init(&Config{Registry: registry}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err == nil {
+		t.Fatal("Init succeeded despite a conflicting metric registration; a panic here takes the gateway down at boot")
+	}
+	if p != nil {
+		t.Fatalf("Init returned a plugin alongside the error: %v", p)
+	}
+}
+
+// overheadResponse is a minimal chat response PostLLMHook accepts as a completed request.
+func overheadResponse() *schemas.BifrostResponse {
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "openai", "m", "m")
+	return resp
+}
+
+// waitForOverheadSeries polls until bifrost_overhead_latency_microseconds has want series.
+func waitForOverheadSeries(t *testing.T, p *PrometheusPlugin, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := testutil.CollectAndCount(p.OverheadLatencyMicros)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bifrost_overhead_latency_microseconds series = %d, want %d (timed out)", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The HTTP server runs transport hooks on one BifrostContext and LLM hooks on a separate
+// handler context seeded from it; values set on the handler context never flow back. The
+// scalar overhead histogram was never observed over HTTP because of that split.
+func TestOverheadLatencyRecordedAcrossTransportAndHandlerContexts(t *testing.T) {
+	p := newTestPlugin(t)
+	transportCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := p.HTTPTransportPreHook(transportCtx, &schemas.HTTPRequest{}); err != nil {
+		t.Fatalf("HTTPTransportPreHook: %v", err)
+	}
+	// Mirrors TransportInterceptorMiddleware -> fasthttp user values -> ConvertToBifrostContext.
+	handlerCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	for k, v := range transportCtx.GetUserValues() {
+		handlerCtx.SetValue(k, v)
+	}
+	handlerCtx.ResetUpstreamLatency()
+	if _, _, err := p.PreLLMHook(handlerCtx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	schemas.AddUpstreamLatency(handlerCtx, time.Millisecond)
+	if _, _, err := p.PostLLMHook(handlerCtx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+		t.Fatalf("HTTPTransportPostHook: %v", err)
+	}
+	if got := testutil.CollectAndCount(p.OverheadLatencyMicros); got != 1 {
+		t.Fatalf("bifrost_overhead_latency_microseconds series = %d, want 1", got)
+	}
+	// The LLM-hook goroutine must not record a second observation for an HTTP request.
+	time.Sleep(50 * time.Millisecond)
+	if got := histogramSampleCount(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 1 {
+		t.Fatalf("bifrost_overhead_latency_microseconds samples = %d, want 1", got)
+	}
+}
+
+// runHTTPRequest drives one request through the plugin the way the HTTP server does: transport
+// hooks on one context, LLM hooks on a separate handler context seeded from it. The LLM hooks get
+// a plugin-scoped context that is released when they return, as the real pipeline does.
+func runHTTPRequest(t *testing.T, p *PrometheusPlugin, reqType schemas.RequestType, transportAge, upstream time.Duration, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	t.Helper()
+	transportCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := p.HTTPTransportPreHook(transportCtx, &schemas.HTTPRequest{}); err != nil {
+		t.Fatalf("HTTPTransportPreHook: %v", err)
+	}
+	slot := transportCtx.Value(overheadSlotKey).(*overheadSlot)
+	slot.start = time.Now().Add(-transportAge)
+	handlerCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	for k, v := range transportCtx.GetUserValues() {
+		handlerCtx.SetValue(k, v)
+	}
+	handlerCtx.ResetUpstreamLatency()
+	name := PluginName
+	pre := handlerCtx.WithPluginScope(&name)
+	if _, _, err := p.PreLLMHook(pre, &schemas.BifrostRequest{RequestType: reqType}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	pre.ReleasePluginScope()
+	schemas.AddUpstreamLatency(handlerCtx, upstream)
+	post := handlerCtx.WithPluginScope(&name)
+	if _, _, err := p.PostLLMHook(post, result, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	post.ReleasePluginScope()
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+		t.Fatalf("HTTPTransportPostHook: %v", err)
+	}
+}
+
+// histogramSum sums the observed values across every series of a histogram family.
+func histogramSum(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var sum float64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			sum += m.GetHistogram().GetSampleSum()
+		}
+	}
+	return sum
+}
+
+// The observed value is the transport window minus upstream: 50ms - 20ms is ~30ms.
+func TestOverheadLatencyValueIsTransportWindowMinusUpstream(t *testing.T) {
+	p := newTestPlugin(t)
+	runHTTPRequest(t, p, schemas.ChatCompletionRequest, 50*time.Millisecond, 20*time.Millisecond, overheadResponse(), nil)
+	if got := histogramSampleCount(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 1 {
+		t.Fatalf("samples = %d, want 1", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_overhead_latency_microseconds"); got < 30000 || got >= 45000 {
+		t.Fatalf("overhead = %vus, want ~30000us (50ms window minus 20ms upstream)", got)
+	}
+}
+
+// Upstream longer than the transport window clamps to zero rather than going negative.
+func TestOverheadLatencyClampsAtZero(t *testing.T) {
+	p := newTestPlugin(t)
+	runHTTPRequest(t, p, schemas.ChatCompletionRequest, 10*time.Millisecond, 100*time.Millisecond, overheadResponse(), nil)
+	if got := histogramSampleCount(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 1 {
+		t.Fatalf("samples = %d, want 1", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 0 {
+		t.Fatalf("overhead = %vus, want 0 (clamped)", got)
+	}
+}
+
+// A plugin short-circuit rejecting a stream request runs post hooks with an error and no
+// stream-end indicator. That still ends the request, so its overhead is recorded.
+func TestOverheadLatencyRecordedForStreamShortCircuitError(t *testing.T) {
+	p := newTestPlugin(t)
+	runHTTPRequest(t, p, schemas.ResponsesStreamRequest, 10*time.Millisecond, 0, nil, streamError(schemas.ResponsesStreamRequest, 429))
+	if got := histogramSampleCount(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 1 {
+		t.Fatalf("samples = %d, want 1: a rejected stream request recorded no overhead", got)
+	}
+}
+
+// Go SDK callers have no transport hooks, so PostLLMHook records overhead itself.
+func TestOverheadLatencyRecordedForSDKCaller(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.ResetUpstreamLatency()
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if _, _, err := p.PostLLMHook(ctx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	waitForOverheadSeries(t, p, 1)
+}
+
+// histogramSampleCount sums the observation count across every series of a histogram family.
+func histogramSampleCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var n uint64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			n += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return n
+}
+
+// runAttempt drives one attempt through the hooks the way core does: reset the request's
+// accumulator once, mark the attempt, run PreLLMHook, let the test shape what the attempt
+// did (provider time, queue wait, delays inside the hook window), then run PostLLMHook.
+func runAttempt(t *testing.T, p *PrometheusPlugin, ctx *schemas.BifrostContext, reqType schemas.RequestType, during func(), result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	t.Helper()
+	ctx.MarkAttemptStart()
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: reqType}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if during != nil {
+		during()
+	}
+	if _, _, err := p.PostLLMHook(ctx, result, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+}
+
+// waitForSamples polls until the histogram family has want observations.
+func waitForSamples(t *testing.T, p *PrometheusPlugin, name string, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if got := histogramSampleCount(t, p.registry, name); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s samples = %d, want %d (timed out)", name, histogramSampleCount(t, p.registry, name), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// settle waits for the metric goroutine of everything already run, using a counter the
+// goroutine records unconditionally, then lets any other observation land.
+func settle(t *testing.T, p *PrometheusPlugin, attempts uint64) {
+	t.Helper()
+	waitForSamples(t, p, "bifrost_request_retries", attempts)
+}
+
+// The point of the change: time spent in the hook window outside the provider call, a slow
+// plugin hook or a retry backoff sleep, is not upstream latency. The observation is the
+// socket time the attempt accumulated, whatever the wall clock between the hooks read.
+func TestUpstreamLatencyIsProviderTimeOnly(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		time.Sleep(60 * time.Millisecond)
+		schemas.AddUpstreamLatency(ctx, 25*time.Millisecond)
+	}, overheadResponse(), nil)
+	settle(t, p, 1)
+
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 1 {
+		t.Fatalf("samples = %d, want 1", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0.025 {
+		t.Fatalf("upstream latency = %vs, want 0.025s: the 60ms of hook-window time outside the provider call leaked in", got)
+	}
+}
+
+// A retried attempt sums its calls, because the accumulator adds every socket wait and a
+// retry is the same attempt. Backoff between them is not counted.
+func TestUpstreamLatencySumsRetriesInsideOneAttempt(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.AddUpstreamLatency(ctx, 100*time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
+		schemas.AddUpstreamLatency(ctx, 100*time.Millisecond)
+	}, overheadResponse(), nil)
+	settle(t, p, 1)
+
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0.2 {
+		t.Fatalf("upstream latency = %vs, want 0.2s (two calls, no backoff)", got)
+	}
+}
+
+// A fallback runs PostLLMHook once per attempt on one shared accumulator. Each observation
+// must be its own attempt's share, so the primary's time is not counted again under the fallback.
+func TestUpstreamLatencyIsPerFallbackAttempt(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+
+	primaryErr := streamError(schemas.ChatCompletionRequest, 500)
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.AddUpstreamLatency(ctx, 80*time.Millisecond)
+	}, nil, primaryErr)
+	settle(t, p, 1)
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.AddUpstreamLatency(ctx, 30*time.Millisecond)
+	}, overheadResponse(), nil)
+	settle(t, p, 2)
+
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 2 {
+		t.Fatalf("samples = %d, want 2 (one per attempt)", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got < 0.1099 || got > 0.1101 {
+		t.Fatalf("upstream latency sum = %vs, want 0.110s: 0.080 primary + 0.030 fallback, not 0.080 + 0.110", got)
+	}
+}
+
+// An attempt that never blocks on a provider socket has no provider latency. Observing a zero
+// would put a cache hit or a rejected request into the lowest bucket and drag every quantile down.
+func TestUpstreamLatencyNotObservedWithoutProviderCall(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() { time.Sleep(20 * time.Millisecond) }, overheadResponse(), nil)
+	settle(t, p, 1)
+
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0 {
+		t.Fatalf("samples = %d, want 0 for an attempt that made no provider call", got)
+	}
+	if got := histogramSampleCount(t, p.registry, "bifrost_provider_queue_wait_seconds"); got != 0 {
+		t.Fatalf("queue wait samples = %d, want 0 for an attempt that never reached a worker", got)
+	}
+}
+
+// WebSocket and realtime turns run the LLM hooks without core opening an attempt window, and they
+// skip the provider queue, so they keep the pre-hook to post-hook duration they always reported.
+func TestNoAttemptWindowReportsHookWindow(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	schemas.AddUpstreamLatency(ctx, 50*time.Millisecond)
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, _, err := p.PostLLMHook(ctx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	settle(t, p, 1)
+
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 1 {
+		t.Fatalf("upstream samples = %d, want 1", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got < 0.02 || got >= 0.05 {
+		t.Fatalf("upstream latency = %vs, want the ~20ms hook window, not the 50ms accumulated before the hooks", got)
+	}
+}
+
+// A failed attempt still blocked on the provider, so its time lands in the is_success=false series.
+func TestUpstreamLatencyLabelsFailure(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.AddUpstreamLatency(ctx, 15*time.Millisecond)
+	}, nil, streamError(schemas.ChatCompletionRequest, 500))
+	settle(t, p, 1)
+
+	fams, err := p.registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != "bifrost_upstream_latency_seconds" {
+			continue
+		}
+		if len(mf.GetMetric()) != 1 {
+			t.Fatalf("series = %d, want 1", len(mf.GetMetric()))
+		}
+		for _, l := range mf.GetMetric()[0].GetLabel() {
+			if l.GetName() == "is_success" && l.GetValue() != "false" {
+				t.Fatalf("is_success = %q, want false", l.GetValue())
+			}
+		}
+		return
+	}
+	t.Fatal("bifrost_upstream_latency_seconds not exported")
+}
+
+// A stream records the provider time of the attempt that answered, once, on its final chunk.
+// Intermediate chunks record nothing, and the socket time that keeps accumulating while the
+// stream drains is part of the final read.
+func TestStreamUpstreamLatencyObservedOnFinalChunkOnly(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	ctx.ResetUpstreamLatency()
+	ctx.MarkAttemptStart()
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	chunk := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	chunk.PopulateExtraFields(schemas.ChatCompletionStreamRequest, "openai", "m", "m")
+
+	for range 3 {
+		schemas.AddUpstreamLatency(ctx, 20*time.Millisecond)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+		if _, _, err := p.PostLLMHook(ctx, chunk, nil); err != nil {
+			t.Fatalf("PostLLMHook: %v", err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := histogramSampleCount(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0 {
+		t.Fatalf("samples = %d after intermediate chunks, want 0", got)
+	}
+
+	schemas.AddUpstreamLatency(ctx, 20*time.Millisecond)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, chunk, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	waitForSamples(t, p, "bifrost_upstream_latency_seconds", 1)
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got < 0.0799 || got > 0.0801 {
+		t.Fatalf("stream upstream latency = %vs, want 0.080s (the whole stream's socket time)", got)
+	}
+}
+
+// Queue wait is its own series: it is observed from what the worker recorded, and it never
+// reaches the upstream latency histogram.
+func TestQueueWaitHistogramObservesRecordedWait(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	ctx.ResetUpstreamLatency()
+	runAttempt(t, p, ctx, schemas.ChatCompletionRequest, func() {
+		schemas.RecordQueueWait(ctx, 2*time.Second)
+		schemas.AddUpstreamLatency(ctx, 40*time.Millisecond)
+	}, overheadResponse(), nil)
+	settle(t, p, 1)
+
+	waitForSamples(t, p, "bifrost_provider_queue_wait_seconds", 1)
+	if got := histogramSum(t, p.registry, "bifrost_provider_queue_wait_seconds"); got != 2 {
+		t.Fatalf("queue wait = %vs, want 2s", got)
+	}
+	if got := histogramSum(t, p.registry, "bifrost_upstream_latency_seconds"); got != 0.04 {
+		t.Fatalf("upstream latency = %vs, want 0.04s: a saturated queue must not move it", got)
+	}
+}
+
+// BenchmarkTransportOverheadHooks covers the per-request transport work: slot stamp,
+// LLM-hook capture handoff, and the scalar overhead observation.
+func BenchmarkTransportOverheadHooks(b *testing.B) {
+	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	labels := make([]string, len(p.defaultBifrostLabels))
+	root := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	root.ResetUpstreamLatency()
+	req := &schemas.HTTPRequest{}
+	resp := &schemas.HTTPResponse{}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, _ = p.HTTPTransportPreHook(ctx, req)
+		slot := ctx.Value(overheadSlotKey).(*overheadSlot)
+		slot.capture.Store(&overheadCapture{labels: labels, root: root})
+		_ = p.HTTPTransportPostHook(ctx, req, resp)
+	}
+}
+
+// BenchmarkPostLLMHook covers the per-attempt hook and the start of the metric goroutine it spawns.
+// The loop waits on the retries histogram, which is written after the upstream, queue wait and turn
+// duration observations and before the overhead, cost and token metrics, so those later writes may still
+// be running when the timer stops.
+func BenchmarkPostLLMHook(b *testing.B) {
+	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	resp := overheadResponse()
+	recorded := func() uint64 {
+		fams, _ := p.registry.Gather()
+		var n uint64
+		for _, mf := range fams {
+			if mf.GetName() == "bifrost_request_retries" {
+				for _, m := range mf.GetMetric() {
+					n += m.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+		return n
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		ctx := newHookContext(schemas.ChatCompletionRequest)
+		ctx.ResetUpstreamLatency()
+		ctx.MarkAttemptStart()
+		schemas.AddUpstreamLatency(ctx, time.Millisecond)
+		schemas.RecordQueueWait(ctx, time.Millisecond)
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			b.Fatalf("PostLLMHook: %v", err)
+		}
+	}
+	for recorded() < uint64(b.N) {
+		time.Sleep(time.Millisecond)
+	}
 }

@@ -41,13 +41,22 @@ webhooks:
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of webhook endpoints
@@ -307,13 +316,22 @@ webhooks-deliveries:
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history
@@ -421,20 +439,39 @@ webhooks-deliveries-search:
         in: query
         required: false
         description: |
-          Relative window (e.g. `1h`, `24h`) resolved server-side. Takes
-          precedence over `start_time` / `end_time`.
+          Window resolved server-side. Takes precedence over `start_time` /
+          `end_time`. Sliding periods (`1h` to `30d`) end now; calendar periods
+          (`today`, `this_week`, `this_month`) start at midnight in `timezone`.
+        schema:
+          type: string
+          enum: [1h, 6h, 24h, 7d, 30d, today, this_week, this_month]
+      - name: timezone
+        in: query
+        required: false
+        description: |
+          IANA timezone that calendar periods are measured in. Empty or unknown
+          values fall back to UTC. Ignored for sliding periods.
         schema:
           type: string
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history

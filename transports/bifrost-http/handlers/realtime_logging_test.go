@@ -1,14 +1,130 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
+	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
+
+type sessionLoggingStore struct {
+	logstore.LogStore
+}
+
+func (sessionLoggingStore) ListUserAgentMappings(context.Context, bool) ([]logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func TestSessionLoggingHeaders(t *testing.T) {
+	loggingHeaders := []string{"x-custom-*", "x-exact"}
+	plugin, err := logging.Init(context.Background(), &logging.Config{LoggingHeaders: &loggingHeaders}, &mockLogger{}, sessionLoggingStore{}, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	var entries []*logstore.Log
+	plugin.SetLogCallback(func(_ context.Context, entry *logstore.Log) { entries = append(entries, entry) })
+
+	for _, transport := range []string{"responses", "realtime-websocket", "realtime-webrtc", "live-websocket", "live-webrtc"} {
+		t.Run(transport, func(t *testing.T) {
+			sessions := make([]*schemas.BifrostContext, 0, 3)
+			for _, tenant := range []string{"acme", "other", ""} {
+				requestCtx := &fasthttp.RequestCtx{}
+				if tenant != "" {
+					requestCtx.Request.Header.Set("X-Bf-Lh-Tenant", tenant)
+					requestCtx.Request.Header.Set("X-Custom-Identity", tenant+"-user")
+					requestCtx.Request.Header.Set("X-Exact", tenant+"-exact")
+					requestCtx.Request.Header.Set("X-Unselected", "not-logged")
+					requestCtx.Request.Header.Set("X-Bf-Lh-Cost-Center", "caller")
+					requestCtx.Request.Header.Set("X-Bf-Lh-"+schemas.LoadBalancerMetadataPrefix+"decision", "spoofed")
+				}
+				setupHeaders := captureSessionHeaders(requestCtx)
+				var sessionCtx *schemas.BifrostContext
+				var cancel context.CancelFunc
+				switch transport {
+				case "realtime-webrtc":
+					setupCtx, setupCancel := lib.ConvertToBifrostContext(requestCtx, testWSHandlerStore{})
+					sessionCtx, cancel = newRealtimeRelayContext(setupCtx)
+					setupCancel()
+				case "live-websocket", "live-webrtc":
+					setupCtx, setupCancel := createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
+					sessionCtx, cancel = (&liveGateway{handlerStore: testWSHandlerStore{}}).sessionContext(setupHeaders, setupCtx, nil, "/v1/live")
+					setupCancel()
+				default:
+					sessionCtx, cancel = createBifrostContextFromHeaders(testWSHandlerStore{}, setupHeaders)
+				}
+				t.Cleanup(cancel)
+				requestCtx.Request.Reset()
+				sessionCtx.SetValue(governanceVirtualKeyMetadataContextKey, map[string]string{"cost-center": "governed"})
+				sessionCtx.SetValue(schemas.BifrostIsAsyncRequest, true)
+				sessions = append(sessions, sessionCtx)
+			}
+
+			for turn, kind := range []string{"voice", "backend", "voice"} {
+				for index, tenant := range []string{"acme", "other", ""} {
+					sessionID := fmt.Sprintf("%s-session-%d", transport, index)
+					requestID := fmt.Sprintf("%s-turn-%d", sessionID, turn)
+					var ctx *schemas.BifrostContext
+					requestType := schemas.RealtimeRequest
+					switch transport {
+					case "responses":
+						ctx = sessions[index]
+						ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+						requestType = schemas.WebSocketResponsesRequest
+					case "live-websocket", "live-webrtc":
+						meter := newLiveMeter(nil, sessions[index], schemas.OpenAI, schemas.Key{}, sessionID)
+						ctx = meter.unitContext(requestID, turn > 0, kind)
+						ctx.SetValue(schemas.BifrostContextKeyLiveSessionStart, turn == 0)
+						requestType = schemas.LiveRequest
+					default:
+						ctx = newRealtimeTurnContext(sessions[index], requestID, sessionID, "", "", "", nil)
+					}
+					headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+					require.Equal(t, tenant, headers["x-bf-lh-tenant"])
+					if tenant != "" {
+						require.Equal(t, tenant+"-user", headers["x-custom-identity"])
+						require.Equal(t, tenant+"-exact", headers["x-exact"])
+					}
+					require.Nil(t, ctx.Value(schemas.BifrostContextKeyExtraHeaders))
+					before := len(entries)
+					_, _, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+						RequestType:      requestType,
+						ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "test-model", Params: &schemas.ResponsesParameters{}},
+					})
+					require.NoError(t, err)
+					if requestType == schemas.LiveRequest && turn > 0 {
+						require.Len(t, entries, before)
+						continue
+					}
+					require.Len(t, entries, before+1)
+					metadata := entries[before].MetadataParsed
+					if tenant == "" {
+						require.NotContains(t, metadata, "tenant")
+						require.NotContains(t, metadata, "x-custom-identity")
+						require.NotContains(t, metadata, "x-exact")
+					} else {
+						require.Equal(t, tenant, metadata["tenant"])
+						require.Equal(t, tenant+"-user", metadata["x-custom-identity"])
+						require.Equal(t, tenant+"-exact", metadata["x-exact"])
+					}
+					require.Equal(t, "governed", metadata["cost-center"])
+					require.Equal(t, true, metadata["isAsyncRequest"])
+					require.NotContains(t, metadata, "x-unselected")
+					require.NotContains(t, metadata, schemas.LoadBalancerMetadataPrefix+"decision")
+				}
+			}
+		})
+	}
+}
 
 func TestRealtimeTurnFinalEventUsesTranscriptionCompletionOnlyForTranscriptionSessions(t *testing.T) {
 	t.Parallel()
@@ -51,7 +167,7 @@ func TestBuildRealtimeTurnPostResponseModelsTranscriptionAsOutput(t *testing.T) 
 	t.Parallel()
 
 	rawResponse := []byte(`{"type":"conversation.item.input_audio_transcription.completed","transcript":"spoken user turn","usage":{"total_tokens":11}}`)
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-transcribe", `{"type":"input_audio_buffer.commit"}`, rawResponse, "spoken user turn", 123, true)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-transcribe", `{"type":"input_audio_buffer.commit"}`, rawResponse, "spoken user turn", 123, true, nil)
 	if resp == nil || resp.ResponsesResponse == nil || len(resp.ResponsesResponse.Output) != 1 {
 		t.Fatalf("response = %#v, want one transcription output", resp)
 	}
@@ -439,7 +555,7 @@ func TestBuildRealtimeTurnPostResponseUsesFullResponseDonePayload(t *testing.T) 
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, false)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-4o-realtime-preview-2025-06-03", rawRequest, rawResponse, "", 4321, false, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response to be built")
 	}
@@ -487,7 +603,7 @@ func TestBuildRealtimeTurnPostResponseMergesTextAndToolCalls(t *testing.T) {
 		}
 	}`)
 
-	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, false)
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime", "", rawResponse, "", 123, false, nil)
 	if resp == nil || resp.ResponsesResponse == nil {
 		t.Fatal("expected realtime post response")
 	}
@@ -626,5 +742,62 @@ func TestNewBifrostErrorFromRealtimeErrorCarriesRealtimeMetadata(t *testing.T) {
 	}
 	if bifrostErr.Error == nil || bifrostErr.Error.Param != "session.type" {
 		t.Fatalf("error param = %#v, want session.type", bifrostErr.Error)
+	}
+}
+
+// TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns pins that a turn on a session the provider opened on
+// Azure Voice Live reaches the post-hooks marked for the model's _voice_live rates, with the Azure
+// voice's output audio counted as Standard Speech, and that other sessions are left unmarked.
+func TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns(t *testing.T) {
+	t.Parallel()
+	rawResponse := []byte(`{"type":"response.done","response":{"id":"resp_1","status":"completed","output":[],"usage":{"total_tokens":136,"input_tokens":70,"output_tokens":66,"input_token_details":{"text_tokens":20,"audio_tokens":50},"output_token_details":{"text_tokens":14,"audio_tokens":52}}}}`)
+	for _, tc := range []struct {
+		name               string
+		voiceLive          bool
+		wantSurface        schemas.PricingSurface
+		wantOutputStandard int
+	}{
+		{name: "voice live session", voiceLive: true, wantSurface: schemas.PricingSurfaceVoiceLive, wantOutputStandard: 52},
+		{name: "azure openai session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			baseCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.voiceLive {
+				baseCtx.SetValue(schemas.BifrostContextKeyRealtimePricingSurface, schemas.PricingSurfaceVoiceLive)
+			}
+			session := bfws.NewSession(nil)
+			update, err := schemas.ParseRealtimeEvent([]byte(`{"type":"session.update","session":{"voice":{"name":"en-US-AvaNeural","type":"azure-standard"}}}`))
+			if err != nil {
+				t.Fatalf("ParseRealtimeEvent: %v", err)
+			}
+			updateRealtimeSessionFromEvent(session, update)
+			var captured *schemas.BifrostResponse
+			session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+				RequestID: "req_voice_live",
+				StartedAt: time.Now(),
+				PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					captured = result
+					return result, nil
+				},
+			})
+
+			if postErr := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, baseCtx, session, &openai.OpenAIProvider{}, schemas.Azure, "gpt-realtime", nil, rawResponse, "", schemas.RTEventResponseDone, false); postErr != nil {
+				t.Fatalf("finalizeRealtimeTurnHooks: %v", postErr.Error.Message)
+			}
+			if captured == nil || captured.ResponsesResponse == nil || captured.ResponsesResponse.Usage == nil {
+				t.Fatalf("post-hooks got %#v, want a response with usage", captured)
+			}
+			r := captured.ResponsesResponse
+			if r.ExtraFields.PricingSurface != tc.wantSurface {
+				t.Errorf("pricing surface = %q, want %q", r.ExtraFields.PricingSurface, tc.wantSurface)
+			}
+			if got := r.Usage.OutputTokensDetails.StandardSpeechAudioTokens; got != tc.wantOutputStandard {
+				t.Errorf("output standard speech audio tokens = %d, want %d", got, tc.wantOutputStandard)
+			}
+			if got := r.Usage.InputTokensDetails.StandardSpeechAudioTokens; got != 0 {
+				t.Errorf("input standard speech audio tokens = %d, want 0 for a realtime model", got)
+			}
+		})
 	}
 }

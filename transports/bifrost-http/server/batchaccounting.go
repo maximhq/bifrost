@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 type bifrostBatchResultFetcher struct {
@@ -121,6 +122,12 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+	// Stored interactions (Gemini Deep Research runs) settle once, from their final read; this
+	// sweeper reads the runs no client read to the end.
+	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.KVStore)
+	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
+	// the overall budgets, not through the model catalog.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.
@@ -162,4 +169,47 @@ func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables
 		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
+}
+
+type bifrostInteractionPoller struct {
+	client *bifrost.Bifrost
+}
+
+// PollInteraction reads a stored interaction through passthrough, pinned to the key that created
+// it: an interaction is stored under the project of the key that created it, so another key would
+// be told it does not exist. A passthrough answers a provider error as a response, not an error,
+// so a non-2xx status is turned into a ProviderCallError here for the settler to classify.
+func (f *bifrostInteractionPoller) PollInteraction(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostPassthroughResponse, error) {
+	if f == nil || f.client == nil {
+		return nil, fmt.Errorf("bifrost client is nil")
+	}
+	if job == nil || job.Endpoint == "" {
+		return nil, fmt.Errorf("interaction job has no poll path")
+	}
+	params := jobaccounting.InteractionParamsFromJob(job)
+	resp, bifrostErr := f.client.Passthrough(internalJobContext(ctx, job.SelectedKeyID), schemas.ModelProvider(job.Provider), &schemas.BifrostPassthroughRequest{
+		Model:      job.Model,
+		Method:     http.MethodGet,
+		Path:       job.Endpoint,
+		APIVersion: params.APIVersion,
+	})
+	if bifrostErr != nil {
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, &jobaccounting.ProviderCallError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("interaction poll returned status %d: %s", resp.StatusCode, truncateForError(resp.Body)),
+		}
+	}
+	return resp, nil
+}
+
+// truncateForError keeps a provider error body short enough for a job row's last_error.
+func truncateForError(body []byte) string {
+	const limit = 512
+	if len(body) > limit {
+		return string(body[:limit])
+	}
+	return string(body)
 }
