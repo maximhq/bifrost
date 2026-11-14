@@ -16,6 +16,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
 - Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` (`server_type_on_slug`): code mode for the client on its own `/mcp/<slug>` only (`inherit`, `enabled` or `disabled`); `/mcp`, Virtual MCPs and LLM requests follow `isCodeModeClient`.
 - Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
+- Added `bifrost.modelRouters` (`model_routers`): named model routers, also managed through `/api/routing/model-routers`. Each router classifies the requests its `routing` matches as `SIMPLE`, `MEDIUM` or `COMPLEX` with its own classifier (`semantic`, `decision` or `llm`) and phrases, and sends each tier to the model in `targets`. Routers run after `bifrost.governance.routingRules`, and a new router without `routing` starts off. They are separate from `bifrost.governance.complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
+- `bifrost.governance.complexityAnalyzerConfig.classifier` (`governance.complexity_analyzer_config.classifier`) now also accepts `llm`: the model in the `llm` block classifies each request, so the block becomes required. Before, that block was only the semantic classifier's fallback.
 
 ### 2.1.48
 
@@ -26,8 +28,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
 - `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
 - `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
-- Added `bifrost.modelRouters` (`model_routers`): named model routers, each a complexity classifier (`semantic`, `decision` or `llm`) with its own Simple, Medium and Complex phrases, the model each tier gets (`targets`), and the requests it takes after the routing rules (`routing`: `enabled`, `scope`, `scope_id`, `cel_expression`, `priority`). Routers are separate from `bifrost.governance.complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
-- `bifrost.governance.complexityAnalyzerConfig.classifier` (`governance.complexity_analyzer_config.classifier`) now also accepts `llm`. Phrase suggestions are set per model router (`bifrost.modelRouters[].suggestions`), not on the complexity analyzer config.
 
 ### 2.1.47
 

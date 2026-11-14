@@ -219,7 +219,7 @@ test.describe('Routers', () => {
 
     await expect(page.getByTestId('model-router-setup-classifier')).toHaveAttribute('data-done', 'true')
     await expect(page.getByTestId('model-router-setup-models')).toHaveAttribute('data-done', 'false')
-    await expect(page.getByTestId('model-router-fact-models')).toContainText('0 of 3 set')
+    await expect(page.getByTestId('model-router-fact-models')).toContainText('0 models · 0 of 3 tiers')
     await expect(page.getByTestId('model-router-fact-routing')).toContainText('Priority 1')
     await expect(page.getByTestId('model-router-metric-requests')).toContainText('No requests yet')
     await expect(page.getByTestId('model-router-status')).toContainText('This router is off')
@@ -232,9 +232,9 @@ test.describe('Routers', () => {
   test('should show a busy router its requests split by tier and their cost against the week before', async ({ page }) => {
     await page.goto('/workspace/model-routers?router=support')
     await expect(page.getByTestId('model-router-setup')).toHaveCount(0)
-    await expect(page.getByTestId('model-router-metric-requests')).toContainText('last 7 days')
+    await expect(page.getByTestId('model-router-metric-requests')).toContainText('Last 7 days')
     await expect(page.getByTestId('model-router-metric-tiers')).toHaveText('Simple 30K · Medium 9K · Complex 2.96K')
-    await expect(page.getByTestId('model-router-metric-cost-trend')).toContainText('18.0% vs previous 7 days')
+    await expect(page.getByTestId('model-router-metric-cost-trend')).toContainText('18.0% vs previous period')
     await expect(page.getByTestId('model-router-status')).toContainText('Taking requests')
     // The figures are not links; the status line is the way into the logs.
     await expect(page.getByTestId('model-router-metric-cost')).not.toHaveAttribute('role', 'button')
