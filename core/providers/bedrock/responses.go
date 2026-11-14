@@ -3,6 +3,7 @@ package bedrock
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -5249,8 +5250,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Convert document source data
 			if block.Document.Source != nil {
 				if block.Document.Source.Text != nil {
-					// Plain text content
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
+					// Plain text content. Hand it over as a base64 data URL so literal text that
+					// itself starts with "data:" is not mistaken for a data URL downstream; the
+					// Anthropic egress turns it back into a text source.
+					textDataURL := fmt.Sprintf("data:%s;base64,%s", fileType, base64.StdEncoding.EncodeToString([]byte(*block.Document.Source.Text)))
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &textDataURL
 				} else if block.Document.Source.Bytes != nil {
 					// Base64 encoded bytes (PDF)
 					fileDataURL := *block.Document.Source.Bytes
