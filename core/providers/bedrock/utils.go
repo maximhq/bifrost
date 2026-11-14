@@ -3770,15 +3770,6 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
-	// with a 400 "The provided request is not valid". If every incoming tool
-	// was filtered out above (e.g. only server tools the target provider
-	// doesn't support), omit ToolConfig entirely so the request is valid and
-	// the model simply answers without tool access.
-	if len(bedrockTools) == 0 {
-		return nil, droppedForModel, nil
-	}
-
 	toolConfig := &BedrockToolConfig{
 		Tools: bedrockTools,
 	}
@@ -3789,6 +3780,27 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if toolChoice != nil {
 			if toolChoice.Tool != nil && toolChoice.Tool.Name != "" {
 				toolChoice.Tool.Name = bedrockAliasToolName(ctx, toolChoice.Tool.Name)
+				// Validate the pin against the tool list AS THE CLIENT SENT IT
+				// (params.Tools), before server-tool filtering. A name the client
+				// never sent is a client error; a name present in the original
+				// list but stripped by filtering keeps the silent drop below.
+				sentToolNames := make(map[string]struct{}, len(params.Tools))
+				for _, tool := range params.Tools {
+					name := tool.Name
+					if tool.Function != nil && tool.Function.Name != "" {
+						name = tool.Function.Name
+					}
+					if name == "" {
+						continue
+					}
+					sentToolNames[bedrockAliasToolName(ctx, name)] = struct{}{}
+				}
+				if _, sent := sentToolNames[toolChoice.Tool.Name]; !sent {
+					return nil, nil, providerUtils.InvalidRequestErrorf(
+						"The tool %s at toolConfig.toolChoice.name is not defined in tools.",
+						toolChoice.Tool.Name,
+					)
+				}
 			}
 			// Reconcile: if the choice forces a specific tool by name,
 			// verify that name still exists in the filtered tool set.
@@ -3831,6 +3843,15 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 				toolConfig.ToolChoice = toolChoice
 			}
 		}
+	}
+
+	// Empty-guard: Bedrock's Converse API rejects {"toolConfig": {"tools": []}}
+	// with a 400 "The provided request is not valid". If every incoming tool
+	// was filtered out above (e.g. only server tools the target provider
+	// doesn't support), omit ToolConfig entirely so the request is valid and
+	// the model simply answers without tool access.
+	if len(bedrockTools) == 0 {
+		return nil, droppedForModel, nil
 	}
 
 	return toolConfig, droppedForModel, nil
