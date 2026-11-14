@@ -27,6 +27,13 @@ describe("logs constants", () => {
 		expect(RequestTypeColors["realtime.turn"]).toBeTruthy();
 	});
 
+	it("registers speech sessions as a known request type, apart from speech streams", () => {
+		expect(RequestTypes).toContain("speech.session");
+		expect(RequestTypeLabels["speech.session"]).toBe("Speech Session");
+		expect(RequestTypeColors["speech.session"]).toBeTruthy();
+		expect(RequestTypeColors["speech.session"]).not.toBe(RequestTypeColors.speech_stream);
+	});
+
 	it("registers model retrieve as a known request type", () => {
 		expect(RequestTypes).toContain("model_retrieve");
 		expect(RequestTypeLabels.model_retrieve).toBe("Retrieve Model");

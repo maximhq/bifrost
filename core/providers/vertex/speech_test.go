@@ -91,6 +91,22 @@ func TestToVertexSpeechRequest_UnsupportedFormatsAreRefused(t *testing.T) {
 	}
 }
 
+// Gemini TTS served by Vertex shares the Gemini converter, so its unsupported formats are caller errors too.
+func TestToVertexGeminiSpeechRequest_UnsupportedFormatsAreRefused(t *testing.T) {
+	voice := "Kore"
+	for _, format := range []string{"mp3", "opus", "pcm"} {
+		request := &schemas.BifrostSpeechRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-2.5-flash-tts",
+			Input:    &schemas.SpeechInput{Input: "hello"},
+			Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, ResponseFormat: format},
+		}
+		_, err := toVertexGeminiSpeechRequest(request)
+		require.Error(t, err, format)
+		assert.True(t, providerUtils.IsInvalidRequestError(err), "response_format %q must be a caller error", format)
+	}
+}
+
 func TestToVertexSpeechRequest_SpeedAndExtraParams(t *testing.T) {
 	params := speechParams(chirpVoice)
 	speed := 1.25

@@ -21,6 +21,8 @@ interface Props {
 	pendingCount: number;
 	dismissedCount: number;
 	groups: Suggestion[];
+	// While the selected list's first page loads: no rows, and nothing to act on.
+	loading?: boolean;
 	// A group to open, as when the impact view leads back to one.
 	expandGroupId?: string;
 	// How many groups the list holds; groups are the ones loaded so far.
@@ -57,6 +59,7 @@ export default function SuggestionGroupsTable({
 	pendingCount,
 	dismissedCount,
 	groups,
+	loading = false,
 	expandGroupId,
 	total,
 	hasMore,
@@ -266,7 +269,15 @@ export default function SuggestionGroupsTable({
 						<span />
 					</div>
 
-					{groups.length === 0 ? (
+					{loading ? (
+						<p
+							className="text-muted-foreground flex items-center justify-center gap-2 px-3 py-10 text-sm"
+							data-testid="complexity-suggestions-list-loading"
+						>
+							<LoaderCircle className="size-4 animate-spin" />
+							{t("loading")}
+						</p>
+					) : groups.length === 0 ? (
 						<p className="text-muted-foreground px-3 py-10 text-center text-sm" data-testid="complexity-suggestions-empty">
 							{pending ? t("emptyPending") : t("emptyDismissed")}
 						</p>

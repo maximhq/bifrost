@@ -172,3 +172,34 @@ func BenchmarkParseRealtimeEvent(b *testing.B) {
 		})
 	}
 }
+
+// TestRealtimeTranslationBinaryFrames verifies a provider frame is text unless it is marked binary,
+// however the frames were queued.
+func TestRealtimeTranslationBinaryFrames(t *testing.T) {
+	t.Parallel()
+
+	var translation RealtimeTranslation
+	translation.Provider = append(translation.Provider, []byte(`{"setup":true}`))
+	translation.AddProviderBinary([]byte{0x01})
+	translation.Provider = append(translation.Provider, []byte(`{"type":"finalize"}`))
+	translation.AddProviderBinary([]byte{0x02})
+
+	want := []bool{false, true, false, true}
+	if len(translation.Provider) != len(want) {
+		t.Fatalf("queued %d frames, want %d", len(translation.Provider), len(want))
+	}
+	for i, binary := range want {
+		if got := translation.IsProviderBinary(i); got != binary {
+			t.Errorf("frame %d binary = %v, want %v", i, got, binary)
+		}
+	}
+	if translation.IsProviderBinary(len(want)) {
+		t.Error("a frame that does not exist must not be binary")
+	}
+
+	var textOnly RealtimeTranslation
+	textOnly.Provider = append(textOnly.Provider, []byte(`{}`))
+	if textOnly.IsProviderBinary(0) {
+		t.Error("a translation that marks nothing is all text")
+	}
+}

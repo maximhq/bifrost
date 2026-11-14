@@ -237,11 +237,15 @@ export interface OAuthConfigUpdate {
 	resource?: string;
 }
 
+// Code mode on a client's own /mcp/<slug>; "inherit" follows is_code_mode_client.
+export type MCPServerTypeOnSlug = "inherit" | "enabled" | "disabled";
+
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
 	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -414,6 +418,7 @@ export interface CreateMCPClientRequest {
 	name: string;
 	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -481,6 +486,7 @@ export interface MCPVKConfig {
 export interface UpdateMCPClientRequest {
 	name?: string;
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	headers?: Record<string, SecretVar>;
 	// Set to a new list (including empty) to replace per-user-headers schema.
 	// Omitted = preserve existing. When this list changes against the stored
