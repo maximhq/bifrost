@@ -110,6 +110,15 @@ func awsPartitionForRegion(region string) string {
 // returned value is a bare host, so callers keep ownership of the scheme and path — including
 // the bucket prefix S3's virtual-hosted URLs carry.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, "")
+}
+
+// resolveBedrockHostWithRuntimeDefault is resolveBedrockHost with a provider-wide host for the
+// bedrock-runtime service, taken from network_config.base_url. Precedence for bedrock-runtime is
+// the per-key endpoints.runtime override, then runtimeDefault, then the public regional host.
+// The other services ignore runtimeDefault: one base URL cannot serve the control plane, mantle,
+// agent-runtime and S3 as well, so those keep their per-key overrides or public hosts.
+func resolveBedrockHostWithRuntimeDefault(endpoints *schemas.BedrockEndpoints, service bedrockService, region, runtimeDefault string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar
 		switch service {
@@ -128,11 +137,20 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
+	if service == bedrockServiceRuntime && runtimeDefault != "" {
+		return runtimeDefault
+	}
 	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
 	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+}
+
+// serviceHost resolves the host for an AWS endpoint service, applying network_config.base_url as
+// the provider-wide bedrock-runtime host when the key carries no endpoints.runtime override.
+func (provider *BedrockProvider) serviceHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, provider.runtimeHost)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so
