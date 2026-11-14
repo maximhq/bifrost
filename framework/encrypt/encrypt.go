@@ -19,7 +19,8 @@ import (
 )
 
 var encryptionKey []byte
-var logger schemas.Logger	
+var legacyKey []byte
+var logger schemas.Logger
 
 var ErrEncryptionKeyNotInitialized = errors.New("encryption key is not initialized")
 
@@ -39,11 +40,13 @@ func Init(key string, _logger schemas.Logger) {
 		logger.Warn("encryption passphrase is shorter than 16 bytes, consider using a longer passphrase for better security")
 	}
 
-	// Derive a secure 32-byte key using Argon2id KDF
-	// We use a fixed salt since this is a system-wide encryption key (not per-user passwords)
-	// Argon2id parameters: time=1, memory=64MB, threads=4, keyLen=32
-	// This provides strong security while maintaining reasonable performance for initialization
-	salt := []byte("bifrost-encryption-v1-salt-2024")
+	// Derive legacy key (hardcoded salt) for backwards-compatible decryption of existing data.
+	legacySalt := []byte("bifrost-encryption-v1-salt-2024")
+	legacyKey = argon2.IDKey([]byte(key), legacySalt, 1, 64*1024, 4, 32)
+
+	// Derive new key with per-passphrase salt. New encryptions use this key.
+	saltHash := sha256.Sum256([]byte("bifrost-salt-v2:" + key))
+	salt := saltHash[:16]
 	encryptionKey = argon2.IDKey([]byte(key), salt, 1, 64*1024, 4, 32)
 }
 
@@ -158,11 +161,25 @@ func Decrypt(ciphertext string) (string, error) {
 
 	nonce, ciphertextBytes := data[:nonceSize], data[nonceSize:]
 
-	// Decrypt the data
+	// Decrypt with current key first; fall back to legacy key for data encrypted before the salt change.
 	plaintext, err := aesGCM.Open(nil, nonce, ciphertextBytes, nil)
-	if err != nil {
+	if err == nil {
+		return string(plaintext), nil
+	}
+	if legacyKey == nil {
 		return "", fmt.Errorf("failed to decrypt: %w", err)
 	}
-
+	legacyBlock, lErr := aes.NewCipher(legacyKey)
+	if lErr != nil {
+		return "", fmt.Errorf("failed to decrypt: %w", err)
+	}
+	legacyGCM, lErr := cipher.NewGCM(legacyBlock)
+	if lErr != nil {
+		return "", fmt.Errorf("failed to decrypt: %w", err)
+	}
+	plaintext, lErr = legacyGCM.Open(nil, nonce, ciphertextBytes, nil)
+	if lErr != nil {
+		return "", fmt.Errorf("failed to decrypt: %w", err)
+	}
 	return string(plaintext), nil
 }
