@@ -1195,96 +1195,9 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 }
 
 // supportsDecisions reports whether the listed model serves decisions natively,
-// by the rule the provider's Decision call gates on, so the listing neither
-// offers a model the request would reject nor hides one it would serve. A
-// custom provider is gated by its allowed requests alone: every model when it
-// allows decisions on a base that serves them (Typesafe, serving Laya, Nimble,
-// or Clef, OpenAI, exposing /v1/decisions, or vLLM and SGLang, serving
-// /v1/systemone for every loaded model), since its server rejects a
-// model it does not serve. A custom provider on the Gemini base lists only
-// Gemini Decision models, as its Decision gates them, since the same server
-// serves chat models too. Typesafe lists every model, and any other provider
-// a model the datasheet marks supports_decisions, or without a row the
-// provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
-// System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
-// Perplexity, a System One model on Ollama, a decision-models/ slug on Baseten,
-// a Gemini Decision model on Gemini, a Microsoft decision model or the
-// gpt-6-luna family on Azure, which serves it on /openai/v1/decisions). vLLM
-// and SGLang serve decisions for every model they load, so every listed model qualifies.
-// Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
-// serves its decisions under its own id, openai/gpt-6-luna-decisions, marked by
-// its datasheet row). A key alias is checked as the model it points at, as the
-// request path checks it; on Azure the alias is the model name and its target a
-// deployment name of the user's choosing, so the alias name is checked too.
+// by the rule the provider's Decision call gates on (see decisionRuleFor).
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
-	if custom := h.customProviderConfig(provider); custom != nil {
-		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
-			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
-				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL ||
-				(custom.BaseProviderType == schemas.Gemini && schemas.IsGeminiDecisionModel(h.aliasTarget(provider, model))))
-	}
-	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
-		return true
-	}
-	listed := model
-	model = h.aliasTarget(provider, model)
-	var fallback bool
-	switch {
-	case provider == schemas.OpenAI:
-		fallback = schemas.DefaultSupportsDecisions(model)
-	case provider == schemas.Azure:
-		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model) ||
-			schemas.DefaultSupportsDecisions(listed) || schemas.DefaultSupportsDecisions(model)
-	case provider == schemas.OpenRouter:
-		fallback = schemas.IsTypesafeModel(model)
-	case provider == schemas.Cloudflare:
-		fallback = schemas.IsClefModel(model)
-	case provider == schemas.Perplexity:
-		fallback = schemas.IsPerplexityDeciderModel(model)
-	case provider == schemas.Ollama:
-		fallback = schemas.IsOllamaDecisionModel(model)
-	case provider == schemas.Databricks:
-		fallback = schemas.IsDatabricksDecisionModel(model)
-	case provider == schemas.Baseten:
-		fallback = schemas.IsBasetenDecisionModel(model)
-	case provider == schemas.Gemini:
-		fallback = schemas.IsGeminiDecisionModel(model)
-	}
-	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
-}
-
-// customProviderConfig returns the provider's custom configuration, or nil for
-// a built-in provider or one that is not configured.
-func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
-	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
-		return nil
-	}
-	return config.CustomProviderConfig
-}
-
-// aliasTarget returns the model a key alias points at, in the order the
-// request path resolves it (schemas.ResolveCanonicalModel): the alias's
-// ModelName, then its ModelID. A name that is not an alias is returned as is.
-// The listing names key aliases as models, and a capability lookup on the
-// alias itself finds nothing, so it is resolved through the catalog's alias
-// index first, as GetModelCapabilityEntryForModel does for the details listing.
-func (h *ProviderHandler) aliasTarget(provider schemas.ModelProvider, model string) string {
-	catalog := h.inMemoryStore.ModelCatalog
-	if catalog == nil {
-		return model
-	}
-	owner, ok := catalog.ResolveAlias(provider, model)
-	if !ok {
-		return model
-	}
-	if name := owner.Config.ModelName; name != nil && *name != "" {
-		return *name
-	}
-	if owner.Config.ModelID != "" {
-		return owner.Config.ModelID
-	}
-	return model
+	return decisionRuleFor(h.inMemoryStore, provider, model).serves()
 }
 
 // isModelDeprecated reports whether the catalog marks the model as deprecated.

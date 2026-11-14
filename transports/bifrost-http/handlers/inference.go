@@ -1041,6 +1041,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	h.config.ModelCatalog.EnrichListModelsResponse(resp)
+	tagDecisionModels(h.config, resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1075,6 +1076,7 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 
 	h.config.ModelCatalog.EnrichModelRetrieveResponse(resp)
 	if resp != nil {
+		tagDecisionModel(h.config, &resp.Model)
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	SendJSON(ctx, resp)

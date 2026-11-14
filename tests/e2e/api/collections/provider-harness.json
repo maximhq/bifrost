@@ -328232,6 +328232,132 @@
           }
         }
       ]
+    },
+    {
+      "name": "349. Decision models in /v1/models (v1-models-decision-modality) (PR #10006)",
+      "description": "GET /v1/models and GET /v1/models/{model} add `decisions` to architecture.output_modalities for a model its provider serves only on the decisions endpoint, the marker OpenRouter reports for its own decision models, so an OpenAI-compatible client can tell decision models from chat models without the management API. A model that also serves chat is left unmarked so clients keep offering it for chat, and a provider whose allowed_requests exclude decisions marks nothing. The cases pin: every TypeSafe model is marked; typesafe_custom_gated (base typesafe, decisions not allowed) lists its models unmarked; openai/gpt-6-luna, which OpenAI serves on both chat and decisions, is retrieved unmarked.",
+      "item": [
+        {
+          "name": "/v1/models - decision-only models carry the decisions output modality - typesafe jev - #10006",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every TypeSafe model is marked as a decision model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'no models listed: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  data.forEach(function (m) {",
+                  "    var modalities = (m.architecture && m.architecture.output_modalities) || [];",
+                  "    pm.expect(modalities, m.id + ' unmarked').to.include('decisions');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=typesafe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "typesafe"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models - provider without decisions in allowed_requests marks nothing - typesafe_custom_gated jev - #10006",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a provider that does not allow decisions lists its models unmarked', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'no models listed: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  data.forEach(function (m) {",
+                  "    var modalities = (m.architecture && m.architecture.output_modalities) || [];",
+                  "    pm.expect(modalities, m.id + ' marked').to.not.include('decisions');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=typesafe_custom_gated",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "typesafe_custom_gated"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models/{model} - chat and decision model stays unmarked - openai/gpt-6-luna - #10006",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a model that also serves chat is not marked as a decision model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var m = pm.response.json();",
+                  "  pm.expect(m.id, pm.response.text()).to.eql('openai/gpt-6-luna');",
+                  "  var modalities = (m.architecture && m.architecture.output_modalities) || [];",
+                  "  pm.expect(modalities, pm.response.text()).to.not.include('decisions');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-6-luna",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-6-luna"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
