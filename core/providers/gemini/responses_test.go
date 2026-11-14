@@ -2509,3 +2509,242 @@ func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// GenAI clients (e.g. Antigravity) omit functionCall.id; minted call IDs must be unique and
+// each functionResponse must pair with the oldest unanswered call of the same name.
+func TestConvertGeminiContentsToResponsesMessages_MintsUniqueCallIDsWhenMissing(t *testing.T) {
+	fc := func(name, id, path string) *Part {
+		return &Part{FunctionCall: &FunctionCall{ID: id, Name: name, Args: json.RawMessage(`{"Path":"` + path + `"}`)}}
+	}
+	fr := func(name, id, out string) *Part {
+		return &Part{FunctionResponse: &FunctionResponse{ID: id, Name: name, Response: json.RawMessage(`{"output":"` + out + `"}`)}}
+	}
+	type pair struct{ callID, args, output string }
+	collect := func(msgs []schemas.ResponsesMessage) (calls map[string]string, outputs []pair) {
+		calls = map[string]string{}
+		for _, m := range msgs {
+			switch *m.Type {
+			case schemas.ResponsesMessageTypeFunctionCall:
+				_, dup := calls[*m.ResponsesToolMessage.CallID]
+				require.False(t, dup, "duplicate call_id %q", *m.ResponsesToolMessage.CallID)
+				calls[*m.ResponsesToolMessage.CallID] = *m.ResponsesToolMessage.Arguments
+			case schemas.ResponsesMessageTypeFunctionCallOutput:
+				id := *m.ResponsesToolMessage.CallID
+				outputs = append(outputs, pair{id, calls[id], *m.ResponsesToolMessage.Output.ResponsesToolCallOutputStr})
+			}
+		}
+		return calls, outputs
+	}
+
+	tests := []struct {
+		name     string
+		contents []Content
+		want     []pair // callID left empty: only args→output pairing is asserted
+		wantIDs  []string
+	}{
+		{
+			name: "same-name parallel calls without ids",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "", "a.txt"), fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "interleaved names pair per name in order",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "", "a.txt"), fc("list_dir", "", "."), fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("list_dir", "", "LS"), fr("read_file", "", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"."}`, output: "LS"}, {args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "ids stay unique across turns",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "", "a.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA")}},
+				{Role: "model", Parts: []*Part{fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "client ids are kept verbatim",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt"), fc("read_file", "c2", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "c2", "BBB"), fr("read_file", "c1", "AAA")}},
+			},
+			want:    []pair{{args: `{"Path":"b.txt"}`, output: "BBB"}, {args: `{"Path":"a.txt"}`, output: "AAA"}},
+			wantIDs: []string{"c2", "c1"},
+		},
+		{
+			name: "response without id pairs with a client-id call of the same name",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA")}},
+			},
+			want:    []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}},
+			wantIDs: []string{"c1"},
+		},
+		{
+			name: "minted id skips a client-supplied bf_call_1 that comes first",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "bf_call_1", "a.txt"), fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "bf_call_1", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "minted id skips a client-supplied bf_call_1 that comes later",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "", "a.txt"), fc("read_file", "bf_call_1", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA"), fr("read_file", "bf_call_1", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "mixed supplied and missing call ids pair id-less responses in call order",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt"), fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "supplied same-name call ids pair id-less responses in call order",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt"), fc("read_file", "c2", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want:    []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+			wantIDs: []string{"c1", "c2"},
+		},
+		{
+			name: "explicitly answered call leaves the queue for the id-less response",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt"), fc("read_file", "", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "c1", "AAA"), fr("read_file", "", "BBB")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"b.txt"}`, output: "BBB"}},
+		},
+		{
+			name: "id-less response before an explicit one skips the explicitly answered call",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt"), fc("read_file", "c2", "b.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "BBB"), fr("read_file", "c1", "AAA")}},
+			},
+			want:    []pair{{args: `{"Path":"b.txt"}`, output: "BBB"}, {args: `{"Path":"a.txt"}`, output: "AAA"}},
+			wantIDs: []string{"c2", "c1"},
+		},
+		{
+			name: "continuing id-less response keeps the call for the next response",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "", "a.txt")}},
+				{Role: "user", Parts: []*Part{
+					{FunctionResponse: &FunctionResponse{Name: "read_file", WillContinue: schemas.Ptr(true), Response: json.RawMessage(`{"output":"PART1"}`)}},
+					fr("read_file", "", "PART2"),
+				}},
+			},
+			want:    []pair{{args: `{"Path":"a.txt"}`, output: "PART1"}, {args: `{"Path":"a.txt"}`, output: "PART2"}},
+			wantIDs: []string{"bf_call_1", "bf_call_1"},
+		},
+		{
+			name: "extra id-less response falls back to the last call of that name",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "", "AAA"), fr("read_file", "", "MORE")}},
+			},
+			want:    []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"a.txt"}`, output: "MORE"}},
+			wantIDs: []string{"c1", "c1"},
+		},
+		{
+			name: "id-less response after an explicit answer falls back to that call",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "c1", "a.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "c1", "AAA"), fr("read_file", "", "MORE")}},
+			},
+			want:    []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"a.txt"}`, output: "MORE"}},
+			wantIDs: []string{"c1", "c1"},
+		},
+		{
+			name: "supplied bf_call_1 on another function does not collide with a minted id",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("read_file", "bf_call_1", "a.txt"), fc("list_dir", "", ".")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "bf_call_1", "AAA"), fr("list_dir", "", "LS")}},
+			},
+			want: []pair{{args: `{"Path":"a.txt"}`, output: "AAA"}, {args: `{"Path":"."}`, output: "LS"}},
+		},
+		{
+			name: "supplied bf_call_1 on a later turn does not collide with a minted id",
+			contents: []Content{
+				{Role: "model", Parts: []*Part{fc("list_dir", "", ".")}},
+				{Role: "user", Parts: []*Part{fr("list_dir", "", "LS")}},
+				{Role: "model", Parts: []*Part{fc("read_file", "bf_call_1", "a.txt")}},
+				{Role: "user", Parts: []*Part{fr("read_file", "bf_call_1", "AAA")}},
+			},
+			want: []pair{{args: `{"Path":"."}`, output: "LS"}, {args: `{"Path":"a.txt"}`, output: "AAA"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs := convertGeminiContentsToResponsesMessages(tt.contents)
+			_, outputs := collect(msgs)
+			require.Len(t, outputs, len(tt.want))
+			for i, w := range tt.want {
+				assert.Equal(t, w.args, outputs[i].args, "output %d paired with wrong call", i)
+				assert.Equal(t, w.output, outputs[i].output)
+				if tt.wantIDs != nil {
+					assert.Equal(t, tt.wantIDs[i], outputs[i].callID)
+				}
+			}
+			// Deterministic so the prompt bytes (and provider prompt caches) are stable across turns.
+			assert.Equal(t, msgs, convertGeminiContentsToResponsesMessages(tt.contents))
+
+			// Round trip to Gemini keeps the declared function name on the response.
+			contents, _, err := convertResponsesMessagesToGeminiContents(msgs, "gemini-2.5-pro", schemas.Gemini)
+			require.NoError(t, err)
+			for _, c := range contents {
+				for _, p := range c.Parts {
+					if p.FunctionResponse != nil {
+						assert.Contains(t, []string{"read_file", "list_dir"}, p.FunctionResponse.Name)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkConvertGeminiContentsToResponsesMessages_FunctionCalls(b *testing.B) {
+	build := func(withIDs bool) []Content {
+		id := func(n string) string {
+			if withIDs {
+				return n
+			}
+			return ""
+		}
+		return []Content{
+			{Role: "user", Parts: []*Part{{Text: "read both files"}}},
+			{Role: "model", Parts: []*Part{
+				{FunctionCall: &FunctionCall{ID: id("c1"), Name: "read_file", Args: json.RawMessage(`{"Path":"a.txt"}`)}},
+				{FunctionCall: &FunctionCall{ID: id("c2"), Name: "read_file", Args: json.RawMessage(`{"Path":"b.txt"}`)}},
+			}},
+			{Role: "user", Parts: []*Part{
+				{FunctionResponse: &FunctionResponse{ID: id("c1"), Name: "read_file", Response: json.RawMessage(`{"output":"A"}`)}},
+				{FunctionResponse: &FunctionResponse{ID: id("c2"), Name: "read_file", Response: json.RawMessage(`{"output":"B"}`)}},
+			}},
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		withIDs bool
+	}{{"with_ids", true}, {"without_ids", false}} {
+		contents := build(tc.withIDs)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = convertGeminiContentsToResponsesMessages(contents)
+			}
+		})
+	}
+}

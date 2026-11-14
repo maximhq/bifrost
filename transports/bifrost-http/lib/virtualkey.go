@@ -21,6 +21,7 @@ const (
 	VirtualKeyHeaderSourceXAPIKey       VirtualKeyHeaderSource = "x-api-key"
 	VirtualKeyHeaderSourceXGoogAPIKey   VirtualKeyHeaderSource = "x-goog-api-key"
 	VirtualKeyHeaderSourceAPIKey        VirtualKeyHeaderSource = "api-key"
+	VirtualKeyHeaderSourceXiAPIKey      VirtualKeyHeaderSource = "xi-api-key"
 )
 
 // HeaderName returns the request header this source names, or "" when the
@@ -28,7 +29,8 @@ const (
 func (s VirtualKeyHeaderSource) HeaderName() string {
 	switch s {
 	case VirtualKeyHeaderSourceXBfVK, VirtualKeyHeaderSourceAuthorization,
-		VirtualKeyHeaderSourceXAPIKey, VirtualKeyHeaderSourceXGoogAPIKey, VirtualKeyHeaderSourceAPIKey:
+		VirtualKeyHeaderSourceXAPIKey, VirtualKeyHeaderSourceXGoogAPIKey, VirtualKeyHeaderSourceAPIKey,
+		VirtualKeyHeaderSourceXiAPIKey:
 		return string(s)
 	default:
 		return ""
@@ -45,6 +47,7 @@ func (s VirtualKeyHeaderSource) HeaderName() string {
 //  3. x-api-key      — must start with the VK prefix
 //  4. x-goog-api-key — must start with the VK prefix
 //  5. api-key        — must start with the VK prefix
+//  6. xi-api-key     — must start with the VK prefix (ElevenLabs clients)
 //
 // The governance.VirtualKeyPrefix gate on the alias headers is what lets real
 // provider credentials pass through untouched: only values shaped like a
@@ -70,6 +73,7 @@ func ResolveVirtualKeyFromHeaders(ctx *fasthttp.RequestCtx) (string, VirtualKeyH
 		VirtualKeyHeaderSourceXAPIKey,
 		VirtualKeyHeaderSourceXGoogAPIKey,
 		VirtualKeyHeaderSourceAPIKey,
+		VirtualKeyHeaderSourceXiAPIKey,
 	} {
 		value := strings.TrimSpace(string(ctx.Request.Header.Peek(string(source))))
 		if strings.HasPrefix(strings.ToLower(value), governance.VirtualKeyPrefix) {

@@ -493,6 +493,77 @@ test.describe("LLM Logs", () => {
         await expect(page.getByTestId("logdetails-fallback-chip-3")).toHaveCount(0);
       });
     });
+
+    test.describe("Speech stream rows", () => {
+      // Serves a speech stream row as the only row of the logs page, and by id.
+      async function mockSpeechLog(page: Page, overrides: Record<string, unknown>) {
+        const timestamp = new Date().toISOString();
+        const log = {
+          id: `synthetic-speech-${Date.now()}`,
+          object: "speech.session",
+          timestamp,
+          created_at: timestamp,
+          provider: "elevenlabs",
+          model: "eleven_v4_turbo",
+          number_of_retries: 0,
+          fallback_index: 0,
+          status: "success",
+          stream: true,
+          latency: 700,
+          cost: 0.001,
+          speech_input: { input: "Canonical one says hello." },
+          ...overrides,
+        };
+        await page.route((url) => url.pathname === "/api/logs", async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          await route.fulfill({ json: {
+            logs: [log],
+            pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+            stats: {
+              total_requests: 1,
+              success_rate: 100,
+              user_facing_success_rate: 100,
+              user_facing_total_requests: 1,
+              average_latency: 700,
+              total_tokens: 0,
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_cost: 0.001,
+            },
+            has_logs: true,
+          } });
+        });
+        await page.route((url) => url.pathname === `/api/logs/${log.id}`, async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          await route.fulfill({ json: log });
+        });
+      }
+
+      test("should not show an output player for a finished stream that kept no audio", async ({ page, logsPage }) => {
+        await mockSpeechLog(page, {});
+        await logsPage.goto();
+        await logsPage.viewLogDetails(0);
+        await expect(logsPage.logDetailSheet.getByText("Speech Session", { exact: true }).first()).toBeVisible();
+        await expect(logsPage.logDetailSheet.getByTestId("log-speech-input")).toContainText("Canonical one says hello.");
+        await expect(logsPage.logDetailSheet.getByTestId("log-speech-output")).toHaveCount(0);
+      });
+
+      test("should show the player of a finished stream that kept its audio", async ({ page, logsPage }) => {
+        await mockSpeechLog(page, { speech_output: { audio: "QUJD" } });
+        await logsPage.goto();
+        await logsPage.viewLogDetails(0);
+        const output = logsPage.logDetailSheet.getByTestId("log-speech-output");
+        await expect(output).toBeVisible();
+        await expect(output.getByRole("button", { name: "Play" })).toBeVisible();
+      });
+
+      test("should show the output placeholder while a stream is still running", async ({ page, logsPage }) => {
+        await mockSpeechLog(page, { status: "processing" });
+        await logsPage.goto();
+        await logsPage.viewLogDetails(0);
+        await expect(logsPage.logDetailSheet.getByTestId("log-speech-output")).toBeVisible();
+      });
+    });
   });
 
   test.describe("Pagination", () => {
