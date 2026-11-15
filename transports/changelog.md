@@ -1,6 +1,7 @@
 ## ✨ Features
 
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Enforced Limit in Virtual Key Quota** - Each budget in `GET /api/governance/virtual-keys/quota` carries `effective_max_limit`, the limit the gateway enforces once an active override is added, so a self-service client no longer has to rebuild it from `max_limit` and the override fields
 
 ## 🐞 Fixed
 

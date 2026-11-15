@@ -5783,7 +5783,11 @@ type quotaBudget struct {
 	// Identifies what governs this budget (e.g. an access profile), when the caller
 	// supplied one. Empty for a VK's own budget rows.
 	configstoreTables.SourceRef
-	Models []quotaModelSpend `json:"per_model_usage"`
+	// The limit the gateway enforces for this budget: max_limit plus an active override.
+	// A self-service caller sees override_amount but cannot tell on its own whether the
+	// override is still active, so the enforced value is reported directly.
+	EffectiveMaxLimit float64           `json:"effective_max_limit"`
+	Models            []quotaModelSpend `json:"per_model_usage"`
 }
 
 // buildBudgetsWithUsage wraps each budget with its per-model actual usage, queried from
@@ -5792,7 +5796,7 @@ func (h *GovernanceHandler) buildBudgetsWithUsage(ctx context.Context, vkID, usa
 	out := make([]quotaBudget, 0, len(budgets))
 	for i := range budgets {
 		b := &budgets[i].TableBudget
-		entry := quotaBudget{TableBudget: *b, SourceRef: budgets[i].SourceRef, Models: []quotaModelSpend{}}
+		entry := quotaBudget{TableBudget: *b, SourceRef: budgets[i].SourceRef, EffectiveMaxLimit: b.EffectiveMaxLimit(), Models: []quotaModelSpend{}}
 		if h.logManager != nil {
 			start := b.LastReset
 			if b.CreatedAt.After(start) {
