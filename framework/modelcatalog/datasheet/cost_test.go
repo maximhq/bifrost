@@ -3546,6 +3546,59 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
+// TestCalculateCostExcludesExternalGuardrailEstimatedCost verifies an external
+// guardrail service call's estimated cost is display-only: it never reaches the
+// request cost, the guardrail cost, or (through CalculateCost) budgets, while the
+// LLM judge call beside it is still billed.
+func TestCalculateCostExcludesExternalGuardrailEstimatedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKeyNormalized("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	externalCall := schemas.BifrostGuardrailJudgeCall{
+		GuardrailProvider: "vendor",
+		UsageUnits:        map[string]int{"content_policy_units": 3},
+		EstimatedCost:     0.5, // Large on purpose: any leak would dominate the totals.
+	}
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
+			{
+				JudgeProvider:    schemas.Anthropic,
+				JudgeModel:       "claude-judge",
+				PromptTokens:     20,
+				CompletionTokens: 5,
+				TotalTokens:      25,
+			},
+			externalCall,
+		},
+	}
+
+	// Main 0.0002 plus judge 0.00008; the external call adds nothing.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.00008, bd.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.InDelta(t, 0.00008, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00028, bd.TotalCost, 1e-12)
+
+	// The blocked-request path prices guardrail metadata directly.
+	assert.Zero(t, s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{externalCall},
+	}, nil))
+}
+
 // TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
 func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 	pricing := chatPricing(0.00001, 0)
