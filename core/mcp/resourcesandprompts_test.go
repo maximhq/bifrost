@@ -194,8 +194,44 @@ func TestResourcesAndPrompts_FailedFirstListKeepsSaved(t *testing.T) {
 	assert.Equal(t, saved, installedOf(t, m, config.ID).Resources)
 }
 
+// After a restart the store holds the lists each client's row saved and the client's record carries
+// none: a persistent client's first connect that fails its resources and prompts lists keeps the
+// saved ones, and the discovery written back holds them.
+func TestResourcesAndPrompts_FailedFirstListKeepsStoreRestoredLists(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	ts := newFailingListsUpstream(t, &fail, "resources/list", "prompts/list")
+	savedResources := []mcpgo.Resource{mcpgo.NewResource("file:///saved.md", "saved")}
+	savedPrompts := []mcpgo.Prompt{mcpgo.NewPrompt("docs-saved")}
+	config := &schemas.MCPClientConfig{
+		ID: "restarted", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	// Restored from the row at startup: no DiscoveredAt, so not written back as it is.
+	shared := &recordingSharedDiscoveryStore{discoveries: map[string]*schemas.MCPDiscovery{
+		config.ID: {Resources: savedResources, Prompts: savedPrompts},
+	}}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: newFakePerUserDiscoveryStore()},
+		newTestAccount(), nil, &MockLogger{}, nil)
+	require.NoError(t, addClient(context.Background(), m, config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	written := shared.GetDiscovery(context.Background(), config)
+	require.NotNil(t, written)
+	assert.False(t, written.DiscoveredAt.IsZero(), "the first connect's discovery is the one written back")
+	assert.Contains(t, written.Tools, "docs-echo", "the connect itself succeeded")
+	assert.Equal(t, savedResources, written.Resources, "a failed resources/list keeps the saved resources")
+	assert.Equal(t, savedPrompts, written.Prompts, "a failed prompts/list keeps the saved prompts")
+}
+
 // newFailingResourcesUpstream serves the resources-and-prompts upstream, failing resources/list while fail is set.
 func newFailingResourcesUpstream(t *testing.T, fail *atomic.Bool) *httptest.Server {
+	t.Helper()
+	return newFailingListsUpstream(t, fail, "resources/list")
+}
+
+// newFailingListsUpstream serves the resources-and-prompts upstream, failing each of methods while fail is set.
+func newFailingListsUpstream(t *testing.T, fail *atomic.Bool, methods ...string) *httptest.Server {
 	t.Helper()
 	upstream := server.NewStreamableHTTPServer(newResourcesPromptsUpstream())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +242,7 @@ func newFailingResourcesUpstream(t *testing.T, fail *atomic.Bool) *httptest.Serv
 				Method string          `json:"method"`
 			}
 			_ = json.Unmarshal(body, &msg)
-			if msg.Method == "resources/list" {
+			if slices.Contains(methods, msg.Method) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(msg.ID) + `,"error":{"code":-32603,"message":"backend down"}}`))
 				return

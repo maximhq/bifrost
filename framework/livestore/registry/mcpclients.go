@@ -16,8 +16,9 @@ const (
 	MCPClientBySlug = "slug"
 )
 
-// MCPClient is one configured MCP client, as its row stores it: what it connects with, its tool
-// settings, and the discovery last written to the row.
+// MCPClient is one configured MCP client, as its row stores it: what it connects with and its tool
+// settings. It carries no tools: the discovery the row also holds is kept apart, once per client, by
+// the MCP discovery store, so the record leaves the Discovered fields empty.
 type MCPClient struct {
 	Config schemas.MCPClientConfig
 }
@@ -58,7 +59,13 @@ func readMCPClients(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm
 	}
 	out := make([]*MCPClient, 0, len(rows))
 	for i := range rows {
-		out = append(out, &MCPClient{Config: configstore.MCPClientConfigFromTable(&rows[i])})
+		config := configstore.MCPClientConfigFromTable(&rows[i])
+		config.DiscoveredTools = nil
+		config.DiscoveredInstructions = ""
+		config.DiscoveredResources = nil
+		config.DiscoveredResourceTemplates = nil
+		config.DiscoveredPrompts = nil
+		out = append(out, &MCPClient{Config: config})
 	}
 	return out, nil
 }

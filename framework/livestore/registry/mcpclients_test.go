@@ -43,11 +43,15 @@ func TestMCPClientsPageWalksEveryClientInIDOrder(t *testing.T) {
 }
 
 // TestMCPClientsByIDLeavesOutMissingRows checks that an ID with no row is simply absent, which is how
-// a refresh learns that a client was deleted, and that a record carries its stored row.
+// a refresh learns that a client was deleted, and that a record carries its stored row without the
+// discovered tools, which the discovery store keeps.
 func TestMCPClientsByIDLeavesOutMissingRows(t *testing.T) {
 	ctx := context.Background()
 	store := newProviderDB(t, nil)
-	require.NoError(t, store.CreateMCPClientConfig(ctx, mcpClient("a")))
+	discovered := mcpClient("a")
+	discovered.DiscoveredTools = map[string]schemas.ChatTool{"a-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "a-search"}}}
+	discovered.DiscoveredInstructions = "Read first."
+	require.NoError(t, store.CreateMCPClientConfig(ctx, discovered))
 
 	rows, err := MCPClientsByID(ctx, store.DB(), []string{"a", "gone"})
 	require.NoError(t, err)
@@ -55,4 +59,9 @@ func TestMCPClientsByIDLeavesOutMissingRows(t *testing.T) {
 	require.Equal(t, "a", MCPClientName(rows[0]))
 	require.Equal(t, "a-slug", MCPClientSlug(rows[0]))
 	require.Equal(t, "https://a.example/mcp", rows[0].Config.ConnectionString.GetValue())
+	stored, err := store.GetMCPClientConfigByID(ctx, "a")
+	require.NoError(t, err)
+	require.Len(t, stored.DiscoveredTools, 1, "fixture check: the row holds the tools")
+	require.Nil(t, rows[0].Config.DiscoveredTools, "the record carries no tools")
+	require.Empty(t, rows[0].Config.DiscoveredInstructions)
 }

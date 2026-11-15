@@ -1195,6 +1195,11 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 					Prompts:           config.DiscoveredPrompts,
 				})
 				client.LastDiscoveryHash = computeDiscoveryHash(m.installedDiscovery(config))
+			} else if installed := m.installedDiscovery(config); len(installed.GetTools()) > 0 || installed.GetInstructions() != "" {
+				// The discovery store already holds what the row saved (a store can fill itself from
+				// the rows when the client's configuration carries no tools): seeded from it, as from
+				// a restore.
+				client.LastDiscoveryHash = computeDiscoveryHash(installed)
 			}
 		}
 		m.mu.Unlock()
@@ -1213,8 +1218,9 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 		// uses the slow healthyInterval (not the fast Unstable one) for a
 		// client that already starts Healthy, could be minutes away.
 		// A failure does not fail the add: it is recorded as the client's
-		// state, and the checker started below retries it.
-		if len(config.DiscoveredTools) == 0 {
+		// state, and the checker started below retries it. Tools the
+		// discovery store already holds count as restored.
+		if len(config.DiscoveredTools) == 0 && len(m.installedDiscovery(config).GetTools()) == 0 {
 			if discovery, discErr := m.performAdminToolDiscovery(requestCtx, config, 0); discErr != nil {
 				m.recordFailedFirstDiscovery(config.ID, config.Name, discErr)
 			} else {
@@ -2741,7 +2747,7 @@ func (m *MCPManager) UpdateClientCredentials(id string) (retErr error) {
 			// healthyInterval, not the fast Unstable one, for an
 			// already-Healthy client). A failure is recorded as the client's
 			// state, and the checker started below retries it.
-			if len(newConfig.DiscoveredTools) == 0 && !perUserDiscoveryOn(newConfig) {
+			if len(newConfig.DiscoveredTools) == 0 && len(m.installedDiscovery(newConfig).GetTools()) == 0 && !perUserDiscoveryOn(newConfig) {
 				if discovery, discErr := m.performAdminToolDiscovery(m.ctx, newConfig, 0); discErr != nil {
 					m.recordFailedFirstDiscovery(id, newConfig.Name, discErr)
 				} else {
@@ -3360,8 +3366,10 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 			tools = t
 			m.mu.RLock()
 			previous := *m.installedDiscovery(config) // a copy: the lists below must not land on the stored one
-			if entry.LastDiscoveryHash == "" {
-				// Nothing installed since restart: the saved lists are what a failed list call keeps.
+			if entry.LastDiscoveryHash == "" && (len(config.DiscoveredResources) > 0 || len(config.DiscoveredResourceTemplates) > 0 || len(config.DiscoveredPrompts) > 0) {
+				// Nothing installed since restart: the lists the configuration saved are what a failed
+				// list call keeps. A configuration carrying none leaves the store's, restored from the
+				// client's row.
 				previous.Resources, previous.ResourceTemplates, previous.Prompts = config.DiscoveredResources, config.DiscoveredResourceTemplates, config.DiscoveredPrompts
 			}
 			m.mu.RUnlock()
