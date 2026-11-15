@@ -7070,7 +7070,7 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 	require.NotNil(t, messages[0].Content[0].Text)
 	assert.Equal(t, "first user turn", *messages[0].Content[0].Text)
 	require.NotNil(t, messages[0].Content[1].Text)
-	assert.Equal(t, "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>\n",
+	assert.Equal(t, "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>",
 		*messages[0].Content[1].Text, "reminder must stay inline at its position, wrapped")
 	require.NotNil(t, messages[0].Content[2].Text)
 	assert.Equal(t, "second user turn", *messages[0].Content[2].Text)
@@ -7129,7 +7129,7 @@ func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
 	assert.Equal(t, bedrock.BedrockMessageRoleUser, messages[0].Role)
 	require.Len(t, messages[0].Content, 2)
 	assert.Equal(t, "hello", *messages[0].Content[0].Text)
-	assert.Equal(t, "<system-reminder>\nInjected reminder.\n</system-reminder>\n", *messages[0].Content[1].Text)
+	assert.Equal(t, "<system-reminder>\nInjected reminder.\n</system-reminder>", *messages[0].Content[1].Text)
 }
 
 // TestSystemReminderAfterToolResultPreservesPairing verifies that a reminder arriving after a
@@ -7189,7 +7189,7 @@ func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
 	var foundReminder bool
 	for _, m := range messages {
 		for _, b := range m.Content {
-			if b.Text != nil && *b.Text == "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>\n" {
+			if b.Text != nil && *b.Text == "<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>" {
 				foundReminder = true
 			}
 		}
@@ -7237,7 +7237,7 @@ func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
 	var found bool
 	for _, m := range messages {
 		for _, b := range m.Content {
-			if b.Text != nil && *b.Text == "<system-reminder>\nDeveloper note injected mid-conversation.\n</system-reminder>\n" {
+			if b.Text != nil && *b.Text == "<system-reminder>\nDeveloper note injected mid-conversation.\n</system-reminder>" {
 				found = true
 			}
 		}
@@ -7266,7 +7266,7 @@ func TestMidConversationReminderContentStrInlined(t *testing.T) {
 	var found bool
 	for _, m := range messages {
 		for _, b := range m.Content {
-			if b.Text != nil && *b.Text == "<system-reminder>\nReminder via ContentStr.\n</system-reminder>\n" {
+			if b.Text != nil && *b.Text == "<system-reminder>\nReminder via ContentStr.\n</system-reminder>" {
 				found = true
 			}
 		}
@@ -7297,7 +7297,7 @@ func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
 		require.NotEmpty(t, m.Content, "no message should have empty content")
 		for _, b := range m.Content {
 			if b.Text != nil {
-				assert.NotEqual(t, "<system-reminder>\n\n</system-reminder>\n", *b.Text, "empty reminder must not be emitted as a wrapped blank")
+				assert.NotEqual(t, "<system-reminder>\n\n</system-reminder>", *b.Text, "empty reminder must not be emitted as a wrapped blank")
 			}
 		}
 	}

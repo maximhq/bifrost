@@ -1671,6 +1671,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	// arrives. Giving them a turn of their own instead would read as assistant, user, user once
 	// that turn lands, and Converse turns have to alternate.
 	var pendingReminderBlocks []BedrockContentBlock
+	trimInlineJoin := schemas.ResolveModelCaps(schemas.Bedrock, model).StripsUserTurnTrailingWhitespace(anthropic.DefaultStripsUserTurnTrailingWhitespace(model))
 
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
@@ -1693,6 +1694,9 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 				// Mid-conversation reminder: inline in place (see seenNonSystemMessage).
 				if reminder := convertChatSystemReminderToBedrockUserMessage(msg); reminder != nil {
 					if n := len(messages); n > 0 && messages[n-1].Role == BedrockMessageRoleUser {
+						if trimInlineJoin {
+							trimUserTurnTail(messages[n-1].Content)
+						}
 						messages[n-1].Content = append(messages[n-1].Content, reminder.Content...)
 					} else {
 						pendingReminderBlocks = append(pendingReminderBlocks, reminder.Content...)
@@ -2019,12 +2023,31 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 	return cp
 }
 
+// trimUserTurnTail strips trailing whitespace from the text that ends a user turn (a trailing
+// cachePoint aside), called before an inlined reminder joins that turn on a model that strips it at
+// the end of a turn (ModelCaps.StripsUserTurnTrailingWhitespace). Applied whether or not a
+// cachePoint follows: see the anthropic twin.
+func trimUserTurnTail(content []BedrockContentBlock) {
+	k := len(content) - 1
+	if k >= 0 && content[k].CachePoint != nil {
+		k--
+	}
+	if k < 0 || content[k].Text == nil {
+		return
+	}
+	// The pointer is replaced, not written through: it can alias the caller's request.
+	if trimmed := strings.TrimRight(*content[k].Text, " \n\r\t"); trimmed != "" && len(trimmed) < len(*content[k].Text) {
+		content[k].Text = new(trimmed)
+	}
+}
+
 // convertChatSystemReminderToBedrockUserMessage is the Chat Completions twin of
 // convertBifrostSystemReminderToBedrockUserMessage: a mid-conversation role:"system" chat message
-// rendered as a user turn, each text wrapped in the <system-reminder> envelope, with only the LAST
-// breakpoint kept as a trailing cachePoint (an intermediate marker inside one message closes over
-// nothing the final one does not, and would burn one of the four checkpoints). The breakpoint is
-// taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
+// rendered as a user turn, each text wrapped in the <system-reminder> envelope (no trailing newline,
+// see convertBifrostSystemReminderToBedrockUserMessage), with only the LAST breakpoint kept, as a
+// cachePoint right after the text it closes over (an intermediate marker inside one message closes
+// over nothing the final one does not, and would burn one of the four checkpoints). The breakpoint
+// is taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
 // Text-only, like the `system` branch it replaces. Returns nil when the message yields no text.
 func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *BedrockMessage {
 	if msg.Content == nil {
@@ -2032,7 +2055,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	}
 	var contentBlocks []BedrockContentBlock
 	wrap := func(text string) {
-		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
 	// Whichever breakpoint comes last wins, in whichever dialect it arrived: a cache_control on a
@@ -2040,7 +2063,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	// (Converse-native, and the form convertSystemMessages preserves on the hoisted path). Reading
 	// only the first kind drops the boundary a Converse-native client asked for.
 	var lastBreakpointTTL *string
-	haveBreakpoint := false
+	breakpointAt := -1
 	if msg.Content.ContentStr != nil {
 		if *msg.Content.ContentStr != "" {
 			wrap(*msg.Content.ContentStr)
@@ -2050,20 +2073,22 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 			if block.Text != nil && *block.Text != "" {
 				wrap(*block.Text)
 				if block.CacheControl != nil {
-					lastBreakpointTTL, haveBreakpoint = block.CacheControl.TTL, true
+					lastBreakpointTTL, breakpointAt = block.CacheControl.TTL, len(contentBlocks)
 				}
 				continue
 			}
 			if block.CachePoint != nil {
-				lastBreakpointTTL, haveBreakpoint = block.CachePoint.TTL, true
+				lastBreakpointTTL, breakpointAt = block.CachePoint.TTL, len(contentBlocks)
 			}
 		}
 	}
 	if len(contentBlocks) == 0 {
 		return nil
 	}
-	if haveBreakpoint {
-		contentBlocks = append(contentBlocks, BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
+	if breakpointAt >= 0 {
+		// A cachePoint ahead of every text still follows at least the first one, so the message
+		// never opens with a cachePoint.
+		contentBlocks = slices.Insert(contentBlocks, max(breakpointAt, 1), BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
 	}
 	return &BedrockMessage{Role: BedrockMessageRoleUser, Content: contentBlocks}
 }

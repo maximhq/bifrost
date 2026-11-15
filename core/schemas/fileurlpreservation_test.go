@@ -62,7 +62,7 @@ func TestChatToResponsesKeepsFileURL(t *testing.T) {
 // And the reverse direction must not lose it either.
 func TestResponsesToChatKeepsFileURL(t *testing.T) {
 	cm := fileURLChatMessage()
-	back := ToChatMessages(cm.ToResponsesMessages())
+	back := ToChatMessages(cm.ToResponsesMessages(), nil)
 	if len(back) != 1 {
 		t.Fatalf("expected 1 chat message, got %d", len(back))
 	}

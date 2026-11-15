@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -950,6 +951,12 @@ func isPromptOptionalVideoEditType(t *string) bool {
 		[]string{"background_removal", "remove_background", "remove_bg", "upscale"},
 		normalized,
 	)
+}
+
+// wrapResponsesRestorePostHookRunner restores custom tool calls, then namespaced tool names.
+func wrapResponsesRestorePostHookRunner(runner schemas.PostHookRunner, prepared *schemas.BifrostResponsesRequest) schemas.PostHookRunner {
+	runner = providerUtils.WrapCustomToolRestorePostHookRunner(runner, prepared.CustomToolNames)
+	return providerUtils.WrapNamespaceRestorePostHookRunner(runner, prepared.NamespaceToolAliases)
 }
 
 // wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming

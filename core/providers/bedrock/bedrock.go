@@ -4607,7 +4607,7 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input)
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input) || inputHasToolChanges(request.Input)
 }
 
 func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
@@ -4643,6 +4643,29 @@ func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
 		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
 		for j := range blocks {
 			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputHasToolChanges reports tool_addition / tool_removal blocks (system or developer
+// messages) or a compaction item's tool_changes, which Converse has no block for.
+func inputHasToolChanges(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		if input[i].Content == nil || len(input[i].Content.ContentBlocks) == 0 {
+			continue
+		}
+		blocks := input[i].Content.ContentBlocks
+		if cmp := blocks[0].ResponsesOutputMessageContentCompaction; cmp != nil && len(cmp.ToolChanges) > 0 {
+			return true
+		}
+		if role := input[i].Role; role == nil || (*role != schemas.ResponsesInputMessageRoleSystem && *role != schemas.ResponsesInputMessageRoleDeveloper) {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition || blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
 				return true
 			}
 		}

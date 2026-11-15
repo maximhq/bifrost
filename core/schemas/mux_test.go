@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func TestToChatMessages_PreservesDeveloperRole(t *testing.T) {
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(chatMessages))
 	}
@@ -68,7 +69,7 @@ func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 		{Role: Ptr(ResponsesInputMessageRoleAssistant)},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != len(messages) {
 		t.Fatalf("expected %d messages, got %d", len(messages), len(chatMessages))
 	}
@@ -109,7 +110,7 @@ func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages (reasoning absorbed into assistant), got %d", len(chatMessages))
 	}
@@ -162,7 +163,7 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages (tool-call assistant + tool result), got %d", len(chatMessages))
 	}
@@ -199,7 +200,7 @@ func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) 
 		},
 	}
 
-	chatMessages := ToChatMessages(messages)
+	chatMessages := ToChatMessages(messages, nil)
 	if len(chatMessages) != 2 {
 		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
 	}
@@ -293,7 +294,7 @@ func TestToResponsesMessages_KeepsTextBeforeToolCalls(t *testing.T) {
 	}
 
 	// Round trip back to chat must yield one assistant turn carrying both the text and the calls.
-	back := ToChatMessages(out)
+	back := ToChatMessages(out, nil)
 	if len(back) != 1 {
 		t.Fatalf("expected round trip to yield 1 assistant message, got %d: %#v", len(back), back)
 	}
@@ -361,7 +362,7 @@ func TestToChatMessages_RoundTripKeepsReasoningTextAndCallsOnOneTurn(t *testing.
 	items = append(items, user.ToResponsesMessages()...)
 	items = append(items, cm.ToResponsesMessages()...)
 	items = append(items, toolResult.ToResponsesMessages()...)
-	back := ToChatMessages(items)
+	back := ToChatMessages(items, nil)
 
 	if len(back) != 3 {
 		t.Fatalf("expected user, assistant, tool messages, got %d: %#v", len(back), back)
@@ -522,7 +523,7 @@ func TestToResponsesToolMessage_MarksAFailedToolResult(t *testing.T) {
 	if general := failed.ToResponsesMessages(); len(general) != 1 || general[0].Status == nil || *general[0].Status != *msg.Status {
 		t.Fatalf("expected ToResponsesMessages to mark it the same way, got %#v", general)
 	}
-	back := ToChatMessages([]ResponsesMessage{*msg})
+	back := ToChatMessages([]ResponsesMessage{*msg}, nil)
 	if len(back) != 1 || back[0].ChatToolMessage == nil || back[0].ChatToolMessage.IsError == nil || !*back[0].ChatToolMessage.IsError {
 		t.Fatalf("expected the mark to read back as is_error, got %#v", back)
 	}
@@ -2373,7 +2374,7 @@ func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
 		t.Fatal("guard marker dropped on chat -> responses")
 	}
 
-	back := ToChatMessages(responses)
+	back := ToChatMessages(responses, nil)
 	if len(back) != 1 || back[0].Content == nil || len(back[0].Content.ContentBlocks) != 2 {
 		t.Fatalf("unexpected chat shape: %+v", back)
 	}
@@ -2402,7 +2403,7 @@ func TestReasoningItemIDSurvivesChatRoundTrip(t *testing.T) {
 		},
 	}
 
-	chat := ToChatMessages(items)
+	chat := ToChatMessages(items, nil)
 	var assistant *ChatMessage
 	for i := range chat {
 		if chat[i].Role == ChatMessageRoleAssistant && chat[i].ChatAssistantMessage != nil {
@@ -2552,7 +2553,7 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
 			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
 		}}},
-	})
+	}, nil)
 	if len(chat) != 2 {
 		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
 	}
@@ -2587,7 +2588,7 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 		t.Fatalf("unmarshal input: %v", err)
 	}
 
-	got := ToChatMessages(input)
+	got := ToChatMessages(input, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
 	}
@@ -2610,7 +2611,7 @@ func TestToChatMessages_DropsMCPCallItems(t *testing.T) {
 		t.Fatalf("unmarshal input: %v", err)
 	}
 
-	got := ToChatMessages(input)
+	got := ToChatMessages(input, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected only the two user messages, got %d messages: %+v", len(got), got)
 	}
@@ -2642,7 +2643,7 @@ func TestToChatMessages_DropsRolelessItemsWithoutChatEquivalent(t *testing.T) {
 		t.Fatalf("unmarshal input: %v", err)
 	}
 
-	got := ToChatMessages(input)
+	got := ToChatMessages(input, nil)
 	wantRoles := []ChatMessageRole{ChatMessageRoleUser, ChatMessageRoleAssistant, ChatMessageRoleTool, ChatMessageRoleUser}
 	if len(got) != len(wantRoles) {
 		t.Fatalf("expected %d messages, got %d: %+v", len(wantRoles), len(got), got)
@@ -2733,7 +2734,7 @@ func BenchmarkToChatMessages(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = ToChatMessages(input)
+		_ = ToChatMessages(input, nil)
 	}
 }
 
@@ -2816,5 +2817,172 @@ func TestResponsesToolToChatTool_CustomToolKeepsNameAndDescription(t *testing.T)
 		if !strings.Contains(string(out), `"name":"ApplyPatch"`) || !strings.Contains(string(out), `"description":"Apply a patch"`) {
 			t.Fatalf("ToChatTool(%s) = %s, want name and description inside custom", in, out)
 		}
+	}
+}
+
+// Chat logprobs must survive the chat -> Responses conversion, which carries them
+// as an include entry rather than a boolean.
+func TestToResponsesRequest_LogProbsAddsInclude(t *testing.T) {
+	cases := []struct {
+		name     string
+		logprobs *bool
+		want     bool
+	}{
+		{name: "true", logprobs: Ptr(true), want: true},
+		{name: "false", logprobs: Ptr(false), want: false},
+		{name: "unset", logprobs: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			brr := (&BifrostChatRequest{
+				Model:  "gpt-6-luna",
+				Params: &ChatParameters{LogProbs: tc.logprobs, TopLogProbs: Ptr(2)},
+			}).ToResponsesRequest()
+			got := slices.Contains(brr.Params.Include, ResponsesIncludeOutputTextLogProbs)
+			if got != tc.want {
+				t.Fatalf("include %q present = %v, want %v (include=%v)", ResponsesIncludeOutputTextLogProbs, got, tc.want, brr.Params.Include)
+			}
+			if brr.Params.TopLogProbs == nil || *brr.Params.TopLogProbs != 2 {
+				t.Fatalf("expected top_logprobs 2, got %v", brr.Params.TopLogProbs)
+			}
+		})
+	}
+}
+
+func responsesTextOutputWithLogProbs(text string, logprobs []ResponsesOutputMessageContentTextLogProb) []ResponsesMessage {
+	out := responsesTextOutput(text)
+	out[0].Content.ContentBlocks[0].ResponsesOutputMessageContentText = &ResponsesOutputMessageContentText{LogProbs: logprobs}
+	return out
+}
+
+func TestToBifrostChatResponse_MapsOutputTextLogProbs(t *testing.T) {
+	logprobs := []ResponsesOutputMessageContentTextLogProb{
+		{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi"}}},
+		{Bytes: []int{33}, LogProb: -0.00002, Token: "!", TopLogProbs: []LogProb{{Bytes: []int{33}, LogProb: -0.00002, Token: "!"}}},
+	}
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutputWithLogProbs("Hi!", logprobs),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", chatResp)
+	}
+	lp := chatResp.Choices[0].LogProbs
+	if lp == nil {
+		t.Fatal("expected choices[0].logprobs to be set")
+	}
+	want := []ContentLogProb{
+		{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi"}}},
+		{Bytes: []int{33}, LogProb: -0.00002, Token: "!", TopLogProbs: []LogProb{{Bytes: []int{33}, LogProb: -0.00002, Token: "!"}}},
+	}
+	if !reflect.DeepEqual(lp.Content, want) {
+		t.Fatalf("logprobs.content mismatch:\n got %+v\nwant %+v", lp.Content, want)
+	}
+}
+
+// OpenAI echoes "logprobs": [] on every text block, requested or not; that must
+// stay null on the chat side, as it is on a native chat completion.
+func TestToBifrostChatResponse_EmptyOutputTextLogProbsStayNull(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutputWithLogProbs("Hi!", []ResponsesOutputMessageContentTextLogProb{}),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", chatResp)
+	}
+	if chatResp.Choices[0].LogProbs != nil {
+		t.Fatalf("expected nil logprobs, got %+v", chatResp.Choices[0].LogProbs)
+	}
+}
+
+// Each choice built from an output message carries only that message's logprobs, even
+// when items with no chat message of their own (reasoning) sit between them.
+func TestToBifrostChatResponse_LogProbsFollowTheirMessage(t *testing.T) {
+	hi := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{72, 105}, LogProb: -0.1, Token: "Hi", TopLogProbs: []LogProb{}}}
+	bye := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{66, 121, 101}, LogProb: -0.2, Token: "Bye", TopLogProbs: []LogProb{}}}
+	output := append(responsesTextOutputWithLogProbs("Hi", hi), ResponsesMessage{
+		Type:               Ptr(ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &ResponsesReasoning{Summary: []ResponsesReasoningSummary{}},
+	})
+	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
+
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
+	if chatResp == nil || len(chatResp.Choices) != 2 {
+		t.Fatalf("expected two choices, got %+v", chatResp)
+	}
+	for i, want := range []struct{ text, token string }{{"Hi", "Hi"}, {"Bye", "Bye"}} {
+		choice := chatResp.Choices[i]
+		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
+			t.Fatalf("choices[%d] text = %v, want %q", i, got, want.text)
+		}
+		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
+			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i, choice.LogProbs, want.token)
+		}
+	}
+}
+
+// A standalone tool call ahead of the text gets no logprobs, and a call after the text
+// merges into that text's choice without taking a later message's logprobs.
+func TestToBifrostChatResponse_LogProbsSurviveInterleavedToolCalls(t *testing.T) {
+	call := func(id string) ResponsesMessage {
+		return ResponsesMessage{
+			Type:                 Ptr(ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr(id), Name: Ptr("get_weather"), Arguments: Ptr("{}")},
+		}
+	}
+	hi := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{72, 105}, LogProb: -0.1, Token: "Hi", TopLogProbs: []LogProb{}}}
+	bye := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{66, 121, 101}, LogProb: -0.2, Token: "Bye", TopLogProbs: []LogProb{}}}
+	output := []ResponsesMessage{call("call_1")}
+	output = append(output, responsesTextOutputWithLogProbs("Hi", hi)...)
+	output = append(output, call("call_2"))
+	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
+
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
+	if chatResp == nil || len(chatResp.Choices) != 3 {
+		t.Fatalf("expected three choices (call_1, Hi+call_2, Bye), got %+v", chatResp)
+	}
+	if lp := chatResp.Choices[0].LogProbs; lp != nil {
+		t.Fatalf("standalone tool-call choice must carry no logprobs, got %+v", lp)
+	}
+	for i, want := range []struct{ text, token, call string }{{"Hi", "Hi", "call_2"}, {"Bye", "Bye", ""}} {
+		choice := chatResp.Choices[i+1]
+		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
+			t.Fatalf("choices[%d] text = %v, want %q", i+1, got, want.text)
+		}
+		if want.call != "" {
+			calls := choice.Message.ChatAssistantMessage.ToolCalls
+			if len(calls) != 1 || calls[0].ID == nil || *calls[0].ID != want.call {
+				t.Fatalf("choices[%d] tool calls = %+v, want %s merged", i+1, calls, want.call)
+			}
+		}
+		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
+			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i+1, choice.LogProbs, want.token)
+		}
+	}
+}
+
+func TestResponsesStreamToBifrostChatResponse_MapsOutputTextDeltaLogProbs(t *testing.T) {
+	chunk := &BifrostResponsesStreamResponse{
+		Type:  ResponsesStreamResponseTypeOutputTextDelta,
+		Delta: Ptr("Hi"),
+		LogProbs: []ResponsesOutputMessageContentTextLogProb{
+			{Bytes: []int{72, 105}, LogProb: -0.0001, Token: "Hi", TopLogProbs: []LogProb{}},
+		},
+	}
+
+	resp := chunk.ToBifrostChatResponse()
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %+v", resp)
+	}
+	lp := resp.Choices[0].LogProbs
+	if lp == nil || len(lp.Content) != 1 || lp.Content[0].Token != "Hi" || lp.Content[0].LogProb != -0.0001 {
+		t.Fatalf("expected delta logprobs for token Hi, got %+v", lp)
+	}
+
+	chunk.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
+	if resp := chunk.ToBifrostChatResponse(); resp.Choices[0].LogProbs != nil {
+		t.Fatalf("expected nil logprobs for an empty delta list, got %+v", resp.Choices[0].LogProbs)
 	}
 }
