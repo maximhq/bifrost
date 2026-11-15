@@ -256309,6 +256309,150 @@
               ]
             }
           }
+        },
+        {
+          "name": "/v1/decisions - locate returns spans indexing the input by code point, [] for no match - perplexity/pplx-decider-v1.3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('locate answers carry spans whose code-point offsets index the input, and [] when nothing matches', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var input = JSON.parse(pm.request.body.raw).input;",
+                  "  var chars = Array.from(input);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(a.map(function (x) { return x.type; })).to.eql(['locate', 'locate']);",
+                  "  pm.expect(a[0].name).to.eql('oxygen');",
+                  "  pm.expect(a[0].spans, 'spans: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  a[0].spans.forEach(function (s) {",
+                  "    pm.expect(s.text).to.be.a('string').and.not.empty;",
+                  "    pm.expect(s.score).to.be.a('number');",
+                  "    pm.expect(chars.slice(s.start, s.end).join(''), 'offsets ' + s.start + '-' + s.end + ' do not index the input').to.eql(s.text);",
+                  "  });",
+                  "  pm.expect(a[0].spans.map(function (s) { return s.text; }).join(' ')).to.include('nasal cannula');",
+                  "  pm.expect(a[1].name).to.eql('phone');",
+                  "  pm.expect(a[1].spans, 'no-match answer must keep spans: []: ' + pm.response.text()).to.eql([]);",
+                  "  pm.expect(pm.response.json().usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.3\",\n  \"input\": \"Admit Date: 11/02/2026   Discharge Date: 11/09/2026\\nPt: José 😀 seen in clinic\\nO2: 2L nasal cannula, wean as tolerated\\nApixaban 5 mg PO BID\",\n  \"questions\": [\n    {\n      \"type\": \"locate\",\n      \"name\": \"oxygen\",\n      \"instructions\": \"The text describing the patient’s oxygen delivery.\"\n    },\n    {\n      \"type\": \"locate\",\n      \"name\": \"phone\",\n      \"instructions\": \"The patient’s home phone number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - Perplexity-shaped locate body (state + questions map) answers with spans - perplexity/pplx-decider-v1.3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a map-form locate question is served and answered with spans keyed by name', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var state = JSON.parse(pm.request.body.raw).state;",
+                  "  var chars = Array.from(state);",
+                  "  var answer = pm.response.json().answers.medication;",
+                  "  pm.expect(answer, 'answers: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(answer.kind).to.eql('locate');",
+                  "  pm.expect(answer.spans, 'spans: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(answer.value).to.eql(answer.spans);",
+                  "  answer.spans.forEach(function (s) {",
+                  "    pm.expect(chars.slice(s.start, s.end).join('')).to.eql(s.text);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.3\",\n  \"state\": \"Admit Date: 11/02/2026   Discharge Date: 11/09/2026\\nPt: José 😀 seen in clinic\\nO2: 2L nasal cannula, wean as tolerated\\nApixaban 5 mg PO BID\",\n  \"questions\": {\n    \"medication\": {\n      \"type\": \"locate\",\n      \"instructions\": \"The apixaban medication line.\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - locate on a structured input is rejected by the gateway - perplexity/pplx-decider-v1.3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('locate needs a plain text input; a JSON object input is a 400 before any provider call', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('plain text string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.3\",\n  \"input\": {\n    \"note\": \"O2: 2L nasal cannula\"\n  },\n  \"questions\": [\n    {\n      \"type\": \"locate\",\n      \"name\": \"oxygen\",\n      \"instructions\": \"The oxygen delivery text.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
         }
       ]
     },
