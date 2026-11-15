@@ -112,6 +112,46 @@ func TestToBifrostListModelsResponse_ReportsModalities(t *testing.T) {
 	assert.Contains(t, string(raw), `"architecture":{"input_modalities":["text"],"output_modalities":["audio"]}`)
 }
 
+// TestGeminiModelArchitecture_DocumentedFamilies follows the Inputs/Output rows of
+// Google's per-model pages (https://ai.google.dev/gemini-api/docs/models).
+func TestGeminiModelArchitecture_DocumentedFamilies(t *testing.T) {
+	generate := []string{"generateContent", "countTokens"}
+	tests := []struct {
+		name    string
+		methods []string
+		in, out []string
+	}{
+		{"models/gemini-3.8-flash-tts", generate, []string{"text"}, []string{"audio"}},
+		{"models/gemini-3.8-flash-lite-tts", generate, []string{"text"}, []string{"audio"}},
+		{"models/gemini-3.8-live", []string{"bidiGenerateContent"}, []string{"audio", "image", "text"}, []string{"audio", "text"}},
+		{"models/gemini-3.5-live-translate-preview", []string{"bidiGenerateContent"}, []string{"audio"}, []string{"audio", "text"}},
+		{"models/gemini-2.5-flash-native-audio-preview-12-2025", []string{"bidiGenerateContent"}, []string{"audio", "text", "video"}, []string{"audio", "text"}},
+		{"models/gemini-3.5-transcribe", generate, []string{"audio"}, []string{"text"}},
+		{"models/imagen-4.0-ultra-generate-001", []string{"predict"}, []string{"text"}, []string{"image"}},
+		{"models/veo-3.1-generate-preview", []string{"predictLongRunning"}, []string{"image", "text"}, []string{"video"}},
+		{"models/gemini-omni-flash", generate, []string{"image", "text", "video"}, []string{"text", "video"}},
+		{"models/lyria-realtime-exp", []string{"bidiGenerateMusic"}, []string{"text"}, []string{"audio"}},
+		{"models/lyria-3.5", generate, []string{"image", "text"}, []string{"audio", "text"}},
+		{"models/gemini-3-pro-image", generate, []string{"image", "text"}, []string{"image", "text"}},
+		{"models/gemini-3.1-flash-image", generate, []string{"file", "image", "text", "video"}, []string{"image", "text"}},
+		{"models/gemini-nano-banana-2.1", generate, []string{"file", "image", "text", "video"}, []string{"image", "text"}},
+		{"models/gemini-embedding-2", []string{"embedContent"}, []string{"audio", "file", "image", "text", "video"}, []string{"embeddings"}},
+		{"models/text-embedding-004", []string{"embedContent"}, []string{"text"}, []string{"embeddings"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			arch := geminiModelArchitecture(tc.name, tc.methods)
+			require.NotNil(t, arch)
+			assert.Equal(t, tc.in, arch.InputModalities)
+			assert.Equal(t, tc.out, arch.OutputModalities)
+		})
+	}
+
+	for _, chat := range []string{"models/gemini-3.8-flash", "models/gemini-4-carbon", "models/gemini-3.1-flash-lite"} {
+		assert.Nil(t, geminiModelArchitecture(chat, generate), chat)
+	}
+}
+
 func TestToBifrostModelRetrieveResponse_ReportsTTSModality(t *testing.T) {
 	model := &GeminiModel{
 		Name:                       "models/gemini-2.5-pro-preview-tts",

@@ -21,8 +21,9 @@ func toGeminiModelResourceName(modelID string) string {
 // geminiModelArchitecture derives the modality lists for a Gemini models.list entry.
 // The Model resource has no modality fields, and TTS, image and chat models all list
 // generateContent, so the model family in the name is the only signal that separates
-// them; embedContent without generateContent marks an embedding model. Returns nil for
-// plain text-generation models, so the model catalog can still fill their full input
+// them; embedContent without generateContent marks an embedding model. The lists follow
+// the per-model Inputs/Output tables in Google's model docs. Returns nil for plain
+// text-generation models, so the model catalog can still fill their full input
 // modalities from its datasheet.
 func geminiModelArchitecture(modelName string, methods []string) *schemas.Architecture {
 	name := strings.ToLower(strings.TrimPrefix(modelName, "models/"))
@@ -31,16 +32,42 @@ func geminiModelArchitecture(modelName string, methods []string) *schemas.Archit
 	switch {
 	case slices.Contains(tokens, "tts"):
 		inputs, outputs = []string{"text"}, []string{"audio"}
+	case slices.Contains(tokens, "live") && slices.Contains(tokens, "translate"):
+		inputs, outputs = []string{"audio"}, []string{"audio", "text"}
 	case strings.Contains(name, "native-audio"):
 		inputs, outputs = []string{"audio", "text", "video"}, []string{"audio", "text"}
+	case slices.Contains(tokens, "live"):
+		inputs, outputs = []string{"audio", "image", "text"}, []string{"audio", "text"}
+	case slices.Contains(tokens, "transcribe"):
+		inputs, outputs = []string{"audio"}, []string{"text"}
 	case schemas.IsImagenModel(name):
 		inputs, outputs = []string{"text"}, []string{"image"}
 	case slices.Contains(tokens, "veo"):
 		inputs, outputs = []string{"image", "text"}, []string{"video"}
-	case slices.Contains(tokens, "image"):
-		inputs, outputs = []string{"image", "text"}, []string{"image", "text"}
-	case slices.Contains(methods, "embedContent") && !slices.Contains(methods, "generateContent"):
-		inputs, outputs = []string{"text"}, []string{"embeddings"}
+	case slices.Contains(tokens, "omni"):
+		inputs, outputs = []string{"image", "text", "video"}, []string{"text", "video"}
+	case slices.Contains(tokens, "lyria") && slices.Contains(tokens, "realtime"):
+		inputs, outputs = []string{"text"}, []string{"audio"}
+	case slices.Contains(tokens, "lyria"):
+		inputs, outputs = []string{"image", "text"}, []string{"audio", "text"}
+	case slices.Contains(tokens, "image") || strings.Contains(name, "nano-banana"):
+		// Gemini 2.x image models and Gemini 3 Pro Image take images and text; the
+		// later image models also take video and PDF.
+		if strings.HasPrefix(name, "gemini-2") || strings.HasPrefix(name, "gemini-3-pro-image") {
+			inputs = []string{"image", "text"}
+		} else {
+			inputs = []string{"file", "image", "text", "video"}
+		}
+		outputs = []string{"image", "text"}
+	case slices.Contains(tokens, "embedding") || (slices.Contains(methods, "embedContent") && !slices.Contains(methods, "generateContent")):
+		// gemini-embedding-2 embeds text, images, video, audio and PDF; the earlier
+		// embedding models take text only.
+		if strings.HasPrefix(name, "gemini-embedding-2") {
+			inputs = []string{"audio", "file", "image", "text", "video"}
+		} else {
+			inputs = []string{"text"}
+		}
+		outputs = []string{"embeddings"}
 	default:
 		return nil
 	}
