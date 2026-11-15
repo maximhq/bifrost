@@ -256382,7 +256382,9 @@
                   "  pm.expect(answer.kind).to.eql('locate');",
                   "  pm.expect(answer.spans, 'spans: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                   "  pm.expect(answer.value).to.eql(answer.spans);",
+                  "  pm.expect(answer.spans.map(function (s) { return s.text; }).join(' '), 'medication text: ' + pm.response.text()).to.include('Apixaban 5 mg PO BID');",
                   "  answer.spans.forEach(function (s) {",
+                  "    pm.expect(s.text).to.be.a('string').and.not.empty;",
                   "    pm.expect(chars.slice(s.start, s.end).join('')).to.eql(s.text);",
                   "  });",
                   "});"
