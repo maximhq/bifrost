@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **Next Reset in Virtual Key Quota** - `GET /api/governance/virtual-keys/quota` reports `next_reset` on each budget, `token_next_reset` and `request_next_reset` on each rate limit, and the key's `calendar_aligned` flag, so a self-service client no longer has to work out reset times from `last_reset` and `reset_duration`
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
 
 ## 🐞 Fixed

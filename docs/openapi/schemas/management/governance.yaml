@@ -950,6 +950,7 @@ VirtualKeyQuotaResponse:
   required:
     - virtual_key_name
     - is_active
+    - calendar_aligned
     - budgets
     - rate_limit
     - rate_limits
@@ -962,6 +963,12 @@ VirtualKeyQuotaResponse:
     is_active:
       type: boolean
       description: Whether the virtual key is active
+    calendar_aligned:
+      type: boolean
+      description: >
+        The virtual key's `calendar_aligned` setting: whether its `1d`, `1w`, `1M`, `1Q` and `1Y`
+        windows reset on calendar boundaries (UTC) instead of on a rolling schedule. The
+        `next_reset` fields already apply the alignment of whatever governs each window.
     budgets:
       type: [array, 'null']
       description: >
@@ -976,7 +983,9 @@ VirtualKeyQuotaResponse:
         carries the real usage. Kept for readers that expect one value; see `rate_limits` for the
         unmerged list.
       oneOf:
-        - $ref: '#/RateLimit'
+        - allOf:
+            - $ref: '#/RateLimit'
+            - $ref: '#/RateLimitNextResets'
         - type: 'null'
     rate_limits:
       type: array
@@ -986,7 +995,9 @@ VirtualKeyQuotaResponse:
         several enterprise access profiles at once, each contributing its own rate limit, so this
         can carry more than one entry. Always present; empty when the key has no rate limit at all.
       items:
-        $ref: '#/SourcedRateLimit'
+        allOf:
+          - $ref: '#/SourcedRateLimit'
+          - $ref: '#/RateLimitNextResets'
     provider_configs:
       type: [array, 'null']
       description: Per-provider budget quotas and rate limits (provider-level splits and limits)
@@ -1017,6 +1028,12 @@ VirtualKeyBudgetUsage:
           description: Per-model actual usage within this budget's current cycle
           items:
             $ref: '#/VirtualKeyModelSpend'
+        next_reset:
+          type: string
+          format: date-time
+          description: >
+            When the gateway next resets this budget, computed with the same window rules it resets
+            by. Omitted when the budget has no reset duration.
         source_type:
           type: string
           description: >
@@ -1028,6 +1045,19 @@ VirtualKeyBudgetUsage:
         source_name:
           type: string
           description: Human-readable label for `source_id`.
+
+RateLimitNextResets:
+  type: object
+  description: When the gateway next resets each rate-limit counter
+  properties:
+    token_next_reset:
+      type: string
+      format: date-time
+      description: Next reset of the token counter. Omitted when it has no reset duration.
+    request_next_reset:
+      type: string
+      format: date-time
+      description: Next reset of the request counter. Omitted when it has no reset duration.
 
 SourcedRateLimit:
   description: >

@@ -161,6 +161,46 @@ func CountCalendarPeriods(duration string, from, to time.Time, quarterStart time
 	}
 }
 
+// NextResetAt returns the first reset boundary after now: the start of the next
+// calendar period when calendarAligned and the duration has a calendar boundary,
+// and the next point on the rolling lattice anchored at anchor otherwise. These
+// are the boundaries the reset paths write as LastReset, so a LastReset far in
+// the past does not change the result. anchor falls back to lastReset when zero,
+// as in TableBudget.WindowStart and the rate-limit reset path. Returns nil for an
+// empty, unparseable or non-positive duration, or with no anchor at all. The
+// result is in UTC.
+func NextResetAt(duration string, calendarAligned bool, anchor, lastReset, now time.Time, quarterStart time.Month) *time.Time {
+	if calendarAligned && IsCalendarAlignableDuration(duration) {
+		start := GetCalendarPeriodStart(duration, now, quarterStart)
+		var next time.Time
+		switch duration {
+		case "1d":
+			next = start.AddDate(0, 0, 1)
+		case "1w":
+			next = start.AddDate(0, 0, 7)
+		case "1M":
+			next = start.AddDate(0, 1, 0)
+		case "1Q":
+			next = start.AddDate(0, 3, 0)
+		default: // "1Y"
+			next = start.AddDate(1, 0, 0)
+		}
+		return &next
+	}
+	d, err := ParseDuration(duration)
+	if err != nil || d <= 0 {
+		return nil
+	}
+	if anchor.IsZero() {
+		anchor = lastReset
+	}
+	if anchor.IsZero() {
+		return nil
+	}
+	next := RollingWindowStart(anchor, d, now).Add(d).UTC()
+	return &next
+}
+
 // ParseDuration function to parse duration strings
 func ParseDuration(duration string) (time.Duration, error) {
 	if duration == "" {
