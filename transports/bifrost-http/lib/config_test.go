@@ -27501,7 +27501,8 @@ func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *sche
 	t.Helper()
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(providerStore(t, nil)), Logger: logger})
+	cfg := providerStore(t, nil)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(cfg), Logger: logger})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	var calls atomic.Int32
@@ -27511,17 +27512,14 @@ func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *sche
 		}
 		return mcpserver.NewMCPServer("openapi-test", "1", mcpserver.WithToolCapabilities(false)), nil
 	}
-	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, logger, nil))
+	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, NewBaseAccount(cfg), nil, logger, nil))
 	stored := &schemas.MCPClientConfig{
 		ID: "openapi-1", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 		ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "spec-a"},
 	}
-	cfg := providerStore(t, nil)
 	require.NoError(t, cfg.ConfigStore.CreateMCPClientConfig(ctx, stored))
 	require.NoError(t, cfg.refreshMCPClient(ctx, stored.ID))
-	runtime := *stored
-	runtime.OpenAPIConfig = stored.OpenAPIConfig.Clone()
-	require.NoError(t, client.AddMCPClient(ctx, &runtime))
+	require.NoError(t, client.AddMCPClient(ctx, stored.ID))
 	cfg.client = client
 	return cfg, stored
 }
@@ -27545,7 +27543,7 @@ func TestUpdateMCPClient_SharedConnectFailureStillAppliesFields(t *testing.T) {
 	update.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: "spec-b"}
 	update.ToolsToExecute = schemas.WhiteList{"listPets"}
 	storeMCPClientEdit(t, cfg, &update)
-	err := cfg.UpdateMCPClient(context.Background(), stored.ID, &update)
+	err := cfg.UpdateMCPClient(context.Background(), stored.ID)
 	require.ErrorIs(t, err, mcp.ErrMCPSharedConnectFailedAfterUpdate)
 	got, ok := cfg.liveMCPClient(stored.ID)
 	require.True(t, ok)
@@ -27560,14 +27558,14 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	update := *stored
 	update.RequirePublicTarget = true
 	storeMCPClientEdit(t, cfg, &update)
-	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
 	got, ok := cfg.liveMCPClient(stored.ID)
 	require.True(t, ok)
 	assert.True(t, got.Config.RequirePublicTarget)
 
 	update.RequirePublicTarget = false
 	storeMCPClientEdit(t, cfg, &update)
-	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
 	got, ok = cfg.liveMCPClient(stored.ID)
 	require.True(t, ok)
 	assert.True(t, got.Config.RequirePublicTarget)
@@ -27608,7 +27606,7 @@ func TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored(t *testing.T) {
 	update := *stored
 	update.PerUserDiscovery = nil
 	storeMCPClientEdit(t, cfg, &update)
-	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
 	live, ok := cfg.liveMCPClient(stored.ID)
 	require.True(t, ok)
 	got := live.Config.PerUserDiscovery

@@ -52,6 +52,11 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(string) (*schemas.MCPClien
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (baseAccount *BaseAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestJsonParserPluginEndToEnd tests the integration of the JSON parser plugin with Bifrost.
 // It performs the following steps:
 // 1. Initializes the JSON parser plugin with AllRequests usage

@@ -379,7 +379,7 @@ func testSDKWithoutMCPConfig(t *testing.T) {
 	if got := errorText(bErr); got != "mcp is not configured in this bifrost instance" {
 		t.Fatalf("execute error = %q, want \"mcp is not configured in this bifrost instance\"", got)
 	}
-	if err := b.AddMCPClient(context.Background(), alphaClient(a.url)); err != nil {
+	if err := addMCPClient(context.Background(), b, alphaClient(a.url)); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	msg, bErr := execChat(b, "alpha-echo_tool", `{"text":"go23"}`)
@@ -586,7 +586,7 @@ func testSDKInProcessClient(t *testing.T) {
 func testSDKInProcessNoServer(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	start := time.Now()
-	err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
+	err := addMCPClient(context.Background(), b, &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
 	if err == nil || !strings.Contains(err.Error(), "InProcess connection requires a server instance") {
 		t.Fatalf("AddMCPClient error = %v, want \"InProcess connection requires a server instance\"", err)
 	}
@@ -626,7 +626,7 @@ func countingFactory(calls *atomic.Int64, noServer bool) schemas.InProcessServer
 func testSDKOpenAPINoFactory(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	start := time.Now()
-	err := b.AddMCPClient(context.Background(), openAPIClient("spec"))
+	err := addMCPClient(context.Background(), b, openAPIClient("spec"))
 	if err == nil || !strings.Contains(err.Error(), "openapi connection type requires MCPConfig.InProcessServerFactory") {
 		t.Fatalf("AddMCPClient error = %v, want the missing factory", err)
 	}
@@ -640,7 +640,7 @@ func testSDKOpenAPINoFactory(t *testing.T) {
 func testSDKOpenAPIFactory(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{InProcessServerFactory: countingFactory(&calls, false)}})
-	if err := b.AddMCPClient(context.Background(), openAPIClient("spec")); err != nil {
+	if err := addMCPClient(context.Background(), b, openAPIClient("spec")); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	if got := calls.Load(); got != 1 {
@@ -664,7 +664,7 @@ func testSDKOpenAPIFactory(t *testing.T) {
 func testSDKOpenAPIFactoryNil(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{InProcessServerFactory: countingFactory(&calls, true)}})
-	err := b.AddMCPClient(context.Background(), openAPIClient("spec"))
+	err := addMCPClient(context.Background(), b, openAPIClient("spec"))
 	if err == nil || !strings.Contains(err.Error(), "in-process server factory returned no server") {
 		t.Fatalf("AddMCPClient error = %v, want \"in-process server factory returned no server\"", err)
 	}
@@ -679,7 +679,7 @@ func testSDKOpenAPIFactoryAfterInit(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	b.SetMCPInProcessServerFactory(countingFactory(&calls, false))
-	if err := b.AddMCPClient(context.Background(), openAPIClient("spec")); err != nil {
+	if err := addMCPClient(context.Background(), b, openAPIClient("spec")); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	if got := clientNamed(t, b, "spec").State; got != schemas.MCPConnectionStateHealthy {

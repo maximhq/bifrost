@@ -552,6 +552,11 @@ func (splitKeysAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig,
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (splitKeysAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // allowedKeysPlugin narrows a request to the keys its virtual key may use, as governance does,
 // and records the key each unit was billed on.
 type allowedKeysPlugin struct {
@@ -895,6 +900,11 @@ func (a twoLiveProvidersAccount) GetConfiguredMCPClients() ([]string, error) {
 
 // GetConfigForMCPClient finds no MCP client: this account configures none.
 func (a twoLiveProvidersAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a twoLiveProvidersAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
 	return nil, nil
 }
 

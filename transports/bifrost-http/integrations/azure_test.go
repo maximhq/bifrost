@@ -123,6 +123,11 @@ func (a azureRouteTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClient
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a azureRouteTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func newAzureRouteTestRouter(t *testing.T, account azureRouteTestAccount, plugins ...schemas.LLMPlugin) *router.Router {
 	t.Helper()
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{

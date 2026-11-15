@@ -1575,8 +1575,16 @@ type Account interface {
 	// Bifrost dials them when ConnectConfiguredMCPClients runs.
 	GetConfiguredMCPClients() ([]string, error)
 
-	// GetConfigForMCPClient returns the configuration of the MCP client with this ID. The value
-	// is read-only: Bifrost copies it before keeping it, so an implementation may return the
-	// value it stores.
+	// GetConfigForMCPClient returns the configuration of the MCP client with this ID. Bifrost
+	// keeps the returned value without copying it and compares it with the next one when the
+	// client is updated, so the value must never be edited in place. To change a client's
+	// configuration, serve the changed configuration as a new value, then call UpdateMCPClient.
+	// An implementation may return the value it stores, as long as it replaces that value rather
+	// than editing it.
 	GetConfigForMCPClient(clientID string) (*MCPClientConfig, error)
+
+	// GetConfigForMCPClientByName returns the configuration of the MCP client with this name, the
+	// same value GetConfigForMCPClient returns and under the same rules: kept without copying,
+	// never edited in place. Bifrost resolves a tool call's client by name with it.
+	GetConfigForMCPClientByName(name string) (*MCPClientConfig, error)
 }

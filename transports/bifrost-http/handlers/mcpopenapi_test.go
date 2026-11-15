@@ -943,7 +943,7 @@ func strPtr(s string) *string { return &s }
 // raw secrets.
 func TestGetMCPClients_OpenAPIConfigIsReturnedRedacted(t *testing.T) {
 	h, _ := newOpenAPITestHandler(t)
-	h.client = &bifrost.Bifrost{MCPManager: bifrostmcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)}
+	h.client = &bifrost.Bifrost{MCPManager: bifrostmcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, &mockLogger{}, nil)}
 	createBody, _ := json.Marshal(map[string]any{
 		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
 		"tools_to_execute": []string{"listPets"},

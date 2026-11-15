@@ -2346,16 +2346,17 @@ func TestMCPConnectCallsAreNotLogged(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
+	notes := &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}
 	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
 		PerUserDiscoveryStore:  noCallerDiscoveries{},
 		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin} },
 		ReleasePluginPipeline:  func(interface{}) {},
-	}, signInCredStore{}, testLogger{}, nil)
+	}, oneMCPClientAccount{client: notes}, signInCredStore{}, testLogger{}, nil)
 	t.Cleanup(func() { _ = manager.Cleanup() })
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
-		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
-	}))
+	require.NoError(t, manager.AddClient(context.Background(), notes.ID))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
@@ -2436,16 +2437,17 @@ func TestMCPUpstreamConnectNamedByALaterPluginIsLogged(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
+	notes := &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}
 	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
 		PerUserDiscoveryStore:  aliceDiscoversConnect{},
 		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin, user: "alice"} },
 		ReleasePluginPipeline:  func(interface{}) {},
-	}, bearerCredStore{}, testLogger{}, nil)
+	}, oneMCPClientAccount{client: notes}, bearerCredStore{}, testLogger{}, nil)
 	t.Cleanup(func() { _ = manager.Cleanup() })
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
-		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
-	}))
+	require.NoError(t, manager.AddClient(context.Background(), notes.ID))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream-late")
@@ -7220,6 +7222,11 @@ func (a *streamAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig,
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *streamAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
 type failedUsageRecorder struct {
 	usage chan *schemas.BifrostLLMUsage
@@ -7526,4 +7533,32 @@ func BenchmarkSpeechSessionContextLookup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// oneMCPClientAccount is an Account serving one MCP client, for tests that drive an MCP manager
+// directly. Its provider methods are never called.
+type oneMCPClientAccount struct {
+	schemas.Account
+	client *schemas.MCPClientConfig
+}
+
+// GetConfiguredMCPClients lists the account's client.
+func (a oneMCPClientAccount) GetConfiguredMCPClients() ([]string, error) {
+	return []string{a.client.ID}, nil
+}
+
+// GetConfigForMCPClient returns the account's client when the ID is its.
+func (a oneMCPClientAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if id != a.client.ID {
+		return nil, fmt.Errorf("MCP client %s is not configured", id)
+	}
+	return a.client, nil
+}
+
+// GetConfigForMCPClientByName returns the account's client when the name is its.
+func (a oneMCPClientAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	if name != a.client.Name {
+		return nil, fmt.Errorf("MCP client %s is not configured", name)
+	}
+	return a.client, nil
 }

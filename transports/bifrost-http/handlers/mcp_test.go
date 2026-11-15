@@ -1867,7 +1867,7 @@ func TestAddMCPClient_IgnoresToolPricing(t *testing.T) {
 // that sends the listed config back keeps it. The list used to leave it out.
 func TestGetMCPClients_ReturnsMaxInstructionsLength(t *testing.T) {
 	h, _ := newOpenAPITestHandler(t)
-	h.client = &bifrost.Bifrost{MCPManager: coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)}
+	h.client = &bifrost.Bifrost{MCPManager: coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, &mockLogger{}, nil)}
 	createBody, _ := json.Marshal(map[string]any{
 		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
 		"tools_to_execute":        []string{"listPets"},
@@ -2656,6 +2656,16 @@ func (a mcpClientsAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientC
 		}
 	}
 	return nil, fmt.Errorf("MCP client %s is not configured", id)
+}
+
+// GetConfigForMCPClientByName returns the account's client with this name.
+func (a mcpClientsAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	for _, client := range a.clients {
+		if client.Name == name {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s is not configured", name)
 }
 
 // newVerificationRuntime returns an engine holding clients.

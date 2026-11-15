@@ -545,15 +545,16 @@ func (m *MCPManager) connectionTypeForClientName(name string) schemas.MCPConnect
 	if name == "" {
 		return ""
 	}
+	config := m.configByName(name)
+	if config == nil {
+		return ""
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, state := range m.clientMap {
-		// Match on ExecutionConfig.Name, as GetClientByName does.
-		if state != nil && state.ExecutionConfig != nil && state.ExecutionConfig.Name == name {
-			return state.ExecutionConfig.ConnectionType
-		}
+	if _, ok := m.clientMap[config.ID]; !ok {
+		return ""
 	}
-	return ""
+	return config.ConnectionType
 }
 
 // mcpErrorType classifies a failed MCP op into a low-cardinality error.type for the

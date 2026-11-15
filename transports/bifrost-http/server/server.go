@@ -533,7 +533,7 @@ func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
 
 // AddMCPClient adds a new MCP client to the in-memory store
 func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
-	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
+	if err := s.Config.AddMCPClient(ctx, clientConfig.ID); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
@@ -556,13 +556,11 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 		}
 	}
 	// Config exists in store, but not in Bifrost (can happen if client initialization failed).
-	// The runtime keeps and changes the config it is given, so it gets a copy of the record.
-	stored, ok := s.Config.LiveStore.Collections.MCPClients.Get(id)
-	if !ok {
+	// The runtime reads it through the account.
+	if _, ok := s.Config.LiveStore.Collections.MCPClients.Get(id); !ok {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-	clientConfig := stored.Config
-	if err := s.Client.AddMCPClient(ctx, &clientConfig); err != nil {
+	if err := s.Client.AddMCPClient(ctx, id); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
@@ -586,7 +584,7 @@ func (s *BifrostHTTPServer) RefreshMCPClientTools(ctx context.Context, id string
 
 // UpdateMCPClient updates an MCP client in the in-memory store
 func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error {
-	if err := s.Config.UpdateMCPClient(ctx, id, updatedConfig); err != nil {
+	if err := s.Config.UpdateMCPClient(ctx, id); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {
@@ -610,7 +608,7 @@ func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, 
 
 // UpdateMCPClientCredentials saves credentials and refreshes the MCP server configuration.
 func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
-	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
+	if err := s.Config.UpdateMCPClientCredentials(ctx, id); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {

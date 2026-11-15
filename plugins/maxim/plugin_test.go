@@ -83,6 +83,11 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(string) (*schemas.MCPClien
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (baseAccount *BaseAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestMaximLoggerPlugin tests the integration of the Maxim Logger plugin with Bifrost.
 // It performs the following steps:
 // 1. Initializes the Maxim plugin with environment variables

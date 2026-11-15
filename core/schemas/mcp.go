@@ -1436,53 +1436,6 @@ func (c *MCPOpenAPIConfig) HasSpecSource() bool {
 	return c.SpecURL != nil && strings.TrimSpace(*c.SpecURL) != ""
 }
 
-// Clone returns a copy that shares no mutable state with c: the string
-// pointers, the credential map and its secrets are all copied.
-func (c *MCPOpenAPIConfig) Clone() *MCPOpenAPIConfig {
-	if c == nil {
-		return nil
-	}
-	out := *c
-	out.SpecURL = cloneStringPtr(c.SpecURL)
-	out.SpecFile = cloneStringPtr(c.SpecFile)
-	out.BaseURL = cloneStringPtr(c.BaseURL)
-	if c.SecurityCredentials != nil {
-		out.SecurityCredentials = make(map[string]MCPOpenAPICredential, len(c.SecurityCredentials))
-		for name, cred := range c.SecurityCredentials {
-			out.SecurityCredentials[name] = MCPOpenAPICredential{
-				Value:    cloneSecretVarPtr(cred.Value),
-				Username: cloneSecretVarPtr(cred.Username),
-				Password: cloneSecretVarPtr(cred.Password),
-			}
-		}
-	}
-	return &out
-}
-
-func cloneStringPtr(s *string) *string {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-func cloneSecretVarPtr(s *SecretVar) *SecretVar {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-// Clone returns a copy of t that shares no mutable state with it.
-func (t *MCPTLSConfig) Clone() *MCPTLSConfig {
-	if t == nil {
-		return nil
-	}
-	return &MCPTLSConfig{InsecureSkipVerify: t.InsecureSkipVerify, CACertPEM: cloneSecretVarPtr(t.CACertPEM)}
-}
-
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.
 // ca_cert_pem is stored as a plain string ("env.VAR_NAME" or literal PEM).
 // For HTTP API responses use json.Marshal so clients receive the full SecretVar object.

@@ -256,6 +256,11 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(string) (*schemas.MCPClien
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (baseAccount *BaseAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // getMockRules returns a list of mock rules for the semantic cache tests
 func getMockRules() []mocker.MockRule {
 	return []mocker.MockRule{

@@ -59,6 +59,11 @@ func (a inferenceSetupAccount) GetConfigForMCPClient(string) (*schemas.MCPClient
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a inferenceSetupAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)

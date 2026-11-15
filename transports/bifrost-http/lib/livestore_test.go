@@ -529,6 +529,27 @@ func TestProviderSettingsUpdateKeepsKeyRowsAsStored(t *testing.T) {
 	saveSettings([]string{"k1", "k3"}, "a settings save must not delete the added key")
 }
 
+// TestDisableMCPClientRollbackKeepsADisabledClientDisabled checks the rollback of a disable the
+// runtime refuses: the row goes back to the flag it held before, so a client that was already
+// disabled stays disabled instead of being enabled by the rollback.
+func TestDisableMCPClientRollbackKeepsADisabledClientDisabled(t *testing.T) {
+	ctx := context.Background()
+	c := providerStore(t, nil)
+	// A core client started without MCP has no MCP manager, so the runtime refuses every disable.
+	c.SetBifrostClient(newNoopProviderClient(t, c))
+	client := &schemas.MCPClientConfig{
+		ID: "docs-id", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1"), AuthType: schemas.MCPAuthTypeNone,
+		ToolsToExecute: schemas.WhiteList{"*"}, Disabled: true,
+	}
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, client))
+
+	require.Error(t, c.DisableMCPClient(ctx, client.ID), "the runtime has no MCP manager to disable the client in")
+	stored, err := c.ConfigStore.GetMCPClientByID(ctx, client.ID)
+	require.NoError(t, err)
+	require.True(t, stored.Disabled, "the failed disable's rollback enabled a client that was already disabled")
+}
+
 // newNoopProviderClient starts a core client over c's providers, so provider writes can rebuild
 // instances. Nothing in these tests sends a request through it.
 func newNoopProviderClient(t *testing.T, c *Config) *bifrost.Bifrost {
@@ -540,6 +561,35 @@ func newNoopProviderClient(t *testing.T, c *Config) *bifrost.Bifrost {
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	return client
+}
+
+// TestAddMCPClientAgainKeepsTheHeldClient checks a repeated add of a client the runtime and memory
+// already hold: the runtime refuses it, and memory keeps the client the runtime still serves, since
+// this call did not add it. Only a client the failed add itself loaded is dropped again.
+func TestAddMCPClientAgainKeepsTheHeldClient(t *testing.T) {
+	ctx := context.Background()
+	upstream := mcpserver.NewMCPServer("docs", "1.0.0", mcpserver.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("search"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("found"), nil
+	})
+	ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(upstream))
+	t.Cleanup(ts.Close)
+
+	c := providerStore(t, nil)
+	c.SetBifrostClient(newNoopProviderClient(t, c))
+	client := &schemas.MCPClientConfig{
+		ID: "docs-id", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypeNone, ToolsToExecute: schemas.WhiteList{"*"},
+	}
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, client))
+	require.NoError(t, c.AddMCPClient(ctx, client.ID))
+
+	require.Error(t, c.AddMCPClient(ctx, client.ID), "the runtime already holds the client")
+	_, ok := c.liveMCPClient(client.ID)
+	require.True(t, ok, "a failed repeat add dropped the client the runtime still serves from memory")
+	served, err := NewBaseAccount(c).GetConfigForMCPClient(client.ID)
+	require.NoError(t, err)
+	require.Equal(t, "docs", served.Name)
 }
 
 // TestMCPClientWritesReachMemoryThroughTheDatabase checks the MCP client write path: the caller
@@ -564,7 +614,7 @@ func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
 	_, ok := c.liveMCPClient(client.ID)
 	require.False(t, ok, "a written row is not in memory until the runtime has taken the client")
 
-	require.NoError(t, c.AddMCPClient(ctx, client))
+	require.NoError(t, c.AddMCPClient(ctx, client.ID))
 	account := NewBaseAccount(c)
 	ids, err := account.GetConfiguredMCPClients()
 	require.NoError(t, err)
@@ -576,7 +626,7 @@ func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
 	renamed := *client
 	renamed.Name = "docs_renamed"
 	storeMCPClientEdit(t, c, &renamed)
-	require.NoError(t, c.UpdateMCPClient(ctx, client.ID, &renamed))
+	require.NoError(t, c.UpdateMCPClient(ctx, client.ID))
 	_, ok = c.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, "docs_renamed")
 	require.True(t, ok, "the edited row is in memory")
 	_, ok = c.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, "docs")

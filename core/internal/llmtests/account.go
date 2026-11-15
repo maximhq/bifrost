@@ -1275,6 +1275,11 @@ func (account *ComprehensiveTestAccount) GetConfigForMCPClient(string) (*schemas
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (account *ComprehensiveTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // AllProviderConfigs contains test configurations for all providers
 var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
