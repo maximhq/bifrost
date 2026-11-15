@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -892,9 +893,10 @@ func TestToPerplexityChatCompletionRequest_FlattensToolResultMedia(t *testing.T)
 // trickyLocateInput exercises everything that must survive untouched: leading and
 // trailing whitespace, CRLF, tabs, runs of spaces, a non-breaking space, combining and
 // precomposed accents (not normalized), astral-plane emoji, quotes, and HTML-sensitive
-// characters.
-const trickyLocateInput = "  Admit Date: 11/02/2026   Discharge Date: 11/09/2026\r\n\tO2: 2L nasal cannula  \n" +
-	"Pt: José / José \U0001F600 \"quoted\" <b>&amp;</b> Apixaban 5 mg PO BID\n\n"
+// characters. The emoji and the combining accent come before the spans the tests locate,
+// so code-point offsets differ from UTF-16 code-unit and byte offsets there.
+const trickyLocateInput = "  Admit Date: 11/02/2026   Discharge Date: 11/09/2026\r\n" +
+	"Pt: Jose\u0301 / Jos\u00e9 \U0001F600 \"quoted\" <b>&amp;</b>\n\tO2: 2L nasal\u00a0cannula  \nApixaban 5 mg PO BID\n\n"
 
 func locateDecisionRequest(input schemas.DecisionInput, questions ...schemas.DecisionQuestion) *schemas.BifrostDecisionRequest {
 	if len(questions) == 0 {
@@ -1012,6 +1014,9 @@ func TestDecision_LocateRoundTrip(t *testing.T) {
 	span := (*spans)[0]
 	if got := string([]rune(trickyLocateInput)[span.Start:span.End]); got != span.Text || span.Text != "2L nasal cannula" {
 		t.Errorf("input[%d:%d] = %q, span text %q", span.Start, span.End, got, span.Text)
+	}
+	if utf16Start := len(utf16.Encode([]rune(trickyLocateInput[:strings.Index(trickyLocateInput, span.Text)]))); utf16Start == span.Start {
+		t.Errorf("span start %d equals the UTF-16 offset; the fixture must put an astral-plane character before the span", span.Start)
 	}
 	if span.Score == nil || *span.Score != 1 {
 		t.Errorf("score = %v", span.Score)
