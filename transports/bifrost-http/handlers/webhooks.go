@@ -127,7 +127,6 @@ func redactedWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) *
 	return &copied
 }
 
-// storeAvailable guards every route against a disabled config store.
 // requireGenuineAuthForPrivateNetworkEndpoint rejects a create/update that
 // makes Bifrost deliver to a loopback or private-network receiver when the
 // caller was only let through by the fail-open bypass (dashboard auth
@@ -163,21 +162,10 @@ func requireGenuineAuthForPrivateNetworkDelivery(ctx *fasthttp.RequestCtx, endpo
 	return true
 }
 
-func (h *WebhookHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
-	if h.store == nil || h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "Config store is not available")
-		return false
-	}
-	return true
-}
-
 // listWebhookEndpoints returns one page of endpoints matching the query
 // filters. Reads the store, not memory: list views include the operational
 // failure counters, which are only tracked in the database.
 func (h *WebhookHandler) listWebhookEndpoints(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	args := ctx.QueryArgs()
 	params := configstore.WebhookEndpointsQueryParams{
 		Search: strings.TrimSpace(string(args.Peek("search"))),
@@ -236,9 +224,6 @@ func (h *WebhookHandler) listWebhookEndpoints(ctx *fasthttp.RequestCtx) {
 // getWebhookEndpoint returns one endpoint; the signing secret is never
 // included in responses.
 func (h *WebhookHandler) getWebhookEndpoint(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -259,9 +244,6 @@ func (h *WebhookHandler) getWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 // createWebhookEndpoint registers a new endpoint. The generated signing
 // secret is returned exactly once in this response and never again.
 func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	var req webhookEndpointRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -303,9 +285,6 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 // full desired state must be sent — omitted fields are cleared, and an empty
 // name or URL is rejected by validation.
 func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -377,9 +356,6 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 // deleteWebhookEndpoint removes an endpoint. In-flight deliveries referencing
 // it are retired by the delivery worker on their next attempt.
 func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -410,9 +386,6 @@ func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 // rotateWebhookEndpointSecret swaps in a freshly generated signing secret,
 // effective immediately, and returns it exactly once.
 func (h *WebhookHandler) rotateWebhookEndpointSecret(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -445,9 +418,6 @@ func (h *WebhookHandler) rotateWebhookEndpointSecret(ctx *fasthttp.RequestCtx) {
 // delivery path and reports the receiver's response. Rate-limited per
 // endpoint so a misclicked button cannot hammer a receiver.
 func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	if h.dispatcher == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Webhook delivery is not available")
 		return
@@ -513,9 +483,6 @@ func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 // endpoint, newest first. History outlives its endpoint, so no existence
 // check is made against the endpoint itself.
 func (h *WebhookHandler) listWebhookDeliveries(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	if h.store.LogsStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Logs store is not available")
 		return
@@ -616,9 +583,6 @@ func parseWebhookDeliveryFilters(ctx *fasthttp.RequestCtx) (*logstore.WebhookDel
 // endpoint the filters select, newest first. It backs the dedicated deliveries
 // page; the per-endpoint listWebhookDeliveries above backs the endpoint sheet.
 func (h *WebhookHandler) searchWebhookDeliveries(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	if h.store.LogsStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Logs store is not available")
 		return
@@ -653,9 +617,6 @@ func (h *WebhookHandler) searchWebhookDeliveries(ctx *fasthttp.RequestCtx) {
 // redeliverWebhook re-queues the delivery a history record belongs to, under
 // its original webhook id so receivers can deduplicate the replay.
 func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
-	if !h.storeAvailable(ctx) {
-		return
-	}
 	if h.store.LogsStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Logs store is not available")
 		return

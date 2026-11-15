@@ -912,6 +912,53 @@ func TestRecalculateLogCostsRejectsUnknownPeriod(t *testing.T) {
 	}
 }
 
+// TestRecalculateCostRoutesRefuseWithoutConfigStore registers the logging routes with the config
+// store disabled and sends each request through the router. The recalculate-cost routes keep
+// their job in the config store, so they answer 503 from RequireConfigStoreMiddleware even with
+// a job runner wired, and enqueue nothing; a log store route stays open.
+func TestRecalculateCostRoutesRefuseWithoutConfigStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := newFakeSidekiqStore()
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	h.SetSidekiqBackend(sidekiq.New(store, &mockLogger{}, 1, ""), store)
+	r := router.New()
+	h.RegisterRoutes(r)
+
+	tests := []struct {
+		method  string
+		path    string
+		refused bool
+	}{
+		{fasthttp.MethodPost, "/api/logs/recalculate-cost", true},
+		{fasthttp.MethodGet, "/api/logs/recalculate-cost/status", true},
+		{fasthttp.MethodPost, "/api/logs/recalculate-cost/cancel", true},
+		{fasthttp.MethodGet, "/api/logs/search", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			var req fasthttp.Request
+			req.Header.SetMethod(tt.method)
+			req.SetRequestURI(tt.path)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"filters":{"period":"1h"}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+			r.Handler(ctx)
+
+			status, body := ctx.Response.StatusCode(), string(ctx.Response.Body())
+			refused := status == fasthttp.StatusServiceUnavailable && strings.Contains(body, "config store not available")
+			if refused != tt.refused {
+				t.Fatalf("refused = %v, want %v: status %d, body %s", refused, tt.refused, status, body)
+			}
+		})
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no job to be enqueued, got %d", store.createdCount())
+	}
+}
+
 // TestParseHistogramFiltersResolvesCalendarPeriodInTimezone verifies the
 // timezone query param reaches calendar period resolution on query-string
 // endpoints.

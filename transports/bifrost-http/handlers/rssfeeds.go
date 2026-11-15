@@ -37,6 +37,11 @@ const (
 	rssFeedUnavailableMessage = "feed could not be loaded"
 )
 
+// errRSSFeedsUnavailable answers every feed route while the handler's store is nil: the config
+// store does not provide RSS feed storage (it does not implement configstore.RSSFeedStore), for
+// example a store that wraps another by embedding the ConfigStore interface, which promotes only
+// that interface's methods. RequireConfigStoreMiddleware refuses only a disabled config store, so
+// these routes check the feed store themselves.
 var errRSSFeedsUnavailable = errors.New("rss feed storage is unavailable")
 
 // rssItemsFetchTimeout bounds one items request and one probe; a var so tests can shorten it.
@@ -84,6 +89,7 @@ type rssFeedListResponse struct {
 	Feeds []tables.TableRSSFeed `json:"feeds"`
 }
 
+// listFeeds handles GET /api/rss/feeds: every configured feed, built-in and custom.
 func (h *RSSFeedsHandler) listFeeds(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -114,6 +120,7 @@ type rssFeedUpdateRequest struct {
 	Enabled *bool   `json:"enabled,omitempty"`
 }
 
+// createFeed handles POST /api/rss/feeds: it validates and probes a custom feed, then saves it.
 func (h *RSSFeedsHandler) createFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -156,6 +163,7 @@ func (h *RSSFeedsHandler) createFeed(ctx *fasthttp.RequestCtx) {
 	SendJSONWithStatus(ctx, feed, fasthttp.StatusCreated)
 }
 
+// updateFeed handles PUT /api/rss/feeds/{id}. A built-in feed can only be enabled or disabled.
 func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -224,6 +232,7 @@ func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, feed)
 }
 
+// deleteFeed handles DELETE /api/rss/feeds/{id}. Built-in feeds cannot be deleted, only disabled.
 func (h *RSSFeedsHandler) deleteFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -286,6 +295,7 @@ type rssSettingsUpdateRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 
+// getSettings handles GET /api/rss/settings: whether the gateway-wide news switch is on.
 func (h *RSSFeedsHandler) getSettings(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())

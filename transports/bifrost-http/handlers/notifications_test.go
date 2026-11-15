@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -172,6 +174,23 @@ func TestNotificationListStopsAtScanBudget(t *testing.T) {
 	_, cursorID, err := decodeNotificationCursor(response.NextCursor)
 	require.NoError(t, err)
 	require.Equal(t, fmt.Sprintf("call-%d-row-%d", store.calls, maxNotificationScan-1), cursorID, "cursor must resume from the last row scanned")
+}
+
+// TestNotificationListAnswers503WhenTheConfigStoreLacksNotificationStorage pins that the list route
+// answers 503 instead of panicking when the config store is set but does not provide notification
+// storage. The store embeds the ConfigStore interface, as a store that wraps another does, so the
+// optional NotificationStore methods are not promoted and the service's store is nil, while
+// RequireConfigStoreMiddleware lets the request through.
+func TestNotificationListAnswers503WhenTheConfigStoreLacksNotificationStorage(t *testing.T) {
+	var store configstore.ConfigStore = struct{ configstore.ConfigStore }{}
+	r := router.New()
+	NewNotificationService(store, nil).RegisterRoutes(r, RequireConfigStoreMiddleware(store))
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/api/notifications?limit=50")
+	r.Handler(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Contains(t, string(ctx.Response.Body()), ErrNotificationsUnavailable.Error())
 }
 
 func TestNotificationCreateRequiresLocalAdmin(t *testing.T) {
