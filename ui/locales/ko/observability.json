@@ -1261,6 +1261,7 @@
 		"decisions": "결정",
 		"speech": "연설",
 		"speech_stream": "음성 스트림",
+		"speech_session": "음성 세션",
 		"transcription": "전사",
 		"transcription_stream": "전사 스트림",
 		"image_generation": "이미지 생성",

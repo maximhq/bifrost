@@ -324,6 +324,35 @@ func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
 	}
 }
 
+// BenchmarkPrepareCountTokensRequest measures the preparation count tokens now shares with
+// dispatch: the common case (plain tools) and a request whose custom tool is rewritten.
+func BenchmarkPrepareCountTokensRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var provider schemas.Provider = stubProvider{key: schemas.Anthropic}
+	plain := responsesReqWithText("hello")
+	plain.Model = "claude-sonnet-4-6"
+	plain.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+	}}
+	custom := applyPatchResponsesRequest(schemas.Anthropic, "claude-sonnet-4-6")
+	prepare := func(r *schemas.BifrostResponsesRequest) {
+		_, _ = prepareResponsesRequest(ctx, nil, provider, schemas.Key{}, r)
+	}
+	b.Run("plain_tools", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(plain)
+		}
+	})
+	b.Run("custom_tool", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(custom)
+		}
+	})
+}
+
 // TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
 func TestPrepareResponsesClaudeLocalMCP(test *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1469,7 +1498,6 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 		{name: "logit_bias", want: []string{"logit_bias"}, params: schemas.ChatParameters{LogitBias: &map[string]float64{"50256": -100}}},
 		{name: "presence_penalty", want: []string{"presence_penalty"}, params: schemas.ChatParameters{PresencePenalty: new(0.5)}},
 		{name: "frequency_penalty", want: []string{"frequency_penalty"}, params: schemas.ChatParameters{FrequencyPenalty: new(0.5)}},
-		{name: "logprobs", want: []string{"logprobs"}, params: schemas.ChatParameters{LogProbs: new(true)}},
 		{name: "audio modality", want: []string{"audio"}, params: schemas.ChatParameters{Modalities: []string{"text", "audio"}}},
 		{name: "prediction", want: []string{"prediction"}, params: schemas.ChatParameters{Prediction: &schemas.ChatPrediction{Type: "content", Content: "x"}}},
 		{name: "web_search_options", want: []string{"web_search_options"}, params: schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}}},
@@ -1554,6 +1582,89 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 				assert.Equal(t, []string{"service_tier"}, dropped, "the raw body still carries reasoning.mode")
 			})
 		}
+	}
+}
+
+var reasoningModeLogProbs = []schemas.ResponsesOutputMessageContentTextLogProb{{Bytes: []int{79, 75}, LogProb: -0.01, Token: "OK", TopLogProbs: []schemas.LogProb{}}}
+
+// logprobsResponsesProvider answers Responses with output_text logprobs; its stream
+// pushes one output_text.delta carrying them through the runner dispatch hands it.
+type logprobsResponsesProvider struct {
+	billingHeaderCaptureProvider
+	streamed *schemas.BifrostResponse
+}
+
+func (p *logprobsResponsesProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.responses = r
+	return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: new(schemas.ResponsesMessageTypeMessage),
+		Role: new(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                              schemas.ResponsesOutputMessageContentTypeText,
+			Text:                              new("OK"),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{LogProbs: reasoningModeLogProbs},
+		}}},
+	}}}, nil
+}
+
+func (p *logprobsResponsesProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.responses = r
+	p.streamed, _ = postHookRunner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type:     schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:    new("OK"),
+		LogProbs: reasoningModeLogProbs,
+	}}, nil)
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+// TestChatReasoningModeForwardsLogProbs: a reasoning.mode chat request asking for
+// logprobs is served through Responses with the output_text include, and the returned
+// token logprobs come back on the chat choice, streamed or not.
+func TestChatReasoningModeForwardsLogProbs(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &schemas.ChatParameters{LogProbs: new(true), TopLogProbs: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &logprobsResponsesProvider{billingHeaderCaptureProvider: billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}}
+			client := &Bifrost{}
+
+			var chat *schemas.BifrostChatResponse
+			if stream {
+				message.RequestType = schemas.ChatCompletionStreamRequest
+				passthrough := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return r, e
+				}
+				_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, passthrough, nil)
+				require.Nil(t, bifrostErr, "logprobs must not block the reasoning.mode reroute")
+				require.NotNil(t, provider.streamed)
+				chat = provider.streamed.ChatResponse
+			} else {
+				resp, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+				require.Nil(t, bifrostErr, "logprobs must not block the reasoning.mode reroute")
+				chat = resp.ChatResponse
+			}
+
+			require.NotNil(t, provider.responses, "reasoning.mode must route the chat request to the Responses API")
+			require.NotNil(t, provider.responses.Params)
+			assert.Contains(t, provider.responses.Params.Include, schemas.ResponsesIncludeOutputTextLogProbs)
+			require.NotNil(t, provider.responses.Params.TopLogProbs)
+			assert.Equal(t, 2, *provider.responses.Params.TopLogProbs)
+
+			require.NotNil(t, chat)
+			require.Len(t, chat.Choices, 1)
+			lp := chat.Choices[0].LogProbs
+			require.NotNil(t, lp, "returned logprobs must reach the chat choice")
+			require.Len(t, lp.Content, 1)
+			assert.Equal(t, "OK", lp.Content[0].Token)
+		})
 	}
 }
 

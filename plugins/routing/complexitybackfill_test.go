@@ -2,12 +2,15 @@ package routing
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,6 +86,26 @@ func capturedIDs(t *testing.T, space *complexity.SuggestionSpace, from, to time.
 	return got
 }
 
+// failingRouterLogs is a log store whose router-log reads fail.
+type failingRouterLogs struct{ logstore.LogStore }
+
+func (failingRouterLogs) EachComplexityRouterLog(context.Context, string, time.Time, time.Time, func([]logstore.ComplexityRouterLog) error) error {
+	return errors.New("router logs unavailable")
+}
+
+// An estimate whose backfill cannot be planned still sizes what is captured,
+// and says the backfill is unknown, rather than failing: the run dialog
+// starts a run only on an estimate.
+func TestComplexitySuggestionEstimateWithUnknownBackfill(t *testing.T) {
+	p, store, _ := suggestionPlugin(t)
+	p.SetComplexitySuggestionStore(failingRouterLogs{store}, (&textReads{}).read)
+	estimate, err := p.EstimateComplexitySuggestionRun(context.Background(), captureRouterID, 0)
+	require.NoError(t, err)
+	assert.True(t, estimate.BackfillUnknown)
+	assert.Zero(t, estimate.Backfill)
+	assert.Equal(t, 6, estimate.Requests, "what is captured is still counted")
+}
+
 // A router's window is filled from its logs before it is read: the requests
 // it took before it captured them are embedded and stored under their log
 // time, while those it captured live, other routers' requests and logs
@@ -131,6 +154,52 @@ func TestComplexitySuggestionBackfillFillsTheWindowFromLogs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, written)
 	assert.Equal(t, []string{"old-hidden"}, reads.take(), "only the request still without text is tried again")
+}
+
+// filteredReadStore is a vector store whose filtered reads cannot be relied
+// on past a result ceiling, here zero: fail is Weaviate, which refuses the
+// read; otherwise it is Redis, which answers with nothing more.
+type filteredReadStore struct {
+	vectorstore.VectorStore
+	fail bool
+}
+
+func (s filteredReadStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	if len(queries) == 0 {
+		return s.VectorStore.GetAll(ctx, namespace, queries, selectFields, cursor, limit)
+	}
+	if s.fail {
+		return nil, nil, errors.New("query maximum results exceeded")
+	}
+	return nil, nil, nil
+}
+
+// A backfill finds which requests are already captured through the store's
+// whole walk, never a filtered read: past a backend's result ceiling a
+// filtered read fails the run (Weaviate) or ends early (Redis), and a request
+// read as missing is embedded again.
+func TestComplexitySuggestionBackfillPlansPastAFilteredReadCeiling(t *testing.T) {
+	for name, fail := range map[string]bool{"a filtered read that fails": true, "a filtered read that ends early": false} {
+		t.Run(name, func(t *testing.T) {
+			p, store, _ := suggestionPlugin(t) // samples every request, and has captured six
+			p.SetComplexitySuggestionStore(store, (&textReads{}).read)
+			now := time.Now().UTC().Truncate(time.Second)
+			for i := range 6 {
+				addRouterLog(t, store, fmt.Sprintf("log-%d", i), captureRouterID, now.Add(-time.Minute))
+			}
+			addRouterLog(t, store, "old-1", captureRouterID, now.Add(-2*24*time.Hour))
+
+			space := backfillSpace(t, p)
+			space.Store = filteredReadStore{VectorStore: space.Store, fail: fail}
+			router, _ := p.suggestionRouter(captureRouterID)
+			logs, _ := p.suggestionDeps().store.(ComplexitySuggestionRouterLogs)
+			plan, err := p.planBackfill(context.Background(), router, space, logs, now.Add(-7*24*time.Hour), now.Add(time.Minute), backfillLimit(router))
+			require.NoError(t, err)
+			assert.Equal(t, 1, plan.missing, "only the request never captured is missing")
+			require.Len(t, plan.candidates, 1)
+			assert.Equal(t, "old-1", plan.candidates[0].ID)
+		})
+	}
 }
 
 // A backfill plans the newest missing requests first, keeping only as many

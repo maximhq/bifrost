@@ -327,6 +327,8 @@ type ConfigStore interface {
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
+	// UpdateMCPClientConfigHash writes only config_hash, and only while it still equals oldHash.
+	UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error)
 	// UpdateMCPClientDiscovery writes only the discovery columns; safe from a background refresh.
 	UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error

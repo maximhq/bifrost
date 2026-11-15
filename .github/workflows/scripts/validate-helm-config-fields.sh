@@ -186,6 +186,7 @@ bifrost:
     mcpCodeModeBindingLevel: "server"
     mcpToolSyncInterval: 60
     hideDeletedVirtualKeysInFilters: true
+    mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json"
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -218,6 +219,7 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
+assert_field_value 'client.mcp_client_metadata_url' '.client.mcp_client_metadata_url' '"https://public.example.com/bifrost/client.json"'
 
 ###############################################################################
 # 1b. Server Config
@@ -791,6 +793,7 @@ bifrost:
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
+        serverTypeOnSlug: "disabled"
         toolSyncInterval: "5m"
         maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
@@ -879,6 +882,7 @@ assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
+assert_field_value 'mcp client[0] server_type_on_slug' '.mcp.client_configs.[0].server_type_on_slug' '"disabled"'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
 assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'

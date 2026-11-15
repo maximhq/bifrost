@@ -1316,6 +1316,7 @@
 		"decisions": "Решения",
 		"speech": "Синтез речи",
 		"speech_stream": "Поток синтеза речи",
+		"speech_session": "Сессия синтеза речи",
 		"transcription": "Транскрипция",
 		"transcription_stream": "Поток транскрипции",
 		"image_generation": "Генерация изображений",

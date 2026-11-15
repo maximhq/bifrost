@@ -308,6 +308,14 @@ test_template "mcp: maxProtocolVersion global + per-client" \
   --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=http://localhost:3000' \
   --set 'bifrost.mcp.clientConfigs[0].maxProtocolVersion=2025-06-18'
 
+test_template "mcp: per-client serverTypeOnSlug" \
+  --set bifrost.mcp.enabled=true \
+  --set 'bifrost.mcp.clientConfigs[0].name=test' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=http://localhost:3000' \
+  --set 'bifrost.mcp.clientConfigs[0].isCodeModeClient=true' \
+  --set 'bifrost.mcp.clientConfigs[0].serverTypeOnSlug=disabled'
+
 # Gap 7: Cluster with region
 test_template "cluster: region (Gap 7)" \
   --set bifrost.cluster.enabled=true \

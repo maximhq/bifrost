@@ -180,6 +180,7 @@
                   "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/soniox",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",

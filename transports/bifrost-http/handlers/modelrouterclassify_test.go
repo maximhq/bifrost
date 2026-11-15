@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,7 @@ type modelRouterClassifierFake struct {
 // ClassifyWithModelRouter records the call and classifies from the fake's table.
 func (m *modelRouterClassifierFake) ClassifyWithModelRouter(_ context.Context, routerID string, inputs []routing.ModelRouterClassifyInput) (routing.ModelRouterClassifyResult, error) {
 	m.routerID, m.inputs = routerID, inputs
-	if routerID == "missing" {
+	if routerID == "missing" || routerID == "unserved" {
 		return routing.ModelRouterClassifyResult{}, routing.ErrUnknownComplexityRouter
 	}
 	if len(inputs) == 0 {
@@ -114,21 +115,24 @@ func TestClassifyWithModelRouterUnlabelledHasNoAccuracy(t *testing.T) {
 }
 
 // TestClassifyWithModelRouterErrors maps each refusal to its status: an
-// unknown router is 404; a bad label, a misspelled field, or a page the
-// plugin rejects is 400; a deployment without the classifier is 503.
+// unknown router is 404 and a saved one the plugin does not serve 503; a bad
+// label, a misspelled field, or a page the plugin rejects is 400; a
+// deployment without the classifier is 503.
 func TestClassifyWithModelRouterErrors(t *testing.T) {
 	SetLogger(&mockLogger{})
-	h := &RoutingHandler{routingManager: &modelRouterClassifierFake{}}
+	saved := suggestionsConfigStore{routers: map[string]*configstore.ModelRouter{"unserved": {ID: "unserved", Name: "Unserved"}}}
+	h := &RoutingHandler{configStore: saved, routingManager: &modelRouterClassifierFake{}}
 	for name, tc := range map[string]struct {
 		router string
 		body   string
 		status int
 	}{
-		"unknown router":   {"missing", `{"inputs":[{"text":"hi"}]}`, fasthttp.StatusNotFound},
-		"invalid label":    {"default", `{"inputs":[{"text":"hi","expected_tier":"HARD"}]}`, fasthttp.StatusBadRequest},
-		"misspelled field": {"default", `{"inputs":[{"text":"hi","expected_teir":"SIMPLE"}]}`, fasthttp.StatusBadRequest},
-		"empty page":       {"default", `{"inputs":[]}`, fasthttp.StatusBadRequest},
-		"not json":         {"default", `inputs`, fasthttp.StatusBadRequest},
+		"unknown router":           {"missing", `{"inputs":[{"text":"hi"}]}`, fasthttp.StatusNotFound},
+		"saved router, not loaded": {"unserved", `{"inputs":[{"text":"hi"}]}`, fasthttp.StatusServiceUnavailable},
+		"invalid label":            {"default", `{"inputs":[{"text":"hi","expected_tier":"HARD"}]}`, fasthttp.StatusBadRequest},
+		"misspelled field":         {"default", `{"inputs":[{"text":"hi","expected_teir":"SIMPLE"}]}`, fasthttp.StatusBadRequest},
+		"empty page":               {"default", `{"inputs":[]}`, fasthttp.StatusBadRequest},
+		"not json":                 {"default", `inputs`, fasthttp.StatusBadRequest},
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, body := call(t, h.classifyWithModelRouter, tc.body, map[string]string{"router_id": tc.router})

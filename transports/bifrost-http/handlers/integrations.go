@@ -37,6 +37,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewLiteLLMRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewCohereRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewAzureRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewElevenlabsRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewLangChainRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewPydanticAIRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewBedrockRouter(client, handlerStore, accessResolver, logger),
@@ -50,6 +51,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewBedrockPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewSageMakerPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewElevenlabsPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
 

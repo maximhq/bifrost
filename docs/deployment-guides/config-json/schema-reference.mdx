@@ -114,6 +114,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
+| `mcp_client_metadata_url` | string \| EnvVar | - | Full HTTPS URL where you host Bifrost's client metadata document for upstream MCP servers that cannot reach Bifrost; when unset, Bifrost serves it itself. Supports `"env.MY_VAR"` |
 | `a2a_private_allowlist` | array of strings | `[]` | Private hosts, IPs, or CIDRs permitted for Agent Gateway card, OAuth, and runtime connections; link-local and metadata addresses stay blocked |
 | `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |
 | `skills_external_client_url` | string or secret reference | - | Public base URL required for skills marketplace registration and serving; skill management and downloads remain available when unset |
@@ -164,7 +165,7 @@ Origin approval applies even without configured runtime credentials. It does not
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`, `baseten`, `kimchi`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`, `baseten`, `kimchi`, `soniox`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -470,6 +471,7 @@ Common fields on each `client_configs` entry:
 | `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
 | `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
 | `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+| `server_type_on_slug` | string | Code Mode on this client's own `/mcp/<slug>` endpoint only: `"inherit"` (default) follows `is_code_mode_client`, `"enabled"` turns Code Mode on there, `"disabled"` serves the client's tools directly there. `/mcp`, Virtual MCP endpoints and LLM requests always follow `is_code_mode_client`. See [Code Mode on a server's own endpoint](/mcp/code-mode#code-mode-on-a-servers-own-endpoint). |
 | `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `require_public_target` | boolean | Server-managed, default `false`. Set to `true` when the client was registered over the management API without an admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as `true` it is never cleared by the API or by config.json reconciliation; declaring it `true` here is honored. |
@@ -595,7 +597,7 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 | `read_buffer_size` | integer | `65536` | Buffer size in bytes for reading HTTP request headers. Requests whose headers do not fit are rejected with `431`. |
 | `base_path` | string | unset (domain root) | URL path prefix Bifrost is served under behind a reverse proxy, for example `/bifrost` for `https://example.com/bifrost/`. Nested prefixes such as `/tools/llm-gw` work. The `-base-path` flag and the `BIFROST_BASE_PATH` environment variable take precedence. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix). |
 | `body_buffer_pool_limit_bytes` | integer | `4194304` (4 MiB) | Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are released after each request; larger bodies are still accepted. `0` keeps every buffer. Also applies to outbound request buffers. |
-| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. |
+| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. Every plugin download, `.so` or `.wasm`, also needs its host listed in the `BIFROST_PLUGIN_URL_ALLOWLIST` environment variable: comma separated hosts, `.example.com` or `*.example.com` for subdomains, `*` for any host. It is empty by default, so no plugin is downloaded until you list its host. The list also applies to every redirect. |
 | `a2a_grpc_base_domain` | string | unset | Base domain for the Agent Gateway's shared gRPC listener. Needs a wildcard DNS record for `*.<base-domain>`. See [Enable gRPC](/features/agent-gateway/configuration#enable-grpc). |
 | `a2a_grpc_port` | integer | unset | Public port advertised for that gRPC listener. gRPC stays off while this or `a2a_grpc_base_domain` is unset. `BIFROST_A2A_GRPC_LISTEN_PORT` overrides the local bind port. |
 | `a2a_allow_private_push_callbacks` | boolean | `false` | Allows Agent push delivery to loopback and private network addresses. For development and test environments only. |

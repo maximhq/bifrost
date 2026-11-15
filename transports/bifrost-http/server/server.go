@@ -301,6 +301,7 @@ type BifrostHTTPServer struct {
 	skillsServingHandler *handlers.SkillsServingHandler
 	IntegrationHandler   *handlers.IntegrationHandler
 	wsLiveHandler        *handlers.WSLiveHandler
+	wsSpeechHandler      *handlers.WSSpeechSessionHandler
 	webrtcLiveHandler    *handlers.WebRTCLiveHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
@@ -2957,6 +2958,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
 	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool)
 	s.wsLiveHandler = handlers.NewWSLiveHandler(s.Client, s.Config, s.wsPool)
+	s.wsSpeechHandler = handlers.NewWSSpeechSessionHandler(s.Client, s.Config, s.wsPool)
 	s.webrtcLiveHandler = handlers.NewWebRTCLiveHandler(s.Client, s.Config)
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
@@ -2977,6 +2979,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	s.wsLiveHandler.RegisterRoutes(s.Router, middlewares...)
+	s.wsSpeechHandler.RegisterRoutes(s.Router, middlewares...)
 	s.webrtcLiveHandler.RegisterRoutes(s.Router, middlewares...)
 	handlers.NewLiveControlHandler(s.Client, s.Config).RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -4083,6 +4086,9 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.wsLiveHandler != nil {
 			s.wsLiveHandler.Close()
 		}
+		if s.wsSpeechHandler != nil {
+			s.wsSpeechHandler.Close()
+		}
 		if s.webrtcLiveHandler != nil {
 			s.webrtcLiveHandler.Close()
 		}
@@ -4200,6 +4206,9 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	}
 	if s.wsLiveHandler != nil {
 		s.wsLiveHandler.Close()
+	}
+	if s.wsSpeechHandler != nil {
+		s.wsSpeechHandler.Close()
 	}
 	if s.webrtcLiveHandler != nil {
 		s.webrtcLiveHandler.Close()
