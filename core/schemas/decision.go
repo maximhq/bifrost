@@ -48,6 +48,10 @@ const (
 	// DecisionTypeBox yields the edges of a box around what the instructions
 	// describe in an image. Typesafe serves it.
 	DecisionTypeBox DecisionType = "box"
+	// DecisionTypeLocate yields the spans of a text input that match the
+	// instructions, as character offsets into the input. Perplexity's v1.3
+	// deciders serve it; it takes no criteria, choices, or levels.
+	DecisionTypeLocate DecisionType = "locate"
 	// DecisionTypeRefusal marks a question the model declined to answer. It
 	// only appears on answers.
 	DecisionTypeRefusal DecisionType = "refusal"
@@ -55,7 +59,7 @@ const (
 
 // IsQuestionType reports whether the type is valid on a question.
 func (t DecisionType) IsQuestionType() bool {
-	return t == DecisionTypePredicate || t == DecisionTypeChoice || t == DecisionTypeScore || t == DecisionTypeBox
+	return t == DecisionTypePredicate || t == DecisionTypeChoice || t == DecisionTypeScore || t == DecisionTypeBox || t == DecisionTypeLocate
 }
 
 // DecisionInput is the evidence a decision is judged on. At most one member is
@@ -629,8 +633,8 @@ type DecisionProbability struct {
 }
 
 // DecisionAnswer is one answer of a decision response, in the order of the
-// request's questions. Which of Probability, Choice, Score, and Box is set
-// follows Type; a refusal carries only Type and Name. Confidence, Probabilities, and
+// request's questions. Which of Probability, Choice, Score, Box, and Spans is
+// set follows Type; a refusal carries only Type and Name. Confidence, Probabilities, and
 // Legend carry per-answer metadata when the provider supplies it; Legend
 // echoes each score level's description verbatim, keyed by level index.
 type DecisionAnswer struct {
@@ -643,6 +647,10 @@ type DecisionAnswer struct {
 	Confidence    *float64              `json:"confidence,omitempty"`
 	Legend        map[string]any        `json:"legend,omitempty"`
 	Box           *DecisionBox          `json:"box,omitempty"`
+	// Spans is a locate answer's matches. It is a pointer so that a locate
+	// answer with no match keeps "spans": [] on the wire while every other
+	// answer type omits the key.
+	Spans *[]DecisionSpan `json:"spans,omitempty"`
 
 	// Laya-specific fields
 	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`    // calibrated probability of the reported answer
@@ -659,6 +667,18 @@ type DecisionBox struct {
 	Bottom float64 `json:"bottom"`
 	Left   float64 `json:"left"`
 	Right  float64 `json:"right"`
+}
+
+// DecisionSpan is one match of a locate answer: Text is the input from Start
+// to End, offsets in Unicode characters (code points) with End exclusive, as
+// the provider reported them. Score is the provider's certainty for the span.
+// Spans are passed through as received; nothing recomputes or normalizes them,
+// so the offsets stay valid against the exact input that was sent.
+type DecisionSpan struct {
+	Text  string   `json:"text"`
+	Start int      `json:"start"`
+	End   int      `json:"end"`
+	Score *float64 `json:"score,omitempty"`
 }
 
 // BifrostDecisionResponse represents the response from a decision request.

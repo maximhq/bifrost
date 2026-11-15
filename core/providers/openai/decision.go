@@ -145,6 +145,9 @@ func openAIInstructionParts(instructions *schemas.DecisionText) []interface{} {
 // label is labelled by its index, the position that already identifies it
 // (the map form defines its levels that way).
 func toOpenAIDecisionQuestion(index int, question schemas.DecisionQuestion) (OpenAIDecisionQuestion, error) {
+	if question.Type == schemas.DecisionTypeLocate {
+		return OpenAIDecisionQuestion{}, providerUtils.InvalidRequestErrorf("question %d is a locate question, which only Perplexity's v1.3 decider models serve (perplexity/pplx-decider-v1.3, perplexity/pplx-decider-flash-v1.3, or the -latest aliases); route the request there", index)
+	}
 	if !question.Type.IsQuestionType() {
 		return OpenAIDecisionQuestion{}, providerUtils.InvalidRequestErrorf("question %d has unsupported type %q; expected predicate, choice, or score", index, question.Type)
 	}
