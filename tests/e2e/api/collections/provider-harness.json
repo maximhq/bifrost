@@ -346509,10 +346509,10 @@
     },
     {
       "name": "372. Rapid-MLX local provider (rapidmlx local provider)",
-      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required.",
+      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all four requests are skipped by default.",
       "item": [
         {
-          "name": "Rapid-MLX rapidmlx chat/completions unary",
+          "name": "[PREVIEW] Rapid-MLX rapidmlx chat/completions unary",
           "event": [
             {
               "listen": "test",
@@ -346551,7 +346551,7 @@
           }
         },
         {
-          "name": "Rapid-MLX rapidmlx chat/completions streaming",
+          "name": "[PREVIEW] Rapid-MLX rapidmlx chat/completions streaming",
           "event": [
             {
               "listen": "test",
@@ -346590,7 +346590,7 @@
           }
         },
         {
-          "name": "Rapid-MLX rapidmlx responses unary",
+          "name": "[PREVIEW] Rapid-MLX rapidmlx responses unary",
           "event": [
             {
               "listen": "test",
@@ -346598,7 +346598,16 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "pm.test('Rapid-MLX returns generated output', function () { var body = pm.response.json(); pm.expect(body.output).to.be.an('array').that.is.not.empty; });"
+                  "pm.test('Rapid-MLX returns generated output', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.output).to.be.an('array');",
+                  "  var hasAnswer = body.output.some(function (item) {",
+                  "    return item.type === 'message' && Array.isArray(item.content) && item.content.some(function (part) {",
+                  "      return part.type === 'output_text' && typeof part.text === 'string' && part.text.length > 0;",
+                  "    });",
+                  "  });",
+                  "  pm.expect(hasAnswer, pm.response.text()).to.eql(true);",
+                  "});"
                 ]
               }
             }
@@ -346628,7 +346637,7 @@
           }
         },
         {
-          "name": "Rapid-MLX rapidmlx responses streaming",
+          "name": "[PREVIEW] Rapid-MLX rapidmlx responses streaming",
           "event": [
             {
               "listen": "test",
@@ -346636,7 +346645,19 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "pm.test('Rapid-MLX stream contains answer text and completes', function () { var text = pm.response.text(); pm.expect(text).to.include('response.completed'); pm.expect(text).to.match(/\\\"delta\\\"\\s*:\\s*\\\"[^\\\"]+/); });"
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () {",
+                  "  var events = [];",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    events.push(JSON.parse(data));",
+                  "  });",
+                  "  pm.expect(events.some(function (event) {",
+                  "    return event.type === 'response.output_text.delta' && typeof event.delta === 'string' && event.delta.length > 0;",
+                  "  }), pm.response.text()).to.eql(true);",
+                  "  pm.expect(events.some(function (event) { return event.type === 'response.completed'; }), pm.response.text()).to.eql(true);",
+                  "});"
                 ]
               }
             }
