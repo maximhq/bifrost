@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"slices"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -15,6 +16,35 @@ func toGeminiModelResourceName(modelID string) string {
 		return "models/" + modelID[idx+1:]
 	}
 	return "models/" + modelID
+}
+
+// geminiModelArchitecture derives the modality lists for a Gemini models.list entry.
+// The Model resource has no modality fields, and TTS, image and chat models all list
+// generateContent, so the model family in the name is the only signal that separates
+// them; embedContent without generateContent marks an embedding model. Returns nil for
+// plain text-generation models, so the model catalog can still fill their full input
+// modalities from its datasheet.
+func geminiModelArchitecture(modelName string, methods []string) *schemas.Architecture {
+	name := strings.ToLower(strings.TrimPrefix(modelName, "models/"))
+	tokens := strings.Split(name, "-")
+	var inputs, outputs []string
+	switch {
+	case slices.Contains(tokens, "tts"):
+		inputs, outputs = []string{"text"}, []string{"audio"}
+	case strings.Contains(name, "native-audio"):
+		inputs, outputs = []string{"audio", "text", "video"}, []string{"audio", "text"}
+	case schemas.IsImagenModel(name):
+		inputs, outputs = []string{"text"}, []string{"image"}
+	case slices.Contains(tokens, "veo"):
+		inputs, outputs = []string{"image", "text"}, []string{"video"}
+	case slices.Contains(tokens, "image"):
+		inputs, outputs = []string{"image", "text"}, []string{"image", "text"}
+	case slices.Contains(methods, "embedContent") && !slices.Contains(methods, "generateContent"):
+		inputs, outputs = []string{"text"}, []string{"embeddings"}
+	default:
+		return nil
+	}
+	return &schemas.Architecture{InputModalities: inputs, OutputModalities: outputs}
 }
 
 func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
@@ -55,6 +85,7 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 				MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
 				MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
 				SupportedMethods: model.SupportedGenerationMethods,
+				Architecture:     geminiModelArchitecture(model.Name, model.SupportedGenerationMethods),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -85,6 +116,7 @@ func (model *GeminiModel) ToBifrostModelRetrieveResponse(providerKey schemas.Mod
 			MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
 			MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
 			SupportedMethods: model.SupportedGenerationMethods,
+			Architecture:     geminiModelArchitecture(model.Name, model.SupportedGenerationMethods),
 		},
 	}
 }

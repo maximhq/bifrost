@@ -1,0 +1,1 @@
+- fix: gemini - list-models and model-retrieve rows carry `architecture.input_modalities`/`output_modalities` for TTS (`audio` out), native-audio, image-output, Imagen, Veo and embedding models, derived from the model family and `supportedGenerationMethods` since Gemini's Model resource has no modality fields; plain chat rows stay unset so the catalog datasheet still fills them
