@@ -46,7 +46,11 @@ func geminiModelArchitecture(modelName string, methods []string) *schemas.Archit
 	case slices.Contains(tokens, "veo"):
 		inputs, outputs = []string{"image", "text"}, []string{"video"}
 	case slices.Contains(tokens, "omni"):
+		// Omni 1.1 and the earlier preview return video only; 1.2 also returns text.
 		inputs, outputs = []string{"image", "text", "video"}, []string{"text", "video"}
+		if slices.Contains(tokens, "1.1") || slices.Contains(tokens, "preview") {
+			outputs = []string{"video"}
+		}
 	case slices.Contains(tokens, "lyria") && slices.Contains(tokens, "realtime"):
 		inputs, outputs = []string{"text"}, []string{"audio"}
 	case slices.Contains(tokens, "lyria"):
