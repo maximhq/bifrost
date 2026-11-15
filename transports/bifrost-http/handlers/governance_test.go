@@ -2577,9 +2577,6 @@ func TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed(t *testing.T) {
 	}
 }
 
-// TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty verifies that a VK without any
-// VK-scoped model configs reports empty governance (not a stale direct-relationship
-// read) and still returns 200 with identity fields.
 // TestGetVirtualKeyQuota_ReportsEffectiveMaxLimit checks that each quota budget carries the
 // limit the gateway enforces. The response already exposes max_limit and the override fields,
 // but a caller that reads max_limit alone under-reports the limit while an override is active.
@@ -2633,6 +2630,9 @@ func TestGetVirtualKeyQuota_ReportsEffectiveMaxLimit(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty verifies that a VK without any
+// VK-scoped model configs reports empty governance (not a stale direct-relationship
+// read) and still returns 200 with identity fields.
 func TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty(t *testing.T) {
 	SetLogger(&mockLogger{})
 

@@ -5784,8 +5784,8 @@ type quotaBudget struct {
 	// supplied one. Empty for a VK's own budget rows.
 	configstoreTables.SourceRef
 	// The limit the gateway enforces for this budget: max_limit plus an active override.
-	// A self-service caller sees override_amount but cannot tell on its own whether the
-	// override is still active, so the enforced value is reported directly.
+	// A self-service caller would otherwise have to repeat the gateway's override rule
+	// (override_mode and override_cycles_remaining) to get this value.
 	EffectiveMaxLimit float64           `json:"effective_max_limit"`
 	Models            []quotaModelSpend `json:"per_model_usage"`
 }
