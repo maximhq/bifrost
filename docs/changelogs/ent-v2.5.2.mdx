@@ -7,14 +7,15 @@ description: "v2.5.2 changelog - 2026-11-15"
 
 ## Changelog
 
-v2.5.2 is a security release. Auth, RBAC and audit checks now read the same raw request path that the router uses, so an encoded path can no longer skip them. Remote plugin downloads now need https and an explicit host allowlist, and native plugins can no longer be downloaded from a URL by default. The OSS base stays at transports v2.5.1. There are no database migrations.
+v2.5.2 is a security release. Auth, RBAC and audit checks now read the same raw request path that the router uses. Remote plugin downloads now need https and an explicit host allowlist, and native plugins can no longer be downloaded from a URL by default. The brotli library moves to v1.2.8 to fix a decompression panic. The OSS base stays at transports v2.5.1. There are no database migrations.
 
 ## 🐞 Fixed
 
-- **Encoded Path Checks** - Identity, RBAC, access-profile guards, license and expiry gates, data-access restrictions and audit exclusions now match on the raw request path. Before, a path with `%2F` or `..` could be read as a whitelisted route while the router ran a protected handler
-- **API Key Prefix Trust** - A `bfst-` token is accepted only when the API key middleware actually validated it. A `bfst-` value sent in a cookie, the query string or a malformed header now returns 401
+- **Encoded Path Checks** - Identity, RBAC, access-profile guards, license and expiry gates, data-access restrictions and audit exclusions now match on the raw request path.
+- **API Key Prefix Trust** -  A `bfst-` value sent in a cookie, the query string or a malformed header now returns 401
 - **Whitelisted Route Marking** - Requests let through on a whitelisted (no-auth) route are now marked as unauthenticated, so handlers that gate sensitive operations refuse them
 - **Remote Plugin Downloads** - Plugin URLs must use https and the host must be listed in `BIFROST_PLUGIN_URL_ALLOWLIST`. Redirects are held to the same rules. Native plugins (`.so`, `.dylib`) are refused from a URL unless `BIFROST_ALLOW_REMOTE_NATIVE_PLUGINS=true`
+- **brotli Short-Read Panic** - `github.com/andybalholm/brotli` moves from v1.2.7 to v1.2.8. A brotli stream read one byte at a time with extra data after its end could panic instead of returning an error
 
 <Warning>
 `BIFROST_PLUGIN_URL_ALLOWLIST` is empty by default, so no plugin is downloaded from a URL until you list its host. If you load plugins from a URL, set it before you upgrade (comma separated hosts; `*` allows every host, and an entry starting with `.` or `*.` also matches subdomains). Local plugin paths are not affected.
@@ -116,7 +117,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/STARRY-S/zip v0.2.1 // indirect
 	github.com/a2aproject/a2a-go/v2 v2.5.0 // indirect
-	github.com/andybalholm/brotli v1.2.7 // indirect
+	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
