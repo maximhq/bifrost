@@ -9,7 +9,7 @@ import { LoaderCircle, Play } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { availableWindows } from "./suggestions.utils";
+import { availableWindows, canStartRun } from "./suggestions.utils";
 
 interface Props {
 	open: boolean;
@@ -87,9 +87,13 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 						<p className="text-destructive text-xs" data-testid="complexity-suggestions-run-estimate" aria-live="polite">
 							{t("estimateFailed", { error: getErrorMessage(error) })}
 						</p>
-					) : estimated && estimate.requests === 0 ? (
+					) : estimated && !canStartRun(estimate) ? (
 						<p className="text-muted-foreground text-xs" data-testid="complexity-suggestions-run-estimate" aria-live="polite">
 							{t("estimateEmpty")}
+						</p>
+					) : estimated && estimate.backfill_unknown ? (
+						<p className="text-muted-foreground text-xs" data-testid="complexity-suggestions-run-backfill" aria-live="polite">
+							{t("estimateBackfillUnknown")}
 						</p>
 					) : estimated && (estimate.backfill ?? 0) > 0 ? (
 						// A first run over a window from before suggestions were on
@@ -114,7 +118,7 @@ export default function RunNowDialog({ open, onOpenChange, routerId, lookbackDay
 						size="sm"
 						onClick={start}
 						// Only on a successful estimate of the selected window.
-						disabled={isStarting || !runWindow || !estimated || estimate.requests === 0}
+						disabled={isStarting || !runWindow || !estimated || !canStartRun(estimate)}
 						data-testid="complexity-suggestions-run-start-button"
 					>
 						{isStarting || (isFetching && !error) ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}

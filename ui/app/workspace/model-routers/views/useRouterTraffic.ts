@@ -1,39 +1,125 @@
 import { type MetricsState, metricsState } from "@/app/workspace/logs/views/metricStrip.utils";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { useGetDimensionRankingsQuery } from "@/lib/store/apis/logsApi";
 import { COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
-import type { DimensionRankingEntry } from "@/lib/types/logs";
-import { useMemo, useState } from "react";
+import { dateUtils, type DimensionRankingEntry } from "@/lib/types/logs";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { useCallback, useMemo } from "react";
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+// The period the Routers pages open on.
+export const DEFAULT_TRAFFIC_PERIOD = "7d";
 
-// TrafficWindow is the last seven days, in the shape the logs filters take.
+// TrafficWindow is the period the traffic figures cover, in the shape the logs
+// filters take: a preset period the gateway resolves against its own clock, or
+// the two ends of a custom range.
 export interface TrafficWindow {
-	start_time: string;
-	end_time: string;
+	period?: string;
+	start_time?: string;
+	end_time?: string;
 }
 
-// useTrafficWindow freezes the last seven days on mount. A date minted in
-// render would change the query argument every render and re-subscribe
-// forever. The Routers page holds it, so the list and a router's page share
-// one window and so one cached read.
-export function useTrafficWindow(): TrafficWindow {
-	const [window] = useState(() => {
-		const now = Date.now();
-		return { start_time: new Date(now - WEEK_MS).toISOString(), end_time: new Date(now).toISOString() };
-	});
-	return window;
+// TrafficSelection is what the period picker holds: a preset period, or the
+// two ends of a custom range in unix seconds.
+export type TrafficSelection = { period: string; start?: undefined; end?: undefined } | { period?: undefined; start: number; end: number };
+
+// trafficSelection reads the selection out of the URL. A preset the picker
+// offers is taken as it is; with no preset, a range with both ends in order is
+// a custom range. Anything else, an empty URL included, is the default period.
+export function trafficSelection(period: string | null, start: number | null, end: number | null): TrafficSelection {
+	if (period && TIME_PERIODS.some((preset) => preset.value === period)) return { period };
+	if (!period && start != null && end != null && start < end) return { start, end };
+	return { period: DEFAULT_TRAFFIC_PERIOD };
+}
+
+// trafficWindow is the selection as the logs filters take it.
+export function trafficWindow(selection: TrafficSelection): TrafficWindow {
+	if (selection.period !== undefined) return { period: selection.period };
+	return { start_time: dateUtils.toISOString(selection.start), end_time: dateUtils.toISOString(selection.end) };
+}
+
+// trafficLogsSearch is the selection as the logs page reads it from its URL,
+// so a link into a router's requests opens them over the same period.
+export function trafficLogsSearch(selection: TrafficSelection): { period?: string; start_time?: number; end_time?: number } {
+	if (selection.period !== undefined) return { period: selection.period };
+	return { start_time: selection.start, end_time: selection.end };
+}
+
+// customRangeLabel names a custom range by its two dates, in the UI language
+// and in the timezone the picker shows the range in, so the two never name
+// different days for a range that ends near midnight.
+export function customRangeLabel(start: number, end: number, locale: string, timezone: string): string {
+	return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: timezone }).formatRange(
+		new Date(start * 1000),
+		new Date(end * 1000),
+	);
+}
+
+// TrafficFilter is the period the Routers pages show traffic for, with what
+// the period picker needs to show and change it.
+export interface TrafficFilter {
+	selection: TrafficSelection;
+	window: TrafficWindow;
+	// The dates the picker shows; for a preset, the range it covers right now.
+	dateRange: { from: Date; to: Date };
+	setPeriod: (period: string | undefined) => void;
+	setDateRange: (range: { from?: Date; to?: Date }) => void;
+	// The timezone the picker shows dates in, held here so a label of the same range reads them the same way.
+	timezone: string;
+	setTimezone: (timezone: string) => void;
+}
+
+// useTrafficFilter keeps the period in the URL, as the dashboard and logs
+// pages keep theirs, so a link carries it and the routers list and a router's
+// page share one period and so one cached read. The default period leaves the
+// URL clean. A preset is sent to the gateway by name, so the query argument
+// stays the same across renders with no date minted here.
+export function useTrafficFilter(): TrafficFilter {
+	const [url, setUrl] = useQueryStates({ period: parseAsString, start_time: parseAsInteger, end_time: parseAsInteger });
+	const [timezone, setTimezone] = useTimezonePreference();
+	const selection = useMemo(() => trafficSelection(url.period, url.start_time, url.end_time), [url.period, url.start_time, url.end_time]);
+	const window = useMemo(() => trafficWindow(selection), [selection]);
+	const dateRange = useMemo(
+		() =>
+			selection.period !== undefined
+				? getRangeForPeriod(selection.period)
+				: { from: new Date(selection.start * 1000), to: new Date(selection.end * 1000) },
+		[selection],
+	);
+	const setPeriod = useCallback(
+		(period: string | undefined) => {
+			if (!period) return;
+			void setUrl({ period: period === DEFAULT_TRAFFIC_PERIOD ? null : period, start_time: null, end_time: null });
+		},
+		[setUrl],
+	);
+	const setDateRange = useCallback(
+		(range: { from?: Date; to?: Date }) => {
+			if (!range.from || !range.to) return;
+			void setUrl({
+				period: null,
+				start_time: dateUtils.toUnixTimestamp(range.from) ?? null,
+				end_time: dateUtils.toUnixTimestamp(range.to) ?? null,
+			});
+		},
+		[setUrl],
+	);
+	return useMemo(
+		() => ({ selection, window, dateRange, setPeriod, setDateRange, timezone, setTimezone }),
+		[selection, window, dateRange, setPeriod, setDateRange, timezone, setTimezone],
+	);
 }
 
 // RouterTraffic is what one router took over the window.
 export interface RouterTraffic {
 	requests: number;
 	cost: number;
-	// Percent change in cost against the seven days before; null when there is nothing to compare with.
+	// Percent change in cost against the period of the same length before; null when there is nothing to compare with.
 	costTrend: number | null;
 }
 
 // toRouterTraffic reads one router's rankings row. The cost change is only
-// kept when the router took requests in the week before; with a free week
+// kept when the router took requests in the period before; with a free period
 // before it, the gateway sends no change at all.
 export function toRouterTraffic(entry: DimensionRankingEntry): RouterTraffic {
 	const trend = entry.trend;
@@ -55,7 +141,7 @@ export interface RouterTrafficRead {
 }
 
 // useRouterTraffic reads how many requests each model router took over the
-// window, what they cost, and how that cost moved against the week before,
+// window, what they cost, and how that cost moved against the period before,
 // keyed by router id. One rankings call covers every router; `all` so a
 // router outside any top-N still gets its figures. The Routers page calls it
 // once and hands the figures to the list and to a router's page, as the

@@ -1266,6 +1266,7 @@
 		"decisions": "Decisions",
 		"speech": "Speech",
 		"speech_stream": "Speech Stream",
+		"speech_session": "Speech Session",
 		"transcription": "Transcription",
 		"transcription_stream": "Transcription Stream",
 		"image_generation": "Image Generation",

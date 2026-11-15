@@ -308,6 +308,7 @@ write_config() {
     { "client_id": "pud10-h", "name": "pud10_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
     { "client_id": "pud10-x", "name": "pud10_x", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud10/mcp", "auth_type": "headers", "headers": { "X-Api-Key": "admin-key" }, "per_user_discovery": true, "tools_to_execute": ["*"] },
     { "client_id": "pud11-p", "name": "pud11_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud11p/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
+    { "client_id": "set35-c", "name": "set35_c", "endpoint_slug": "set35", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/set35/mcp", "auth_type": "none", "tool_sync_interval": "5s", "tools_to_execute": ["*"], "is_code_mode_client": true, "server_type_on_slug": "disabled" },
     { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] }
   ] },
   "providers": {

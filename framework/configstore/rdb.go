@@ -354,6 +354,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		UsageEstimationTokenizers:                 config.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
+		MCPClientMetadataURL:                      mcpExternalURLToString(config.MCPClientMetadataURL),
 		SkillsExternalClientURL:                   mcpExternalURLToString(config.SkillsExternalClientURL),
 		A2AStoreRawRequestResponse:                config.A2AStoreRawRequestResponse,
 		A2AExternalClientURL:                      mcpExternalURLToString(config.A2AExternalClientURL),
@@ -677,6 +678,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		UsageEstimationTokenizers:               dbConfig.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                    dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                    schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		MCPClientMetadataURL:                    schemas.NewSecretVar(dbConfig.MCPClientMetadataURL),
 		SkillsExternalClientURL:                 schemas.NewSecretVar(dbConfig.SkillsExternalClientURL),
 		A2AStoreRawRequestResponse:              dbConfig.A2AStoreRawRequestResponse,
 		A2AExternalClientURL:                    schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
@@ -1809,6 +1811,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Name:                   dbClient.Name,
 					EndpointSlug:           dbClient.EndpointSlug,
 					IsCodeModeClient:       dbClient.IsCodeModeClient,
+					ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 					ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:       dbClient.ConnectionString,
 					StdioConfig:            dbClient.StdioConfig,
@@ -1877,6 +1880,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -2337,6 +2341,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Name:                   dbClient.Name,
 		EndpointSlug:           dbClient.EndpointSlug,
 		IsCodeModeClient:       dbClient.IsCodeModeClient,
+		ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 		ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:       dbClient.ConnectionString,
 		StdioConfig:            dbClient.StdioConfig,
@@ -2420,6 +2425,15 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 		return ErrNotFound
 	}
 	return nil
+}
+
+// UpdateMCPClientConfigHash moves a client's config_hash from oldHash to newHash and writes nothing else, so
+// it never overwrites a concurrent edit. It reports false when the stored hash is no longer oldHash.
+func (s *RDBConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	res := s.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).
+		Where("client_id = ? AND config_hash = ?", clientID, oldHash).
+		Update("config_hash", newHash)
+	return res.RowsAffected > 0, res.Error
 }
 
 // UpdateMCPClientDiscovery writes only the discovery columns, so a background refresh never races a
@@ -2529,6 +2543,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			Name:                   clientConfigCopy.Name,
 			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
+			ServerTypeOnSlug:       clientConfigCopy.ServerTypeOnSlug,
 			ConnectionType:         string(clientConfigCopy.ConnectionType),
 			ConnectionString:       clientConfigCopy.ConnectionString,
 			StdioConfig:            clientConfigCopy.StdioConfig,
@@ -2761,6 +2776,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		updates := map[string]interface{}{
 			"name":                       clientConfigCopy.Name,
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
+			"server_type_on_slug":        clientConfigCopy.ServerTypeOnSlug,
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
 			"prompts_to_expose_json":     promptsToExposeJSON,
@@ -9221,9 +9237,10 @@ type MCPOAuthConfigFields struct {
 	RedirectURI     string // "" keeps the stored redirect_uri
 
 	// The authorization-server binding; callers that do not set it resolve it with KeepBinding.
-	Issuer                string
-	IssParameterSupported bool
-	DynamicallyRegistered bool
+	Issuer                 string
+	IssParameterSupported  bool
+	DynamicallyRegistered  bool
+	ClientMetadataDocument bool // the client_id is Bifrost's own metadata document, which follows its configured URL
 
 	ExpectedIssuer   *string // when set, applies only while the stored issuer still equals it (ErrOAuthConfigChanged otherwise)
 	ExpectedClientID *string // when set, applies only while the stored client_id still equals it (ErrOAuthConfigChanged otherwise)
@@ -9243,6 +9260,7 @@ func (fields *MCPOAuthConfigFields) KeepBinding(existingOauthConfig *tables.Tabl
 	}
 	if sameClient {
 		fields.DynamicallyRegistered = existingOauthConfig.DynamicallyRegistered
+		fields.ClientMetadataDocument = existingOauthConfig.ClientMetadataDocument
 	}
 }
 
@@ -9334,6 +9352,7 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 	existingOauthConfig.Issuer = fields.Issuer
 	existingOauthConfig.IssParameterSupported = fields.IssParameterSupported
 	existingOauthConfig.DynamicallyRegistered = fields.DynamicallyRegistered
+	existingOauthConfig.ClientMetadataDocument = fields.ClientMetadataDocument
 	if len(fields.Scopes) == 0 {
 		existingOauthConfig.Scopes = ""
 	} else {

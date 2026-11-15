@@ -1266,6 +1266,7 @@
 		"decisions": "Entscheidungen",
 		"speech": "Sprachsynthese",
 		"speech_stream": "Sprachsynthese-Stream",
+		"speech_session": "Sprachsynthese-Sitzung",
 		"transcription": "Transkription",
 		"transcription_stream": "Transkriptions-Stream",
 		"image_generation": "Bilderzeugung",

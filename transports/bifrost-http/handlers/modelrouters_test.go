@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -1095,6 +1096,95 @@ func TestModelRouterScopeEntityRemoved(t *testing.T) {
 			body = modelRouterOK(t, h.setModelRouterRouting, fmt.Sprintf(`{"enabled":false,"scope":"global","priority":%d}`, priority), path)
 			assert.Equal(t, map[string]any{"enabled": false, "scope": "global", "priority": float64(priority), "cel_expression": `model == "gpt-4o"`}, body["routing"],
 				"moving the router to global is accepted and drops the removed entity's id")
+		})
+	}
+}
+
+// routerHidingStore answers every router read as not found, as the enterprise
+// data access control answers a router whose routing is outside the caller's
+// scope. Its embedded store is nil, so a route that goes on to any other store
+// method panics.
+type routerHidingStore struct {
+	configstore.ConfigStore
+}
+
+// GetModelRouter hides every router.
+func (routerHidingStore) GetModelRouter(context.Context, string) (*configstore.ModelRouter, error) {
+	return nil, configstore.ErrNotFound
+}
+
+// TestModelRouterRoutesRefuseARouterTheStoreHides pins that every route under
+// /api/routing/model-routers/{router_id} answers 404 for a router the config
+// store does not return to the caller, before its handler runs. Behind the
+// enterprise data access control that is a router whose routing is outside
+// the caller's scope. Status, warmup retry, classify and the suggestion routes
+// act on the in-memory router, and delete, reset and add phrases write without
+// reading the router first, so without the shared check each would act on a
+// router the caller cannot see. The routes are read from the router, so a
+// route added later is covered too.
+func TestModelRouterRoutesRefuseARouterTheStoreHides(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &RoutingHandler{configStore: routerHidingStore{}, routingManager: &suggestionManagerFake{}}
+	r := router.New()
+	h.RegisterRoutes(r)
+	params := strings.NewReplacer("{router_id}", "hidden", "{suggestion_id}", "s-1", "{run_id}", "run-1")
+	checked := 0
+	for method, paths := range r.List() {
+		for _, path := range paths {
+			if !strings.Contains(path, "{router_id}") {
+				continue
+			}
+			checked++
+			uri := params.Replace(path)
+			var code int
+			var body map[string]any
+			assert.NotPanics(t, func() { code, body = serve(t, r, method, uri, "{}") }, "%s %s reached its handler", method, uri)
+			assert.Equal(t, fasthttp.StatusNotFound, code, "%s %s: %v", method, uri, body)
+			assert.Equal(t, `model router "hidden" not found`, errorText(body), "%s %s", method, uri)
+		}
+	}
+	assert.GreaterOrEqual(t, checked, 19, "every route that names a router was checked")
+}
+
+// routerLookupStore answers every router read with err.
+type routerLookupStore struct {
+	configstore.ConfigStore
+	err error
+}
+
+// GetModelRouter answers with the store's error.
+func (s routerLookupStore) GetModelRouter(context.Context, string) (*configstore.ModelRouter, error) {
+	return nil, s.err
+}
+
+// TestVisibleModelRouterFailsClosed pins how the router check answers each
+// lookup result. A router the store does not return is 404. Any other failed
+// lookup is 500 and never reaches the handler, as getRoutingRule answers it: a
+// read that failed cannot say whether the caller may see the router. A found
+// router, and one found but stored in a form this version cannot read, reach
+// the handler, which reports the latter itself (an unreadable router can still
+// be deleted).
+func TestVisibleModelRouterFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cases := []struct {
+		name        string
+		err         error
+		wantCode    int
+		wantHandler bool
+	}{
+		{"found", nil, fasthttp.StatusOK, true},
+		{"unreadable", fmt.Errorf("%w: unknown classifier", configstore.ErrConfigUnreadable), fasthttp.StatusOK, true},
+		{"hidden or missing", configstore.ErrNotFound, fasthttp.StatusNotFound, false},
+		{"lookup failed", errors.New("database is locked"), fasthttp.StatusInternalServerError, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &RoutingHandler{configStore: routerLookupStore{err: tc.err}}
+			reached := false
+			handler := h.visibleModelRouter("/api/routing/model-routers/{router_id}/status", func(*fasthttp.RequestCtx) { reached = true })
+			code, _ := call(t, handler, "", map[string]string{"router_id": "support"})
+			assert.Equal(t, tc.wantCode, code)
+			assert.Equal(t, tc.wantHandler, reached, "handler reached")
 		})
 	}
 }

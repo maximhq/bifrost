@@ -13,6 +13,7 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
+import { getEndpointUrl } from "@/lib/utils/port";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -89,6 +90,7 @@ export default function MCPView() {
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const clientURLChanged = !secretVarEquals(localConfig.mcp_external_client_url, config.mcp_external_client_url);
+		const clientMetadataURLChanged = !secretVarEquals(localConfig.mcp_client_metadata_url, config.mcp_client_metadata_url);
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
@@ -102,6 +104,7 @@ export default function MCPView() {
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
+			clientMetadataURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
@@ -187,6 +190,10 @@ export default function MCPView() {
 
 	const handleClientURLChange = useCallback((value: SecretVar) => {
 		setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
+	}, []);
+
+	const handleClientMetadataURLChange = useCallback((value: SecretVar) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_client_metadata_url: value }));
 	}, []);
 
 	const handleAuthModeChange = useCallback((value: string) => {
@@ -640,6 +647,37 @@ export default function MCPView() {
 									</p>
 								</AlertDescription>
 							</Alert>
+							<div className="mt-4 space-y-2 border-t pt-4">
+								<label htmlFor="client-metadata-url" className="text-sm font-medium">
+									{t("mcpSettings.clientMetadataUrl")}
+								</label>
+								<p className="text-muted-foreground text-sm">
+									<Trans
+										t={t}
+										i18nKey="mcpSettings.clientMetadataUrlHelp"
+										components={{
+											code0: <code className="text-xs" />,
+											a1: (
+												<a
+													href={getEndpointUrl("/api/oauth/client-metadata.json")}
+													target="_blank"
+													rel="noopener noreferrer"
+													className="underline"
+													data-testid="mcp-client-metadata-document-link"
+												/>
+											),
+										}}
+									/>
+								</p>
+								<SecretVarInput
+									id="client-metadata-url"
+									data-testid="mcp-client-metadata-url-input"
+									placeholder={t("mcpSettings.clientMetadataUrlPlaceholder")}
+									value={localConfig.mcp_client_metadata_url}
+									onChange={handleClientMetadataURLChange}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
 							{/* MCP Server Auth Mode */}
 							<div className="mt-4 space-y-2 border-t pt-4">
 								<label htmlFor="mcp-server-auth-mode" className="text-sm font-medium">

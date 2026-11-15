@@ -3,9 +3,9 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { createFileRoute } from "@tanstack/react-router";
 import ModelRoutersPage from "./page";
 
-// The model router APIs are gated on Governance, so the page is too.
+// The router APIs are gated on the Routers permission, so the page is too.
 function RouteComponent() {
-	const hasAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasAccess = useRbac(RbacResource.Routers, RbacOperation.View);
 	if (!hasAccess) {
 		return <NoPermissionView entity="model routers" />;
 	}

@@ -1054,7 +1054,10 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 	// Deep copy Custom if present
 	if original.Custom != nil {
-		copyTool.Custom = &ChatToolCustom{}
+		copyTool.Custom = &ChatToolCustom{Name: original.Custom.Name}
+		if original.Custom.Description != nil {
+			copyTool.Custom.Description = Ptr(*original.Custom.Description)
+		}
 
 		if original.Custom.Format != nil {
 			copyFormat := &ChatToolCustomFormat{
