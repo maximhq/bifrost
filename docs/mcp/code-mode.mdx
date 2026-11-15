@@ -542,8 +542,10 @@ mcpConfig := &schemas.MCPConfig{
 
 Code Mode tools can be auto-executed in [Agent Mode](./agent-mode), but with **additional validation**:
 
-1. The `listToolFiles` and `readToolFile` tools are always auto-executable (they're read-only)
+1. The `listToolFiles`, `readToolFile`, and `getToolDocs` tools only discover and describe tools, but agent mode is opt-in: they are auto-executed only when a code mode client's `tools_to_auto_execute` lists them by name (or is `["*"]`). When none is listed, the call is returned to the caller like any other tool call that isn't auto-executable
 2. The `executeToolCode` tool is auto-executable **only if** all tool calls within the code are allowed
+
+For both, Bifrost auto-executes a code mode tool only if it added that tool to the request itself. A tool the caller declared under the same name in their own request is never auto-executed.
 
 ### How Validation Works
 
