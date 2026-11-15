@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,7 +123,7 @@ func callToolResult(t *testing.T, tm MCPToolManager) map[string]any {
 	t.Helper()
 	h := &MCPServerHandler{
 		toolManager: tm,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 	tools, _ := h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})
@@ -205,7 +206,7 @@ func TestSyncMCPServer_ReadsToolsWithoutTheTriggersIdentity(t *testing.T) {
 	h := &MCPServerHandler{
 		toolManager: tm,
 		served:      served,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 	admin := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -227,7 +228,7 @@ func initializeResult(t *testing.T, tm MCPToolManager, ctx context.Context) map[
 	t.Helper()
 	h := &MCPServerHandler{
 		toolManager: tm,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 
@@ -333,7 +334,7 @@ func TestAdmitBySlug(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			cfg := &lib.Config{LiveStore: liveStoreForTest(t), MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
 				{ID: "c7", Name: "context7", EndpointSlug: "context7"},
 			}}}
 			h := &MCPServerHandler{admitter: tc.admitter, config: cfg}
@@ -396,7 +397,7 @@ func startGateway(t testing.TB, h *MCPServerHandler) string {
 func newGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -594,7 +595,7 @@ func TestMCPGateway_OriginValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
-			cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
+			cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
 			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
@@ -639,7 +640,7 @@ func BenchmarkMCPGateway_RefuseOrigin(b *testing.B) {
 		{"listed origin", "https://app.example.com"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
-			h := &MCPServerHandler{config: &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*", "https://app.example.com"}}}}
+			h := &MCPServerHandler{config: &lib.Config{LiveStore: liveStoreForTest(b), ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*", "https://app.example.com"}}}}
 			ctx := &fasthttp.RequestCtx{}
 			if tc.origin != "" {
 				ctx.Request.Header.Set("Origin", tc.origin)
@@ -820,7 +821,7 @@ func (r *refusingToolManager) ExecuteChatMCPTool(ctx context.Context, call *sche
 // (governance, logging) run and the refusal says why, instead of mcp-go answering "not found".
 func TestMCPGateway_NarrowedToolCallReachesBifrost(t *testing.T) {
 	tm := &refusingToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
 	require.NoError(t, err)
 	h.admitter = slugAdmitter{vmcps: map[string][]string{"nothing": {"other-tool"}}}
 	baseURL := startGateway(t, h)
@@ -902,7 +903,7 @@ func (s *servingToolManager) CompleteMCPArgument(ctx context.Context, params mcp
 func newServingGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &servingToolManager{echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -1004,7 +1005,7 @@ func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
 				servingToolManager: servingToolManager{echoToolManager{fakeInstructionsToolManager{}}},
 				seen:               map[string]*mcp.ClientCapabilities{},
 			}
-			h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+			h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
 
@@ -1087,7 +1088,7 @@ func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *s
 // with the call across rounds while a separate call gets its own.
 func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	tm := &inputRequiringToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 
@@ -1239,7 +1240,7 @@ func (c *chartToolManager) ExecuteChatMCPTool(_ context.Context, call *schemas.C
 // (images and structured content included); a result a plugin rewrote is rebuilt from the message
 // instead, and isError follows the message either way.
 func TestMCPGateway_ToolMetadataAndResultFidelity(t *testing.T) {
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
@@ -1646,6 +1647,7 @@ func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerTool
 		"notes-id": {Tools: []string{"export", "search"}, Prompts: []string{"review"}, Resources: []string{"file:///alice.md", "file:///bob.md"}},
 	}}
 	config := &lib.Config{
+		LiveStore:    liveStoreForTest(t),
 		ClientConfig: &configstore.ClientConfig{},
 		ConfigStore:  store,
 		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
@@ -2087,7 +2089,7 @@ func newAppsGateway(tb testing.TB) *MCPServerHandler {
 		ID: "apps", Name: "apps", EndpointSlug: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
 	}))
-	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		{ID: "apps", Name: "apps", EndpointSlug: "apps"},
 	}}}
 	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
@@ -2126,7 +2128,7 @@ func newCodeModeGateway(tb testing.TB, codeMode bool, slug schemas.MCPServerType
 	tb.Cleanup(func() { _ = m.Cleanup() })
 	require.NoError(tb, m.AddClient(ctx, github))
 	require.NoError(tb, m.AddClient(ctx, slack))
-	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{github, slack}}}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{github, slack}}}
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"github-create_issue", "slack-post"}},
 		clients: map[string][]string{"github": {"github-*"}, "slack": {"slack-*"}},
@@ -2467,7 +2469,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 			ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"},
 		}))
 	}
-	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
 	}}}
 	admitter := slugAdmitter{
@@ -2656,3 +2658,6 @@ func TestMCPGateway_ServerGivenNamesForPerCallerClients(t *testing.T) {
 		assert.NotEqual(t, "", coremcp.ToolClientName(name), "tools/list carries no server-given name: %q", name)
 	}
 }
+
+// liveStoreForTest returns a new, empty live store closed when the test ends.
+var liveStoreForTest = livestoretest.New

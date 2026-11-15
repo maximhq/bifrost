@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -198,4 +199,46 @@ func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
 	unset := hash("")
 	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
 	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
+}
+
+// TestProviderSettingsMirrorProviderConfig checks that ProviderSettings has every ProviderConfig
+// field but Keys, with the same type and JSON tag, and that Settings and Config carry each of them,
+// so a field added to ProviderConfig cannot be dropped where a provider is loaded or written.
+func TestProviderSettingsMirrorProviderConfig(t *testing.T) {
+	configType := reflect.TypeOf(ProviderConfig{})
+	settingsType := reflect.TypeOf(ProviderSettings{})
+	require.Equal(t, configType.NumField()-1, settingsType.NumField(), "ProviderSettings is ProviderConfig without Keys")
+
+	var config ProviderConfig
+	value := reflect.ValueOf(&config).Elem()
+	for i := 0; i < configType.NumField(); i++ {
+		field := configType.Field(i)
+		if field.Name == "Keys" {
+			continue
+		}
+		mirror, ok := settingsType.FieldByName(field.Name)
+		require.True(t, ok, "ProviderSettings lacks %s", field.Name)
+		require.Equal(t, field.Type, mirror.Type, field.Name)
+		require.Equal(t, field.Tag.Get("json"), mirror.Tag.Get("json"), field.Name)
+		// A value no field holds by default, so a conversion that skips the field shows.
+		switch f := value.Field(i); f.Kind() {
+		case reflect.Pointer:
+			f.Set(reflect.New(field.Type.Elem()))
+		case reflect.Slice:
+			f.Set(reflect.MakeSlice(field.Type, 1, 1))
+		case reflect.Bool:
+			f.SetBool(true)
+		case reflect.String:
+			f.SetString(field.Name)
+		default:
+			t.Fatalf("no test value for %s of kind %s", field.Name, f.Kind())
+		}
+	}
+	config.Keys = []schemas.Key{{ID: "k1"}}
+
+	settings := config.Settings()
+	got := settings.Config()
+	want := config
+	want.Keys = nil
+	require.Equal(t, want, got, "a round trip keeps every setting and drops the keys")
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -131,18 +132,18 @@ func (r *capturingLiveIO) sent() (upstream, client []string) {
 // Each extra name is configured as a custom provider on OpenAI's API with its own key.
 func newLiveOwnerTestGateway(t testing.TB, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
 	t.Helper()
-	config := &lib.Config{
-		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
-		},
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
 	}
 	for _, name := range extra {
-		config.Providers[name] = configstore.ProviderConfig{
+		providers[name] = configstore.ProviderConfig{
 			Keys:                 []schemas.Key{{ID: "key-" + string(name), Name: string(name), Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}},
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 		}
 	}
+	config := libtest.FileOnly(t, &lib.Config{
+		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
+	}, providers)
 	if store != nil {
 		config.ConfigStore = store
 	}
@@ -940,13 +941,12 @@ func BenchmarkLiveSessionControlRoute(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer store.Close(context.Background())
-	config := &lib.Config{
+	config := libtest.FileOnly(b, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{},
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
-		},
-		ConfigStore: store,
-	}
+		ConfigStore:  store,
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
+	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
 	if err != nil {
 		b.Fatal(err)

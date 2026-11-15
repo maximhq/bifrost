@@ -15,7 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/tracing"
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -161,7 +161,7 @@ func TestNativeWSUpstreamProducesLLMCallSpan(t *testing.T) {
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),
@@ -269,7 +269,7 @@ func TestNativeWSUpstreamFailedResponseProducesErroredLLMCallSpan(t *testing.T) 
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),
@@ -374,9 +374,9 @@ func TestNativeWSUpstreamTimeoutProducesErroredLLMCallSpan(t *testing.T) {
 	h := &WSResponsesHandler{
 		client: client,
 		// 1s idle timeout so the stalled upstream trips the read deadline quickly.
-		config: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 1}},
-		}},
+		}),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),

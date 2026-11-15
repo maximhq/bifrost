@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
-	"reflect"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
@@ -40,13 +44,14 @@ func TestProviderKeyReadRedactsNestedSecrets(t *testing.T) {
 					ProjectID: secret(), Endpoints: &schemas.BedrockEndpoints{Runtime: secret()},
 				}
 			}
-			h := &ProviderHandler{inMemoryStore: &lib.Config{
-				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-					provider: {Keys: []schemas.Key{key}},
-				},
-			}}
+			cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+				provider: {Keys: []schemas.Key{key}},
+			})
+			memory := &ProviderHandler{config: cfg}
+			database := &ProviderHandler{config: cfg, configStore: cfg.ConfigStore}
 			for name, handler := range map[string]func(*fasthttp.RequestCtx){
-				"get": h.getProviderKey, "list": h.listProviderKeys,
+				"get": memory.getProviderKey, "list": memory.listProviderKeys,
+				"get from the database": database.getProviderKey, "list from the database": database.listProviderKeys,
 			} {
 				t.Run(name, func(t *testing.T) {
 					ctx := newTestRequestCtx("")
@@ -65,12 +70,160 @@ func TestProviderKeyReadRedactsNestedSecrets(t *testing.T) {
 					if strings.Count(body, ref) != 5 || strings.Count(body, secret().Redacted().GetValue()) != 5 {
 						t.Fatalf("missing masked values or references: %s", body)
 					}
-					if key.Aliases["test"].Region.GetValue() != canary {
+					// The live record the handler served, not the fixture it was seeded from:
+					// redacting the response must leave the record's secrets resolved.
+					live, ok := cfg.LiveStore.Collections.ProviderKeys.Get(key.ID)
+					if !ok {
+						t.Fatalf("live record %s missing", key.ID)
+					}
+					if live.Key.Aliases["test"].Region.GetValue() != canary {
 						t.Fatal("reading a key modified the live secret")
 					}
 				})
 			}
 		})
+	}
+}
+
+// TestUpdateProviderKey_MergesOntoTheStoredKey pins that a key update fills the fields its body
+// leaves out from the key as stored, not from the live record: a value written elsewhere that this
+// node has not re-read yet is kept, and memory then holds the row as written.
+func TestUpdateProviderKey_MergesOntoTheStoredKey(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	ctx := context.Background()
+
+	key := schemas.Key{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-memory"), Models: schemas.WhiteList{"*"}, Weight: 1}
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{key}}})
+	// Written elsewhere: this node's live record still holds the old value.
+	key.Value = *schemas.NewSecretVar("sk-database")
+	if err := cfg.ConfigStore.UpdateProviderKey(ctx, schemas.OpenAI, "k1", key); err != nil {
+		t.Fatalf("writing the key elsewhere: %v", err)
+	}
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	attachBifrostClient(t, cfg)
+
+	reqCtx := newTestRequestCtx(`{"name":"first","weight":3}`)
+	reqCtx.SetUserValue("provider", string(schemas.OpenAI))
+	reqCtx.SetUserValue("key_id", "k1")
+	h.updateProviderKey(reqCtx)
+	if reqCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", reqCtx.Response.StatusCode(), reqCtx.Response.Body())
+	}
+
+	stored, err := cfg.ConfigStore.GetProviderKey(ctx, schemas.OpenAI, "k1")
+	if err != nil {
+		t.Fatalf("reading the key: %v", err)
+	}
+	if stored.Value.GetValue() != "sk-database" || stored.Weight == nil || *stored.Weight != 3 {
+		t.Fatalf("stored key got value %q weight %v, want the stored value kept and weight 3", stored.Value.GetValue(), stored.Weight)
+	}
+	rec, ok := cfg.LiveStore.Collections.ProviderKeys.Get("k1")
+	if !ok || rec.Key.Value.GetValue() != "sk-database" || rec.Key.Weight != 3 {
+		t.Fatalf("memory got %+v, want the row as written", rec)
+	}
+}
+
+// keyRouteRequest runs one key route for provider, and for keyID when it is set, and returns the
+// request context holding the response.
+func keyRouteRequest(handler func(*fasthttp.RequestCtx), provider schemas.ModelProvider, keyID string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", string(provider))
+	if keyID != "" {
+		ctx.SetUserValue("key_id", keyID)
+	}
+	handler(ctx)
+	return ctx
+}
+
+// TestProviderKeyReads_AnswerWhatIsSaved pins where the key routes read keys. With a config store
+// they read the database: a key saved but never loaded into memory, as after a failed reload, is
+// listed after the older key by the provider's key list and by /api/keys, is returned by GET, and
+// grants models in the model list's key filter. Without one they read memory.
+func TestProviderKeyReads_AnswerWhatIsSaved(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	first := schemas.Key{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}
+	saved := schemas.Key{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1}
+	models := &mockModelsManager{filtered: map[schemas.ModelProvider][]string{schemas.OpenAI: {"gpt-4o"}}}
+
+	withStore := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{first}}})
+	if err := withStore.ConfigStore.CreateProviderKey(context.Background(), schemas.OpenAI, saved); err != nil {
+		t.Fatalf("saving the key: %v", err)
+	}
+	if _, ok := withStore.LiveStore.Collections.ProviderKeys.Get("k2"); ok {
+		t.Fatal("precondition: memory must not hold the saved key")
+	}
+	fileOnly := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{first, saved}}})
+
+	for name, h := range map[string]*ProviderHandler{
+		"database": {config: withStore, configStore: withStore.ConfigStore, modelsManager: models},
+		"memory":   {config: fileOnly, modelsManager: models},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := keyRouteRequest(h.listProviderKeys, schemas.OpenAI, "")
+			var list ListProviderKeysResponse
+			if err := sonic.Unmarshal(ctx.Response.Body(), &list); err != nil || ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("list: status %d, err %v, body %s", ctx.Response.StatusCode(), err, ctx.Response.Body())
+			}
+			if list.Total != 2 || list.Keys[0].ID != "k1" || list.Keys[1].ID != "k2" {
+				t.Fatalf("list got %+v, want k1 then k2", list.Keys)
+			}
+
+			ctx = keyRouteRequest(h.getProviderKey, schemas.OpenAI, "k2")
+			if ctx.Response.StatusCode() != fasthttp.StatusOK || !strings.Contains(string(ctx.Response.Body()), `"second"`) {
+				t.Fatalf("get: status %d, body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			for _, body := range []string{string(ctx.Response.Body()), fmt.Sprint(list.Keys)} {
+				if strings.Contains(body, "sk-2") {
+					t.Fatalf("a key read must be redacted: %s", body)
+				}
+			}
+
+			ctx = keyRouteRequest(h.listKeys, schemas.OpenAI, "")
+			var all []struct {
+				KeyID string `json:"key_id"`
+			}
+			if err := sonic.Unmarshal(ctx.Response.Body(), &all); err != nil || len(all) != 2 || all[0].KeyID != "k1" || all[1].KeyID != "k2" {
+				t.Fatalf("/api/keys: status %d, err %v, body %s", ctx.Response.StatusCode(), err, ctx.Response.Body())
+			}
+
+			listed, _, err := h.listManagementModels(context.Background(), modelListQuery{Provider: schemas.OpenAI, KeyIDs: []string{"k2"}})
+			if err != nil || len(listed) != 1 || !slices.Equal(listed[0].AccessibleByKeys, []string{"k2"}) {
+				t.Fatalf("model list by key got %+v, %v; want gpt-4o granted by k2", listed, err)
+			}
+		})
+	}
+}
+
+// TestProviderKeyReads_AnswerServerErrorWhenTheDatabaseFails pins that a key route whose database
+// read fails answers 500, as the provider routes do, instead of falling back to memory.
+func TestProviderKeyReads_AnswerServerErrorWhenTheDatabaseFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}}},
+	})
+	h := &ProviderHandler{config: cfg, configStore: cfg.ConfigStore, modelsManager: &mockModelsManager{
+		filtered: map[schemas.ModelProvider][]string{schemas.OpenAI: {"gpt-4o"}},
+	}}
+	sqlDB, err := cfg.ConfigStore.DB().DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("closing the database: %v", err)
+	}
+
+	for name, handler := range map[string]func(*fasthttp.RequestCtx){
+		"list": h.listProviderKeys, "get": h.getProviderKey, "all keys": h.listKeys,
+	} {
+		if ctx := keyRouteRequest(handler, schemas.OpenAI, "k1"); ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+			t.Fatalf("%s: status %d, want 500; body %s", name, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	if _, _, err := h.listManagementModels(context.Background(), modelListQuery{Provider: schemas.OpenAI, KeyIDs: []string{"k1"}}); err == nil {
+		t.Fatal("model list by key: want the read error")
 	}
 }
 
@@ -988,10 +1141,10 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 	for _, tc := range createCases {
 		t.Run("create "+tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: tc.config}},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: tc.config}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
 			h.createProviderKey(ctx)
@@ -999,7 +1152,7 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
 			}
 			body := string(ctx.Response.Body())
-			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			keys := libtest.Providers(h.config)[tc.provider].Keys
 			if tc.wantStatus != fasthttp.StatusOK {
 				if !strings.Contains(body, tc.wantBody) {
 					t.Fatalf("expected the error to contain %q, got %s", tc.wantBody, body)
@@ -1023,10 +1176,10 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 			c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar(jwt))
 		})}
 		h := &ProviderHandler{
-			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}),
 			modelsManager: &mockModelsManager{},
 		}
-		attachBifrostClient(t, h.inMemoryStore)
+		attachBifrostClient(t, h.config)
 		masked := jwt[:4] + strings.Repeat("*", 24) + jwt[len(jwt)-4:]
 		ctx := newTestRequestCtx(`{"name":"wif","weight":2,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"8c1d0f5e-0000-4000-8000-000000000001","service_account_id":"svac_01def","identity_source":{"type":"inline","token":"` + masked + `"}}}}`)
 		ctx.SetUserValue("provider", string(schemas.Anthropic))
@@ -1035,7 +1188,7 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 		if ctx.Response.StatusCode() != fasthttp.StatusOK {
 			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 		}
-		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		got := libtest.Providers(h.config)[schemas.Anthropic].Keys[0]
 		if got.Weight != 2 {
 			t.Fatalf("weight got %v, want the update applied", got.Weight)
 		}
@@ -1053,13 +1206,13 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 			c.IdentitySource = inlineIdentitySource(schemas.NewSecretVar(jwt))
 		})}
 		h := &ProviderHandler{
-			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}),
 			modelsManager: &mockModelsManager{},
 		}
-		attachBifrostClient(t, h.inMemoryStore)
-		redacted, err := h.inMemoryStore.GetProviderKeyRedacted(schemas.Anthropic, "key-1")
+		attachBifrostClient(t, h.config)
+		redacted, err := h.redactedKeyOf(context.Background(), schemas.Anthropic, "key-1")
 		if err != nil {
-			t.Fatalf("GetProviderKeyRedacted: %v", err)
+			t.Fatalf("key-1 must be configured: %v", err)
 		}
 		redacted.Weight = 3
 		body, err := sonic.Marshal(redacted)
@@ -1079,7 +1232,7 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 		if ctx.Response.StatusCode() != fasthttp.StatusOK {
 			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 		}
-		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		got := libtest.Providers(h.config)[schemas.Anthropic].Keys[0]
 		if got.Weight != 3 {
 			t.Fatalf("weight got %v, want the update applied", got.Weight)
 		}
@@ -1099,10 +1252,10 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 		newHandler := func(t *testing.T) *ProviderHandler {
 			stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(nil)}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 			return h
 		}
 		update := func(t *testing.T, h *ProviderHandler, body string) schemas.Key {
@@ -1113,7 +1266,7 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 			if ctx.Response.StatusCode() != fasthttp.StatusOK {
 				t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			return h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+			return libtest.Providers(h.config)[schemas.Anthropic].Keys[0]
 		}
 
 		if got := update(t, newHandler(t), `{"weight":2}`); !got.AnthropicKeyConfig.HasWorkloadIdentity() {
@@ -1131,22 +1284,20 @@ func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
 
 // refreshHandlerForTest builds a ProviderHandler with one keyed provider and a
 // recording models manager.
-func refreshHandlerForTest(mgr *mockModelsManager) *ProviderHandler {
+func refreshHandlerForTest(t testing.TB, mgr *mockModelsManager) *ProviderHandler {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 	return &ProviderHandler{
-		inMemoryStore: &lib.Config{
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
-			},
-		},
+		config: libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
+		}),
 		modelsManager: mgr,
 	}
 }
 
 func TestRefreshProviderModels_DelegatesToModelsManager(t *testing.T) {
 	mgr := &mockModelsManager{}
-	h := refreshHandlerForTest(mgr)
+	h := refreshHandlerForTest(t, mgr)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", "openai")
@@ -1162,7 +1313,7 @@ func TestRefreshProviderModels_DelegatesToModelsManager(t *testing.T) {
 
 func TestRefreshProviderKeyModels_DelegatesToModelsManager(t *testing.T) {
 	mgr := &mockModelsManager{}
-	h := refreshHandlerForTest(mgr)
+	h := refreshHandlerForTest(t, mgr)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", "openai")
@@ -1182,7 +1333,7 @@ func TestRefreshProviderKeyModels_DelegatesToModelsManager(t *testing.T) {
 // tell the user to wait instead of silently doubling the load.
 func TestRefreshProviderModels_InFlightReturns409(t *testing.T) {
 	mgr := &mockModelsManager{refreshErr: ErrRefreshInProgress}
-	h := refreshHandlerForTest(mgr)
+	h := refreshHandlerForTest(t, mgr)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", "openai")
@@ -1195,7 +1346,7 @@ func TestRefreshProviderModels_InFlightReturns409(t *testing.T) {
 
 func TestRefreshProviderKeyModels_UnknownKeyReturns404(t *testing.T) {
 	mgr := &mockModelsManager{}
-	h := refreshHandlerForTest(mgr)
+	h := refreshHandlerForTest(t, mgr)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", "openai")
@@ -1212,7 +1363,7 @@ func TestRefreshProviderKeyModels_UnknownKeyReturns404(t *testing.T) {
 
 func TestRefreshProviderModels_UnknownProviderReturns404(t *testing.T) {
 	mgr := &mockModelsManager{}
-	h := refreshHandlerForTest(mgr)
+	h := refreshHandlerForTest(t, mgr)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", "does-not-exist")
@@ -1237,20 +1388,18 @@ func TestDeleteProviderKey_KeylessProviderRemovesResidualKey(t *testing.T) {
 
 	const provider schemas.ModelProvider = "keyless-custom"
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				provider: {
-					Keys: []schemas.Key{{ID: "residual-key", Name: "residual", Value: *schemas.NewSecretVar("sk-residual"), Weight: 1, Enabled: schemas.Ptr(false)}},
-					CustomProviderConfig: &schemas.CustomProviderConfig{
-						IsKeyLess:        true,
-						BaseProviderType: schemas.OpenAI,
-					},
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				Keys: []schemas.Key{{ID: "residual-key", Name: "residual", Value: *schemas.NewSecretVar("sk-residual"), Weight: 1, Enabled: schemas.Ptr(false)}},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					IsKeyLess:        true,
+					BaseProviderType: schemas.OpenAI,
 				},
 			},
-		},
+		}),
 		modelsManager: &mockModelsManager{},
 	}
-	attachBifrostClient(t, h.inMemoryStore)
+	attachBifrostClient(t, h.config)
 
 	ctx := newTestRequestCtx("")
 	ctx.SetUserValue("provider", string(provider))
@@ -1260,7 +1409,7 @@ func TestDeleteProviderKey_KeylessProviderRemovesResidualKey(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("delete residual key on keyless provider: status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if keys := h.inMemoryStore.Providers[provider].Keys; len(keys) != 0 {
+	if keys := libtest.Providers(h.config)[provider].Keys; len(keys) != 0 {
 		t.Fatalf("residual key still stored after delete: %+v", keys)
 	}
 }
@@ -1273,15 +1422,13 @@ func TestCreateProviderKey_CustomBedrockRequiresRegion(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"aws-custom": {
-					CustomProviderConfig: &schemas.CustomProviderConfig{
-						BaseProviderType: schemas.Bedrock,
-					},
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"aws-custom": {
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					BaseProviderType: schemas.Bedrock,
 				},
 			},
-		},
+		}),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -1332,19 +1479,17 @@ func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						schemas.Ollama: {Keys: []schemas.Key{{
-							ID:              "key-1",
-							Name:            "ollama-key",
-							Weight:          1,
-							OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
-						}}},
-					},
-				},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.Ollama: {Keys: []schemas.Key{{
+						ID:              "key-1",
+						Name:            "ollama-key",
+						Weight:          1,
+						OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(storedURL)},
+					}}},
+				}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(schemas.Ollama))
@@ -1356,7 +1501,7 @@ func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
 			if ctx.Response.StatusCode() != tc.wantStatus {
 				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
 			}
-			stored := h.inMemoryStore.Providers[schemas.Ollama].Keys[0]
+			stored := libtest.Providers(h.config)[schemas.Ollama].Keys[0]
 			if got := stored.OllamaKeyConfig.URL.GetValue(); got != tc.wantURL {
 				t.Fatalf("stored url got %q, want %q", got, tc.wantURL)
 			}
@@ -1390,19 +1535,17 @@ func TestProviderKeyWeight_RejectsNegative(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						schemas.OpenAI: {Keys: []schemas.Key{{
-							ID:     "key-1",
-							Name:   "openai-key",
-							Value:  *schemas.NewSecretVar("sk-stored"),
-							Weight: 1,
-						}}},
-					},
-				},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.OpenAI: {Keys: []schemas.Key{{
+						ID:     "key-1",
+						Name:   "openai-key",
+						Value:  *schemas.NewSecretVar("sk-stored"),
+						Weight: 1,
+					}}},
+				}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(schemas.OpenAI))
@@ -1419,7 +1562,7 @@ func TestProviderKeyWeight_RejectsNegative(t *testing.T) {
 			if tc.wantStatus == fasthttp.StatusBadRequest && !strings.Contains(string(ctx.Response.Body()), "weight") {
 				t.Fatalf("expected the error to name the weight, got %s", ctx.Response.Body())
 			}
-			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			keys := libtest.Providers(h.config)[schemas.OpenAI].Keys
 			if tc.create && tc.wantStatus == fasthttp.StatusBadRequest && len(keys) != 1 {
 				t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
 			}
@@ -1579,10 +1722,16 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 				providerConfig.Keys = []schemas.Key{*tc.stored}
 			}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: providerConfig}},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: providerConfig}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
+			// Snapshot by value: the live record's Keys slice is shared, so an in-place edit
+			// during a rejected update would change a slice kept by reference as well.
+			before, err := json.Marshal(libtest.Providers(h.config)[tc.provider].Keys)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
@@ -1603,11 +1752,15 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			if tc.wantNamed != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantNamed) {
 				t.Fatalf("the refusal must name %s, got %s", tc.wantNamed, ctx.Response.Body())
 			}
-			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			keys := libtest.Providers(h.config)[tc.provider].Keys
 			switch {
 			case tc.want403 && tc.stored != nil:
-				if len(keys) != 1 || !reflect.DeepEqual(keys[0], *tc.stored) {
-					t.Fatalf("expected stored key unchanged after 403, got %+v", keys)
+				after, err := json.Marshal(keys)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(keys) != 1 || string(after) != string(before) {
+					t.Fatalf("expected stored key unchanged after 403, got %s, want %s", after, before)
 				}
 			case tc.want403:
 				if len(keys) != 0 {
@@ -1653,10 +1806,10 @@ func TestProviderKeyURL_RejectsLinkLocalDestination(t *testing.T) {
 				}}
 			}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Ollama: providerConfig}},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Ollama: providerConfig}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(schemas.Ollama))
@@ -1670,7 +1823,7 @@ func TestProviderKeyURL_RejectsLinkLocalDestination(t *testing.T) {
 			if ctx.Response.StatusCode() != tc.wantStatus {
 				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
 			}
-			keys := h.inMemoryStore.Providers[schemas.Ollama].Keys
+			keys := libtest.Providers(h.config)[schemas.Ollama].Keys
 			switch {
 			case tc.wantStatus != fasthttp.StatusOK && tc.stored:
 				if len(keys) != 1 || keys[0].OllamaKeyConfig.URL.GetValue() != storedURL {
@@ -1717,10 +1870,10 @@ func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: {}}},
+				config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: {}}),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
 			h.createProviderKey(ctx)
@@ -1731,7 +1884,7 @@ func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
 				if !strings.Contains(string(ctx.Response.Body()), "region") {
 					t.Fatalf("rejection must name the region field, got %s", ctx.Response.Body())
 				}
-				if len(h.inMemoryStore.Providers[tc.provider].Keys) != 0 {
+				if len(libtest.Providers(h.config)[tc.provider].Keys) != 0 {
 					t.Fatal("a rejected key must not be persisted")
 				}
 			}
@@ -2002,10 +2155,10 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 
 	t.Run("create", func(t *testing.T) {
 		h := &ProviderHandler{
-			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+			config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
 			modelsManager: &mockModelsManager{},
 		}
-		attachBifrostClient(t, h.inMemoryStore)
+		attachBifrostClient(t, h.config)
 		ctx := newTestRequestCtx(`{"name":"oauth","weight":1,"oauth_key_config":` + block + `}`)
 		ctx.SetUserValue("provider", string(schemas.OpenAI))
 		h.createProviderKey(ctx)
@@ -2020,17 +2173,17 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 
 	t.Run("update", func(t *testing.T) {
 		h := &ProviderHandler{
-			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "oauth", Weight: 1, OAuthKeyConfig: &schemas.OAuthKeyConfig{
 					GrantType:    schemas.OAuthGrantClientCredentials,
 					TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
 					ClientID:     schemas.NewSecretVar("id"),
 					ClientSecret: schemas.NewSecretVar("s"),
 				}}}},
-			}},
+			}),
 			modelsManager: &mockModelsManager{},
 		}
-		attachBifrostClient(t, h.inMemoryStore)
+		attachBifrostClient(t, h.config)
 		ctx := newTestRequestCtx(`{"oauth_key_config":` + block + `}`)
 		ctx.SetUserValue("provider", string(schemas.OpenAI))
 		ctx.SetUserValue("key_id", "key-1")
@@ -2042,7 +2195,7 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 		if body := string(ctx.Response.Body()); !strings.Contains(body, `oauth_key_config: unknown field \"scope\"`) {
 			t.Fatalf("the response must name the unknown field, got %s", body)
 		}
-		if stored := h.inMemoryStore.Providers[schemas.OpenAI].Keys[0]; len(stored.OAuthKeyConfig.Scopes) != 0 || stored.OAuthKeyConfig.ClientID.GetValue() != "id" {
+		if stored := libtest.Providers(h.config)[schemas.OpenAI].Keys[0]; len(stored.OAuthKeyConfig.Scopes) != 0 || stored.OAuthKeyConfig.ClientID.GetValue() != "id" {
 			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
 		}
 	})

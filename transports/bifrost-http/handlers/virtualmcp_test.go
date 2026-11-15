@@ -22,7 +22,7 @@ import (
 // named alpha by name was saved, granted nothing, and its endpoint listed nothing.
 func TestValidateToolSpecs_NamesAClientByID(t *testing.T) {
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-		Account: lib.NewBaseAccount(&lib.Config{}),
+		Account: lib.NewBaseAccount(&lib.Config{LiveStore: liveStoreForTest(t)}),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	require.NoError(t, err)

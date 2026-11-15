@@ -61,7 +61,7 @@ func TestMCPGateway_UpstreamToolChangeReachesListeners(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	b, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: lib.NewBaseAccount(&lib.Config{}),
+		Account: lib.NewBaseAccount(&lib.Config{LiveStore: liveStoreForTest(t)}),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
 		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			ID:                     "alpha",
@@ -76,7 +76,7 @@ func TestMCPGateway_UpstreamToolChangeReachesListeners(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(b.Shutdown)
 
-	h, err := NewMCPServerHandler(ctx, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, coreToolManager{b}, nil, nil, nil)
+	h, err := NewMCPServerHandler(ctx, &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, coreToolManager{b}, nil, nil, nil)
 	require.NoError(t, err)
 	// As the HTTP server wires it: a discovery change re-syncs the served /mcp server.
 	b.SetMCPDiscoveryChangeCallback(func(string, string, *schemas.MCPDiscovery) { go func() { _ = h.SyncMCPServer(ctx) }() })

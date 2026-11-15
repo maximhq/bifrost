@@ -2,12 +2,13 @@
 // from the config store, runtime state keyed by those records, and tables a component owns.
 //
 // New returns a store with a collection registered for each config store table, reached through
-// Store.Collections. Configuration reaches memory three ways: LoadAll reads every registered kind from
+// Store.Collections, and the tables derived from them that several components read, reached through
+// Store.Views. Configuration reaches memory three ways: LoadAll reads every registered kind from
 // the database at boot, LoadRecords publishes records the caller built for a process without a
 // database, and Refresh re-reads the named rows from the database after a write. A write reaches
-// memory only through the refresh that follows it, so a record holds what the database held when its
-// row was last read. Readers keep typed collections and read through them; nothing on the request
-// path looks a collection up by name.
+// memory only through the refresh that follows it, so a record holds what the database held when
+// its row was last read. Readers keep typed collections and read through them; nothing on the
+// request path looks a collection up by name.
 //
 // Which structure holds a piece of data follows from what a miss means:
 //
@@ -226,7 +227,8 @@ func Rec[T any](c *Collection[T], v *T) Record {
 
 // Store owns every collection and table, and the one write path for configuration records.
 // Collections holds the typed collection of each config store table; a build that registers
-// collections of its own keeps their handles beside it.
+// collections of its own keeps their handles beside it. Views holds the tables the store derives
+// from those collections for every component.
 //
 // tablesMu is separate from mu, which a publish holds while subscribers run, so a table call made
 // from a subscriber can never wait on its own publish. reads holds when each Refresh and
@@ -234,6 +236,7 @@ func Rec[T any](c *Collection[T], v *T) Record {
 // for the records they have yet to publish.
 type Store struct {
 	Collections *Collections
+	Views       *Views
 
 	mu       sync.Mutex  // the kind registry, and one publish at a time
 	frozen   atomic.Bool // set by LoadAll or LoadRecords; kind registration fails after it

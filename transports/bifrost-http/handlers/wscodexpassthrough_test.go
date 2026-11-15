@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -232,6 +233,13 @@ type codexFixtureOptions struct {
 
 func newCodexRelayFixtureWith(t *testing.T, config *lib.Config, opts codexFixtureOptions) *codexRelayFixture {
 	t.Helper()
+	if config == nil {
+		config = &lib.Config{}
+	}
+	if config.LiveStore == nil {
+		// The relay reads OpenAI's proxy and network config from the live store.
+		config = libtest.FileOnly(t, config, nil)
+	}
 	plugins := opts.plugins
 	recorder := &codexPipelineRecorder{}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
@@ -787,12 +795,11 @@ func TestCodexCallerKey(t *testing.T) {
 // that may use OpenAI.
 func codexGovernedFixture(t *testing.T, enforceAuth, allowDirectKeys bool) *codexRelayFixture {
 	t.Helper()
-	config := &lib.Config{
+	config := libtest.FileOnly(t, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth},
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}}},
-		},
-	}
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}}},
+	})
 	virtualKey := func(name string) configtables.TableVirtualKey {
 		return configtables.TableVirtualKey{
 			ID: name, Name: name, Value: *schemas.NewSecretVar("sk-bf-" + name), IsActive: new(true),

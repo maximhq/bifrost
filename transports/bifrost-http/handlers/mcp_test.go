@@ -613,7 +613,7 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	manager := &removeRecordingMCPManager{}
-	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+	h := &MCPHandler{store: &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
 	del := func(id string) (int, string) {
 		var req fasthttp.Request
 		req.Header.SetMethod(fasthttp.MethodDelete)
@@ -665,7 +665,7 @@ func TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt(t *testing.T) {
 	}
 
 	governance := &reloadCountingGovernanceManager{}
-	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
+	h := &MCPHandler{store: &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodDelete)
 	reqCtx := initCtx(&req)
@@ -707,7 +707,7 @@ func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
 		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
 	}))
 	mgr := &removeRecordingMCPManager{}
-	h := &MCPHandler{store: &lib.Config{ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
+	h := &MCPHandler{store: &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodDelete)
 	reqCtx := initCtx(&req)
@@ -1939,7 +1939,7 @@ func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	SetLogger(&mockLogger{})
 	mgr := &reconnectRecordingMCPManager{}
 	h := &MCPHandler{
-		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+		store:      &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
 		mcpManager: mgr,
 	}
 	status, respBody := doMCPRequest(t, h.reconnectMCPClient, fasthttp.MethodPost, "", "no-such-client", false)
@@ -2608,6 +2608,7 @@ func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler
 	t.Cleanup(tokens.Close)
 	provider.SetTokenExchangeIdPResolver(exchangeIdP{tokenEndpoint: tokens.URL})
 	cfg := &lib.Config{
+		LiveStore:          liveStoreForTest(t),
 		ConfigStore:        store,
 		ClientConfig:       &configstore.ClientConfig{},
 		MCPConfig:          &schemas.MCPConfig{},

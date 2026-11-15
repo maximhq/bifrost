@@ -874,20 +874,6 @@ func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.
 	return append([]schemas.Key(nil), config.Keys...), nil
 }
 
-func (m *MockConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
-	config, ok := m.providers[provider]
-	if !ok {
-		return nil, configstore.ErrNotFound
-	}
-	for _, key := range config.Keys {
-		if key.ID == keyID {
-			keyCopy := key
-			return &keyCopy, nil
-		}
-	}
-	return nil, configstore.ErrNotFound
-}
-
 func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
 	config, ok := m.providers[provider]
 	if !ok {
@@ -9416,7 +9402,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify provider exists in memory
-	if _, exists := config.Providers[schemas.OpenAI]; !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("OpenAI provider not found in memory")
 	}
 
@@ -9523,8 +9509,8 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	}
 
 	// Verify the new BaseURL is in memory
-	if config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL != "https://api.openai.com/v2" {
-		t.Errorf("Expected BaseURL to be updated, got %s", config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL)
+	if providersOf(config2)[schemas.OpenAI].NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+		t.Errorf("Expected BaseURL to be updated, got %s", providersOf(config2)[schemas.OpenAI].NetworkConfig.BaseURL)
 	}
 }
 
@@ -9581,10 +9567,10 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify both providers exist
-	if _, exists := config2.Providers[schemas.OpenAI]; !exists {
+	if _, exists := providersOf(config2)[schemas.OpenAI]; !exists {
 		t.Error("OpenAI provider should exist (from file)")
 	}
-	if _, exists := config2.Providers[schemas.Anthropic]; !exists {
+	if _, exists := providersOf(config2)[schemas.Anthropic]; !exists {
 		t.Error("Anthropic provider should be preserved (added via DB)")
 	}
 
@@ -11077,8 +11063,8 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	verifyVirtualKeyInDB(t, config.ConfigStore, "vk-2")
 
 	// Verify in-memory state
-	if len(config.Providers) != 2 {
-		t.Errorf("Expected 2 providers in memory, got %d", len(config.Providers))
+	if len(providersOf(config)) != 2 {
+		t.Errorf("Expected 2 providers in memory, got %d", len(providersOf(config)))
 	}
 	if len(config.GovernanceConfig.VirtualKeys) != 2 {
 		t.Errorf("Expected 2 virtual keys in memory, got %d", len(config.GovernanceConfig.VirtualKeys))
@@ -18526,7 +18512,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := config.Providers[schemas.OpenAI]
+	openaiConfig, exists := providersOf(config)[schemas.OpenAI]
 	if !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
@@ -18563,7 +18549,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := config.Providers[schemas.OpenAI]
+	openaiConfig, exists := providersOf(config)[schemas.OpenAI]
 	if !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
@@ -18598,8 +18584,8 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
 
-	if config1.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
-		t.Errorf("First load: Expected weight 0, got %f", config1.Providers[schemas.OpenAI].Keys[0].Weight)
+	if providersOf(config1)[schemas.OpenAI].Keys[0].Weight != 0 {
+		t.Errorf("First load: Expected weight 0, got %f", providersOf(config1)[schemas.OpenAI].Keys[0].Weight)
 	}
 	config1.Close(ctx)
 
@@ -18610,9 +18596,9 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	}
 	defer config2.Close(ctx)
 
-	if config2.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
+	if providersOf(config2)[schemas.OpenAI].Keys[0].Weight != 0 {
 		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
-			config2.Providers[schemas.OpenAI].Keys[0].Weight)
+			providersOf(config2)[schemas.OpenAI].Keys[0].Weight)
 	}
 }
 
@@ -18913,7 +18899,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := config1.Providers[schemas.OpenAI]
+	openaiConfig1 := providersOf(config1)[schemas.OpenAI]
 	if openaiConfig1.Keys[0].Enabled == nil || !*openaiConfig1.Keys[0].Enabled {
 		t.Fatal("Expected Enabled=true after first load")
 	}
@@ -18944,7 +18930,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify Enabled changed to false in the in-memory config
-	openaiConfig2 := config2.Providers[schemas.OpenAI]
+	openaiConfig2 := providersOf(config2)[schemas.OpenAI]
 	if openaiConfig2.Keys[0].Enabled == nil || *openaiConfig2.Keys[0].Enabled {
 		t.Error("Expected Enabled=false after second load, but got true or nil")
 	}
@@ -18956,7 +18942,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+	if enabled := providersOf(config3)[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
 		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
 	}
 }
@@ -19003,7 +18989,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 
 	// Turn the key back on the way the UI does (ConfigHash is left as is), and store the hash an
 	// older build wrote for this file
-	key := config2.Providers[schemas.OpenAI].Keys[0]
+	key := providersOf(config2)[schemas.OpenAI].Keys[0]
 	key.Enabled = &enabledTrue
 	if err := config2.ConfigStore.UpdateProviderKey(context.Background(), schemas.OpenAI, key.ID, key); err != nil {
 		t.Fatalf("UpdateProviderKey failed: %v", err)
@@ -19023,7 +19009,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
+	if enabled := providersOf(config3)[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
 		t.Error("Expected Enabled=true from the UI to survive a restart with config.json unchanged, but got false")
 	}
 }
@@ -19162,7 +19148,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config1.Close(context.Background())
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := config1.Providers[schemas.OpenAI]
+	openaiConfig1 := providersOf(config1)[schemas.OpenAI]
 	if openaiConfig1.Keys[0].UseForBatchAPI == nil || *openaiConfig1.Keys[0].UseForBatchAPI {
 		t.Fatal("Expected UseForBatchAPI=false after first load")
 	}
@@ -19191,7 +19177,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify UseForBatchAPI changed to true in the in-memory config
-	openaiConfig2 := config2.Providers[schemas.OpenAI]
+	openaiConfig2 := providersOf(config2)[schemas.OpenAI]
 	if openaiConfig2.Keys[0].UseForBatchAPI == nil || !*openaiConfig2.Keys[0].UseForBatchAPI {
 		t.Error("Expected UseForBatchAPI=true after second load, but got false or nil")
 	}
@@ -21995,24 +21981,35 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 // AddProvider Tests
 // =============================================================================
 
-// mockConfigStoreAddProvider is a ConfigStore mock that allows controlling AddProvider behavior.
+// mockConfigStoreAddProvider wraps a config store so a test can make AddProvider fail.
 type mockConfigStoreAddProvider struct {
-	MockConfigStore
+	configstore.ConfigStore
 	addProviderErr error
 }
 
+// AddProvider fails with addProviderErr when it is set, and writes through otherwise.
 func (m *mockConfigStoreAddProvider) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	if m.addProviderErr != nil {
 		return m.addProviderErr
 	}
-	return m.MockConfigStore.AddProvider(ctx, provider, config, tx...)
+	return m.ConfigStore.AddProvider(ctx, provider, config, tx...)
 }
 
+// testProviderKey is a key with a name and a value, which every stored key needs.
+func testProviderKey() schemas.Key {
+	return schemas.Key{Name: "test-key", Value: *schemas.NewSecretVar("test-key")}
+}
+
+// TestProviderPrefixRegistration_ConfigLifecycle checks that a provider's "name/model" prefix is
+// recognized once AddProvider returns and stops being recognized once RemoveProvider drops it,
+// and that a failed write leaves it as it was. A provider written to the database elsewhere and
+// then refreshed into this config registers its prefix the same way.
 func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
 	initTestLogger()
 	const provider schemas.ModelProvider = "Config Prefix Registration"
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
-	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	cfg := providerStore(t, nil)
+	store := cfg.ConfigStore
 	ctx := context.Background()
 	model := string(provider) + "/namespace/model"
 	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
@@ -22023,17 +22020,14 @@ func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
 		t.Fatalf("configured prefix was not recognized: provider=%q model=%q", parsedProvider, parsedModel)
 	}
 
-	cfg.ConfigStore = &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: errors.New("delete failed"),
-	}
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: store, deleteProviderErr: errors.New("delete failed")}
 	if err := cfg.RemoveProvider(ctx, provider); err == nil {
 		t.Fatal("expected persistence failure")
 	}
 	if !schemas.IsKnownProvider(string(provider)) {
 		t.Fatal("failed removal unregistered the retained configuration")
 	}
-	cfg.ConfigStore = nil
+	cfg.ConfigStore = store
 	if err := cfg.RemoveProvider(ctx, provider); err != nil {
 		t.Fatal(err)
 	}
@@ -22041,61 +22035,55 @@ func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
 		t.Fatal("removed configuration left a registered prefix")
 	}
 
-	cfg.ConfigStore = &mockConfigStoreAddProvider{
-		MockConfigStore: *NewMockConfigStore(),
-		addProviderErr:  errors.New("add failed"),
-	}
+	cfg.ConfigStore = &mockConfigStoreAddProvider{ConfigStore: store, addProviderErr: errors.New("add failed")}
 	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err == nil {
 		t.Fatal("expected persistence failure")
 	}
 	if schemas.IsKnownProvider(string(provider)) {
 		t.Fatal("failed creation registered a prefix")
 	}
-}
 
-func BenchmarkProviderPrefixRegistration(b *testing.B) {
-	initTestLogger()
-	const provider schemas.ModelProvider = "benchmark-prefix-registration"
-	b.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
-	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
-	ctx := context.Background()
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
-			b.Fatal(err)
-		}
-		if err := cfg.RemoveProvider(ctx, provider); err != nil {
-			b.Fatal(err)
-		}
+	// A provider written elsewhere is registered when this config refreshes it, and unregistered
+	// when a delete whose rows are already gone drops it.
+	cfg.ConfigStore = store
+	if err := store.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshProviderRow(ctx, cfg, provider); err != nil {
+		t.Fatal(err)
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("refreshed configuration did not register its prefix")
+	}
+	if err := store.DeleteProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RemoveProvider(context.WithValue(ctx, schemas.BifrostContextKeySkipDBUpdate, true), provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("configuration removed after its rows were deleted left a registered prefix")
 	}
 }
 
 func TestAddProvider_Success(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, nil)
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
+		Keys: []schemas.Key{testProviderKey()},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be in the in-memory map after successful add")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be in the live store after a successful add")
 	}
 }
 
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {},
-		},
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{"test-provider": {}})
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err == nil {
@@ -22110,21 +22098,14 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	initTestLogger()
 	schemas.UnregisterKnownProvider("test-provider")
 	t.Cleanup(func() { schemas.UnregisterKnownProvider("test-provider") })
-	// Simulate: provider exists in DB but not in the in-memory map.
-	// This can happen when a previous AddProvider wrote to DB but the process failed
-	// before syncing the in-memory state (e.g., UpdateProviderConfig failed after AddProvider).
-	mockStore := &mockConfigStoreAddProvider{
-		MockConfigStore: *NewMockConfigStore(),
-		addProviderErr:  configstore.ErrAlreadyExists,
-	}
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: mockStore,
+	// Simulate: provider exists in DB but not in memory. This can happen when a previous
+	// AddProvider wrote to DB but the process failed before the live store heard of it.
+	cfg := providerStore(t, nil)
+	config := configstore.ProviderConfig{Keys: []schemas.Key{testProviderKey()}}
+	if err := cfg.ConfigStore.AddProvider(context.Background(), "test-provider", config); err != nil {
+		t.Fatalf("seeding the database: %v", err)
 	}
 
-	config := configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
-	}
 	err := cfg.AddProvider(context.Background(), "test-provider", config)
 
 	// Should return ErrAlreadyExists
@@ -22135,10 +22116,10 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
 	}
 
-	// The provider should be synced to the in-memory map
+	// The provider should be refreshed into the live store
 	// so that subsequent UpdateProviderConfig calls can succeed
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be synced to in-memory map when DB returns already exists")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be refreshed into the live store when DB returns already exists")
 	}
 	if !schemas.IsKnownProvider("test-provider") {
 		t.Fatal("synced configuration should register its provider prefix")
@@ -22148,40 +22129,33 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 func TestAddProvider_DBError_DoesNotSyncToMemory(t *testing.T) {
 	initTestLogger()
 	// Non-duplicate DB errors should NOT add the provider to memory
-	mockStore := &mockConfigStoreAddProvider{
-		MockConfigStore: *NewMockConfigStore(),
-		addProviderErr:  errors.New("connection refused"),
-	}
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, nil)
+	cfg.ConfigStore = &mockConfigStoreAddProvider{ConfigStore: cfg.ConfigStore, addProviderErr: errors.New("connection refused")}
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	if _, exists := cfg.Providers["test-provider"]; exists {
+	if cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should NOT be in memory when DB returns a non-duplicate error")
 	}
 }
 
-func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
+// With the config store disabled, configuration does not change until a restart, so a provider
+// write is refused and memory keeps what boot loaded.
+func TestAddProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: nil,
-	}
+	cfg := withProviders(t, &Config{}, nil)
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
+		Keys: []schemas.Key{testProviderKey()},
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	if !errors.Is(err, ErrNoConfigStore) {
+		t.Fatalf("expected ErrNoConfigStore, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be in memory when ConfigStore is nil")
+	if cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should not be added when ConfigStore is nil")
 	}
 }
 
@@ -22189,45 +22163,38 @@ func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
 // RemoveProvider Tests
 // =============================================================================
 
-// mockConfigStoreDeleteProvider is a ConfigStore mock that allows controlling DeleteProvider behavior.
+// mockConfigStoreDeleteProvider wraps a config store so a test can make DeleteProvider fail.
 type mockConfigStoreDeleteProvider struct {
-	MockConfigStore
+	configstore.ConfigStore
 	deleteProviderErr error
 }
 
+// DeleteProvider fails with deleteProviderErr when it is set, and deletes through otherwise.
 func (m *mockConfigStoreDeleteProvider) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	if m.deleteProviderErr != nil {
 		return m.deleteProviderErr
 	}
-	return m.MockConfigStore.DeleteProvider(ctx, provider, tx...)
+	return m.ConfigStore.DeleteProvider(ctx, provider, tx...)
 }
 
 func TestRemoveProvider_Success(t *testing.T) {
 	initTestLogger()
-	mockStore := NewMockConfigStore()
-	mockStore.providers["test-provider"] = configstore.ProviderConfig{}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
-		t.Fatal("provider should be removed from in-memory map after successful delete")
+	if cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be removed from the live store after successful delete")
 	}
 }
 
 func TestRemoveProvider_NotFound(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, nil)
 
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
 	if err != nil {
@@ -22237,66 +22204,53 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 
 func TestRemoveProvider_DBError_DoesNotRemoveFromMemory(t *testing.T) {
 	initTestLogger()
-	mockStore := &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: errors.New("connection refused"),
-	}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("connection refused")}
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	if _, exists := cfg.Providers["test-provider"]; !exists {
+	if !cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should still be in memory when DB delete fails")
 	}
 }
 
-func TestRemoveProvider_NilConfigStore_RemovesFromMemoryOnly(t *testing.T) {
+func TestRemoveProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: nil,
-	}
+	cfg := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	if !errors.Is(err, ErrNoConfigStore) {
+		t.Fatalf("expected ErrNoConfigStore, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
-		t.Fatal("provider should be removed from memory when ConfigStore is nil")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should stay when ConfigStore is nil")
 	}
 }
 
+// A delete whose rows are already gone from the store: the store is not written again, and the
+// provider leaves memory.
 func TestRemoveProvider_SkipDBUpdate(t *testing.T) {
 	initTestLogger()
 	// When skipDBUpdate is set, DeleteProvider should not be called on the store.
 	// Use a mock that would fail if called, proving it was skipped.
-	mockStore := &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: errors.New("should not be called"),
-	}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("should not be called")}
 
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeySkipDBUpdate, true)
 	err := cfg.RemoveProvider(ctx, "test-provider")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
+	if cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should be removed from memory when skipDBUpdate is true")
 	}
 }
@@ -22484,6 +22438,21 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 
+// requireProvidersAsStored checks that boot attached a live store whose provider collection holds
+// exactly the providers the config store holds.
+func requireProvidersAsStored(t *testing.T, config *Config) {
+	t.Helper()
+	require.NotNil(t, config.LiveStore, "LiveStore should be attached")
+	require.NotNil(t, config.LiveStore.Collections.Providers, "Providers collection should be registered")
+	stored, err := config.ConfigStore.GetProvidersConfig(context.Background())
+	require.NoError(t, err)
+	held := providersOf(config)
+	require.Len(t, held, len(stored), "Providers collection should hold every stored provider")
+	for name := range stored {
+		require.Contains(t, held, name, "Providers collection should hold stored provider %s", name)
+	}
+}
+
 // TestLoadConfig_NoConfigFile_FreshStart tests LoadConfig with no config.json and no existing DB
 func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	initTestLogger()
@@ -22504,8 +22473,9 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	// HeaderMatcher is nil when no header filter is configured (DefaultClientConfig has nil HeaderFilterConfig)
 	// This is expected behavior - it's only set when HeaderFilterConfig is non-nil
 
-	// Verify providers map initialized (may be empty or auto-detected from env)
-	require.NotNil(t, config.Providers, "Providers map should be initialized")
+	// Verify boot filled the provider collection with what the store holds (may be empty or
+	// auto-detected from env)
+	requireProvidersAsStored(t, config)
 
 	// Verify governance/MCP are nil or empty (no config file)
 	// MCP and governance may be nil when no config and no DB data
@@ -22557,8 +22527,8 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify DB data was loaded (provider preserved from first run)
-	require.Len(t, config2.Providers, 1, "Provider from DB should be preserved")
-	_, hasOpenAI := config2.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config2), 1, "Provider from DB should be preserved")
+	_, hasOpenAI := providersOf(config2)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI provider should be loaded from DB")
 
 	// Verify governance loaded from DB
@@ -22617,7 +22587,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	// Verify all sections loaded
 	require.NotNil(t, config.ConfigStore, "ConfigStore should be initialized")
 	require.Equal(t, 20, config.ClientConfig.InitialPoolSize, "Client config InitialPoolSize from file")
-	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.Len(t, providersOf(config), 2, "Should have 2 providers")
 	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
 	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
 	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
@@ -22654,8 +22624,8 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify providers loaded from file
-	require.Len(t, config.Providers, 1, "Should have 1 provider from file")
-	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config), 1, "Should have 1 provider from file")
+	_, hasOpenAI := providersOf(config)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI should be loaded from file")
 
 	// Verify client config gets defaults (no client in file)
@@ -22697,7 +22667,7 @@ func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
 
 	// Verify providers auto-detected (no providers in file)
 	// (may be empty if no env vars set, that's fine)
-	require.NotNil(t, config.Providers, "Providers map should be initialized")
+	requireProvidersAsStored(t, config)
 }
 
 // TestLoadConfig_PartialConfigFile_OnlyGovernance tests config.json with only governance section
@@ -22812,7 +22782,7 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 
 	// Verify both sections loaded
 	require.Equal(t, 100, config.ClientConfig.InitialPoolSize)
-	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.Len(t, providersOf(config), 2, "Should have 2 providers")
 
 	// Verify other sections empty/nil
 	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
@@ -22841,8 +22811,8 @@ func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
 	require.NotNil(t, config.ConfigStore, "ConfigStore should be created as default SQLite when section is absent")
 
 	// Verify providers are loaded into memory
-	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
-	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config), 1, "Provider should be loaded into memory")
+	_, hasOpenAI := providersOf(config)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI should be loaded")
 }
 
@@ -22871,7 +22841,7 @@ func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
 	require.Nil(t, config.ConfigStore, "ConfigStore should be nil when disabled")
 
 	// Providers should still be loaded into memory
-	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+	require.Len(t, providersOf(config), 1, "Provider should be loaded into memory")
 }
 
 // TestLoadConfig_NoConfigFile_SecondRun tests that DB data persists across runs without config.json
@@ -22945,7 +22915,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
-	require.Len(t, config1.Providers, 2, "Should have 2 providers from first load")
+	require.Len(t, providersOf(config1), 2, "Should have 2 providers from first load")
 	require.NotNil(t, config1.GovernanceConfig)
 	config1.Close(ctx)
 
@@ -22967,13 +22937,13 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify providers updated (only openai now from file)
-	require.Contains(t, config2.Providers, schemas.OpenAI, "OpenAI should be present")
+	require.Contains(t, providersOf(config2), schemas.OpenAI, "OpenAI should be present")
 
 	// Verify governance preserved from DB (not wiped by missing section in file)
 	require.NotNil(t, config2.GovernanceConfig, "Governance should be preserved from DB")
 	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget should be preserved from DB")
 
-	_, hasAnthropic := config2.Providers[schemas.Anthropic]
+	_, hasAnthropic := providersOf(config2)[schemas.Anthropic]
 	require.True(t, hasAnthropic, "Anthropic should be preserved from DB")
 }
 
@@ -23391,7 +23361,7 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 	defer config.Close(ctx)
 
 	// v2 semantics: empty models stays empty (deny all) — must NOT be promoted to ["*"]
-	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	openaiCfg, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
 	require.Len(t, openaiCfg.Keys, 1)
 	require.Empty(t, openaiCfg.Keys[0].Models,
@@ -23419,7 +23389,7 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	openaiCfg, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
 	require.Len(t, openaiCfg.Keys, 1)
 	require.Equal(t, schemas.WhiteList{"*"}, openaiCfg.Keys[0].Models,
@@ -23446,7 +23416,7 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	anthropicCfg, ok := config.Providers[schemas.Anthropic]
+	anthropicCfg, ok := providersOf(config)[schemas.Anthropic]
 	require.True(t, ok, "anthropic provider should be present")
 	require.Len(t, anthropicCfg.Keys, 1)
 	require.Empty(t, anthropicCfg.Keys[0].Models,
@@ -25370,85 +25340,6 @@ func TestAttachWarpHistoryLock(t *testing.T) {
 	require.Nil(t, bare.locker)
 }
 
-// TestGetAllKeys_PreservesEnabled pins that /api/keys reports each key's enabled
-// flag. GetAllKeys builds its keys field by field, and once dropped Enabled, so a
-// disabled key read as enabled to every client of the endpoint.
-func TestGetAllKeys_PreservesEnabled(t *testing.T) {
-	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"typesafe": {
-				Keys: []schemas.Key{
-					{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
-					{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
-					{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
-				},
-			},
-		},
-	}
-
-	keys, err := cfg.GetAllKeys()
-	if err != nil {
-		t.Fatalf("GetAllKeys: %v", err)
-	}
-	byID := make(map[string]configstoreTables.TableKey, len(keys))
-	for _, key := range keys {
-		byID[key.KeyID] = key
-	}
-
-	if got := byID["disabled-key"].Enabled; got == nil || *got {
-		t.Fatalf("disabled key: expected Enabled=false, got %v", got)
-	}
-	if got := byID["enabled-key"].Enabled; got == nil || !*got {
-		t.Fatalf("enabled key: expected Enabled=true, got %v", got)
-	}
-	// Unset stays unset: the field is omitted and clients read it as enabled.
-	if got := byID["unset-key"].Enabled; got != nil {
-		t.Fatalf("unset key: expected Enabled=nil, got %v", *got)
-	}
-
-	// The flag is what clients act on, so pin it on the wire too.
-	body, err := json.Marshal(byID["disabled-key"])
-	if err != nil {
-		t.Fatalf("marshal disabled key: %v", err)
-	}
-	if !strings.Contains(string(body), `"enabled":false`) {
-		t.Fatalf("disabled key JSON should carry \"enabled\":false, got %s", body)
-	}
-}
-
-// TestGetAllKeys_RedactsAnthropicWorkloadIdentity pins that /api/keys carries a federated key's
-// workload identity block with the identity token masked and the identifiers readable.
-func TestGetAllKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
-	initTestLogger()
-	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Anthropic: {Keys: []schemas.Key{{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
-				WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
-					FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
-					OrganizationID:   *schemas.NewSecretVar("org-uuid"),
-					ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
-					IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
-				},
-			}}}},
-		},
-	}
-
-	keys, err := cfg.GetAllKeys()
-	require.NoError(t, err)
-	require.Len(t, keys, 1)
-	require.True(t, keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
-	wif := keys[0].AnthropicKeyConfig.WorkloadIdentity
-	assert.Equal(t, "svac_01def", wif.ServiceAccountID.GetValue())
-	assert.True(t, wif.IdentitySource.Token.IsMaskedPlaceholder())
-	body, err := json.Marshal(keys[0])
-	require.NoError(t, err)
-	assert.NotContains(t, string(body), jwt)
-	assert.Contains(t, string(body), `"anthropic_key_config"`)
-	assert.Equal(t, jwt, cfg.Providers[schemas.Anthropic].Keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
-}
-
 // TestReconcileProviderKeys_AnthropicWorkloadIdentity pins that an unchanged config.json key keeps
 // its dashboard edits when the env-backed identity token behind it rotates, on both the stored-hash
 // and the legacy no-hash paths, while an edit to the block still replaces the stored key.
@@ -26072,14 +25963,14 @@ func TestValidatePassthroughBody_AcceptsSchemaValidShapes(t *testing.T) {
 // an x-model-provider header names: only a custom provider reports its base, and only a
 // policy, even an empty one, counts as opting in.
 func TestGetCustomProviderPassthrough(t *testing.T) {
-	store := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {Passthrough: &schemas.PassthroughPolicy{}},
 		"sidecar": {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 			Passthrough:          &schemas.PassthroughPolicy{},
 		},
 		"sidecar-off": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
-	}}
+	})
 	for _, tc := range []struct {
 		provider    schemas.ModelProvider
 		wantBase    schemas.ModelProvider
@@ -27633,12 +27524,13 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 }
 
 // newOpenAPIUpdateTestConfig builds a Config backed by a real Bifrost engine
-// with one registered openapi client. Its server factory succeeds on the first
+// with one registered openapi client. The engine's Account reads a loaded live
+// store, as the server's does. Its server factory succeeds on the first
 // connect and fails every rebuild after it when failRebuilds is set.
 func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *schemas.MCPClientConfig) {
 	t.Helper()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(&Config{}), Logger: logger})
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(providerStore(t, nil)), Logger: logger})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	var calls atomic.Int32

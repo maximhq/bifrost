@@ -8658,7 +8658,7 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlSecretVar}
 				}
 
-				schemaKey := schemaKeyFromTableKey(newKey)
+				schemaKey := SchemaKeyFromTableKey(newKey)
 				hash, err := GenerateKeyHash(schemaKey)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)

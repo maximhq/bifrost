@@ -66,13 +66,6 @@ func sortedProviderNames(providers map[schemas.ModelProvider]ProviderConfig) []s
 	return names
 }
 
-// sortedUintCopy returns a sorted copy of ids without mutating the caller's slice.
-func sortedUintCopy(ids []uint) []uint {
-	sorted := append([]uint(nil), ids...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return sorted
-}
-
 // sortTableKeysByID sorts table keys by stable database identity for deterministic writes.
 func sortTableKeysByID(keys []tables.TableKey) {
 	sort.Slice(keys, func(i, j int) bool {
@@ -170,8 +163,8 @@ func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error
 	return int(interval / time.Second), nil
 }
 
-// schemaKeyFromTableKey converts a database key to a schema key.
-func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
+// SchemaKeyFromTableKey converts a database key to a schema key.
+func SchemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
 		ID:                     dbKey.KeyID,
 		Name:                   dbKey.Name,
@@ -1008,26 +1001,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	return nil
 }
 
-// deleteJoinRowsForRemovedProviderKeys removes join-table entries that reference keys
-// that are being deleted by UpdateProvider, for every VK provider config of
-// provider. The caller MUST have already locked those VKPC rows (FOR UPDATE)
-// before calling, so this helper performs no locking of its own. This keeps the
-// resource order config_providers -> VKPC -> config_keys consistent with
-// DeleteProvider and UpdateVirtualKeyProviderConfig.
-//
-// One statement covers every config: the provider's configs are selected by a
-// subquery (idx_vk_provider_configs_provider) and the removed keys by
-// idx_vkpc_keys_table_key_id, instead of one DELETE per config.
-func (s *RDBConfigStore) deleteJoinRowsForRemovedProviderKeys(ctx context.Context, txDB *gorm.DB, provider string, lockedVKPCCount int, removedKeyIDs []uint) error {
-	if len(removedKeyIDs) == 0 || lockedVKPCCount == 0 {
-		return nil
-	}
-	providerConfigIDs := txDB.WithContext(ctx).Model(&tables.TableVirtualKeyProviderConfig{}).Select("id").Where("provider = ?", provider)
-	return txDB.WithContext(ctx).
-		Where("table_key_id IN ? AND table_virtual_key_provider_config_id IN (?)", removedKeyIDs, providerConfigIDs).
-		Delete(&tables.TableVirtualKeyProviderConfigKey{}).Error
-}
-
 // cleanupVirtualKeyProviderConfigsForDeletedProvider removes every VK provider
 // config of provider together with what each one owns, with the same effect as
 // calling DeleteVirtualKeyProviderConfig on each: the config-key join rows, the
@@ -1083,17 +1056,19 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 	return nil
 }
 
-// UpdateProvider updates a single provider configuration in the database without deleting/recreating.
+// UpdateProvider writes a provider's settings and nothing else. It never creates, updates or
+// deletes a key row: keys are written by their own calls (CreateProviderKey, UpdateProviderKey,
+// DeleteProviderKey), so a settings save cannot bring back a key deleted meanwhile, here or on
+// another node, or delete one added meanwhile. config.Keys is ignored. The config hash, the
+// status and description, and the provider's limits also stay as stored: the hash belongs to the
+// config.json sync (UpdateProvidersConfig), which compares against it on restart.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
 		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProvider(ctx, provider, config, transaction)
 		})
 	}
-
-	var txDB *gorm.DB
-	txDB = tx[0]
-	// Find the existing provider
+	txDB := tx[0]
 	var dbProvider tables.TableProvider
 	if err := dbForUpdate(txDB.WithContext(ctx)).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1101,15 +1076,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		}
 		return err
 	}
-
-	// Create a deep copy of the config to avoid modifying the original
+	// The row's hooks may change what they save, so they get a copy, never the caller's config.
 	configCopy, err := deepCopy(config)
 	if err != nil {
 		return err
 	}
-	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
-	configCopy.ConfigHash = config.ConfigHash
-	// Update provider fields
 	dbProvider.NetworkConfig = configCopy.NetworkConfig
 	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
@@ -1122,178 +1093,9 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.InjectedTools = configCopy.InjectedTools
 	dbProvider.Passthrough = configCopy.Passthrough
-	dbProvider.ConfigHash = configCopy.ConfigHash
-
-	// Save the updated provider
 	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
 	}
-
-	// Lock VKPC rows for this provider BEFORE locking config_keys so that the
-	// resource order matches DeleteProvider and concurrent UpdateVirtualKeyProviderConfig
-	// (which holds a VKPC row and then needs FK locks on config_keys via the join table).
-	// Without this pre-lock the two paths invert on config_keys vs. VKPC and deadlock (40P01).
-	// Only the ids are read: the lock is the point, and loading full rows cost
-	// one row per VK holding this provider.
-	var providerVKPCIDs []uint
-	if err := dbForUpdate(txDB.WithContext(ctx)).
-		Model(&tables.TableVirtualKeyProviderConfig{}).
-		Where("provider = ?", dbProvider.Name).
-		Order("id ASC").
-		Pluck("id", &providerVKPCIDs).Error; err != nil {
-		return err
-	}
-
-	// Get existing keys for this provider
-	var existingKeys []tables.TableKey
-	if err := dbForUpdate(txDB.WithContext(ctx)).Where("provider_id = ?", dbProvider.ID).Order("id ASC").Find(&existingKeys).Error; err != nil {
-		return err
-	}
-
-	// Create a map of existing keys by KeyID for quick lookup
-	existingKeysMap := make(map[string]tables.TableKey)
-	for _, key := range existingKeys {
-		existingKeysMap[key.KeyID] = key
-	}
-
-	// Process each key in the new config
-	for _, key := range configCopy.Keys {
-		// Generate key hash
-		keyHash, err := GenerateKeyHash(key)
-		if err != nil {
-			return fmt.Errorf("failed to generate key hash: %w", err)
-		}
-		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
-			DisableContentLogging:  key.DisableContentLogging,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			SageMakerKeyConfig:     key.SageMakerKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			CloudflareKeyConfig:    key.CloudflareKeyConfig,
-			AnthropicKeyConfig:     key.AnthropicKeyConfig,
-			OAuthKeyConfig:         key.OAuthKeyConfig,
-			ConfigHash:             keyHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
-		}
-
-		// Handle Azure config
-		if key.AzureKeyConfig != nil {
-			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
-			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
-		}
-
-		// Handle Vertex config
-		if key.VertexKeyConfig != nil {
-			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-			dbKey.VertexRegion = &key.VertexKeyConfig.Region
-			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
-			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
-			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
-			if err != nil {
-				return err
-			}
-			dbKey.VertexAWSWorkloadIdentityJSON = wif
-		}
-
-		// Handle Bedrock config
-		if key.BedrockKeyConfig != nil {
-			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
-			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
-			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
-			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockBatchS3ConfigJSON = &s
-			} else {
-				dbKey.BedrockBatchS3ConfigJSON = nil
-			}
-			if key.BedrockKeyConfig.Endpoints != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockEndpointsJSON = &s
-			} else {
-				dbKey.BedrockEndpointsJSON = nil
-			}
-		}
-
-		// Check if this key already exists
-		if existingKey, exists := existingKeysMap[key.ID]; exists {
-			dbKey.ID = existingKey.ID                             // Keep the same database ID
-			dbKey.ConfigHash = existingKey.ConfigHash             // Preserve config hash
-			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
-			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
-			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
-			dbKey.CreatedAt = existingKey.CreatedAt               // Preserve original creation timestamp
-			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
-				return s.parseGormError(err)
-			}
-			delete(existingKeysMap, key.ID)
-		} else {
-			if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
-				return s.parseGormError(err)
-			}
-		}
-	}
-
-	removedProviderKeyIDs := make([]uint, 0, len(existingKeysMap))
-	for _, keyToDelete := range existingKeysMap {
-		removedProviderKeyIDs = append(removedProviderKeyIDs, keyToDelete.ID)
-	}
-	removedProviderKeyIDs = sortedUintCopy(removedProviderKeyIDs)
-	if err := s.deleteJoinRowsForRemovedProviderKeys(ctx, txDB, dbProvider.Name, len(providerVKPCIDs), removedProviderKeyIDs); err != nil {
-		return err
-	}
-
-	// Delete keys that are no longer in the new config
-	removedKeys := make([]tables.TableKey, 0, len(existingKeysMap))
-	for _, keyToDelete := range existingKeysMap {
-		removedKeys = append(removedKeys, keyToDelete)
-	}
-	sortTableKeysByID(removedKeys)
-	for _, keyToDelete := range removedKeys {
-		if err := txDB.WithContext(ctx).Delete(&keyToDelete).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -1485,10 +1287,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	return nil
 }
 
-// GetProvidersConfig retrieves the provider configuration from the database.
+// GetProvidersConfig retrieves the provider configuration from the database, each provider's keys
+// in creation order (by row ID).
 func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error) {
 	var dbProviders []tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Find(&dbProviders).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Keys", func(k *gorm.DB) *gorm.DB { return k.Order("id") }).Find(&dbProviders).Error; err != nil {
 		return nil, err
 	}
 	if len(dbProviders) == 0 {
@@ -1496,32 +1299,8 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		return nil, nil
 	}
 	processedProviders := make(map[schemas.ModelProvider]ProviderConfig)
-	for _, dbProvider := range dbProviders {
-		provider := schemas.ModelProvider(dbProvider.Name)
-		// Convert database keys to schemas.Key
-		keys := make([]schemas.Key, len(dbProvider.Keys))
-		for i, dbKey := range dbProvider.Keys {
-			keys[i] = schemaKeyFromTableKey(dbKey)
-		}
-		providerConfig := ProviderConfig{
-			Keys:                     keys,
-			NetworkConfig:            dbProvider.NetworkConfig,
-			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
-			ProxyConfig:              dbProvider.ProxyConfig,
-			SendBackRawRequest:       dbProvider.SendBackRawRequest,
-			SendBackRawResponse:      dbProvider.SendBackRawResponse,
-			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
-			IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
-			CustomProviderConfig:     dbProvider.CustomProviderConfig,
-			OpenAIConfig:             dbProvider.OpenAIConfig,
-			PromptCache:              dbProvider.PromptCache,
-			InjectedTools:            dbProvider.InjectedTools,
-			Passthrough:              dbProvider.Passthrough,
-			ConfigHash:               dbProvider.ConfigHash,
-			Status:                   dbProvider.Status,
-			Description:              dbProvider.Description,
-		}
-		processedProviders[provider] = providerConfig
+	for i := range dbProviders {
+		processedProviders[schemas.ModelProvider(dbProviders[i].Name)] = ProviderConfigFromTable(&dbProviders[i])
 	}
 	return processedProviders, nil
 }
@@ -1536,11 +1315,18 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		return nil, err
 	}
 
+	config := ProviderConfigFromTable(&dbProvider)
+	return &config, nil
+}
+
+// ProviderConfigFromTable builds a provider's configuration from its row, with the keys the row
+// was loaded with: preload Keys to include them.
+func ProviderConfigFromTable(dbProvider *tables.TableProvider) ProviderConfig {
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
-		keys[i] = schemaKeyFromTableKey(dbKey)
+		keys[i] = SchemaKeyFromTableKey(dbKey)
 	}
-	return &ProviderConfig{
+	return ProviderConfig{
 		Keys:                     keys,
 		NetworkConfig:            dbProvider.NetworkConfig,
 		ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
@@ -1557,10 +1343,10 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
-	}, nil
+	}
 }
 
-// GetProviderKeys retrieves all keys for a provider ordered by creation time.
+// GetProviderKeys retrieves all keys for a provider in creation order (by row ID).
 func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
 	var dbKeys []tables.TableKey
 	result := s.DB().WithContext(ctx).
@@ -1568,7 +1354,7 @@ func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.M
 		Select("config_keys.*").
 		Joins("LEFT JOIN config_keys ON config_keys.provider_id = config_providers.id").
 		Where("config_providers.name = ?", string(provider)).
-		Order("config_keys.created_at ASC").
+		Order("config_keys.id ASC").
 		Scan(&dbKeys)
 	if result.Error != nil {
 		return nil, result.Error
@@ -1588,7 +1374,7 @@ func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.M
 		if err := dbKey.AfterFind(nil); err != nil {
 			return nil, err
 		}
-		keys = append(keys, schemaKeyFromTableKey(dbKey))
+		keys = append(keys, SchemaKeyFromTableKey(dbKey))
 	}
 
 	return keys, nil
@@ -1610,15 +1396,17 @@ func (s *RDBConfigStore) getProviderKeyByName(ctx context.Context, txDB *gorm.DB
 	return &dbKey, nil
 }
 
-// GetProviderKey retrieves a single key for a provider.
-func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
-	dbKey, err := s.getProviderKeyByName(ctx, s.DB(), provider, keyID)
-	if err != nil {
+// GetProviderKey reads one key row of a provider, ErrNotFound when the provider has no key with
+// keyID. SchemaKeyFromTableKey converts it for a caller that works with schema keys.
+func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*tables.TableKey, error) {
+	var dbKey tables.TableKey
+	if err := s.DB().WithContext(ctx).Where("key_id = ? AND provider = ?", keyID, string(provider)).First(&dbKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-
-	key := schemaKeyFromTableKey(*dbKey)
-	return &key, nil
+	return &dbKey, nil
 }
 
 // CreateProviderKey creates a new key for an existing provider.

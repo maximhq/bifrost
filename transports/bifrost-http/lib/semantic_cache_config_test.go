@@ -50,19 +50,17 @@ func TestValidateSemanticCacheConfig_DirectOnlyModeRemovesStaleProviderBackedFie
 }
 
 func TestValidateSemanticCacheConfig_ProviderBackedModeValidationPasses(t *testing.T) {
-	config := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {
-				Keys: []schemas.Key{
-					{
-						Name:   "openai-key",
-						Value:  *schemas.NewSecretVar("sk-test"),
-						Weight: 1,
-					},
+	config := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {
+			Keys: []schemas.Key{
+				{
+					Name:   "openai-key",
+					Value:  *schemas.NewSecretVar("sk-test"),
+					Weight: 1,
 				},
 			},
 		},
-	}
+	})
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
 		Config: map[string]interface{}{

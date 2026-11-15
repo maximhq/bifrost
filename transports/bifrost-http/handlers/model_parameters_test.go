@@ -38,8 +38,8 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 	require.Equal(t, 2, rows)
 
 	h := &ProviderHandler{
-		dbStore: store,
-		inMemoryStore: &lib.Config{
+		configStore: store,
+		config: &lib.Config{
 			ModelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds),
 		},
 	}
@@ -98,7 +98,7 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 	}
 
 	t.Run("nil inMemoryStore falls back to exact DB lookup", func(t *testing.T) {
-		bare := &ProviderHandler{dbStore: store}
+		bare := &ProviderHandler{configStore: store}
 
 		var req fasthttp.Request
 		req.SetRequestURI("/api/models/parameters?model=gpt-5.5")

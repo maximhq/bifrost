@@ -206,8 +206,8 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 		return
 	}
 
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(provider); cfgErr == nil &&
-		providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+		stored.Settings.OpenAIConfig != nil && stored.Settings.OpenAIConfig.DisableStore {
 		event.Store = schemas.Ptr(false)
 	} else {
 		event.Store = schemas.Ptr(true)
@@ -321,8 +321,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	upstreamFromPool := true
 
 	var proxyConfig *schemas.ProxyConfig
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(req.Provider); cfgErr == nil && providerCfg != nil {
-		proxyConfig = providerCfg.ProxyConfig
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(req.Provider)); ok {
+		proxyConfig = stored.Settings.ProxyConfig
 	}
 
 	// Validate the pinned upstream matches the current request's provider/key.
@@ -566,9 +566,9 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 func resolveWSStreamIdleTimeout(config *lib.Config, provider schemas.ModelProvider) time.Duration {
 	idleTimeoutSeconds := schemas.DefaultStreamIdleTimeoutInSeconds
 	if config != nil {
-		if providerCfg, err := config.GetProviderConfigRaw(provider); err == nil && providerCfg != nil &&
-			providerCfg.NetworkConfig != nil && providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
-			idleTimeoutSeconds = providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds
+		if stored, ok := config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+			stored.Settings.NetworkConfig != nil && stored.Settings.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
+			idleTimeoutSeconds = stored.Settings.NetworkConfig.StreamIdleTimeoutInSeconds
 		}
 	}
 	if idleTimeoutSeconds <= 0 {
