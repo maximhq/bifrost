@@ -90,7 +90,7 @@ func newBatchFixture(t *testing.T, size int) *batchFixture {
 }
 
 // newBatchStore returns a store with nothing registered, for the kinds these tests register.
-func newBatchStore() *Store { return New() }
+func newBatchStore() *Store { return newStore() }
 
 // plainGroupLoader reads groups without interning their tags.
 func plainGroupLoader() Loader[group] {

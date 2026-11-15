@@ -38,7 +38,7 @@ func staticLoader[T any](id func(*T) string, recs []*T, before func() error) Loa
 // TestLoadAllReadsKindsConcurrently: two unrelated kinds' reads overlap. Each read waits for the
 // other to start, so a kind-by-kind load would never get past the first.
 func TestLoadAllReadsKindsConcurrently(t *testing.T) {
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	aStarted, bStarted := make(chan struct{}), make(chan struct{})
 	wait := func(mine, other chan struct{}) func() error {
@@ -68,7 +68,7 @@ func TestLoadAllReadsKindsConcurrently(t *testing.T) {
 // shares the parent's copy of the ID, because records are published, and IDs shared, in dependency
 // order.
 func TestLoadAllSharesIDsInDependencyOrder(t *testing.T) {
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	parentID := strings.Clone("p1")
 	parents, err := s.Register(Kind("parent"), nil, staticLoader(func(p *ldParent) string { return p.ID }, []*ldParent{{ID: parentID}}, func() error {
@@ -103,7 +103,7 @@ func TestLoadAllSharesIDsInDependencyOrder(t *testing.T) {
 // its read finishes before the broken one fails, so a load that published each kind as soon as it
 // was read would publish it.
 func TestLoadAllFailedReadPublishesNothing(t *testing.T) {
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	id := func(p *ldParent) string { return p.ID }
 	goodRead := make(chan struct{})
@@ -140,7 +140,7 @@ func TestLoadAllFailedReadPublishesNothing(t *testing.T) {
 // still need it.
 func TestLoadAllKeepsInternedValuesUntilTheBootPublishes(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	tags, err := s.RegisterInterned(Kind("tag_set"), func(ts *tagSet) Hash {
 		var h Hash

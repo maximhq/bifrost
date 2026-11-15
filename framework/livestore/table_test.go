@@ -13,7 +13,7 @@ import (
 // TestTableExpiry checks the table TTL, a per-entry TTL that never expires, and the sweep.
 func TestTableExpiry(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
-	s := New()
+	s := newStore()
 	defer s.Close()
 	tb, err := s.NewTable[string, int](context.Background(), "ttl", WithTTL(time.Minute))
 	if err != nil {
@@ -62,7 +62,7 @@ func TestTableExpiry(t *testing.T) {
 
 // TestTableGeneration checks that a memo entry from an older generation misses.
 func TestTableGeneration(t *testing.T) {
-	s := New()
+	s := newStore()
 	defer s.Close()
 	gen := uint64(1)
 	tb, err := s.NewTable[string, string](context.Background(), "memo", WithGeneration(func() uint64 { return gen }))
@@ -82,7 +82,7 @@ func TestTableGeneration(t *testing.T) {
 // TestTablePutIfAbsent checks leases: one holder until expiry.
 func TestTablePutIfAbsent(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
-	s := New()
+	s := newStore()
 	defer s.Close()
 	tb, err := s.NewTable[string, string](context.Background(), "leases")
 	if err != nil {
@@ -148,7 +148,7 @@ func TestRegisterStateNeedsAKind(t *testing.T) {
 
 // TestDropTable checks that a dropped name can be registered again.
 func TestDropTable(t *testing.T) {
-	s := New()
+	s := newStore()
 	defer s.Close()
 	tb, err := s.NewTable[string, int](context.Background(), "plugin")
 	if err != nil {
@@ -172,7 +172,7 @@ func TestDropTable(t *testing.T) {
 // TestHoldsHandles checks that the marker changes nothing in memory: a table created with it reads
 // as one created without it.
 func TestHoldsHandles(t *testing.T) {
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	plain, err := s.NewTable[string, int](context.Background(), "plain")
 	if err != nil {
@@ -194,7 +194,10 @@ func TestHoldsHandles(t *testing.T) {
 // newGenerationTable returns a table with the generation gen reports, in a store of its own.
 func newGenerationTable[V any](t *testing.T, gen func() uint64) *Table[string, V] {
 	t.Helper()
-	s := New()
+	s, err := New()
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
 	t.Cleanup(s.Close)
 	tb, err := s.NewTable[string, V](context.Background(), "test_generation", WithGeneration(gen))
 	if err != nil {
@@ -317,7 +320,7 @@ func TestGetOrComputeConcurrentReadsAndGenerationChanges(t *testing.T) {
 // TestTableLenAndFlush checks that Len counts only live entries and that Flush empties the table.
 func TestTableLenAndFlush(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
-	s := New()
+	s := newStore()
 	defer s.Close()
 	tb, err := s.NewTable[string, int](context.Background(), "len_flush", WithTTL(time.Minute))
 	if err != nil {
