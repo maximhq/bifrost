@@ -2308,6 +2308,8 @@
 		"enableRuleHelp": "A regra estará ativa e será aplicada aos pedidos correspondentes",
 		"chainRule": "Regra da Corrente",
 		"chainRuleHelp": "Após esta regra corresponder, reavaliar as regras de encaminhamento usando o fornecedor/modelo resolvido como novo contexto. Útil para compor regras, p. ex. normalizar primeiro um alias de modelo e depois encaminhar com base no nome canónico.",
+		"stickySessions": "Sessões fixas",
+		"stickySessionsHelp": "Mantém todas as solicitações de uma sessão no mesmo destino ponderado, para que as conversas não troquem de provedor no meio e os caches de prompt continuem funcionando. Solicitações sem ID de sessão continuam usando a seleção aleatória ponderada.",
 		"selectScope": "Selecionar âmbito...",
 		"priorityRequired": "A prioridade é necessária",
 		"priorityMin": "A prioridade tem de ser ≥ 0",

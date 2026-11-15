@@ -2206,6 +2206,12 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		hash.Write([]byte("chain_rule:false"))
 	}
 
+	// Hash StickySessions only when set, so rules stored before the field existed keep their
+	// digest and the column's migration needs no config_hash backfill.
+	if r.StickySessions {
+		hash.Write([]byte("sticky_sessions:true"))
+	}
+
 	// Hash Scope
 	hash.Write([]byte(r.Scope))
 

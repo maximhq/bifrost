@@ -6737,6 +6737,11 @@
           "default": false,
           "description": "If true, re-evaluates routing chain after this rule matches"
         },
+        "sticky_sessions": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, every request that carries a session id (x-bf-session-id or a harness session header) gets the same weighted target for that session, scoped to its virtual key and user; requests without a session id, or with x-bf-session-affinity off, keep weighted random selection."
+        },
         "targets": {
           "type": "array",
           "minItems": 1,

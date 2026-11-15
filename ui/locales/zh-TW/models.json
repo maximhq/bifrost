@@ -2306,6 +2306,8 @@
 		"enableRuleHelp": "規則將處於活動狀態，並應用於匹配的請求",
 		"chainRule": "鏈式規則",
 		"chainRuleHelp": "此規則匹配後，使用解析出的供應商/模型作為新上下文重新評估路由規則。適用於組合規則，例如先規範化模型別名，再按規範名稱路由。",
+		"stickySessions": "工作階段黏著",
+		"stickySessionsHelp": "讓同一工作階段的所有請求始終送往同一個加權目標，避免對話中途切換供應商，並維持提示快取命中。沒有工作階段 ID 的請求仍使用加權隨機選擇。",
 		"selectScope": "選擇作用域…",
 		"priorityRequired": "優先順序為必填項",
 		"priorityMin": "優先順序必須 ≥ 0",

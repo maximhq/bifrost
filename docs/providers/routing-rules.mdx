@@ -461,6 +461,7 @@ Define routing rules in your `config.json` file under the governance configurati
 - **description** (string, optional): Internal documentation
 - **enabled** (boolean): Whether rule is active
 - **chain_rule** (boolean, default: `false`): When `true`, re-evaluates the full routing chain after this rule matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
+- **sticky_sessions** (boolean, default: `false`): When `true`, every request of one session gets the same weighted target instead of a new random draw per request. See [Sticky Sessions](#sticky-sessions).
 - **cel_expression** (string): CEL expression for rule matching
 - **targets** (array, required): One or more routing targets. Each target has:
   - `provider` (string, optional): Target provider - omit to use the incoming request provider
@@ -642,6 +643,43 @@ Route based on region headers:
   "priority": 0
 }
 ```
+
+---
+
+## Sticky Sessions
+
+A rule with several weighted targets draws a target at random for every request, so the turns of
+one conversation can land on different providers: `anthropic` for turn 1, `openai` for turn 2.
+That breaks conversations whose message and tool formats differ between providers, throws away
+provider-side prompt caches on every switch, and undoes [session affinity](/providers/session-affinity),
+which keeps a session on its last provider only while routing still offers it.
+
+Set `sticky_sessions: true` on the rule to choose the target once per session instead:
+
+```json
+{
+  "name": "claude-gpt-split",
+  "cel_expression": "model == \"claude-sonnet-4\"",
+  "targets": [
+    { "provider": "anthropic", "model": "claude-sonnet-4", "weight": 0.7 },
+    { "provider": "openai", "model": "gpt-4o", "weight": 0.3 }
+  ],
+  "sticky_sessions": true
+}
+```
+
+- **Same session, same target.** Every request carrying the same session id gets the same target.
+  The session id is the one session affinity reads: `x-bf-session-id`, the baggage `session-id`
+  member, or a coding harness's session header. A session is scoped to its virtual key and user,
+  so two callers reusing the same session id are two sessions.
+- **The split still holds across sessions.** Each session's target is chosen by weighted
+  rendezvous hashing over the session, the rule and the target, so across many sessions each
+  target's share follows its weight. Changing a rule's targets only moves the sessions whose
+  target was removed or lost weight.
+- **No session, no change.** Requests without a session id, and requests that send
+  `x-bf-session-affinity: off`, keep the weighted random draw. So do rules without the flag.
+- **Failover.** If the chosen target fails and a fallback serves, session affinity binds the
+  session to the fallback that served it, as for any request.
 
 ---
 

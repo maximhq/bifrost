@@ -153,6 +153,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const hasRequiredAccess = isEditing ? canUpdate : canCreate;
 	const enabled = watch("enabled");
 	const chainRule = watch("chain_rule");
+	const stickySessions = watch("sticky_sessions");
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
 
@@ -208,6 +209,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("priority", editingRule.priority);
 			setValue("enabled", editingRule.enabled);
 			setValue("chain_rule", editingRule.chain_rule ?? false);
+			setValue("sticky_sessions", editingRule.sticky_sessions ?? false);
 			if (editingRule.targets && editingRule.targets.length > 0) {
 				setTargets(
 					editingRule.targets.map((t) => ({
@@ -354,6 +356,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			priority: data.priority,
 			enabled: data.enabled,
 			chain_rule: data.chain_rule,
+			sticky_sessions: data.sticky_sessions,
 			query: query,
 		};
 
@@ -451,6 +454,20 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								checked={chainRule}
 								onCheckedChange={(checked) => setValue("chain_rule", checked)}
 								data-testid="routing-rule-chain-rule-switch"
+							/>
+						</div>
+
+						{/* Sticky Sessions Switch */}
+						<div className="flex items-center justify-between rounded-lg border p-4">
+							<div className="space-y-0.5">
+								<Label htmlFor="sticky_sessions">{t("routing.stickySessions")}</Label>
+								<p className="text-muted-foreground text-sm">{t("routing.stickySessionsHelp")}</p>
+							</div>
+							<Switch
+								id="sticky_sessions"
+								checked={stickySessions}
+								onCheckedChange={(checked) => setValue("sticky_sessions", checked)}
+								data-testid="routing-rule-sticky-sessions-switch"
 							/>
 						</div>
 

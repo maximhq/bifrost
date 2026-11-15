@@ -36,6 +36,9 @@ type TableRoutingRule struct {
 	// Chaining
 	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
 
+	// Session stickiness
+	StickySessions bool `gorm:"not null;default:false" json:"sticky_sessions"` // If true, a request carrying a session id always gets the same weighted target for that session
+
 	// Execution
 	Priority int `gorm:"type:int;not null;default:0;index" json:"priority"` // Lower = evaluated first within scope
 

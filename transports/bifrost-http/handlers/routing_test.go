@@ -813,3 +813,55 @@ func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
 	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
 }
+
+// TestRoutingRuleStickySessionsRoundTrip pins sticky_sessions through the routing rule API: a
+// create without it stores false, a create with it stores true, an update that omits it keeps the
+// stored value, and an update can turn it off again. Each read is from the store, so the column
+// exists after migrations and holds what the API was sent.
+func TestRoutingRuleStickySessionsRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &reloadRecordingRoutingManager{}}
+
+	create := func(t *testing.T, name, extra string) string {
+		t.Helper()
+		ctx := newTestRequestCtx(`{"name":"` + name + `","cel_expression":"model == \"gpt-4o\"","targets":[{"provider":"openai","weight":0.7},{"provider":"anthropic","weight":0.3}]` + extra + `}`)
+		handler.createRoutingRule(ctx)
+		require.Less(t, ctx.Response.StatusCode(), 300, "create: %s", string(ctx.Response.Body()))
+		var resp struct {
+			Rule struct {
+				ID string `json:"id"`
+			} `json:"rule"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		return resp.Rule.ID
+	}
+	update := func(t *testing.T, id, body string) {
+		t.Helper()
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(ctx)
+		require.Less(t, ctx.Response.StatusCode(), 300, "update: %s", string(ctx.Response.Body()))
+	}
+	stored := func(t *testing.T, id string) bool {
+		t.Helper()
+		rule, err := store.GetRoutingRule(context.Background(), id)
+		require.NoError(t, err)
+		return rule.StickySessions
+	}
+
+	plain := create(t, "sticky-default", "")
+	require.False(t, stored(t, plain), "a create without sticky_sessions must store false")
+
+	sticky := create(t, "sticky-on", `,"sticky_sessions":true,"priority":1`)
+	require.True(t, stored(t, sticky))
+
+	update(t, sticky, `{"description":"renamed"}`)
+	require.True(t, stored(t, sticky), "an update that omits sticky_sessions must keep it")
+
+	update(t, sticky, `{"sticky_sessions":false}`)
+	require.False(t, stored(t, sticky))
+
+	update(t, plain, `{"sticky_sessions":true}`)
+	require.True(t, stored(t, plain))
+}

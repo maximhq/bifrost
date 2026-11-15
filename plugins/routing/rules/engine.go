@@ -2,6 +2,8 @@ package rules
 
 import (
 	"fmt"
+	"hash/fnv"
+	"math"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/routing"
@@ -273,7 +276,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					continue
 				}
 
-				target, ok := selectWeightedTarget(rule.Targets)
+				target, ok := selectRuleTarget(ctx, rule)
 				if !ok {
 					re.logger.Debug("[Engine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
@@ -348,6 +351,99 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		re.logger.Debug("[Engine] No routing rule matched, using default routing")
 	}
 	return finalDecision, nil
+}
+
+// stickyRouteStateKind names sticky target selection among the kinds of per-session state, so its
+// key is scoped the way every other piece of session state is (bifrost.SessionStateKey).
+const stickyRouteStateKind = "sticky-route"
+
+// selectRuleTarget picks the target a matched rule routes to. A rule with sticky_sessions set
+// gives every request of one session the same target; any other request, and one that carries
+// no session or has switched session affinity off, keeps the per-request weighted random draw.
+//
+// The session is keyed with bifrost.SessionStateKey: by session id, virtual key and user, so the
+// same session id from two callers is two sessions, plus the rule id, so a chain of sticky rules
+// picks independently. Stickiness here is what lets core's session affinity hold: affinity keeps
+// a session on the route that last served it only while the routing chain still offers that
+// route, and a fresh random draw on every turn keeps handing it a chain without it.
+func selectRuleTarget(ctx *schemas.BifrostContext, rule *configstoreTables.TableRoutingRule) (configstoreTables.TableRoutingTarget, bool) {
+	if rule.StickySessions && schemas.IsSessionAffinityActive(ctx) {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' has sticky_sessions, so the target is chosen from the session", rule.Name))
+		return selectStickyWeightedTarget(rule.Targets, bifrost.SessionStateKey(ctx, stickyRouteStateKind, rule.ID))
+	}
+	return selectWeightedTarget(rule.Targets)
+}
+
+// selectStickyWeightedTarget picks one target for stickyKey with weighted rendezvous hashing:
+// every target scores weight / -ln(u), where u is a uniform value hashed from the key and the
+// target's identity, and the highest score wins. The same key always gets the same target,
+// across many keys each target's share follows its weight, the order of targets does not
+// matter, and removing a target moves only the keys that were on it.
+//
+// Weight handling matches selectWeightedTarget: negative weights are filtered out, a zero
+// weight is never chosen while another target has weight, and all-zero weights are uniform.
+func selectStickyWeightedTarget(targets []configstoreTables.TableRoutingTarget, stickyKey string) (configstoreTables.TableRoutingTarget, bool) {
+	total := 0.0
+	valid := 0
+	for _, t := range targets {
+		if t.Weight >= 0 {
+			total += t.Weight
+			valid++
+		}
+	}
+	if valid == 0 {
+		return configstoreTables.TableRoutingTarget{}, false
+	}
+
+	var best configstoreTables.TableRoutingTarget
+	bestScore, bestIdentity, found := 0.0, "", false
+	for _, t := range targets {
+		if !(t.Weight >= 0) {
+			continue // negative or NaN: invalid, as in the first pass
+		}
+		weight := t.Weight
+		if total == 0 && weight == 0 {
+			weight = 1 // all-zero weights: every valid target counts the same
+		}
+		if weight == 0 {
+			continue
+		}
+		identity := routingTargetIdentity(t)
+		score := weight / -math.Log(stickyHashUnit(stickyKey, identity))
+		// Ties are broken by identity so the result never depends on target order.
+		if !found || score > bestScore || (score == bestScore && identity < bestIdentity) {
+			best, bestScore, bestIdentity, found = t, score, identity, true
+		}
+	}
+	return best, found
+}
+
+// routingTargetIdentity names a target by the fields its unique index covers.
+func routingTargetIdentity(t configstoreTables.TableRoutingTarget) string {
+	deref := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	return deref(t.Provider) + "\x00" + deref(t.Model) + "\x00" + deref(t.KeyID)
+}
+
+// stickyHashUnit maps a key and a target identity to a value uniform in the open interval (0, 1).
+func stickyHashUnit(stickyKey, identity string) float64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(stickyKey))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(identity))
+	// FNV-1a mixes short, near-identical keys weakly, so a splitmix64 finaliser spreads the
+	// bits before the top 53 become the mantissa.
+	x := h.Sum64()
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return (float64(x>>11) + 0.5) / (1 << 53)
 }
 
 // selectWeightedTarget picks one routing rule target by weight; see pickWeighted.
