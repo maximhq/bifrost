@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -590,4 +591,22 @@ func TestOpenAIDecisionUsageKeepsTokenDetails(t *testing.T) {
 	plain, err := json.Marshal(toOpenAIDecisionUsage(&schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3}))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"input_tokens":3,"output_tokens":0,"total_tokens":3}`, string(plain), "absent details are left out")
+}
+
+// TestToOpenAIDecisionRequestRejectsLocate pins that a locate question, which OpenAI
+// does not serve, is a 400 naming where it is served rather than a forwarded type.
+func TestToOpenAIDecisionRequestRejectsLocate(t *testing.T) {
+	_, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("O2: 2L nasal cannula")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypeLocate, Name: schemas.Ptr("value"), Instructions: schemas.NewDecisionText("oxygen")}},
+	})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	if !ok {
+		t.Fatalf("err = %v, want a 400", err)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, "Perplexity") {
+		t.Errorf("message = %q", bifrostErr.Error.Message)
+	}
 }

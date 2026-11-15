@@ -883,3 +883,14 @@ func TestParseDecisionAnswersFlattenedRejections(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildDecisionResponsesToolRejectsLocate pins that decision emulation refuses a
+// locate question, naming where it is served, rather than asking a chat model to count
+// characters.
+func TestBuildDecisionResponsesToolRejectsLocate(t *testing.T) {
+	questions := []schemas.DecisionQuestion{{Type: schemas.DecisionTypeLocate, Name: schemas.Ptr("value"), Instructions: schemas.NewDecisionText("oxygen")}}
+	_, err := BuildDecisionResponsesTool(questions, []string{"value"})
+	if err == nil || !strings.Contains(err.Error(), "pplx-decider-v1.3") {
+		t.Errorf("err = %v, want a locate refusal naming where it is served", err)
+	}
+}
