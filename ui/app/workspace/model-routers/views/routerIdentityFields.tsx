@@ -1,31 +1,31 @@
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { msg } from "@/lib/i18n/validationMessage";
-import type { Control } from "react-hook-form";
+import type { ModelRouterIdentityFormSchema } from "@/lib/types/schemas";
+import type { Control, FieldValues, Path } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { z } from "zod";
-
-export const routerIdentitySchema = z.object({
-	name: z.string().trim().min(1, msg("validation.nameIsRequired")),
-	description: z.string().trim(),
-});
-export type RouterIdentityValues = z.infer<typeof routerIdentitySchema>;
 
 // RouterIdentityFields are a router's name and description, as the creation
-// wizard's first step and the edit-details dialog both ask for them.
-export function RouterIdentityFields({ control }: { control: Control<RouterIdentityValues> }) {
+// wizard's first step and the router sheet both ask for them. They take any
+// form whose values include the two.
+export function RouterIdentityFields<T extends FieldValues & ModelRouterIdentityFormSchema>({ control }: { control: Control<T> }) {
 	const { t } = useTranslation("models", { keyPrefix: "routing.modelRouters" });
 	return (
 		<>
 			<FormField
 				control={control}
-				name="name"
+				name={"name" as Path<T>}
 				render={({ field }) => (
 					<FormItem>
 						<FormLabel>{t("columnName")}</FormLabel>
 						<FormControl>
-							<Input {...field} placeholder={t("namePlaceholder")} autoFocus data-testid="model-router-name-input" />
+							<Input
+								{...field}
+								value={field.value ?? ""}
+								placeholder={t("namePlaceholder")}
+								autoFocus
+								data-testid="model-router-name-input"
+							/>
 						</FormControl>
 						<FormMessage />
 					</FormItem>
@@ -33,12 +33,18 @@ export function RouterIdentityFields({ control }: { control: Control<RouterIdent
 			/>
 			<FormField
 				control={control}
-				name="description"
+				name={"description" as Path<T>}
 				render={({ field }) => (
 					<FormItem>
 						<FormLabel>{t("descriptionLabel")}</FormLabel>
 						<FormControl>
-							<Textarea {...field} rows={3} placeholder={t("descriptionPlaceholder")} data-testid="model-router-description-input" />
+							<Textarea
+								{...field}
+								value={field.value ?? ""}
+								rows={3}
+								placeholder={t("descriptionPlaceholder")}
+								data-testid="model-router-description-input"
+							/>
 						</FormControl>
 						<FormMessage />
 					</FormItem>

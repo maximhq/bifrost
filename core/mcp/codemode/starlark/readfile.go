@@ -102,7 +102,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 
@@ -169,7 +169,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 				availableFiles = append(availableFiles, fmt.Sprintf("servers/%s.pyi", name))
 			} else {
 				client := s.clientManager.GetClientByName(name)
-				if client != nil && client.ExecutionConfig.IsCodeModeClient {
+				if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 					if tools, ok := availableToolsPerClient[name]; ok {
 						for _, tool := range tools {
 							if tool.Function != nil {
@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 

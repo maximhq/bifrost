@@ -22,4 +22,31 @@ test.describe('MCP Settings', () => {
     await expect(saveBtn).toBeVisible()
     await expect(saveBtn).toBeDisabled()
   })
+
+  test('should save the hosted client metadata document URL', async ({ configSettingsPage }) => {
+    const page = configSettingsPage.page
+    const hostedURL = 'https://public.example.com/bifrost/client.json'
+    let saved: { value?: string } | undefined
+    // Capture the save without writing it, so the shared store keeps its config.
+    await page.route('**/api/config', async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue()
+        return
+      }
+      const payload = route.request().postDataJSON() as { client_config: { mcp_client_metadata_url?: { value?: string } } }
+      saved = payload.client_config.mcp_client_metadata_url
+      await route.fulfill({ json: { message: 'Configuration updated successfully' } })
+    })
+    await configSettingsPage.goto('mcp-gateway')
+    await page.getByTestId('mcp-settings-advanced-trigger').click()
+
+    const input = page.getByTestId('mcp-client-metadata-url-input')
+    await expect(input).toBeVisible()
+    await expect(page.getByTestId('mcp-client-metadata-document-link')).toHaveAttribute('href', /\/api\/oauth\/client-metadata\.json$/)
+    await input.fill(hostedURL)
+    const saveBtn = page.getByTestId('mcp-settings-save-btn')
+    await expect(saveBtn).toBeEnabled()
+    await saveBtn.click()
+    await expect.poll(() => saved?.value).toBe(hostedURL)
+  })
 })

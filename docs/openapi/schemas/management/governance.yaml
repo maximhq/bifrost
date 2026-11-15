@@ -3169,9 +3169,16 @@ ComplexitySemanticStatus:
     namespace:
       type: string
       description: The fingerprinted namespace the serving generation queries, for example BifrostComplexityRouter_<hash>. The backend holds no phrase text, so this is the only handle on the records the classifier owns in a shared vector store. Absent while nothing is serving.
+    capture_available:
+      type: boolean
+      description: Whether there is a vector store to keep captured request vectors in, for phrase suggestions. When false, capture_unavailable_reason says why.
+    capture_unavailable_reason:
+      type: string
+      enum: [no_vector_store, embedded_vector_store]
+      description: 'Why requests are not captured: no_vector_store = no top-level vector store is configured; embedded_vector_store = the configured store is the embedded one (Chromem), which capture does not use. Absent when capture_available is true.'
     llm:
       type: object
-      description: Always present in the response. state is disabled when no llm block is configured.
+      description: Present on status reads, where state is disabled when no llm block is configured; left out when the llm status could not be read, and in the warmup retry response.
       properties:
         state:
           type: string
@@ -3204,13 +3211,13 @@ ComplexitySemanticStatus:
               type: string
     llm_default_prompt:
       type: string
-      description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
+      description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Present on status reads whether or not an llm block is configured; left out with llm, and in the warmup retry response.
     decision_defaults:
       type: object
-      description: The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
+      description: The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Filled on status reads; in the warmup retry response criteria is null. The fixed question, decision rule, and context rule are not exposed.
       properties:
         criteria:
-          type: object
+          type: [object, 'null']
           additionalProperties:
             type: object
             properties:
@@ -3345,12 +3352,10 @@ ComplexitySuggestionsConfig:
     provider:
       type: string
       minLength: 1
-      pattern: "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
       description: Provider of the suggestion model. Set together with model; both omitted use the llm block's model.
     model:
       type: string
       minLength: 1
-      pattern: "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
       description: Suggestion model. Set together with provider; both omitted use the llm block's model.
     instructions:
       type: string
@@ -3375,12 +3380,10 @@ ComplexitySuggestionsTier:
     provider:
       type: string
       minLength: 1
-      pattern: "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
       description: Provider of the tier model. Set together with model; both omitted take the phrase model (llm) or the decision block's model, else the shipped decision model (decision), when the config is saved.
     model:
       type: string
       minLength: 1
-      pattern: "[^\\s\u000b\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
       description: Tier model. Set together with provider.
     prompt:
       type: string
@@ -3820,6 +3823,9 @@ ComplexitySuggestionRunEstimate:
     backfill:
       type: integer
       description: Requests in the window from before the router captured them, which the run embeds from their logs first (up to the run's clustering budget); counted in requests. Omitted when none.
+    backfill_unknown:
+      type: boolean
+      description: True when what a run would embed from logs could not be planned; requests then counts only what is captured. Omitted when false.
 
 ModelRouter:
   type: object
@@ -4035,6 +4041,16 @@ ModelRouterUpdate:
       then:
         required:
           - llm
+  # Any classifier setting replaces the whole config, whose keyword lists
+  # must be non-empty, so a body that sends one must send keywords too.
+  dependentRequired:
+    tier_boundaries: [keywords]
+    classifier: [keywords]
+    semantic: [keywords]
+    decision: [keywords]
+    llm: [keywords]
+    session: [keywords]
+    suggestions: [keywords]
   properties:
     id:
       type: string
@@ -4042,7 +4058,7 @@ ModelRouterUpdate:
       pattern: '^[A-Za-z0-9_-]+$'
       not:
         const: defaults
-      description: Stable router id; generated when omitted on create. `defaults` is reserved, since it names the endpoint that serves a new router's defaults.
+      description: Ignored; the id in the path names the router.
     name:
       type: string
       minLength: 1
@@ -4093,6 +4109,7 @@ ModelRouterList:
 ModelRouterTarget:
   type: object
   description: One model for one tier of a model router. Omitting provider or model keeps the request's value, but a target sets at least one.
+  additionalProperties: false
   required:
     - tier
     - weight
@@ -4137,6 +4154,7 @@ ModelRouterTarget:
 ModelRouterTargetsRequest:
   type: object
   description: The targets that replace a model router's. Weights within a tier sum to 1; an empty list clears them.
+  additionalProperties: false
   required:
     - targets
   properties:
@@ -4148,6 +4166,7 @@ ModelRouterTargetsRequest:
 ModelRouterRouting:
   type: object
   description: Which requests a model router takes. Routers are tried after the routing rules, on the request as the routing rules left it - narrowest scope first (virtual key, user, team, customer, global), by priority within a scope - and the first enabled router whose condition holds classifies the request. No other router is tried.
+  additionalProperties: false
   allOf:
     - if:
         required: [scope]
@@ -4221,6 +4240,23 @@ ModelRouterDefaults:
     decision_defaults:
       type: object
       description: The decision model's shipped per-tier guidance, as the router status endpoint serves it.
+      properties:
+        criteria:
+          type: object
+          description: Each tier's shipped definition, signals and examples, keyed by tier (SIMPLE, MEDIUM, COMPLEX).
+          additionalProperties:
+            type: object
+            properties:
+              definition:
+                type: string
+              signals:
+                type: array
+                items:
+                  type: string
+              examples:
+                type: array
+                items:
+                  type: string
     llm_default_prompt:
       type: string
       description: The llm classifier's shipped classification prompt.
@@ -4246,7 +4282,8 @@ ModelRouterClassifyRequest:
             description: Your own identifier for the statement, echoed back in its result.
           text:
             type: string
-            description: The statement, classified as the latest user turn. At most 32 KiB together with previous_user_messages.
+            minLength: 1
+            description: The statement, classified as the latest user turn. Blank or whitespace-only text is 400. At most 32 KiB together with previous_user_messages.
           previous_user_messages:
             type: array
             items:

@@ -1260,6 +1260,7 @@
 		"decisions": "決定",
 		"speech": "スピーチ",
 		"speech_stream": "音声ストリーム",
+		"speech_session": "音声セッション",
 		"transcription": "文字起こし",
 		"transcription_stream": "文字起こしストリーム",
 		"image_generation": "画像生成",

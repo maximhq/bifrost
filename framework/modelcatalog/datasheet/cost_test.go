@@ -1977,6 +1977,36 @@ func TestComputeSpeechCost_TokenFallback(t *testing.T) {
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
+// A token-billed TTS model (Gemini TTS, gpt-4o-mini-tts) has no per-character rate; the input is the
+// tokens the provider reported, not the character count times a per-token price.
+func TestComputeSpeechCost_ReportedTokensBeatCharactersWithoutPerCharacterRate(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 15*0.0000005+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_PerCharacterRateStillWins(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	p.InputCostPerCharacter = bifrost.Ptr(0.00003)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.00003+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_CharactersAreUsedWhenNoTokensAreReported(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 100, TotalTokens: 100}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.0000005+100*0.00001, cost, 1e-12)
+}
+
 func TestComputeSpeechCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
 	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)

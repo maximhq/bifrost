@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -179,6 +180,23 @@ func NewRunwarePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		StripPrefix: []string{
 			"/runware_passthrough",
 		},
+	})
+}
+
+// NewElevenlabsPassthroughRouter creates a passthrough router for /elevenlabs_passthrough, for the ElevenLabs
+// endpoints Bifrost has no native route for. ElevenLabs names its model model_id.
+func NewElevenlabsPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Elevenlabs,
+		StripPrefix: []string{
+			"/elevenlabs_passthrough",
+		},
+		StreamingPath: elevenlabs.IsPassthroughStreamPath,
+		BodyModelKey: func(method, path string) string {
+			return "model_id"
+		},
+		// ElevenLabs runs its own default for a call without model_id, whatever a "model" field says.
+		BodyModelKeyOnly: true,
 	})
 }
 

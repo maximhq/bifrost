@@ -1932,6 +1932,7 @@ export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
 export const mcpClientUpdateSchema = z
 	.object({
 		is_code_mode_client: z.boolean().optional(),
+		server_type_on_slug: z.enum(["inherit", "enabled", "disabled"]).optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
 		per_user_discovery: z.boolean().optional(),
@@ -2653,3 +2654,50 @@ export const datasheetOverrideFormSchema = z
 	});
 
 export type DatasheetOverrideFormSchema = z.infer<typeof datasheetOverrideFormSchema>;
+// modelRouterIdentitySchema is a model router's name and description, as the
+// creation wizard and the router sheet ask for them.
+export const modelRouterIdentitySchema = z.object({
+	name: z.string().trim().min(1, msg("validation.nameIsRequired")),
+	description: z.string().trim(),
+});
+
+export type ModelRouterIdentityFormSchema = z.infer<typeof modelRouterIdentitySchema>;
+
+// The entity a non-global routing scope points at, named for its missing-entity message.
+function modelRouterScopeNoun(scope: string): string {
+	if (scope === "team") return i18n.t("routing.team", { ns: "models" });
+	if (scope === "customer") return i18n.t("routing.customer", { ns: "models" });
+	if (scope === "user") return i18n.t("routing.user", { ns: "models" });
+	return i18n.t("routing.scopeVirtualKey", { ns: "models" });
+}
+
+// modelRouterSheetSchema is the router sheet's form: the router's name and
+// description, whether it is on, and where it takes requests. The priority is
+// kept as typed so a bad entry shows under its field; the condition is edited
+// by the condition builder beside the form.
+export const modelRouterSheetSchema = modelRouterIdentitySchema
+	.extend({
+		enabled: z.boolean(),
+		scope: z.string(),
+		scope_id: z.string(),
+		priority: z.string(),
+	})
+	.superRefine((data, ctx) => {
+		if (data.scope !== "global" && !data.scope_id.trim()) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["scope_id"],
+				message: i18n.t("routing.scopeRequired", { ns: "models", scope: modelRouterScopeNoun(data.scope) }),
+			});
+		}
+		const priority = Number(data.priority);
+		if (data.priority.trim() === "" || !Number.isInteger(priority) || priority < 0 || priority > 1000) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["priority"],
+				message: i18n.t("routing.modelRouters.routing.priorityInvalid", { ns: "models" }),
+			});
+		}
+	});
+
+export type ModelRouterSheetFormSchema = z.infer<typeof modelRouterSheetSchema>;

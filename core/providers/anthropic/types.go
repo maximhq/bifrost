@@ -224,7 +224,7 @@ type ProviderFeatureSupport struct {
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01. Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
-	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01 (+ inline-tools-2026-09-15). Model gate enforced upstream; Bedrock carries them on InvokeModel only.
 	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
 	ThinkingDisplayUpdates bool // thinking.display:"updates" — thinking-display-updates-2026-08-18. Surface-level; SupportsThinkingDisplayUpdates adds the per-model gate.
 }
@@ -285,6 +285,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Vertex (verified live with the beta forwarded; without it display:"updates" 400s).
 		FastMode:               true, // speed:"fast" GA on Vertex for the models DefaultSupportsFastMode lists (Fable 5.2); global/us/eu locations only, Vertex 400s elsewhere (cite: V-fast)
 		FastModeHeaderless:     true, // V-fast: "No anthropic-beta header is required"
+		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — accepted on rawPredict for Claude 5 (verified live 2026-11-10).
 		Safeguards:             true, // Claude Code auto-mode classifier — Vertex shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, so this is model-gated the same way as Anthropic direct's own model list (Sonnet 5 / Opus 4.7+ / Fable) via SupportsSafeguards.
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
@@ -317,6 +318,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Safeguards:     true, // Claude Code auto-mode classifier, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable). Converse has no slot for this undocumented Anthropic-native field, so responsesUsesAnthropicInvokePath (bedrock.go) routes a safeguards-bearing request to InvokeModel — same pattern as Compaction/ToolSearch above (#6825) — which reuses this package's builder end to end and this flag applies there.
 
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Converse (verified live, beta in additionalModelRequestFields.anthropic_beta); InvokeModel carries the same body field.
+		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — InvokeModel only; responsesUsesAnthropicInvokePath routes requests carrying the blocks there.
 	},
 	// Bedrock Mantle — same AWS-hosted Claude models as Bedrock, reached through
 	// the native Anthropic Messages surface (/anthropic/v1/messages) instead of
@@ -382,6 +384,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Safeguards:     true, // Claude Code auto-mode classifier — Azure shares Anthropic's native request shape via BuildAnthropicResponsesRequestBody, model-gated via SupportsSafeguards (Sonnet 5 / Opus 4.7+ / Fable), same as Vertex above.
 
 		ThinkingDisplayUpdates: true, // thinking-display-updates-2026-08-18 — accepted on Foundry (verified live with the beta forwarded).
+		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01.
 	},
 	schemas.DeepSeek: {
 		WebSearch:              true,

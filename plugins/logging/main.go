@@ -2059,6 +2059,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if liveUnit != "" {
 		initialData.Object = liveSessionObject
 	}
+	if req.RequestType == schemas.SpeechStreamRequest {
+		if speechSession, _ := ctx.Value(schemas.BifrostContextKeySpeechSession).(bool); speechSession {
+			initialData.Object = speechSessionObject
+		}
+	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
@@ -2656,6 +2661,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 		}
+		applySpeechSessionInput(entry, result, contentLoggingEnabled)
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {

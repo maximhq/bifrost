@@ -354,6 +354,8 @@ test.describe('Complexity Router', () => {
         model: 'gpt-4.1-mini',
         tier: { classifier: 'llm', provider: 'openai', model: 'gpt-4.1-mini' },
       },
+      // The gateway always returns a router's routing; the router page reads it.
+      routing: { enabled: false, scope: 'global', priority: 0 },
     }
     const TIER_PROMPT =
       'Pick the tier by the work asked.\n\nTier definitions:\n- "SIMPLE": short answers\n\n' +
@@ -383,7 +385,8 @@ test.describe('Complexity Router', () => {
           if (route.request().method() === 'PUT') {
             const body = route.request().postDataJSON()
             saved.push(body)
-            return route.fulfill({ json: { ...body, id: 'default' } })
+            // A config save leaves the routing as it was.
+            return route.fulfill({ json: { ...body, id: 'default', routing: CONFIG.routing } })
           }
           return route.fulfill({ json: CONFIG })
         },
@@ -511,6 +514,44 @@ test.describe('Complexity Router', () => {
       await page.getByTestId('complexity-suggestions-list-dismissed').click()
       await expect(page.getByTestId('complexity-suggestion-row-sug-old')).toContainText('translate this paragraph')
       await expect(page.getByTestId('complexity-suggestion-restore-sug-old')).toBeVisible()
+    })
+
+    test('should not offer actions on the last list while the selected one loads', async ({ page }) => {
+      // The dismissed list is held until released, so the switch can be seen
+      // before it arrives.
+      let release: () => void = () => {}
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await page.route(
+        (url) => url.pathname === '/api/routing/model-routers/default/suggestions' && url.searchParams.get('status') === 'dismissed',
+        async (route) => {
+          await held
+          await route.fulfill({
+            json: {
+              router_id: 'default',
+              router_version: 'bank-v2',
+              suggestions: DISMISSED,
+              counts: { open: OPEN.length, dismissed: DISMISSED.length },
+              enabled: true,
+              last_run: LAST_RUN,
+            },
+          })
+        },
+      )
+      await page.goto('/workspace/model-routers?router=default')
+      await page.getByTestId('complexity-router-tab-suggestions').click()
+      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toBeVisible()
+
+      await page.getByTestId('complexity-suggestions-list-dismissed').click()
+      // The pending rows are not shown as dismissed ones, with a Restore that would fail.
+      await expect(page.getByTestId('complexity-suggestion-restore-sug-refund')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-suggestion-row-sug-refund')).toHaveCount(0)
+      await expect(page.getByTestId('complexity-suggestions-list-loading')).toBeVisible()
+
+      release()
+      await expect(page.getByTestId('complexity-suggestion-restore-sug-old')).toBeVisible()
+      await expect(page.getByTestId('complexity-suggestions-list-loading')).toHaveCount(0)
     })
 
     test('should load more suggestions than one page holds', async ({ page }) => {

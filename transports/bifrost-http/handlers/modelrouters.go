@@ -45,7 +45,7 @@ type ModelRouterDefaultsResponse struct {
 // shipped under /api/governance, so they have no legacy alias.
 func (h *RoutingHandler) registerModelRouterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handle := func(method, path string, handler fasthttp.RequestHandler) {
-		r.Handle(method, path, lib.ChainMiddlewares(handler, middlewares...))
+		r.Handle(method, path, lib.ChainMiddlewares(h.visibleModelRouter(path, handler), middlewares...))
 	}
 	handle(fasthttp.MethodGet, "/api/routing/model-routers", h.listModelRouters)
 	handle(fasthttp.MethodPost, "/api/routing/model-routers", h.createModelRouter)
@@ -60,6 +60,34 @@ func (h *RoutingHandler) registerModelRouterRoutes(r *router.Router, middlewares
 	handle(fasthttp.MethodPost, "/api/routing/model-routers/{router_id}/status/retry", h.retryModelRouterWarmup)
 	handle(fasthttp.MethodPost, "/api/routing/model-routers/{router_id}/classify", h.classifyWithModelRouter)
 
+}
+
+// visibleModelRouter wraps the handler of a route that names a router
+// ({router_id}) so it answers 404 when the config store does not return that
+// router to the caller. In OSS the store returns every saved router. Behind
+// the enterprise data access control it does not return one whose routing is
+// outside the caller's scope, and several routes would otherwise act on such a
+// router anyway: status, warmup retry, classify and the suggestion routes act
+// on the in-memory router, and delete, reset and add phrases write without
+// reading it first. Any other failed read is answered 500 without running the
+// handler, as getRoutingRule answers it, since it cannot say whether the caller
+// may see the router. A router found but stored in a form this version cannot
+// read still reaches the handler, which reports it (an unreadable router can
+// still be deleted). Routes that name no router are returned unchanged.
+func (h *RoutingHandler) visibleModelRouter(path string, handler fasthttp.RequestHandler) fasthttp.RequestHandler {
+	if !strings.Contains(path, "{router_id}") {
+		return handler
+	}
+	return func(ctx *fasthttp.RequestCtx) {
+		if h.configStore != nil {
+			id := pathID(ctx, "router_id")
+			if _, err := h.configStore.GetModelRouter(ctx, id); err != nil && !errors.Is(err, configstore.ErrConfigUnreadable) {
+				sendModelRouterLoadError(ctx, id, err)
+				return
+			}
+		}
+		handler(ctx)
+	}
 }
 
 // pathID reads a route parameter.
