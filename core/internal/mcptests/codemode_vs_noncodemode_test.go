@@ -299,6 +299,7 @@ func TestCodeMode_Agent_MixedCodeModeWithApproval(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient, goTestClient)
 	ctx := createTestContext()
+	injectToolsAsGatewayDoes(ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
@@ -402,6 +403,7 @@ func TestCodeMode_Agent_CodeModeInCode_NonCodeModeDirect(t *testing.T) {
 
 	manager := setupMCPManager(t, codeModeClient, temperatureClient, goTestClient)
 	ctx := createTestContext()
+	injectToolsAsGatewayDoes(ctx, manager)
 
 	mocker := NewDynamicLLMMocker()
 
