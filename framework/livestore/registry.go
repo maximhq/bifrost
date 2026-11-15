@@ -21,12 +21,16 @@ const (
 // internal range, so no component can create or drop a table under it.
 const providerKeyListsTable = internalPrefix + "provider_key_lists"
 
+// KindMCPClient names the MCP client collection.
+const KindMCPClient Kind = "mcp_client"
+
 // Collections holds the typed collection of each config store table the live store loads. New
 // registers every one of them, so a reader takes them from Store.Collections. The record types and
 // the reads that load them are in the registry package.
 type Collections struct {
 	Providers    *Collection[registry.Provider]    // provider settings; their keys are ProviderKeys
 	ProviderKeys *Collection[registry.ProviderKey] // one record per key, children of Providers
+	MCPClients   *Collection[registry.MCPClient]
 }
 
 // Views holds the global derived tables: tables derived only from collections and read by more
@@ -80,6 +84,16 @@ func registerCollections(s *Store) (*Collections, error) {
 		Page: registry.ProviderKeysPage,
 		ByID: registry.ProviderKeysByID,
 	}, ChildOf(KindProvider, registry.ProviderKeyProvider, registry.ProviderKeysByProviders, Cascade)); err != nil {
+		return nil, err
+	}
+	if c.MCPClients, err = s.Register(KindMCPClient, nil, Loader[registry.MCPClient]{
+		ID:   registry.MCPClientID,
+		Page: registry.MCPClientsPage,
+		ByID: registry.MCPClientsByID,
+	},
+		UniqueIndex(registry.MCPClientByName, registry.MCPClientName),
+		UniqueIndex(registry.MCPClientBySlug, registry.MCPClientSlug),
+	); err != nil {
 		return nil, err
 	}
 	return c, nil

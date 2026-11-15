@@ -109,12 +109,12 @@ type MCPManagerInterface interface {
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 
-	// ConnectConfiguredClients dials all clients supplied at construction time.
-	// Construction no longer connects; call this once all plugins are registered so
-	// PreMCPConnectionHook sees the full plugin set. It returns once every client
-	// has been attempted; onClientDone, when not nil, is called as each attempt
-	// finishes, one call at a time.
-	ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string))
+	// ConnectConfiguredClients dials the configured clients, configs, which the
+	// manager keeps from then on. Construction never connects; call this once all
+	// plugins are registered so PreMCPConnectionHook sees the full plugin set. It
+	// returns once every client has been attempted; onClientDone, when not nil, is
+	// called as each attempt finishes, one call at a time.
+	ConnectConfiguredClients(ctx context.Context, configs []*schemas.MCPClientConfig, onClientDone func(clientID string))
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error

@@ -4804,16 +4804,41 @@ func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) st
 //	    ConnectionString: &url,
 //	})
 //
-// ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
-// no longer auto-connects, so callers invoke this after all plugins are registered
-// (so every PreMCPConnectionHook participates in the connection). It returns once
-// every client has been attempted; onClientDone, when not nil, is called as each
-// attempt finishes, one call at a time, so a caller running the dial in the
-// background can act on each client as soon as it is ready. No-op if MCP is not
-// configured.
+// ConnectConfiguredMCPClients dials the MCP clients the Account lists, each with a copy of
+// its config, since the manager writes to the configs it keeps. Construction never connects,
+// so callers invoke this after all plugins are registered (so every PreMCPConnectionHook
+// participates in the connection). It returns once every client has been attempted;
+// onClientDone, when not nil, is called as each attempt finishes, one call at a time, so a
+// caller running the dial in the background can act on each client as soon as it is ready.
+// A client whose config cannot be read is logged and skipped; no-op when the Account lists
+// none.
 func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClientDone func(clientID string)) {
+	ids, err := bifrost.account.GetConfiguredMCPClients()
+	if err != nil {
+		bifrost.logger.Warn("failed to list the configured MCP clients: %v", err)
+		return
+	}
+	configs := make([]*schemas.MCPClientConfig, 0, len(ids))
+	for _, id := range ids {
+		config, err := bifrost.account.GetConfigForMCPClient(id)
+		if err != nil {
+			bifrost.logger.Warn("skipping MCP client %s: %v", id, err)
+			continue
+		}
+		if config == nil {
+			bifrost.logger.Warn("skipping MCP client %s: the account has no config for it", id)
+			continue
+		}
+		owned := *config
+		configs = append(configs, &owned)
+	}
+	if len(configs) == 0 {
+		return
+	}
+	// Init creates the manager only with an mcp block; clients the Account lists need one too.
+	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.ConnectConfiguredClients(ctx, onClientDone)
+		bifrost.MCPManager.ConnectConfiguredClients(ctx, configs, onClientDone)
 	}
 }
 
@@ -4823,7 +4848,6 @@ func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClien
 // client added at runtime synthesizes its server exactly as a boot-time one would.
 func (bifrost *Bifrost) lazyMCPConfig() schemas.MCPConfig {
 	return schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{},
 		PluginPipelineProvider: func() interface{} {
 			return bifrost.getPluginPipeline()
 		},

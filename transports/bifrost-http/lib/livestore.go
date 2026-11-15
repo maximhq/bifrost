@@ -142,12 +142,15 @@ type bootConfig struct {
 // records builds the live store records for everything b holds, for file-only mode. A provider's
 // keys become records of their own, ordered by their position in config.json.
 func (b *bootConfig) records(live *livestore.Store) []livestore.Record {
-	records := make([]livestore.Record, 0, len(b.providers))
+	records := make([]livestore.Record, 0, len(b.providers)+len(b.mcpClients))
 	for name, providerConfig := range b.providers {
 		records = append(records, livestore.Rec(live.Collections.Providers, &registry.Provider{Name: name, Settings: providerConfig.Settings()}))
 		for i, key := range providerConfig.Keys {
 			records = append(records, livestore.Rec(live.Collections.ProviderKeys, &registry.ProviderKey{Provider: name, Order: int64(i), Key: key}))
 		}
+	}
+	for _, client := range b.mcpClients {
+		records = append(records, livestore.Rec(live.Collections.MCPClients, &registry.MCPClient{Config: *client}))
 	}
 	return records
 }
@@ -201,4 +204,14 @@ func DBLookupRetry() []livestore.RefreshOption {
 		livestore.RetryMissing(DBLookupMaxRetries, 2*DBLookupDelay),
 		livestore.RetryErrors(DBLookupMaxRetries, 2*DBLookupDelay),
 	}
+}
+
+// mcpClientExists reports whether b holds an MCP client with this name.
+func (b *bootConfig) mcpClientExists(name string) bool {
+	for _, client := range b.mcpClients {
+		if client != nil && client.Name == name {
+			return true
+		}
+	}
+	return false
 }

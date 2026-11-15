@@ -248,8 +248,9 @@ type MCPCredentialStore interface {
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
+// The MCP clients themselves come from the Account (GetConfiguredMCPClients and
+// GetConfigForMCPClient), not from this struct.
 type MCPConfig struct {
-	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).

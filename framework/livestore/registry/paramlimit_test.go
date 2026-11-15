@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -49,4 +50,21 @@ func TestProviderKeysByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	recs, err = ProviderKeysByProviders(ctx, store.DB(), withMissingIDs(string(schemas.OpenAI)))
 	require.NoError(t, err)
 	require.Equal(t, []string{"o1"}, keyIDs(recs))
+}
+
+// TestMCPClientsByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more MCP client IDs
+// than one statement may bind still reads the ones that exist, on either side of the limit.
+func TestMCPClientsByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newProviderDB(t, nil)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, mcpClient("a")))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, mcpClient("z")))
+	rows, err := MCPClientsByID(ctx, store.DB(), append(withMissingIDs("a"), "z"))
+	require.NoError(t, err)
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, MCPClientID(row))
+	}
+	slices.Sort(ids)
+	require.Equal(t, []string{"a", "z"}, ids, "the client listed after the missing IDs is read too")
 }

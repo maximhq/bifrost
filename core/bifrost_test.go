@@ -1004,9 +1004,10 @@ func BenchmarkIsRateLimitError(b *testing.B) {
 
 // Mock Account implementation for testing UpdateProvider
 type MockAccount struct {
-	mu      sync.RWMutex
-	configs map[schemas.ModelProvider]*schemas.ProviderConfig
-	keys    map[schemas.ModelProvider][]schemas.Key
+	mu         sync.RWMutex
+	configs    map[schemas.ModelProvider]*schemas.ProviderConfig
+	keys       map[schemas.ModelProvider][]schemas.Key
+	mcpClients []*schemas.MCPClientConfig // in the order they were added
 	// keyLookups counts GetKeysForProvider calls per provider
 	keyLookups sync.Map
 }
@@ -1076,6 +1077,36 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 		return &configCopy, nil
 	}
 	return nil, fmt.Errorf("provider %s not configured", provider)
+}
+
+// AddMCPClients configures MCP clients on the account, for ConnectConfiguredMCPClients to dial.
+func (ma *MockAccount) AddMCPClients(clients ...*schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.mcpClients = append(ma.mcpClients, clients...)
+}
+
+// GetConfiguredMCPClients lists the IDs of the MCP clients added with AddMCPClients.
+func (ma *MockAccount) GetConfiguredMCPClients() ([]string, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	ids := make([]string, 0, len(ma.mcpClients))
+	for _, client := range ma.mcpClients {
+		ids = append(ids, client.ID)
+	}
+	return ids, nil
+}
+
+// GetConfigForMCPClient returns the MCP client added with this ID.
+func (ma *MockAccount) GetConfigForMCPClient(clientID string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.ID == clientID {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", clientID)
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {

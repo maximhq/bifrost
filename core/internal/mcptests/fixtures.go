@@ -1447,6 +1447,16 @@ func (a *testAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*
 	return nil, fmt.Errorf("provider %s not supported", providerKey)
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a *testAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a *testAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // setupBifrost creates a Bifrost instance for testing
 func setupBifrost(t *testing.T) *bifrost.Bifrost {
 	t.Helper()
@@ -1485,7 +1495,7 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	logger := newTestLogger(t)
 
-	// Convert to pointer slice for MCPConfig
+	// Convert to the pointer slice the manager dials
 	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
 	for i := range clientConfigs {
 		clientConfigPtrs[i] = &clientConfigs[i]
@@ -1494,7 +1504,6 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 	// Create MCP config with a no-op plugin pipeline so that codemode tool calls
 	// work correctly even when no Bifrost instance is attached.
 	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs: clientConfigPtrs,
 		PluginPipelineProvider: func() interface{} {
 			return &noopPluginPipeline{}
 		},
@@ -1507,7 +1516,7 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 	// Create MCP manager - dependencies are injected automatically
 	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
 	// Construction no longer dials; connect the configured clients explicitly.
-	manager.ConnectConfiguredClients(context.Background(), nil)
+	manager.ConnectConfiguredClients(context.Background(), clientConfigPtrs, nil)
 
 	// Cleanup
 	t.Cleanup(func() {

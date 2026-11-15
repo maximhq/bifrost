@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -75,6 +79,17 @@ func providersOf(c *Config) map[schemas.ModelProvider]configstore.ProviderConfig
 			config.Keys = *keys
 		}
 		out[p.Name] = config
+		return true
+	})
+	return out
+}
+
+// mcpClientsOf returns the MCP clients c's live store holds, in client ID order.
+func mcpClientsOf(c *Config) []*schemas.MCPClientConfig {
+	var out []*schemas.MCPClientConfig
+	c.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		config := client.Config
+		out = append(out, &config)
 		return true
 	})
 	return out
@@ -525,4 +540,50 @@ func newNoopProviderClient(t *testing.T, c *Config) *bifrost.Bifrost {
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	return client
+}
+
+// TestMCPClientWritesReachMemoryThroughTheDatabase checks the MCP client write path: the caller
+// writes the row, the runtime takes the client, and only then does the live store load the row,
+// which the Account serves from there. An edit and a removal reach memory the same way.
+func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	upstream := mcpserver.NewMCPServer("docs", "1.0.0", mcpserver.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("search"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("found"), nil
+	})
+	ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(upstream))
+	t.Cleanup(ts.Close)
+
+	c := providerStore(t, nil)
+	c.SetBifrostClient(newNoopProviderClient(t, c))
+	client := &schemas.MCPClientConfig{
+		ID: "docs-id", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypeNone, ToolsToExecute: schemas.WhiteList{"*"},
+	}
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, client))
+	_, ok := c.liveMCPClient(client.ID)
+	require.False(t, ok, "a written row is not in memory until the runtime has taken the client")
+
+	require.NoError(t, c.AddMCPClient(ctx, client))
+	account := NewBaseAccount(c)
+	ids, err := account.GetConfiguredMCPClients()
+	require.NoError(t, err)
+	require.Equal(t, []string{client.ID}, ids)
+	served, err := account.GetConfigForMCPClient(client.ID)
+	require.NoError(t, err)
+	require.Equal(t, "docs", served.Name)
+
+	renamed := *client
+	renamed.Name = "docs_renamed"
+	storeMCPClientEdit(t, c, &renamed)
+	require.NoError(t, c.UpdateMCPClient(ctx, client.ID, &renamed))
+	_, ok = c.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, "docs_renamed")
+	require.True(t, ok, "the edited row is in memory")
+	_, ok = c.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, "docs")
+	require.False(t, ok, "and the old name is gone from the index")
+
+	require.NoError(t, c.ConfigStore.DeleteMCPClientConfig(ctx, client.ID))
+	require.NoError(t, c.RemoveMCPClient(ctx, client.ID))
+	_, err = account.GetConfigForMCPClient(client.ID)
+	require.ErrorIs(t, err, ErrNotFound, "a removed client leaves memory")
 }

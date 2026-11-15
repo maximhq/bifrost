@@ -93,6 +93,46 @@ func FileOnly(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]c
 	return c
 }
 
+// MCPClients loads clients into a new live store on c without a database, replacing any live
+// store c has, and returns c. Nothing can refresh them afterwards, which suits tests that only
+// read clients; a test that changes a client loads the changed set again.
+func MCPClients(t testing.TB, c *lib.Config, clients ...*schemas.MCPClientConfig) *lib.Config {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("libtest: live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	records := make([]livestore.Record, 0, len(clients))
+	for _, client := range clients {
+		records = append(records, livestore.Rec(live.Collections.MCPClients, &registry.MCPClient{Config: *client}))
+	}
+	if err := live.LoadRecords(context.Background(), records); err != nil {
+		t.Fatalf("libtest: loading live store: %v", err)
+	}
+	c.LiveStore = live
+	return c
+}
+
+// FromStore loads a new live store on c from the config store c already has, as LoadConfig does
+// at boot, and returns c.
+func FromStore(t testing.TB, c *lib.Config) *lib.Config {
+	t.Helper()
+	if c.ConfigStore == nil {
+		t.Fatal("libtest: FromStore loads from the config store; give the config one first")
+	}
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("libtest: live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	if err := live.LoadAll(context.Background(), c.ConfigStore.DB()); err != nil {
+		t.Fatalf("libtest: loading live store: %v", err)
+	}
+	c.LiveStore = live
+	return c
+}
+
 // SetProvider writes a provider's configuration straight to c's config store and refreshes it, as
 // a write made outside c is picked up, for a test that changes a provider partway through. A new
 // provider is added with its keys. For an existing one the settings are saved, a key the store does

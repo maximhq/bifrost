@@ -542,6 +542,16 @@ func (splitKeysAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (splitKeysAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (splitKeysAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // allowedKeysPlugin narrows a request to the keys its virtual key may use, as governance does,
 // and records the key each unit was billed on.
 type allowedKeysPlugin struct {
@@ -876,6 +886,16 @@ func (a twoLiveProvidersAccount) GetConfigForProvider(p schemas.ModelProvider) (
 		return &schemas.ProviderConfig{NetworkConfig: schemas.DefaultNetworkConfig, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
 	}
 	return a.splitKeysAccount.GetConfigForProvider(p)
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a twoLiveProvidersAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a twoLiveProvidersAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // TestLiveControlProviderHonoursTheNamedProvider: a route that only carries a session id cannot

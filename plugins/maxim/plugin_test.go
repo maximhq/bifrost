@@ -73,6 +73,16 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (baseAccount *BaseAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (baseAccount *BaseAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestMaximLoggerPlugin tests the integration of the Maxim Logger plugin with Bifrost.
 // It performs the following steps:
 // 1. Initializes the Maxim plugin with environment variables

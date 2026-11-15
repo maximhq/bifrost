@@ -49,6 +49,16 @@ func (a inferenceSetupAccount) GetConfigForProvider(p schemas.ModelProvider) (*s
 	return c, err
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a inferenceSetupAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a inferenceSetupAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)

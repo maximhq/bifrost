@@ -679,6 +679,7 @@ type MockConfigStore struct {
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	mcpConfig        *schemas.MCPConfig
+	mcpClients       []*schemas.MCPClientConfig
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
@@ -919,6 +920,11 @@ func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig,
 	return m.mcpConfig, nil
 }
 
+// GetMCPClientConfigs returns the stored MCP clients, in creation order like the real store.
+func (m *MockConfigStore) GetMCPClientConfigs(ctx context.Context) ([]*schemas.MCPClientConfig, error) {
+	return m.mcpClients, nil
+}
+
 func (m *MockConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	return nil, nil
 }
@@ -932,7 +938,7 @@ func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (
 }
 
 func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
+	m.mcpClients = append(m.mcpClients, clientConfig)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)
 	return nil
 }
@@ -946,21 +952,19 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		Config: *clientConfig,
 	})
 
-	// Initialize m.mcpConfig if nil (same pattern as CreateMCPClientConfig)
+	// Initialize m.mcpConfig if nil, so GetMCPConfig reports the store as holding MCP config
 	if m.mcpConfig == nil {
-		m.mcpConfig = &schemas.MCPConfig{
-			ClientConfigs: []*schemas.MCPClientConfig{},
-		}
+		m.mcpConfig = &schemas.MCPConfig{}
 	}
 
-	// Update the in-memory state to ensure GetMCPConfig returns updated data
-	for i := range m.mcpConfig.ClientConfigs {
-		if m.mcpConfig.ClientConfigs[i].ID == id {
+	// Update the in-memory state to ensure GetMCPClientConfigs returns updated data
+	for i := range m.mcpClients {
+		if m.mcpClients[i].ID == id {
 			// Found the entry, update it with the new config
-			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
+			m.mcpClients[i] = &schemas.MCPClientConfig{
 				ID:                  clientConfig.ClientID,
 				Name:                clientConfig.Name,
-				EndpointSlug:        m.mcpConfig.ClientConfigs[i].EndpointSlug, // immutable: the real store never updates it
+				EndpointSlug:        m.mcpClients[i].EndpointSlug, // immutable: the real store never updates it
 				IsCodeModeClient:    clientConfig.IsCodeModeClient,
 				ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
@@ -975,7 +979,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
+	m.mcpClients = append(m.mcpClients, &schemas.MCPClientConfig{
 		ID:                  clientConfig.ClientID,
 		Name:                clientConfig.Name,
 		IsCodeModeClient:    clientConfig.IsCodeModeClient,
@@ -998,16 +1002,14 @@ func (m *MockConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientI
 }
 
 func (m *MockConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
-	if m.mcpConfig != nil {
-		for _, cfg := range m.mcpConfig.ClientConfigs {
-			if cfg.ID == clientID {
-				cfg.DiscoveredTools = discovery.Tools
-				cfg.DiscoveredInstructions = discovery.Instructions
-				cfg.DiscoveredResources = discovery.Resources
-				cfg.DiscoveredResourceTemplates = discovery.ResourceTemplates
-				cfg.DiscoveredPrompts = discovery.Prompts
-				return nil
-			}
+	for _, cfg := range m.mcpClients {
+		if cfg.ID == clientID {
+			cfg.DiscoveredTools = discovery.Tools
+			cfg.DiscoveredInstructions = discovery.Instructions
+			cfg.DiscoveredResources = discovery.Resources
+			cfg.DiscoveredResourceTemplates = discovery.ResourceTemplates
+			cfg.DiscoveredPrompts = discovery.Prompts
+			return nil
 		}
 	}
 	return configstore.ErrNotFound
@@ -1051,16 +1053,13 @@ func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]st
 }
 
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	if m.mcpConfig == nil {
-		return nil
-	}
-	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpConfig.ClientConfigs))
-	for _, client := range m.mcpConfig.ClientConfigs {
+	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpClients))
+	for _, client := range m.mcpClients {
 		if client == nil || client.ID != id {
 			filtered = append(filtered, client)
 		}
 	}
-	m.mcpConfig.ClientConfigs = filtered
+	m.mcpClients = filtered
 	return nil
 }
 
@@ -3718,7 +3717,7 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 // TestLoadConfig_MCP_Merge tests MCP config merge from DB and file
 func TestLoadConfig_MCP_Merge(t *testing.T) {
 	// Setup DB MCP config
-	dbMCPConfig := &schemas.MCPConfig{
+	dbMCPConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1",
@@ -3734,7 +3733,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 
 	// Setup file MCP config with some overlapping and some new
-	fileMCPConfig := &schemas.MCPConfig{
+	fileMCPConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1", // Same ID - should be skipped
@@ -3770,7 +3769,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 		}
 	}
 
-	mergedMCPConfig := &schemas.MCPConfig{
+	mergedMCPConfig := &MCPFileConfig{
 		ClientConfigs: append(dbMCPConfig.ClientConfigs, clientConfigsToAdd...),
 	}
 
@@ -3819,11 +3818,10 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NoError(t, err)
 	existing.ConfigHash = existingHash
 
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{existing},
-	}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	fileMCP := &schemas.MCPConfig{
+	fileMCP := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				Name:           "echo_http",
@@ -3842,8 +3840,8 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 		},
 	}
 
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpClients)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
 	require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
@@ -3856,9 +3854,9 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NotEmpty(t, store.mcpConfigsCreated[0].ID)
 	require.NotEmpty(t, store.mcpConfigsCreated[0].ConfigHash)
 
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 2)
+	require.Len(t, cfg.boot.mcpClients, 2)
 	byName := map[string]*schemas.MCPClientConfig{}
-	for _, client := range cfg.MCPConfig.ClientConfigs {
+	for _, client := range cfg.boot.mcpClients {
 		byName[client.Name] = client
 	}
 	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
@@ -3871,36 +3869,34 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
-	}
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 
 	loadMCPConfig(context.Background(), cfg, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
 
 	require.NotNil(t, cfg.MCPConfig)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	require.Equal(t, "db-client", cfg.MCPConfig.ClientConfigs[0].Name)
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, "db-client", cfg.boot.mcpClients[0].Name)
 }
 
 // TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB verifies present empty mcp removes DB MCP clients.
 func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
-	}
-	cfg := &Config{ConfigStore: store}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
-		MCP:           &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
+		MCP:           &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
 	}
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
 	require.NotNil(t, cfg.MCPConfig)
-	require.Empty(t, cfg.MCPConfig.ClientConfigs)
-	require.Empty(t, store.mcpConfig.ClientConfigs)
+	require.Empty(t, cfg.boot.mcpClients)
+	require.Empty(t, store.mcpClients)
 }
 
 // TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient: when
@@ -3910,14 +3906,15 @@ func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{
 		ID: "openapi-db", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 		OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "stored valid document"},
-	}}}
-	cfg := &Config{ConfigStore: store}
+	}}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
-		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 			OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"},
 		}}},
@@ -3925,10 +3922,10 @@ func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *t
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
-	require.Len(t, store.mcpConfig.ClientConfigs, 1, "the stored client must not be pruned")
+	require.Len(t, store.mcpClients, 1, "the stored client must not be pruned")
 	require.NotNil(t, cfg.MCPConfig)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, "stored valid document", cfg.boot.mcpClients[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
 }
 
 // mcpClientNames lists the names of configs, in order.
@@ -3947,8 +3944,8 @@ func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
 	store.mcpConfig = &schemas.MCPConfig{}
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	configData := &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		{Name: "bogus_auth", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: "bogus"},
 		{Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"}},
 		{Name: "oauth_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypePerUserOauth},
@@ -3958,7 +3955,7 @@ func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
 	loadMCPConfig(context.Background(), cfg, configData)
 
 	require.NotNil(t, cfg.MCPConfig)
-	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.boot.mcpClients), "the runtime")
 	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
 }
 
@@ -3969,16 +3966,16 @@ func TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
 	store.mcpConfig = &schemas.MCPConfig{}
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	configData := &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		{Name: "no_auth_type", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp")},
 	}}}
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
 	require.NotNil(t, cfg.MCPConfig)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	assert.Equal(t, schemas.MCPAuthTypeHeaders, cfg.MCPConfig.ClientConfigs[0].AuthType, "the runtime")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, cfg.boot.mcpClients[0].AuthType, "the runtime")
 	require.Len(t, store.mcpConfigsCreated, 1)
 	assert.Equal(t, schemas.MCPAuthTypeHeaders, store.mcpConfigsCreated[0].AuthType, "the store")
 }
@@ -3994,11 +3991,12 @@ func TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient(t *testing.T) 
 		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
 	}
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}
-	cfg := &Config{ConfigStore: store}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{stored}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
-		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
 			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
 		}}},
@@ -4006,9 +4004,9 @@ func TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient(t *testing.T) 
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
-	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(store.mcpConfig.ClientConfigs), "the stored client must not be pruned")
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(store.mcpClients), "the stored client must not be pruned")
 	require.NotNil(t, cfg.MCPConfig)
-	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(cfg.MCPConfig.ClientConfigs))
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(cfg.boot.mcpClients))
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -12415,7 +12413,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	}
 
 	// First, create config.json with MCP client configs
-	mcpConfig := &schemas.MCPConfig{
+	mcpConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:               "weather-mcp",
@@ -17153,7 +17151,7 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{{ID: "mcp-file", Name: "file_mcp", ConnectionType: schemas.MCPConnectionTypeHTTP}},
 	}
 	configData.Plugins = []*schemas.PluginConfig{{Name: "file-plugin", Enabled: true, Config: map[string]any{"setting": "file"}}}
@@ -17214,10 +17212,10 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
 	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
 
-	mcpConfig, err := config2.ConfigStore.GetMCPConfig(ctx)
+	mcpClients, err := config2.ConfigStore.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	require.Equal(t, "file_mcp", mcpConfig.ClientConfigs[0].Name)
+	require.Len(t, mcpClients, 1)
+	require.Equal(t, "file_mcp", mcpClients[0].Name)
 
 	pluginRows, err := config2.ConfigStore.GetPlugins(ctx)
 	require.NoError(t, err)
@@ -20263,7 +20261,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"framework.pricing", reflect.TypeOf(modelcatalog.Config{}), false},
 
 		// MCP config
-		{"mcp", reflect.TypeOf(schemas.MCPConfig{}), false},
+		{"mcp", reflect.TypeOf(MCPFileConfig{}), false},
 		{"mcp.client_configs", reflect.TypeOf(schemas.MCPClientConfig{}), true},
 		{"mcp.client_configs.stdio_config", reflect.TypeOf(schemas.MCPStdioConfig{}), false},
 		{"mcp.tool_manager_config", reflect.TypeOf(schemas.MCPToolManagerConfig{}), false},
@@ -20409,7 +20407,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"created_at": true, // DB metadata; set on write
 	},
 	// MCP types have internal state fields
-	"schemas.MCPConfig": {
+	"lib.MCPFileConfig": {
 		"tool_sync_interval": true, // Internal
 	},
 	"schemas.MCPClientConfig": {
@@ -20632,6 +20630,13 @@ func getGoStructFields(t reflect.Type) map[string]bool {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		jsonTag := field.Tag.Get("json")
+		// An untagged embedded struct's fields are encoded as the outer struct's own.
+		if field.Anonymous && jsonTag == "" {
+			for name := range getGoStructFields(field.Type) {
+				fields[name] = true
+			}
+			continue
+		}
 		if jsonTag == "" || jsonTag == "-" {
 			continue
 		}
@@ -22571,7 +22576,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	}
 
 	// Add MCP
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{ID: uuid.NewString(), Name: "mcp_client_1", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:8080")},
 		},
@@ -22592,7 +22597,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
 	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
 	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
-	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Len(t, mcpClientsOf(config), 1, "Should have 1 MCP client")
 	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
 	require.Equal(t, "test-plugin", config.PluginConfigs[0].Name)
 
@@ -22733,7 +22738,7 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 	ctx := context.Background()
 
 	configData := makeMinimalConfigData(tempDir)
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{ID: uuid.NewString(), Name: "mcp_test", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:9090")},
 		},
@@ -22748,8 +22753,8 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 
 	// Verify MCP loaded from file
 	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
-	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
-	require.Equal(t, "mcp_test", config.MCPConfig.ClientConfigs[0].Name)
+	require.Len(t, mcpClientsOf(config), 1, "Should have 1 MCP client")
+	require.Equal(t, "mcp_test", mcpClientsOf(config)[0].Name)
 
 	// Verify client gets defaults
 	assertDefaultClientConfigValues(t, *config.ClientConfig)
@@ -23035,7 +23040,7 @@ func makeV1ProviderConfig(keys ...schemas.Key) configstore.ProviderConfig {
 // makeV1ConfigData is a convenience constructor for compat tests.
 func makeV1ConfigData(
 	providers map[string]configstore.ProviderConfig,
-	mcp *schemas.MCPConfig,
+	mcp *MCPFileConfig,
 	vks []tables.TableVirtualKey,
 ) *ConfigData {
 	cd := &ConfigData{
@@ -23212,7 +23217,7 @@ func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
 func TestApplyV1Compat_VK_EmptyMCPConfigs(t *testing.T) {
 	cd := makeV1ConfigData(
 		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
-		&schemas.MCPConfig{
+		&MCPFileConfig{
 			ClientConfigs: []*schemas.MCPClientConfig{
 				{Name: "tools-a"},
 				{Name: "tools-b"},
@@ -23249,7 +23254,7 @@ func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
 	}
 	cd := makeV1ConfigData(
 		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
-		&schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
+		&MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
 		[]tables.TableVirtualKey{
 			{ID: "vk-1", Name: "Has MCP", MCPConfigs: existing},
 		},
@@ -24155,7 +24160,7 @@ func TestLoadClientConfig_ToolManagerOnlyFileReconciles(t *testing.T) {
 	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
 		t.Helper()
 		cfg := &Config{ConfigStore: store}
-		require.NoError(t, loadClientConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		require.NoError(t, loadClientConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}}))
 		stored, err := store.GetClientConfig(ctx)
 		require.NoError(t, err)
 		return stored
@@ -24185,7 +24190,7 @@ func TestLoadClientConfig_InvalidAllowlistIsNeverPersisted(t *testing.T) {
 	ctx := context.Background()
 	start := func(store configstore.ConfigStore, tm *schemas.MCPToolManagerConfig) error {
 		t.Helper()
-		return loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}})
+		return loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}})
 	}
 	invalid := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"169.254.169.254"}}
 
@@ -24255,7 +24260,7 @@ func TestOAuthPrivateAllowlistExplicitEmptyIsAFileChange(t *testing.T) {
 	ctx := context.Background()
 	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
 		t.Helper()
-		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}}))
 		stored, err := store.GetClientConfig(ctx)
 		require.NoError(t, err)
 		return stored
@@ -24331,27 +24336,6 @@ func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
 	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
 }
 
-// TestGetMCPClientBySlugSkipsDisabled pins that a disabled MCP client's endpoint slug does not
-// resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
-func TestGetMCPClientBySlugSkipsDisabled(t *testing.T) {
-	c := &Config{
-		MCPConfig: &schemas.MCPConfig{
-			ClientConfigs: []*schemas.MCPClientConfig{
-				{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
-				{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
-			},
-		},
-	}
-
-	id, name, ok := c.GetMCPClientBySlug("live-slug")
-	require.True(t, ok)
-	require.Equal(t, "enabled-id", id)
-	require.Equal(t, "Enabled", name)
-
-	_, _, ok = c.GetMCPClientBySlug("dead-slug")
-	require.False(t, ok, "a disabled client's slug must not resolve")
-}
-
 // TestPinMCPClientImmutableFields_EndpointSlug: the stored slug always wins, and only a declared slug that
 // normalises to something else is reported as an ignored change.
 func TestPinMCPClientImmutableFields_EndpointSlug(t *testing.T) {
@@ -24400,14 +24384,15 @@ func TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled(t *testing.T) {
 	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
 	require.NoError(t, err)
 	existing.EndpointSlug = "echo-http"
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared("renamed")}}}, store.mcpConfig)
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared("renamed")}}}, store.mcpClients)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "an endpoint_slug-only edit must be reconciled, not skipped")
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	require.Equal(t, "echo-http", cfg.MCPConfig.ClientConfigs[0].EndpointSlug, "the stored slug still wins")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, "echo-http", cfg.boot.mcpClients[0].EndpointSlug, "the stored slug still wins")
 }
 
 // TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled: a config.json edit that only sets server_type_on_slug drifts the
@@ -24433,15 +24418,16 @@ func TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled(t *testing.T) {
 	require.NoError(t, err)
 	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
 	require.NoError(t, err)
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(schemas.MCPServerTypeOnSlugDisabled)}}}, store.mcpConfig)
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(schemas.MCPServerTypeOnSlugDisabled)}}}, store.mcpClients)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "a server_type_on_slug-only edit must be reconciled, not skipped")
 	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, store.mcpClientConfigUpdates[0].Config.ServerTypeOnSlug, "the stored row takes the override")
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, cfg.MCPConfig.ClientConfigs[0].ServerTypeOnSlug, "the runtime config carries the override")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, cfg.boot.mcpClients[0].ServerTypeOnSlug, "the runtime config carries the override")
 }
 
 // TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits: on the first boot after is_code_mode_client joined the hash,
@@ -24470,17 +24456,18 @@ func TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits(t *testing.T) {
 	existing.ID = "mcp-existing"
 	existing.ToolsToExecute = schemas.WhiteList{"echo"}
 	existing.ConfigHash = legacyHash
-	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	mock.mcpConfig = &schemas.MCPConfig{}
+	mock.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	cfg := &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+	cfg := &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpClients)
 
 	currentRow, err := mcpClientConfigToTable(declared(true))
 	require.NoError(t, err)
 	currentHash, err := configstore.GenerateMCPClientHash(currentRow)
 	require.NoError(t, err)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	assert.Equal(t, schemas.WhiteList{"echo"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the dashboard edit survives the upgrade")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, schemas.WhiteList{"echo"}, cfg.boot.mcpClients[0].ToolsToExecute, "the dashboard edit survives the upgrade")
 	assert.Empty(t, mock.mcpClientConfigUpdates, "no stored field is rewritten")
 	assert.Equal(t, [][3]string{{"mcp-existing", legacyHash, currentHash}}, mock.mcpClientConfigHashUpdates,
 		"only the stored hash moves, and only from the legacy value")
@@ -24490,63 +24477,28 @@ func TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits(t *testing.T) {
 	upgraded.ID = "mcp-existing"
 	upgraded.ToolsToExecute = schemas.WhiteList{"echo"}
 	upgraded.ConfigHash = currentHash
-	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{upgraded}}
+	mock.mcpClients = []*schemas.MCPClientConfig{upgraded}
 	mock.mcpClientConfigUpdates = nil
-	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(false)}}}, mock.mcpConfig)
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(false)}}}, mock.mcpClients)
 
 	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode off in config.json is a file edit")
 	assert.False(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
-	assert.Equal(t, schemas.WhiteList{"*"}, cfg.MCPConfig.ClientConfigs[0].ToolsToExecute, "the file version applies")
+	assert.Equal(t, schemas.WhiteList{"*"}, cfg.boot.mcpClients[0].ToolsToExecute, "the file version applies")
 
 	// A client stored without code mode hashes the same under both formulas, so config.json turning it on
 	// must apply rather than read as an old hash.
 	withoutCodeMode := declared(false)
 	withoutCodeMode.ID = "mcp-existing"
 	withoutCodeMode.ConfigHash = legacyHash
-	mock.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{withoutCodeMode}}
+	mock.mcpClients = []*schemas.MCPClientConfig{withoutCodeMode}
 	mock.mcpClientConfigUpdates = nil
-	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpConfig)
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpClients)
 
 	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode on in config.json is a file edit")
 	assert.True(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
-	assert.True(t, cfg.MCPConfig.ClientConfigs[0].IsCodeModeClient, "the file version applies")
-}
-
-// TestGetMCPServerTypesOnSlug: the gateway learns every enabled client with an override, and nothing else; a
-// per-user discovery client counts as code mode when either /mcp or its slug runs it in code mode.
-func TestGetMCPServerTypesOnSlug(t *testing.T) {
-	perUser := func(name string, codeMode bool, slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
-		return &schemas.MCPClientConfig{
-			ID: name + "-id", Name: name, AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserDiscovery: schemas.Ptr(true),
-			IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
-		}
-	}
-	cfg := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		{Name: "plain", IsCodeModeClient: true},
-		{Name: "slug_direct", IsCodeModeClient: true, ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled},
-		{Name: "slug_code", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
-		{Name: "off", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled, Disabled: true},
-		perUser("per_user_direct", false, schemas.MCPServerTypeOnSlugInherit),
-		perUser("per_user_slug_code", false, schemas.MCPServerTypeOnSlugEnabled),
-		perUser("per_user_code", true, schemas.MCPServerTypeOnSlugDisabled),
-	}}}
-
-	assert.Equal(t, map[string]MCPClientCodeModes{
-		"slug_direct":        {Global: true, OnSlug: false},
-		"slug_code":          {Global: false, OnSlug: true},
-		"per_user_slug_code": {Global: false, OnSlug: true},
-		"per_user_code":      {Global: true, OnSlug: false},
-	}, cfg.GetMCPServerTypesOnSlug(), "only enabled clients with an override are listed")
-
-	perUserClients := cfg.GetMCPPerUserDiscoveryClients()
-	assert.False(t, perUserClients["per_user_direct-id"].CodeMode)
-	assert.True(t, perUserClients["per_user_slug_code-id"].CodeMode, "code mode on its slug only still needs the code-mode placeholders")
-	assert.True(t, perUserClients["per_user_code-id"].CodeMode)
-
-	assert.Nil(t, (&Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "plain"}}}}).GetMCPServerTypesOnSlug(),
-		"no override anywhere leaves the gateway nothing to check")
+	assert.True(t, cfg.boot.mcpClients[0].IsCodeModeClient, "the file version applies")
 }
 
 // TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug: a config.json client with no endpoint_slug gets
@@ -24555,13 +24507,22 @@ func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 
-	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:             "my_web_client",
 			ConnectionType:   schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
 			ToolsToExecute:   tools,
 		}}}
+	}
+	// bySlug resolves an enabled boot client by its endpoint slug, as /mcp/<slug> does.
+	bySlug := func(cfg *Config, slug string) (name string, ok bool) {
+		for _, client := range cfg.boot.mcpClients {
+			if client != nil && client.EndpointSlug == slug && !client.Disabled {
+				return client.Name, true
+			}
+		}
+		return "", false
 	}
 
 	cases := []struct {
@@ -24576,14 +24537,14 @@ func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
-			_, _, ok := first.GetMCPClientBySlug("my-web-client")
+			_, ok := bySlug(first, "my-web-client")
 			require.True(t, ok, "first boot should serve the derived slug")
 
-			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
-			_, name, ok := second.GetMCPClientBySlug("my-web-client")
+			name, ok := bySlug(second, "my-web-client")
 			require.True(t, ok, "reload dropped the stored endpoint_slug from the in-memory client")
 			require.Equal(t, "my_web_client", name)
 		})
@@ -24634,8 +24595,8 @@ func TestPinMCPClientImmutableFields_ExposeLists(t *testing.T) {
 func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
-	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:             "docs_server",
 			ConnectionType:   schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
@@ -24643,28 +24604,28 @@ func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
 		}}}
 	}
 	store := createTestSQLiteConfigStore(t, createTempDir(t))
-	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
-	require.Len(t, first.MCPConfig.ClientConfigs, 1)
+	require.Len(t, first.boot.mcpClients, 1)
 
-	id := first.MCPConfig.ClientConfigs[0].ID
+	id := first.boot.mcpClients[0].ID
 	row, err := store.GetMCPClientByID(ctx, id)
 	require.NoError(t, err)
 	row.PromptsToExpose, row.ResourcesToExpose = schemas.WhiteList{}, schemas.WhiteList{"file:///handbook.md"}
 	require.NoError(t, store.UpdateMCPClientConfig(ctx, id, row))
 
-	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"web_search"})})
-	require.Len(t, second.MCPConfig.ClientConfigs, 1)
-	assert.Equal(t, schemas.WhiteList{}, second.MCPConfig.ClientConfigs[0].PromptsToExpose, "running config keeps expose-none")
-	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, second.MCPConfig.ClientConfigs[0].ResourcesToExpose)
+	require.Len(t, second.boot.mcpClients, 1)
+	assert.Equal(t, schemas.WhiteList{}, second.boot.mcpClients[0].PromptsToExpose, "running config keeps expose-none")
+	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, second.boot.mcpClients[0].ResourcesToExpose)
 	stored, err := store.GetMCPClientByID(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, schemas.WhiteList{}, stored.PromptsToExpose, "stored row keeps expose-none")
 	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, stored.ResourcesToExpose)
 }
 
-// staleMCPReadStore answers GetMCPConfig with what a node read before a peer's insert committed.
+// staleMCPReadStore answers GetMCPConfig with what an instance read before another instance's insert committed.
 type staleMCPReadStore struct {
 	configstore.ConfigStore
 	stale *schemas.MCPConfig
@@ -24674,14 +24635,19 @@ func (s *staleMCPReadStore) GetMCPConfig(context.Context) (*schemas.MCPConfig, e
 	return s.stale, nil
 }
 
+// GetMCPClientConfigs answers with no clients: the stale read came before the other instance's insert.
+func (s *staleMCPReadStore) GetMCPClientConfigs(context.Context) ([]*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestLoadMCPConfig_PeerStoredFileClientFirst: nodes booting together all find no row for a config.json
 // client without client_id. The one whose insert loses must run the client under the stored row's ID and
 // slug, or the dashboard shows it as errored there and reconnect answers "not found".
 func TestLoadMCPConfig_PeerStoredFileClientFirst(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
-	fileMCP := func() *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func() *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:             "docs_server",
 			ConnectionType:   schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
@@ -24700,16 +24666,16 @@ func TestLoadMCPConfig_PeerStoredFileClientFirst(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
-			peer := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			peer := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, peer, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
 			stored, err := store.GetMCPClientByName(ctx, "docs_server")
 			require.NoError(t, err)
 			require.NotNil(t, stored)
 
-			node := &Config{ConfigStore: &staleMCPReadStore{ConfigStore: store, stale: tc.stale}, ClientConfig: &configstore.ClientConfig{}}
+			node := &Config{ConfigStore: &staleMCPReadStore{ConfigStore: store, stale: tc.stale}, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, node, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
-			require.Len(t, node.MCPConfig.ClientConfigs, 1)
-			running := node.MCPConfig.ClientConfigs[0]
+			require.Len(t, node.boot.mcpClients, 1)
+			running := node.boot.mcpClients[0]
 			assert.Equal(t, stored.ClientID, running.ID, "the node must run the client under the stored ID")
 			assert.Equal(t, stored.EndpointSlug, running.EndpointSlug, "the node must serve the stored endpoint slug")
 		})
@@ -24737,8 +24703,8 @@ func TestMCPClientConfigToTable_RejectsInvalidExposeLists(t *testing.T) {
 func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
-	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:             "legacy_server",
 			ConnectionType:   schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
@@ -24755,21 +24721,21 @@ func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
-			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
-			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+			require.Len(t, first.boot.mcpClients, 1)
 
 			// The cap an admin sets for this server in the UI.
-			id := first.MCPConfig.ClientConfigs[0].ID
+			id := first.boot.mcpClients[0].ID
 			row, err := store.GetMCPClientByID(ctx, id)
 			require.NoError(t, err)
 			row.MaxProtocolVersion = "2025-06-18"
 			require.NoError(t, store.UpdateMCPClientConfig(ctx, id, row))
 
-			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
-			require.Len(t, second.MCPConfig.ClientConfigs, 1)
-			assert.Equal(t, "2025-06-18", second.MCPConfig.ClientConfigs[0].MaxProtocolVersion, "running config keeps the saved cap")
+			require.Len(t, second.boot.mcpClients, 1)
+			assert.Equal(t, "2025-06-18", second.boot.mcpClients[0].MaxProtocolVersion, "running config keeps the saved cap")
 			stored, err := store.GetMCPClientByID(ctx, id)
 			require.NoError(t, err)
 			assert.Equal(t, "2025-06-18", stored.MaxProtocolVersion, "stored row keeps the saved cap")
@@ -24785,8 +24751,8 @@ func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 
-	fileMCP := func(perUserDiscovery *bool) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func(perUserDiscovery *bool) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:              "notes",
 			ConnectionType:    schemas.MCPConnectionTypeHTTP,
 			ConnectionString:  schemas.NewSecretVar("http://localhost:3001/mcp"),
@@ -24813,15 +24779,15 @@ func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.Ptr(true))})
-			require.Len(t, first.MCPConfig.ClientConfigs, 1)
-			require.True(t, on(first.MCPConfig.ClientConfigs[0].PerUserDiscovery), "fixture check: the first boot turns the flag on")
+			require.Len(t, first.boot.mcpClients, 1)
+			require.True(t, on(first.boot.mcpClients[0].PerUserDiscovery), "fixture check: the first boot turns the flag on")
 
-			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.second)})
-			require.Len(t, second.MCPConfig.ClientConfigs, 1)
-			runtime := second.MCPConfig.ClientConfigs[0]
+			require.Len(t, second.boot.mcpClients, 1)
+			runtime := second.boot.mcpClients[0]
 			assert.Equal(t, tc.want, on(runtime.PerUserDiscovery), "runtime config")
 			stored, err := store.GetMCPClientConfigByID(ctx, runtime.ID)
 			require.NoError(t, err)
@@ -24851,20 +24817,20 @@ func TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch(t *testing.T) {
 	}
 	store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		client("id-alpha", "alpha", "http://alpha.example/mcp"),
 		client("id-beta", "beta", "http://beta.example/mcp"),
 	}}})
-	require.Len(t, first.MCPConfig.ClientConfigs, 2)
+	require.Len(t, first.boot.mcpClients, 2)
 
-	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 		client("id-beta", "alpha", "http://alpha.example/mcp"),
 	}}})
 
-	require.Len(t, second.MCPConfig.ClientConfigs, 1)
-	runtime := second.MCPConfig.ClientConfigs[0]
+	require.Len(t, second.boot.mcpClients, 1)
+	runtime := second.boot.mcpClients[0]
 	assert.Equal(t, "id-alpha", runtime.ID, "the runtime client keeps the ID of the stored client it was matched to by name")
 	assert.Equal(t, "http://alpha.example/mcp", runtime.ConnectionString.GetValue())
 	_, err := store.GetMCPClientConfigByID(ctx, "id-alpha")
@@ -24899,8 +24865,8 @@ func TestMCPClientStartsPendingVerification(t *testing.T) {
 func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
-	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 			{Name: "signin", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"), AuthType: schemas.MCPAuthTypeOauth, ToolsToExecute: tools},
 			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: tools},
 			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: tools},
@@ -24908,19 +24874,19 @@ func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
 	}
 	pending := func(cfg *Config) map[string]bool {
 		got := map[string]bool{}
-		for _, c := range cfg.MCPConfig.ClientConfigs {
+		for _, c := range cfg.boot.mcpClients {
 			got[c.Name] = c.PendingVerification
 		}
 		return got
 	}
 	store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
 	assert.Equal(t, map[string]bool{"signin": true, "notes": true, "wiki": false}, pending(first))
 
 	var notesID string
-	for _, c := range first.MCPConfig.ClientConfigs {
+	for _, c := range first.boot.mcpClients {
 		if c.Name == "notes" {
 			notesID = c.ID
 		}
@@ -24929,7 +24895,7 @@ func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
 	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
 
-	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"})})
 	assert.Equal(t, map[string]bool{"signin": true, "notes": false, "wiki": false}, pending(second), "the stored record wins over the edited file")
 	stored, err := store.GetMCPClientConfigByID(ctx, notesID)
@@ -24946,15 +24912,15 @@ func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
 func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
-	fileMCP := func(perUser *bool) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	fileMCP := func(perUser *bool) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
 			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
 			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
 		}}
 	}
 	runtimeClient := func(t *testing.T, cfg *Config, name string) *schemas.MCPClientConfig {
 		t.Helper()
-		for _, c := range cfg.MCPConfig.ClientConfigs {
+		for _, c := range cfg.boot.mcpClients {
 			if c.Name == name {
 				return c
 			}
@@ -24964,7 +24930,7 @@ func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
 	}
 	store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(nil)})
 	notesID := runtimeClient(t, first, "notes").ID
 	// Verified as verify-headers does it, keeping the admin's sample headers.
@@ -24973,7 +24939,7 @@ func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
 	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
 	require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, &tables.TableMCPPerUserHeaderCredential{MCPClientID: notesID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
 
-	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.Ptr(true))})
 	notes := runtimeClient(t, second, "notes")
 	assert.Equal(t, schemas.Ptr(true), notes.PerUserDiscovery)
@@ -24989,7 +24955,7 @@ func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
 	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, &tables.TableMCPPerUserDiscovery{
 		MCPClientID: notesID, AuthMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice"), Tools: tools, DiscoveryHash: "hash-alice", DiscoveredAt: time.Now(),
 	}))
-	third := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	third := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 	loadMCPConfig(ctx, third, &ConfigData{MCP: fileMCP(nil), SourceOfTruth: SourceOfTruthConfigJSON})
 	notes = runtimeClient(t, third, "notes")
 	assert.Equal(t, schemas.Ptr(false), notes.PerUserDiscovery, "omitted under source_of_truth config.json: off")
@@ -25010,26 +24976,26 @@ func TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType(t *testing.T) 
 	ctx := context.Background()
 	for _, sot := range []string{SourceOfTruthSplit, SourceOfTruthConfigJSON} {
 		t.Run(sot, func(t *testing.T) {
-			wiki := func(authType schemas.MCPAuthType, perUser *bool) *schemas.MCPConfig {
+			wiki := func(authType schemas.MCPAuthType, perUser *bool) *MCPFileConfig {
 				client := &schemas.MCPClientConfig{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), AuthType: authType, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser}
 				if authType == schemas.MCPAuthTypePerUserHeaders {
 					client.PerUserHeaderKeys = []string{"x-api-key"}
 				}
-				return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}
+				return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}
 			}
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypeHeaders, nil)})
-			require.Len(t, first.MCPConfig.ClientConfigs, 1)
-			wikiID := first.MCPConfig.ClientConfigs[0].ID
+			require.Len(t, first.boot.mcpClients, 1)
+			wikiID := first.boot.mcpClients[0].ID
 			tools := map[string]schemas.ChatTool{"wiki-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "wiki-search"}}}
 			require.NoError(t, store.UpdateMCPClientDiscovery(ctx, wikiID, &schemas.MCPDiscovery{Tools: tools}))
 
-			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypePerUserHeaders, schemas.Ptr(true))})
-			require.Len(t, second.MCPConfig.ClientConfigs, 1)
-			runtime := second.MCPConfig.ClientConfigs[0]
+			require.Len(t, second.boot.mcpClients, 1)
+			runtime := second.boot.mcpClients[0]
 			assert.Equal(t, schemas.MCPAuthTypeHeaders, runtime.AuthType)
 			assert.NotEqual(t, schemas.Ptr(true), runtime.PerUserDiscovery, "the runtime is handed the stored client")
 			stored, err := store.GetMCPClientConfigByID(ctx, wikiID)
@@ -25864,15 +25830,16 @@ func TestValidateCustomProviderUpdate_ConvertsReservedName(t *testing.T) {
 // time it would fail open and the provider would silently serve requests without the
 // web search tool the operator configured.
 func TestValidateInjectedTools(t *testing.T) {
-	clients := map[string]string{"id-1": "tavily", "id-2": "fetcher"}
+	clients := func(name string) bool { return name == "tavily" || name == "fetcher" }
+	noClients := func(string) bool { return false }
 	row := func(name, client, tool string) schemas.InjectedTool {
 		return schemas.InjectedTool{Name: name, MCPClientName: client, ToolName: tool}
 	}
 	search := row("web_search", "tavily", "search")
 	fetch := row("read_page", "fetcher", "fetch")
 
-	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools list is not a misconfiguration")
-	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{}, nil), "an empty list injects nothing")
+	assert.NoError(t, ValidateInjectedTools(nil, noClients), "no injected_tools list is not a misconfiguration")
+	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{}, noClients), "an empty list injects nothing")
 	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{search, fetch}, clients))
 	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{row("Fetch-Page_2", "fetcher", "fetch")}, clients), "letters, digits, _ and - are allowed")
 
@@ -25896,7 +25863,7 @@ func TestValidateInjectedTools(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.reason, name)
 		}
 	}
-	assert.Error(t, ValidateInjectedTools([]schemas.InjectedTool{search}, nil), "no MCP clients configured at all")
+	assert.Error(t, ValidateInjectedTools([]schemas.InjectedTool{search}, noClients), "no MCP clients configured at all")
 }
 
 // TestUnresolvedInjectedTools pins the load-time check for config.json. The file path
@@ -25914,13 +25881,15 @@ func TestUnresolvedInjectedTools(t *testing.T) {
 		schemas.Anthropic: ref("exa"),
 		schemas.Gemini:    {},
 	}
+	tavily := func(name string) bool { return name == "tavily" }
+	noClients := func(string) bool { return false }
 	assert.Equal(t, []string{`provider anthropic: injected tools validation failed: injected_tools[0] (web_search) references unknown MCP client "exa"`},
-		unresolvedInjectedTools(providers, map[string]string{"id-1": "tavily"}))
-	assert.Len(t, unresolvedInjectedTools(providers, nil), 2, "with no MCP clients every reference is unresolved")
-	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, nil))
+		unresolvedInjectedTools(providers, tavily))
+	assert.Len(t, unresolvedInjectedTools(providers, noClients), 2, "with no MCP clients every reference is unresolved")
+	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, noClients))
 
 	dup := configstore.ProviderConfig{InjectedTools: append(ref("tavily").InjectedTools, schemas.InjectedTool{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"})}
-	assert.Len(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dup}, map[string]string{"id-1": "tavily"}), 1,
+	assert.Len(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dup}, tavily), 1,
 		"config.json cannot express unique names, so a repeated one is a boot warning")
 }
 
@@ -27524,11 +27493,13 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 }
 
 // newOpenAPIUpdateTestConfig builds a Config backed by a real Bifrost engine
-// with one registered openapi client. The engine's Account reads a loaded live
-// store, as the server's does. Its server factory succeeds on the first
+// with one registered openapi client, stored in an SQLite config store and
+// loaded into the live store. The engine's Account reads a loaded live store,
+// as the server's does. Its server factory succeeds on the first
 // connect and fails every rebuild after it when failRebuilds is set.
 func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *schemas.MCPClientConfig) {
 	t.Helper()
+	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(providerStore(t, nil)), Logger: logger})
 	require.NoError(t, err)
@@ -27545,26 +27516,41 @@ func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *sche
 		ID: "openapi-1", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 		ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "spec-a"},
 	}
+	cfg := providerStore(t, nil)
+	require.NoError(t, cfg.ConfigStore.CreateMCPClientConfig(ctx, stored))
+	require.NoError(t, cfg.refreshMCPClient(ctx, stored.ID))
 	runtime := *stored
 	runtime.OpenAPIConfig = stored.OpenAPIConfig.Clone()
-	require.NoError(t, client.AddMCPClient(context.Background(), &runtime))
-	return &Config{client: client, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}}, stored
+	require.NoError(t, client.AddMCPClient(ctx, &runtime))
+	cfg.client = client
+	return cfg, stored
+}
+
+// storeMCPClientEdit writes client to its stored row the way the update handler does before it
+// calls UpdateMCPClient.
+func storeMCPClientEdit(t *testing.T, cfg *Config, client *schemas.MCPClientConfig) {
+	t.Helper()
+	row, err := mcpClientConfigToTable(client)
+	require.NoError(t, err)
+	require.NoError(t, cfg.ConfigStore.UpdateMCPClientConfig(context.Background(), client.ID, &row))
 }
 
 // TestUpdateMCPClient_SharedConnectFailureStillAppliesFields: when the runtime
-// saved an update but could not reconnect with it, the management copy takes
-// the update too, so it agrees with the database and the runtime instead of
-// serving the old document and merging later edits against it.
+// saved an update but could not reconnect with it, the management copy (the
+// live store) takes the update too, so it agrees with the database and the
+// runtime instead of serving the old document and merging later edits against it.
 func TestUpdateMCPClient_SharedConnectFailureStillAppliesFields(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, true)
 	update := *stored
 	update.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: "spec-b"}
 	update.ToolsToExecute = schemas.WhiteList{"listPets"}
+	storeMCPClientEdit(t, cfg, &update)
 	err := cfg.UpdateMCPClient(context.Background(), stored.ID, &update)
 	require.ErrorIs(t, err, mcp.ErrMCPSharedConnectFailedAfterUpdate)
-	got := cfg.MCPConfig.ClientConfigs[0]
-	assert.Equal(t, "spec-b", got.OpenAPIConfig.Spec)
-	assert.Equal(t, schemas.WhiteList{"listPets"}, got.ToolsToExecute)
+	got, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.Equal(t, "spec-b", got.Config.OpenAPIConfig.Spec)
+	assert.Equal(t, schemas.WhiteList{"listPets"}, got.Config.ToolsToExecute)
 }
 
 // TestUpdateMCPClient_RequirePublicTargetOnlyTightens: the management copy can
@@ -27573,12 +27559,18 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
 	update := *stored
 	update.RequirePublicTarget = true
+	storeMCPClientEdit(t, cfg, &update)
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
-	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+	got, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.True(t, got.Config.RequirePublicTarget)
 
 	update.RequirePublicTarget = false
+	storeMCPClientEdit(t, cfg, &update)
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
-	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+	got, ok = cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.True(t, got.Config.RequirePublicTarget)
 }
 
 // TestRemoveMCPClient_DropsItsCatalogPricing: the pricing catalog is keyed by
@@ -27587,6 +27579,8 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
 	stored.ToolPricing = map[string]float64{"listPets": 0.25}
+	storeMCPClientEdit(t, cfg, stored)
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), stored.ID))
 	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
 		"petstore/listPets": {Server: "petstore", ToolName: "listPets", CostPerExecution: 0.25},
 		"other/listPets":    {Server: "other", ToolName: "listPets", CostPerExecution: 0.5},
@@ -27594,6 +27588,8 @@ func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
 	require.NoError(t, err)
 	cfg.MCPCatalog = catalog
 
+	// The caller deletes the row before it removes the client.
+	require.NoError(t, cfg.ConfigStore.DeleteMCPClientConfig(context.Background(), stored.ID))
 	require.NoError(t, cfg.RemoveMCPClient(context.Background(), stored.ID))
 	_, priced := catalog.GetPricingData("petstore", "listPets")
 	assert.False(t, priced, "the deleted client's price is gone")
@@ -27607,45 +27603,17 @@ func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
 func TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
 	stored.PerUserDiscovery = schemas.Ptr(false)
+	storeMCPClientEdit(t, cfg, stored)
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), stored.ID))
 	update := *stored
 	update.PerUserDiscovery = nil
+	storeMCPClientEdit(t, cfg, &update)
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
-	got := cfg.MCPConfig.ClientConfigs[0].PerUserDiscovery
+	live, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	got := live.Config.PerUserDiscovery
 	require.NotNil(t, got)
 	assert.False(t, *got)
-}
-
-// TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
-// under the MCP config lock, so a concurrent update that replaces the block
-// cannot race the read (run with -race).
-func TestGetMCPClientOpenAPISpec_ReadsUnderLock(t *testing.T) {
-	c := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
-		ID: "oa", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "v0"},
-	}}}}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 200; i++ {
-			c.muMCP.Lock()
-			c.MCPConfig.ClientConfigs[0].OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: fmt.Sprintf("v%d", i)}
-			c.muMCP.Unlock()
-		}
-	}()
-	for i := 0; i < 200; i++ {
-		spec, isOpenAPI, found := c.GetMCPClientOpenAPISpec("oa")
-		require.True(t, found)
-		require.True(t, isOpenAPI)
-		require.NotEmpty(t, spec)
-	}
-	<-done
-	_, isOpenAPI, found := c.GetMCPClientOpenAPISpec("missing")
-	assert.False(t, found)
-	assert.False(t, isOpenAPI)
-
-	// A nil entry in the client list is skipped, not dereferenced.
-	c.MCPConfig.ClientConfigs = append([]*schemas.MCPClientConfig{nil}, c.MCPConfig.ClientConfigs...)
-	require.NotPanics(t, func() { _, _, found = c.GetMCPClientOpenAPISpec("oa") })
-	assert.True(t, found)
 }
 
 // TestLoadClientConfigExplicitEmptySkillsURL disables a stored marketplace URL while omission preserves dashboard edits.

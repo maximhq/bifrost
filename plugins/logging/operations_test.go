@@ -7210,6 +7210,16 @@ func (a *streamAccount) GetConfigForProvider(provider schemas.ModelProvider) (*s
 	return &config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a *streamAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a *streamAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
 type failedUsageRecorder struct {
 	usage chan *schemas.BifrostLLMUsage

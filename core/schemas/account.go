@@ -1570,4 +1570,13 @@ type Account interface {
 	// This includes network settings, authentication details, and other provider-specific
 	// configurations.
 	GetConfigForProvider(providerKey ModelProvider) (*ProviderConfig, error)
+
+	// GetConfiguredMCPClients returns the IDs of the MCP clients configured in the account.
+	// Bifrost dials them when ConnectConfiguredMCPClients runs.
+	GetConfiguredMCPClients() ([]string, error)
+
+	// GetConfigForMCPClient returns the configuration of the MCP client with this ID. The value
+	// is read-only: Bifrost copies it before keeping it, so an implementation may return the
+	// value it stores.
+	GetConfigForMCPClient(clientID string) (*MCPClientConfig, error)
 }
