@@ -311,14 +311,6 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasRoutersAccess,
 					},
 					{
-						id: "models.routers",
-						title: t("nav.routers"),
-						url: "/workspace/model-routers",
-						icon: Split,
-						// The model router APIs are gated on Governance.
-						hasAccess: hasGovernanceLegacyAccess,
-					},
-					{
 						id: "models.circuit-breaker",
 						title: t("nav.circuitBreaker"),
 						url: "/workspace/circuit-breaker",
