@@ -32,14 +32,15 @@ func geminiModelArchitecture(modelName string, methods []string) *schemas.Archit
 	switch {
 	case slices.Contains(tokens, "tts"):
 		inputs, outputs = []string{"text"}, []string{"audio"}
+	case slices.Contains(tokens, "transcribe"):
+		// gemini-3.5-transcribe and its Live variant take audio and return text.
+		inputs, outputs = []string{"audio"}, []string{"text"}
 	case slices.Contains(tokens, "live") && slices.Contains(tokens, "translate"):
 		inputs, outputs = []string{"audio"}, []string{"audio", "text"}
 	case strings.Contains(name, "native-audio"):
 		inputs, outputs = []string{"audio", "text", "video"}, []string{"audio", "text"}
 	case slices.Contains(tokens, "live"):
 		inputs, outputs = []string{"audio", "image", "text"}, []string{"audio", "text"}
-	case slices.Contains(tokens, "transcribe"):
-		inputs, outputs = []string{"audio"}, []string{"text"}
 	case schemas.IsImagenModel(name):
 		inputs, outputs = []string{"text"}, []string{"image"}
 	case slices.Contains(tokens, "veo"):
@@ -51,9 +52,9 @@ func geminiModelArchitecture(modelName string, methods []string) *schemas.Archit
 	case slices.Contains(tokens, "lyria"):
 		inputs, outputs = []string{"image", "text"}, []string{"audio", "text"}
 	case slices.Contains(tokens, "image") || strings.Contains(name, "nano-banana"):
-		// Gemini 2.x image models and Gemini 3 Pro Image take images and text; the
-		// later image models also take video and PDF.
-		if strings.HasPrefix(name, "gemini-2") || strings.HasPrefix(name, "gemini-3-pro-image") {
+		// Gemini 2.x image models and Gemini 3 Pro Image (Nano Banana Pro) take images
+		// and text; the later image models also take video and PDF.
+		if strings.HasPrefix(name, "gemini-2") || strings.HasPrefix(name, "gemini-3-pro-image") || strings.HasPrefix(name, "nano-banana-pro") {
 			inputs = []string{"image", "text"}
 		} else {
 			inputs = []string{"file", "image", "text", "video"}

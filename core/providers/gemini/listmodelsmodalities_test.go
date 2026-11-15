@@ -127,6 +127,7 @@ func TestGeminiModelArchitecture_DocumentedFamilies(t *testing.T) {
 		{"models/gemini-3.5-live-translate-preview", []string{"bidiGenerateContent"}, []string{"audio"}, []string{"audio", "text"}},
 		{"models/gemini-2.5-flash-native-audio-preview-12-2025", []string{"bidiGenerateContent"}, []string{"audio", "text", "video"}, []string{"audio", "text"}},
 		{"models/gemini-3.5-transcribe", generate, []string{"audio"}, []string{"text"}},
+		{"models/gemini-3.5-transcribe-live", []string{"bidiGenerateContent"}, []string{"audio"}, []string{"text"}},
 		{"models/imagen-4.0-ultra-generate-001", []string{"predict"}, []string{"text"}, []string{"image"}},
 		{"models/veo-3.1-generate-preview", []string{"predictLongRunning"}, []string{"image", "text"}, []string{"video"}},
 		{"models/gemini-omni-flash", generate, []string{"image", "text", "video"}, []string{"text", "video"}},
@@ -135,6 +136,8 @@ func TestGeminiModelArchitecture_DocumentedFamilies(t *testing.T) {
 		{"models/gemini-3-pro-image", generate, []string{"image", "text"}, []string{"image", "text"}},
 		{"models/gemini-3.1-flash-image", generate, []string{"file", "image", "text", "video"}, []string{"image", "text"}},
 		{"models/gemini-nano-banana-2.1", generate, []string{"file", "image", "text", "video"}, []string{"image", "text"}},
+		{"models/nano-banana-pro-preview", generate, []string{"image", "text"}, []string{"image", "text"}},
+		{"models/gemini-omni-1.2-flash", generate, []string{"image", "text", "video"}, []string{"text", "video"}},
 		{"models/gemini-embedding-2", []string{"embedContent"}, []string{"audio", "file", "image", "text", "video"}, []string{"embeddings"}},
 		{"models/text-embedding-004", []string{"embedContent"}, []string{"text"}, []string{"embeddings"}},
 	}
@@ -147,7 +150,7 @@ func TestGeminiModelArchitecture_DocumentedFamilies(t *testing.T) {
 		})
 	}
 
-	for _, chat := range []string{"models/gemini-3.8-flash", "models/gemini-4-carbon", "models/gemini-3.1-flash-lite"} {
+	for _, chat := range []string{"models/gemini-3.8-flash", "models/gemini-4-carbon", "models/gemini-3.1-flash-lite", "models/gemma-4-31b-it", "models/gemini-robotics-er-2-preview", "models/deep-research-preview-04-2026", "models/gemini-decision-1"} {
 		assert.Nil(t, geminiModelArchitecture(chat, generate), chat)
 	}
 }
