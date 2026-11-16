@@ -215,6 +215,11 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 		sendMCPRefusal(ctx, refusal)
 		return
 	}
+	if refusal := applyToolNamesHeader(ctx, bifrostCtx); refusal != nil {
+		cancel()
+		sendMCPRefusal(ctx, refusal)
+		return
+	}
 
 	req := &server.HTTPRequest{
 		Method:  string(ctx.Method()),
@@ -646,7 +651,8 @@ func derefOr(value *string, fallback string) string {
 // lists the caller sent (x-bf-mcp-include-clients, x-bf-mcp-include-tools) and the tool list the
 // request was admitted with, which admit stamps on the same key. A per-caller placeholder becomes
 // the caller's own tool, with its own description and schemas, or is left out. The hidden refusal
-// tools for server-given names are never listed. Then the MCP Apps rules (applyAppTools). It edits
+// tools for server-given names are never listed. Then the MCP Apps rules (applyAppTools), and last,
+// for a slug request that asked for them, the server-given names (listServerToolNames). It edits
 // the page mcp-go built, so the server must not paginate tools/list.
 func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
 	if result == nil {
@@ -658,6 +664,7 @@ func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.
 	if !narrowed {
 		dropRefusalTools(index, result) // a narrowed list keeps only Bifrost's own names
 	}
+	defer listServerToolNames(ctx, index, result)
 	if !narrowed && perCaller == nil && !index.hasAppTools() {
 		return
 	}

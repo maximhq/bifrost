@@ -50,6 +50,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPToolUIResourceURI:    {},
 	BifrostContextKeyMCPToolAppOnly:          {},
 	BifrostContextKeyMCPGatewayClient:        {},
+	BifrostContextKeyMCPServerToolNames:      {},
 	BifrostContextKeyMCPToolListing:          {},
 	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyInjectedToolsExecuted:   {},

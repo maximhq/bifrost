@@ -294,6 +294,33 @@ http://your-bifrost-gateway/mcp
 
 Include any required Virtual Key authentication headers if governance is enabled. If Bifrost is served under a path prefix (`server.base_path`), the prefix comes first, for example `https://example.com/bifrost/mcp`; the dashboard's usage guide and the virtual MCP endpoint copy buttons already include it.
 
+#### Tool names on a server's own endpoint
+
+Bifrost names every tool `<client>-<tool>`. Some MCP clients already namespace tools by the name you gave the server entry: Claude Code calls a tool `mcp__<entry>__<tool>`, so an entry named `docs` pointing at `/mcp/docs` shows `mcp__docs__docs-search`. On `/mcp/<slug>` for a single MCP client, send `x-bf-mcp-tool-names: server` to list that client's tools by the names their own server gave them (`search`, shown as `mcp__docs__search`):
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "type": "http",
+      "url": "http://your-bifrost-gateway/mcp/docs",
+      "headers": { "x-bf-mcp-tool-names": "server" }
+    }
+  }
+}
+```
+
+| Value | Tools listed as |
+|-------|-----------------|
+| `prefixed` (default) | `<client>-<tool>` |
+| `server` | the server's own tool name |
+
+- `tools/call` accepts either name on the slug, with or without the header.
+- A name that is also another tool's full name (a tool the server itself named `other-search`, while client `other` has `search`) keeps its full name, so every listed name is callable.
+- Plugins, logs and `tools_to_execute` keep using `<client>-<tool>`.
+- Prompts keep their prefixed names.
+- `server` on `/mcp` or on a Virtual MCP's slug is refused with 400, since tools of several servers can share a name there.
+
 ---
 
 ### Virtual Key Authentication
