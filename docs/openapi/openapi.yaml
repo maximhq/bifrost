@@ -797,6 +797,8 @@ paths:
     $ref: "./paths/management/session.yaml#/login"
   /api/session/logout:
     $ref: "./paths/management/session.yaml#/logout"
+  /api/session/me:
+    $ref: "./paths/management/session.yaml#/session-me"
   /api/session/is-auth-enabled:
     $ref: "./paths/management/session.yaml#/is-auth-enabled"
   /api/session/ws-ticket:
