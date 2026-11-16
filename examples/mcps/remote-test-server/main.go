@@ -169,6 +169,25 @@ func newMCPServer(instructions string) *server.MCPServer {
 		return mcp.NewToolResultText("schema parity fixture"), nil
 	})
 
+	// The schema-object and absent variants prove preservation of all three
+	// provider-visible additionalProperties states, not just object closure.
+	objectSchemaTool := mcp.NewToolWithRawSchema(
+		"object_schema_probe",
+		"Read-only object-valued additionalProperties parity probe",
+		json.RawMessage(`{"type":"object","properties":{"probe":{"type":"string"}},"required":["probe"],"additionalProperties":{"type":"string"}}`),
+	)
+	s.AddTool(objectSchemaTool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("schema parity fixture"), nil
+	})
+	absentSchemaTool := mcp.NewToolWithRawSchema(
+		"absent_schema_probe",
+		"Read-only undeclared additionalProperties parity probe",
+		json.RawMessage(`{"type":"object","properties":{"probe":{"type":"string"}},"required":["probe"]}`),
+	)
+	s.AddTool(absentSchemaTool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("schema parity fixture"), nil
+	})
+
 	s.AddTool(mcp.NewTool(
 		"echo",
 		mcp.WithDescription("Echo back the input message"),
