@@ -51,6 +51,8 @@
 		"publishedBy": "Veröffentlicht von <code0>{{host}}</code0>",
 		"localhostWarning": "Diese Anwendung kehrt nur zu deinem eigenen Computer zurück, daher kann ihr Name nicht überprüft werden. Jede lokal laufende App könnte ihn verwenden.",
 		"deviceSignInConfirm": "Fahre nur fort, wenn du diese Anmeldung selbst gestartet hast und der eingegebene Code mit dem in deinem Terminal übereinstimmt.",
+		"deviceCodeLabel": "Code aus deinem Terminal",
+		"deviceCodeEnter": "Gib den Code ein, der in deinem Terminal angezeigt wird",
 		"denyButton": "Das war ich nicht - ablehnen",
 		"signInRedirectBody": "Diese Autorisierung erfordert ein angemeldetes Bifrost-Konto. Du wirst zur Anmeldung weitergeleitet, danach kehrst du direkt hierher zurück.",
 		"signInToBifrost": "Bei Bifrost anmelden"

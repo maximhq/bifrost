@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
+import { DefaultCoreConfig } from '../../../../ui/lib/types/coreConfigDefaults'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 // The gateway's configuration is mocked so the shared test gateway is never
@@ -88,6 +88,10 @@ test.describe('Claude Code gateway settings', () => {
       drop_attributes: ['prompt', 'tool_input'],
     })
 
+    // The first save's toast sits over the Save button; wait for it to show, then close, before saving again.
+    const savedToast = page.getByText('Claude Code settings updated successfully.')
+    await expect(savedToast).toBeVisible()
+    await expect(savedToast).toHaveCount(0, { timeout: 15_000 })
     await claudeCodeGatewayPage.telemetryHeaderValueInput.fill('env.OTEL_COLLECTOR_TOKEN')
     submitted = page.waitForRequest(r => new URL(r.url()).pathname === '/api/config' && r.method() === 'PUT')
     await claudeCodeGatewayPage.saveBtn.click()
@@ -252,5 +256,68 @@ test.describe('Claude Code device sign-in page', () => {
     await claudeCodeGatewayPage.gotoDevicePage('?denied=1')
     await expect(claudeCodeGatewayPage.deviceDenied).toContainText('Sign-in denied')
     await expect(claudeCodeGatewayPage.deviceApproved).toHaveCount(0)
+  })
+})
+
+// A device sign-in's consent page, mocked: the flow has no redirect_uri, and the PUT body is
+// what the page sends to approve it.
+const mockDeviceConsent = async (page: Page, submitted: Array<Record<string, unknown>>) => {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/oauth2/consent/flows/flow-device') {
+      if (route.request().method() === 'PUT') {
+        submitted.push(route.request().postDataJSON())
+        await route.fulfill({ json: { redirect_url: new URL('/oauth/device?approved=1', route.request().url()).toString() } })
+        return
+      }
+      await route.fulfill({ json: {
+        redirect_uri: '', redirect_host: '', client_name: 'Claude Code', available_modes: ['vk'],
+        expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      } })
+    } else if (path === '/api/session/is-auth-enabled') {
+      await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+    } else if (path === '/api/version') {
+      await route.fulfill({ json: '1.0.0' })
+    } else {
+      await route.fulfill({ json: {} })
+    }
+  })
+}
+
+test.describe('Claude Code device sign-in consent', () => {
+  test.use({ skipAutoLogin: true })
+
+  test('shows the code typed on the device page and sends it to approve', async ({ page, claudeCodeGatewayPage }, testInfo) => {
+    const submitted: Array<Record<string, unknown>> = []
+    await mockDeviceConsent(page, submitted)
+    await page.route('**/oauth2/device/verify', route =>
+      route.fulfill({ json: { consent_url: new URL('/oauth/consent?flow=flow-device', route.request().url()).toString() } }))
+    await claudeCodeGatewayPage.gotoDevicePage('?user_code=bcdfghjk')
+    await claudeCodeGatewayPage.deviceContinueBtn.click()
+
+    await expect(claudeCodeGatewayPage.consentDeviceCode).toHaveText('BCDF-GHJK')
+    await expect(claudeCodeGatewayPage.consentDeviceCodeInput).toHaveCount(0)
+    await page.screenshot({ path: testInfo.outputPath('consent-code-shown.png') })
+    await claudeCodeGatewayPage.consentVKInput.fill('sk-bf-test')
+    await claudeCodeGatewayPage.consentConnectVKBtn.click()
+    await expect(page).toHaveURL(/\/oauth\/device\?approved=1$/)
+    expect(submitted).toEqual([{ mode: 'vk', value: 'sk-bf-test', user_code: 'BCDF-GHJK' }])
+  })
+
+  test('asks for the code when the consent link is opened anywhere else', async ({ page, claudeCodeGatewayPage }, testInfo) => {
+    const submitted: Array<Record<string, unknown>> = []
+    await mockDeviceConsent(page, submitted)
+    await claudeCodeGatewayPage.gotoConsentPage('flow-device')
+
+    await expect(claudeCodeGatewayPage.consentDeviceCodeInput).toBeVisible()
+    await claudeCodeGatewayPage.consentVKInput.fill('sk-bf-test')
+    await expect(claudeCodeGatewayPage.consentConnectVKBtn).toBeDisabled()
+    await page.screenshot({ path: testInfo.outputPath('consent-code-asked.png') })
+
+    await claudeCodeGatewayPage.consentDeviceCodeInput.fill('bcdfghjk')
+    await expect(claudeCodeGatewayPage.consentDeviceCodeInput).toHaveValue('BCDF-GHJK')
+    await claudeCodeGatewayPage.consentConnectVKBtn.click()
+    await expect(page).toHaveURL(/\/oauth\/device\?approved=1$/)
+    expect(submitted).toEqual([{ mode: 'vk', value: 'sk-bf-test', user_code: 'BCDF-GHJK' }])
   })
 })

@@ -181,6 +181,8 @@ type consentFlowSubmitRequest struct {
 	Mode  consentFlowMode `json:"mode"`           // "vk" | "session" | "user"
 	Value string          `json:"value"`          // VK plaintext value for mode=vk; empty for session/user
 	Deny  bool            `json:"deny,omitempty"` // refuse the sign-in instead of approving it (device sign-ins only)
+	// UserCode is the code shown in the terminal; approving a device sign-in needs it.
+	UserCode string `json:"user_code,omitempty"`
 }
 
 // consentFlowSubmitResponse is returned after successful consent. The frontend
@@ -212,6 +214,13 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	}
 	if body.Deny {
 		h.denyFlow(ctx, req)
+		return
+	}
+	// The consent link alone must not approve a device sign-in: whoever typed the code gets
+	// it and could send it on to someone else to click. The code from the terminal proves
+	// the person approving is the one signing in.
+	if req.DeviceCodeHash != nil && !deviceUserCodeMatches(req, body.UserCode) {
+		SendError(ctx, fasthttp.StatusBadRequest, deviceUserCodeMismatchMessage)
 		return
 	}
 
@@ -426,6 +435,17 @@ func (h *OAuth2ConsentHandler) availableModes(ctx *fasthttp.RequestCtx) []consen
 // (500 — crypto or DB error). resolveIdentity mixes both kinds; without the
 // status every failure would be reported as a 400, mislabeling a broken server
 // as a bad request and leaking the cause to the client.
+const deviceUserCodeMismatchMessage = "enter the code shown in your terminal to approve this sign-in"
+
+// deviceUserCodeMatches reports whether code is the user code this device sign-in was started with.
+func deviceUserCodeMatches(req *configtables.TableOAuth2AuthorizeRequest, code string) bool {
+	if req.UserCodeHash == nil {
+		return false
+	}
+	got := hashSHA256Hex(normalizeGatewayUserCode(code))
+	return subtle.ConstantTimeCompare([]byte(got), []byte(*req.UserCodeHash)) == 1
+}
+
 // denyFlow refuses a device sign-in (a client gateway's /login) from the consent
 // page: the request moves to revoked, so the device's next poll is answered
 // access_denied (RFC 8628 §3.5) instead of polling until the code expires, and

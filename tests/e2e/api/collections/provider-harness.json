@@ -338028,7 +338028,7 @@
           ]
         },
         {
-          "name": "[EXPECT-200] anthropic claude-code-gateway consent with the harness virtual key - #7963",
+          "name": "[EXPECT-400] anthropic claude-code-gateway consent link without the terminal code is refused - #7963",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
@@ -338052,6 +338052,48 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"mode\": \"vk\",\n  \"value\": \"sk-bf-test-key\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the consent link alone cannot approve a device sign-in', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('enter the code shown in your terminal');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-code-gateway consent with the harness virtual key - #7963",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{cc_gateway_consent_token}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{cc_gateway_flow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"vk\",\n  \"value\": \"sk-bf-test-key\",\n  \"user_code\": \"{{cc_gateway_user_code}}\"\n}"
             }
           },
           "event": [
