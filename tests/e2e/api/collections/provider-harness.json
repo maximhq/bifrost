@@ -329774,7 +329774,7 @@
       ]
     },
     {
-      "name": "265. Request trace endpoint (log-trace) [SERIAL]",
+      "name": "349. Request trace endpoint (log-trace) [SERIAL]",
       "description": "GET /api/logs/{id}/trace serves the causal chain Warp's get_request_trace tool builds (the two now share logstore.BuildRequestTrace), so the Bifrost MCP and API clients can explain one request. The case sends one request, waits for its log row through the session listing, and requires the trace to be rooted at it with one successful openai node; an unknown id must return 404. Red before the change: the route did not exist. The seeded log is deleted at the end.",
       "item": [
         {
@@ -330132,6 +330132,94 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/logs/search?query=refunds&period=last_quarter"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: six identical phrasings count toward the limit of 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: six copies of one query return 400 instead of folding to one', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"6 queries given\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a&query=a&query=a&query=a&query=a&query=a"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a list filter that names no value is refused, not dropped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: providers=, returns 400 instead of searching every provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"providers\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&providers=,"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a filter given twice is refused, not half-applied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: a repeated max_cost returns 400 instead of applying one of them', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"max_cost\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&max_cost=100&max_cost=1"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a metadata filter with no key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: metadata_ with no key returns 400 instead of being dropped', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the problem').to.include(\"metadata\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&metadata_=prod"
           }
         },
         {
@@ -330555,7 +330643,7 @@
       ]
     },
     {
-      "name": "301. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "name": "351. Per-user limits endpoints are Enterprise-only (user-limits)",
       "item": [
         {
           "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
@@ -330608,7 +330696,7 @@
       ]
     },
     {
-      "name": "267. Caller identity endpoint (session-me)",
+      "name": "350. Caller identity endpoint (session-me)",
       "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and Bifrost MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
       "item": [
         {
@@ -330835,7 +330923,616 @@
       ]
     },
     {
-      "name": "353. MachGen Provider Coverage (list models, image, image edit, video)",
+      "name": "353. Warp does not answer without the Bifrost MCP (warp-needs-mcp) [SERIAL]",
+      "description": "Warp reads this deployment's configuration through the Bifrost MCP, the server behind /v1/mcp that loads only when client.bifrost_url is set. Without it Warp used to keep answering from its traffic tools alone, and asked \"what routing rules exist?\" it listed the rules it had seen in logged traffic as if they were the configured list. Warp now does not answer at all without the Bifrost MCP: GET /api/warp/config reports bifrost_mcp_available, and POST /api/warp/chat returns 503 with reason no_bifrost_mcp before any model is called, so no tokens are spent. The case confirms the profile's Bifrost MCP is loaded, clears bifrost_url, waits for the config to report it gone, sends one chat and expects the refusal, then restores the client config and waits for the Bifrost MCP to load again so later Warp cases can answer. Red before the change: the chat answered 200 and the config had no bifrost_mcp_available. Requires the profile to set client.bifrost_url and the warp flag to be unlocked; the client config, Warp config and flag are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-needs-mcp setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpNeedsMcpFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-needs-mcp: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpNeedsMcpFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpNeedsMcpFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpNeedsMcpConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-needs-mcp: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpNeedsMcpConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-needs-mcp: configure Warp on gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpNeedsMcpConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpNeedsMcpConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpNeedsMcpConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpNeedsMcpConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp setup: read current client config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the config (see the test script).",
+                  "pm.collectionVariables.unset('warpNeedsMcpClientWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: client config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { body = undefined; }",
+                  "var client = body && body.client_config;",
+                  "pm.test('warp-needs-mcp: the profile sets bifrost_url, which Warp needs', function () {",
+                  "  pm.expect(client && client.bifrost_url, 'no bifrost_url: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "// Saved unchanged, and only when it is a config with a Bifrost URL: the clear and",
+                  "// restore requests skip without it, so the shared settings are never left changed.",
+                  "if (pm.response.code === 200 && client && client.bifrost_url) { pm.collectionVariables.set('warpNeedsMcpClientWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config?from_db=true"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp: the config reports the Bifrost MCP loaded",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
+                  "var available = pm.response.json().bifrost_mcp_available;",
+                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
+                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
+                  "if (available !== true && polls < 40) {",
+                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  setTimeout(function () {}, 500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
+                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true with bifrost_url set', function () {",
+                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp: clear the Bifrost URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('warpNeedsMcpClientWas')) { pm.execution.skipRequest(); return; }",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpNeedsMcpClientWas'));",
+                  "// Omitted would leave it unchanged; null clears it.",
+                  "was.client_config.bifrost_url = null;",
+                  "pm.collectionVariables.set('warpNeedsMcpClientBody', JSON.stringify(was));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: client config saved without bifrost_url', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpNeedsMcpClientBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp: the config reports no Bifrost MCP",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('warpNeedsMcpClientWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
+                  "var available = pm.response.json().bifrost_mcp_available;",
+                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
+                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
+                  "if (available !== false && polls < 40) {",
+                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  setTimeout(function () {}, 500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
+                  "pm.test('warp-needs-mcp: bifrost_mcp_available is false without bifrost_url', function () {",
+                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-needs-mcp: chat without the Bifrost MCP is refused before any model call [EXPECT-503]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('warpNeedsMcpClientWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Red before the change: Warp answered from traffic alone (200), passing off",
+                  "// routing rules seen in logs as the configured list.",
+                  "pm.test('warp-needs-mcp: 503 when the Bifrost MCP is not loaded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(503);",
+                  "});",
+                  "var body;",
+                  "try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "pm.test('warp-needs-mcp: reason is no_bifrost_mcp', function () {",
+                  "  pm.expect(body.reason, 'reason: ' + pm.response.text()).to.equal('no_bifrost_mcp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"what routing rules exist?\"}], \"stream\": false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp cleanup: restore client config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('warpNeedsMcpClientWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: client config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Its snapshot is cleared at the end of the folder, and only if this restore succeeded.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('warpNeedsMcpClientRestored', 'true'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpNeedsMcpClientWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp cleanup: the Bifrost MCP loads again",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('warpNeedsMcpClientWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('warpNeedsMcpPolls'); return; }",
+                  "var available = pm.response.json().bifrost_mcp_available;",
+                  "var polls = Number(pm.collectionVariables.get('warpNeedsMcpPolls') || 0);",
+                  "// The Bifrost MCP loads and unloads in the background after a client config save.",
+                  "if (available !== true && polls < 60) {",
+                  "  pm.collectionVariables.set('warpNeedsMcpPolls', polls + 1);",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  setTimeout(function () {}, 500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
+                  "pm.test('warp-needs-mcp: bifrost_mcp_available is true again, so later Warp cases can answer', function () {",
+                  "  pm.expect(available, 'bifrost_mcp_available: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpNeedsMcpConfigWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('warpNeedsMcpConfigBody');",
+                  "pm.collectionVariables.unset('warpNeedsMcpConversation');",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('warpNeedsMcpConfigWas'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpNeedsMcpConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-needs-mcp cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpNeedsMcpFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpNeedsMcpFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpNeedsMcpFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-needs-mcp: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Last request of the folder. Each snapshot is cleared only once its own restore succeeded,",
+                  "// so a failed one is left behind to say what to put back.",
+                  "pm.collectionVariables.unset('warpNeedsMcpPolls');",
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.unset('warpNeedsMcpFlagWas');",
+                  "  pm.collectionVariables.unset('warpNeedsMcpFlagBody');",
+                  "}",
+                  "if (pm.collectionVariables.get('warpNeedsMcpClientRestored') === 'true') {",
+                  "  pm.collectionVariables.unset('warpNeedsMcpClientWas');",
+                  "  pm.collectionVariables.unset('warpNeedsMcpClientBody');",
+                  "}",
+                  "pm.collectionVariables.unset('warpNeedsMcpClientRestored');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpNeedsMcpFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
+      "name": "354. MachGen Provider Coverage (list models, image, image edit, video)",
       "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
       "item": [
         {

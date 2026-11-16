@@ -277,6 +277,13 @@ describe("isEncodedTurnError", () => {
 		expect(isEncodedTurnError(encodeTurnError(undefined, "Warp request failed (500)"))).toBe(true);
 		expect(isEncodedTurnError(encodeTurnError("timeout", ""))).toBe(true);
 		expect(isEncodedTurnError(encodeTurnError("upstream_error", "boom"))).toBe(true);
+		expect(isEncodedTurnError(encodeTurnError("no_bifrost_mcp", ""))).toBe(true);
+	});
+
+	it("explains a refusal for a missing Bifrost MCP rather than an unknown error", () => {
+		const detail = warpErrorDetail(decodeTurnError(encodeTurnError("no_bifrost_mcp", "")).code, "");
+		expect(detail.summary).toBe("Warp isn't set up on this deployment.");
+		expect(detail.suggestions.join(" ")).toContain("Bifrost URL");
 	});
 
 	it("does not mistake a colon in a message for a code", () => {

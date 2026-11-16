@@ -430,6 +430,10 @@
 			"indexStatusUnavailable": "Estado del índice no disponible",
 			"askAdminTurnOn": "Pide a un administrador que active Warp.",
 			"askAdminSetUp": "Pide a un administrador que configure Warp.",
+			"needsBifrostMCP": "Warp necesita el Bifrost MCP",
+			"needsBifrostMCPHint": "Configura la URL de Bifrost para que Warp pueda leer la configuración de este despliegue.",
+			"setUpBifrostMCP": "Configurar",
+			"askAdminBifrostMCP": "Pide a un administrador que configure el Bifrost MCP para Warp.",
 			"sendsWhenFinished": "Se envía cuando termine esta respuesta",
 			"remove": "Quitar"
 		},
@@ -544,6 +548,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp no está configurado en este despliegue.",
+				"cause": "Warp necesita el Bifrost MCP para leer la configuración de este despliegue, y no está cargado.",
+				"suggestions": ["Pide a un administrador que configure la URL de Bifrost en Ajustes del cliente."]
+			},
 			"not_configured": {
 				"summary": "Warp aún no está configurado.",
 				"cause": "No hay proveedor ni modelo definidos, o Warp está desactivado en la configuración.",

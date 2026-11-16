@@ -281,7 +281,7 @@ func scribeCatalogAccess(catalog *modelcatalog.ModelCatalog, vk configtables.Tab
 		Provider: config.Provider, AllowedModels: config.AllowedModels,
 		BlacklistedModels: config.BlacklistedModels, KeyIDs: config.KeyIDs(),
 	}}, nil)
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", func(provider, model string, allowed []string) bool {
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", func(provider, model string, allowed []string) bool {
 		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, schemas.WhiteList(allowed))
 	})
 }
@@ -470,7 +470,7 @@ func TestApplyListModelsProviderFilterDelegatesToTheModelsManager(t *testing.T) 
 		// serve the request, and the response is filtered per model afterwards.
 		{Provider: "anthropic"},
 	}, nil)
-	manager := &mockModelsManager{access: grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)}
+	manager := &mockModelsManager{access: grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)}
 	h := &CompletionHandler{modelsManager: manager}
 
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Time{})

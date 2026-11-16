@@ -176,10 +176,46 @@ func TestNotificationCreateRequiresLocalAdmin(t *testing.T) {
 
 	admin := &fasthttp.RequestCtx{}
 	admin.SetUserValue(schemas.IsLocalAdminContextKey, true)
+	admin.Request.Header.SetContentType("application/json")
 	admin.Request.SetBody(body)
 	service.create(admin)
 	require.Equal(t, fasthttp.StatusCreated, admin.Response.StatusCode())
 	require.Len(t, store.created, 1)
+}
+
+// Publishing takes JSON only. A form or text/plain POST is one a browser sends
+// cross-site without a CORS preflight, and admin Basic credentials it has cached
+// ride along; requiring application/json makes such a request preflight first.
+func TestNotificationCreateRequiresJSON(t *testing.T) {
+	store := &recordingNotificationStore{}
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	service := &NotificationService{store: store, now: func() time.Time { return now }}
+	body, err := sonic.Marshal(schemas.NotificationInput{
+		Audience: schemas.NotificationAudienceAll, Severity: schemas.NotificationSeverityInfo, Title: "Broadcast", Message: "To everyone",
+	})
+	require.NoError(t, err)
+
+	for _, contentType := range []string{"", "text/plain", "text/plain; charset=utf-8", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "application/jsonx"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+		if contentType != "" {
+			ctx.Request.Header.SetContentType(contentType)
+		}
+		ctx.Request.SetBody(body)
+		service.create(ctx)
+		require.Equal(t, fasthttp.StatusUnsupportedMediaType, ctx.Response.StatusCode(), "Content-Type %q", contentType)
+	}
+	require.Empty(t, store.created, "a non-JSON body was published")
+
+	for _, contentType := range []string{"application/json", "Application/JSON; charset=utf-8"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+		ctx.Request.Header.SetContentType(contentType)
+		ctx.Request.SetBody(body)
+		service.create(ctx)
+		require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "Content-Type %q", contentType)
+	}
+	require.Len(t, store.created, 2)
 }
 
 func TestNotificationVisibleToRole(t *testing.T) {

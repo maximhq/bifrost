@@ -2,6 +2,7 @@
 
 - **MachGen Provider** - New `machgen` provider for MachGen's image and video models: text-to-image, image edit, and async video generation with retrieve and download. `/v1/models` lists the models each key can use, with their task types. Set up from the UI or `providers.machgen` in config.json
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models
+- **Trace Dimensions on Child Spans** - An OTEL profile with `apply_trace_dimensions_to_child_spans` set merges the request's `x-bf-dim-*` dimensions onto every exported span (LLM call, plugin, retry, fallback, MCP tool), not only the root HTTP span. Span attributes win on conflict, and `path`, `method` and keys in reserved attribute namespaces (`gen_ai.`, `http.`, `bifrost.`, ...) are skipped (#3770)
 
 ## 🐞 Fixed
 

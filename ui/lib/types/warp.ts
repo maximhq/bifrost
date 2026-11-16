@@ -62,6 +62,8 @@ export interface WarpConfig {
 	/** How many requests that matched no topic start a discovery of new topics. */
 	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
+	/** Whether the gateway's Bifrost MCP is loaded. Warp does not answer without it. */
+	bifrost_mcp_available: boolean;
 	/** Kinds of configuration change Warp may offer; empty is reads only (the default). */
 	management_writes: WarpManagementWrite[];
 	/** Whether the Bifrost MCP serves writes at all: bifrost_mcp_allow_writes is the ceiling. */
@@ -126,7 +128,7 @@ export const WARP_MAX_TEMPERATURE = 2;
  * its settings, while a deployment with no log store has nothing to read and no
  * in-panel remedy.
  */
-export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";
+export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store" | "no_bifrost_mcp";
 
 export interface WarpBackfillInput {
 	start_time: string;

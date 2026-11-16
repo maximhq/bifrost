@@ -1822,6 +1822,35 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 	}
 }
 
+// TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin pins that the admin's username and
+// password sent as Basic make the request the local admin, as the same credentials sent
+// base64-encoded as a Bearer token already did. Handlers that are admin-only in OSS (Warp's
+// settings, publishing notifications) check that marker, so Basic credentials were refused
+// there.
+func TestAPIMiddleware_AdminCredentialsRunAsLocalAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hash, err := encrypt.Hash("password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	am := newSetupLockedAuthMiddleware("", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	})
+	encoded := base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	for _, header := range []string{"Basic " + encoded} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.Header.Set("Authorization", header)
+		if !runOSSAPIChain(am, ctx) {
+			t.Fatalf("%s: status %d, body %s", strings.Fields(header)[0], ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+		assert.True(t, admin, "%s admin credentials should run as the local admin", strings.Fields(header)[0])
+	}
+}
+
 // TestSetupLockMiddleware_PublicRoutesStayOpen pins that the setup screen can bootstrap:
 // health, version and is-auth-enabled answer without the setup token while locked.
 func TestSetupLockMiddleware_PublicRoutesStayOpen(t *testing.T) {
@@ -3676,6 +3705,61 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 	if !plugin.rootEnd.After(plugin.rootStart) {
 		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
+	}
+}
+
+// TestTracingMiddleware_StoresDimAttributesOnTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on TraceAttrDimensions so
+// observability plugins can propagate them onto child spans when enabled.
+func TestTracingMiddleware_StoresDimAttributesOnTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedDims map[string]string
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok {
+				capturedDims = dims
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedDims == nil {
+		t.Fatal("trace.Attributes[bifrost.dimensions] was missing")
+	}
+	if got := capturedDims["customer_id"]; got != "acme" {
+		t.Errorf("dims[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedDims["environment"]; got != "prod" {
+		t.Errorf("dims[environment] = %v, want %q", got, "prod")
+	}
+	// Reserved suffixes stay in the nested map for connectors; OTEL export
+	// skips them so they never become child-span attributes.
+	if _, ok := capturedDims["method"]; !ok {
+		t.Error("expected reserved dim 'method' to be stored on TraceAttrDimensions")
+	}
+	if _, ok := capturedDims["path"]; !ok {
+		t.Error("expected reserved dim 'path' to be stored on TraceAttrDimensions")
 	}
 }
 
