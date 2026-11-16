@@ -9,6 +9,10 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrFolderHasHiddenPrompts is returned when a folder delete would cascade to prompts the caller's
+// row-visibility scope hides.
+var ErrFolderHasHiddenPrompts = errors.New("folder contains prompts you cannot access")
+
 // ErrRoutingRulePriorityTaken is returned when a routing rule's priority is already used by another
 // rule in the same scope and scope ID. It wraps ErrAlreadyExists and reads the same, so callers that
 // only ask whether something already exists are unaffected; callers that advise changing the
