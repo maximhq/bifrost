@@ -183,6 +183,49 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
+// A custom provider created with no keys (direct-key callers bring their own) must resolve
+// by its "name/model" prefix from creation, and stop resolving once deleted.
+func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const name = schemas.ModelProvider("harness-zero-key-direct")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             name,
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if provider, model := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != name || model != "gpt-4o-mini" {
+		t.Fatalf("after create: ParseModelString = (%q, %q), want (%q, %q)", provider, model, name, "gpt-4o-mini")
+	}
+
+	delCtx := &fasthttp.RequestCtx{}
+	delCtx.Request.Header.SetMethod(fasthttp.MethodDelete)
+	delCtx.SetUserValue("provider", string(name))
+	h.deleteProvider(delCtx)
+
+	if provider, _ := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != "" {
+		t.Fatalf("after delete: prefix still resolves to %q", provider)
+	}
+}
+
 // TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
 // the provider API accepts: typesafe is a supported base, vertex is not.
 func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
