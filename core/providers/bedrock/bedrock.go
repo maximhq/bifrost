@@ -411,7 +411,31 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	if bErr != nil {
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+	}
 	return body, latency, providerResponseHeaders, bErr
+}
+
+// nativeSchemaRejections are the Converse 400s for a native structured-output schema Claude will
+// not compile (shape or grammar size); the same request succeeds on the synthetic tool.
+var nativeSchemaRejections = []string{"output_config.format.schema:", "compiled grammar is too large", "grammar compilation timed out", "schema is too complex"}
+
+// markNativeSchemaRejection flags a natively sent structured-output request whose schema was
+// rejected, so core re-sends it once with the synthetic tool.
+func markNativeSchemaRejection(ctx *schemas.BifrostContext, jsonData []byte, bErr *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool ||
+		bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest || bErr.Error == nil ||
+		!providerUtils.JSONFieldExists(jsonData, "outputConfig") {
+		return
+	}
+	message := strings.ToLower(bErr.Error.Message)
+	for _, limit := range nativeSchemaRejections {
+		if strings.Contains(message, limit) {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return
+		}
+	}
 }
 
 // newRequestError classifies a failed net/http request the way the shared fasthttp
@@ -595,7 +619,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
+		bErr := parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
 	}
 
 	return resp, nil
@@ -1369,7 +1395,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
-			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
+			choice := bifrostResponse.Choices[0]
+			hasToolCalls := choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ChatAssistantMessage.ToolCalls) > 0
+			if !hasToolCalls && *choice.FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
 				bifrostResponse.Choices[0].FinishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 			}
 		}
@@ -1605,7 +1634,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse bool
 		var structuredOutputBuilder strings.Builder
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
@@ -1766,7 +1795,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					// Override finish reason for structured output
 					// When structured output is used, tool_use stop reason should appear as "stop" to the client
-					if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+					if structuredOutputToolName != "" && !sawCallerToolUse && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 						finishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 					}
 				}
@@ -1781,6 +1810,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 							isAccumulatingStructuredOutput = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
+						sawCallerToolUse = true
 					}
 
 					// Check for tool use delta event
@@ -2230,6 +2262,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							streamState.UsedStructuredOutputTool = true
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
 					}
 
 					// Check for tool use delta event
@@ -4590,27 +4624,76 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 }
 
 func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
-	if request == nil || request.Params == nil {
+	if request == nil {
 		return false
 	}
-	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+	if request.Params != nil && usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
 		return true
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input) || inputHasToolChanges(request.Input)
+}
+
+func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	if extraParamsHasSafeguards(params.ExtraParams) && safeguardsSurviveStrip(ctx, model) {
 		return true
 	}
-	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+	if invokeIngressThinkingNeedsInvokePath(ctx, params.Reasoning) {
 		return true
 	}
-	for _, tool := range request.Params.Tools {
+	for _, tool := range params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
 		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
 			return true
+		}
+	}
+	return false
+}
+
+// responsesInputHasToolReference runs on every Anthropic-family Responses request, so
+// it indexes rather than ranging by value: a by-value range copies each 224-byte
+// ResponsesMessage, which cost ~0.5µs on a 200-message conversation.
+func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		toolMsg := input[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputHasToolChanges reports tool_addition / tool_removal blocks (system or developer
+// messages) or a compaction item's tool_changes, which Converse has no block for.
+func inputHasToolChanges(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		if input[i].Content == nil || len(input[i].Content.ContentBlocks) == 0 {
+			continue
+		}
+		blocks := input[i].Content.ContentBlocks
+		if cmp := blocks[0].ResponsesOutputMessageContentCompaction; cmp != nil && len(cmp.ToolChanges) > 0 {
+			return true
+		}
+		if role := input[i].Role; role == nil || (*role != schemas.ResponsesInputMessageRoleSystem && *role != schemas.ResponsesInputMessageRoleDeveloper) {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition || blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
+				return true
+			}
 		}
 	}
 	return false

@@ -453,6 +453,16 @@ func (c ModelCaps) SupportsMultimodalToolOutput(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNativeStructuredOutput reports whether the model takes a JSON schema
+// natively (Bedrock Converse outputConfig.textFormat) rather than through the
+// synthetic bf_so_* tool.
+func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeStructuredOutput != nil {
+		return *c.record.SupportsNativeStructuredOutput
+	}
+	return fallback
+}
+
 // SupportsResponseSchemaWithTools reports whether the model accepts a JSON
 // response format alongside function declarations. Models without it reject the
 // pairing, so the response-format hint is dropped to keep tool calling working.
@@ -834,6 +844,16 @@ func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
 func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
 	if c.record != nil && c.record.SupportsConverseToolResultImages != nil {
 		return *c.record.SupportsConverseToolResultImages
+	}
+	return fallback
+}
+
+// StripsUserTurnTrailingWhitespace reports whether the model drops trailing whitespace from the
+// text that ends a user turn while keeping it mid-turn, which decides whether a block an inlined
+// reminder joins is trimmed. Falls back to the caller's name-based answer when the row says nothing.
+func (c ModelCaps) StripsUserTurnTrailingWhitespace(fallback bool) bool {
+	if c.record != nil && c.record.StripsUserTurnTrailingWhitespace != nil {
+		return *c.record.StripsUserTurnTrailingWhitespace
 	}
 	return fallback
 }

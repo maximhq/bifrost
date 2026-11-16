@@ -19,6 +19,7 @@
 		"budgetsLimits": "Budgets und Limits",
 		"routingRules": "Routing-Regeln",
 		"complexityRouter": "Komplexitäts-Router",
+		"routers": "Router",
 		"circuitBreaker": "Schutzschalter",
 		"pricingOverrides": "Preisüberschreibungen",
 		"modelSettings": "Modelleinstellungen",
@@ -431,6 +432,10 @@
 			"indexStatusUnavailable": "Indexstatus nicht verfügbar",
 			"askAdminTurnOn": "Bitte einen Administrator, Warp zu aktivieren.",
 			"askAdminSetUp": "Bitte einen Administrator, Warp einzurichten.",
+			"needsBifrostMCP": "Warp benötigt den Bifrost MCP",
+			"needsBifrostMCPHint": "Lege die Bifrost-URL fest, damit Warp die Konfiguration dieser Bereitstellung lesen kann.",
+			"setUpBifrostMCP": "Einrichten",
+			"askAdminBifrostMCP": "Bitte einen Administrator, den Bifrost MCP für Warp einzurichten.",
 			"sendsWhenFinished": "Wird gesendet, sobald diese Antwort abgeschlossen ist",
 			"remove": "Entfernen"
 		},
@@ -545,6 +550,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp ist auf dieser Bereitstellung nicht eingerichtet.",
+				"cause": "Warp benötigt den Bifrost MCP, um die Konfiguration dieser Bereitstellung zu lesen, und er ist nicht geladen.",
+				"suggestions": ["Bitte einen Administrator, die Bifrost-URL in den Client-Einstellungen festzulegen."]
+			},
 			"not_configured": {
 				"summary": "Warp ist noch nicht konfiguriert.",
 				"cause": "Kein Anbieter und Modell gesetzt, oder Warp ist in den Einstellungen ausgeschaltet.",

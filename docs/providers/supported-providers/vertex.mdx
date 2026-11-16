@@ -15,6 +15,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 - **Request conversion** - Conversion to underlying provider format (Gemini or Anthropic)
 - **Embeddings support** - Vector generation with task type and truncation options
 - **Model discovery** - Paginated model listing with deployment information
+- **Realtime** - Gemini Live models over WebSocket, translated to OpenAI Realtime events, see [Realtime](#realtime)
 
 ### Supported Operations
 
@@ -31,6 +32,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Text Completions     | ❌            | ❌        | -                                         |
 | Speech (TTS)         | ✅            | ✅ (Gemini TTS) | `/text:synthesize` (Cloud Text-to-Speech), `:generateContent` (Gemini TTS) |
 | Transcriptions (STT) | ❌            | ❌        | -                                         |
+| Realtime (Gemini Live) | -           | ✅        | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` (WebSocket) |
 | Files                | ❌            | ❌        | -                                         |
 | Batch                | ❌            | ❌        | -                                         |
 
@@ -1544,7 +1546,7 @@ The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech
 | Bifrost                              | Cloud Text-to-Speech           | Notes                                                                                              |
 | ------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------- |
 | `input`                              | `input.text`                   | Input that starts with `<speak` is sent as `input.ssml`                                            |
-| `voice`                              | `voice.name`                   | Required unless `language_code` is set                                                             |
+| `voice`                              | `voice.name`                   | Required. `/v1/audio/speech` returns a 400 without it                                              |
 | `language_code`                      | `voice.languageCode`           | Defaults to the locale at the start of the voice name. It must match the voice's locale            |
 | `response_format`                    | `audioConfig.audioEncoding`    | `mp3` (default) is `MP3`, `wav` is `LINEAR16`, `opus` is `OGG_OPUS`. Any other value returns a 400 |
 | `speed`                              | `audioConfig.speakingRate`     | -                                                                                                  |
@@ -1578,3 +1580,19 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 ```
 
 The same request works on the OpenAI-compatible routes and on the GenAI route (`/genai/v1beta/models/vertex/gemini-2.5-flash-tts:generateContent`).
+
+## Realtime
+
+Gemini Live models such as `gemini-3.8-live` run on Vertex AI over a WebSocket. Open `/v1/realtime` with a Vertex model, for example `vertex/gemini-3.8-live`, and Bifrost translates the OpenAI Realtime events to Live and back, the same translation it does for Gemini Live on the Gemini API.
+
+| Part | On Vertex AI |
+| ---- | ------------ |
+| Endpoint | `wss://{host}/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent`. The host follows the key's region: `us` and `eu` use `aiplatform.{region}.rep.googleapis.com`, `global` uses `aiplatform.googleapis.com`, and any other region uses `{region}-aiplatform.googleapis.com` |
+| Authentication | An OAuth bearer token from the key's service account or workload identity credentials. A key that carries only an API key is refused for realtime |
+| Model | The setup frame names the model as `projects/{project}/locations/{region}/publishers/google/models/{model}`. The project and region are the key's, or those of the model alias the connection resolved through |
+| Usage | Vertex names the response token fields `candidates*` where the Gemini API names them `response*`. Bifrost reads both, so output, audio and thinking tokens are counted the same way on either |
+
+<Note>
+  - Transcription sessions (`intent=transcription`) and WebRTC are not supported.
+  - The native Google GenAI route (`/genai`) serves the Gemini API only. A client that speaks Live to Vertex directly is not relayed.
+</Note>

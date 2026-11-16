@@ -41,6 +41,7 @@ var securityHeaders = []string{
 	"transfer-encoding",
 	"x-api-key",
 	"x-goog-api-key",
+	"xi-api-key",
 	"x-bf-api-key",
 	"x-bf-vk",
 }
@@ -368,6 +369,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
 		return
 	}
+	if err := lib.ValidateClientMetadataURL(payload.ClientConfig.MCPClientMetadataURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_client_metadata_url %v", err))
+		return
+	}
 	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.SkillsExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("skills_external_client_url %v", err))
 		return
@@ -375,6 +380,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
+	}
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.BifrostURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("bifrost_url %v", err))
+		return
+	}
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		if err := configstore.ValidateOpenAPIURL(*payload.FrameworkConfig.OpenAPIURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("openapi_url %v", err))
+			return
+		}
 	}
 
 	// enforce_vk_object_ownership is a plain bool that defaults to true, so a JSON null would
@@ -391,6 +406,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
 			return
 		}
+	}
+	// A JSON null would decode as 0 and silently reset the limit; an explicit 0 is the reset.
+	if raw, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be an integer between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
+		return
 	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
@@ -459,10 +479,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
-		logger.Warn("MCP library sync interval must be greater than 0")
-		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
+	// Checking the MCP library sync interval: 0 disables background sync, as in
+	// config.json; otherwise the same minimum the config schema enforces.
+	if v := payload.FrameworkConfig.MCPLibrarySyncInterval; v != nil && *v != modelcatalog.MCPLibrarySyncDisabled && *v < modelcatalog.MinimumPricingSyncIntervalSec {
+		msg := fmt.Sprintf("MCP library sync interval must be 0 (disabled) or at least %d seconds", modelcatalog.MinimumPricingSyncIntervalSec)
+		logger.Warn(msg)
+		SendError(ctx, fasthttp.StatusBadRequest, msg)
 		return
 	}
 	// Checking the live models sync interval. Unlike the intervals above, 0 is
@@ -650,9 +672,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
 		return
 	}
+	// The same for the entity access profile mode: only an omitted field keeps the stored mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeUnion &&
+		payload.ClientConfig.EntityAccessProfileMode != configstoreTables.EntityAccessProfileModeIntersect {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("entity_access_profile_mode must be 'union' or 'intersect', got %q", payload.ClientConfig.EntityAccessProfileMode))
+		return
+	}
 
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if mb := payload.ClientConfig.MCPOpenAPIMaxSpecMB; mb < 0 || mb > maxMCPOpenAPISpecMB {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_openapi_max_spec_mb must be between 0 (the default, 32) and %d", maxMCPOpenAPISpecMB))
 		return
 	}
 	if payload.ClientConfig.LogRetentionDays < 1 {
@@ -931,6 +964,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
 	}
+	// Copied only when sent, so a partial save keeps the limit; 0 resets it to the default.
+	// The next spec load reads it, so no reload is needed.
+	if _, present := clientConfigFields["mcp_openapi_max_spec_mb"]; present {
+		updatedConfig.MCPOpenAPIMaxSpecMB = payload.ClientConfig.MCPOpenAPIMaxSpecMB
+	}
+	// Copied only when sent (validated up front), so a partial save keeps the stored entity access profile mode.
+	if _, present := clientConfigFields["entity_access_profile_mode"]; present {
+		updatedConfig.EntityAccessProfileMode = payload.ClientConfig.EntityAccessProfileMode
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
@@ -950,11 +992,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["a2a_store_raw_request_response"]; present {
 		updatedConfig.A2AStoreRawRequestResponse = payload.ClientConfig.A2AStoreRawRequestResponse
 	}
+	if _, present := clientConfigFields["mcp_client_metadata_url"]; present {
+		updatedConfig.MCPClientMetadataURL = payload.ClientConfig.MCPClientMetadataURL
+	}
 	if _, present := clientConfigFields["skills_external_client_url"]; present {
 		updatedConfig.SkillsExternalClientURL = payload.ClientConfig.SkillsExternalClientURL
 	}
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
+	}
+	// Copied only when sent, so a partial save keeps them; an empty value or null resets
+	// each to its default. The reload that follows the save rebuilds /v1/mcp.
+	if _, present := clientConfigFields["bifrost_url"]; present {
+		updatedConfig.BifrostURL = payload.ClientConfig.BifrostURL
+	}
+	if _, present := clientConfigFields["bifrost_mcp_allow_writes"]; present {
+		updatedConfig.BifrostMCPAllowWrites = payload.ClientConfig.BifrostMCPAllowWrites
 	}
 
 	// Only update each field when explicitly provided so partial /api/config
@@ -1136,6 +1189,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	// openapi_url is copied only when sent; empty clears it back to the build's
+	// default spec. Validated up front; the reload below rebuilds /v1/mcp.
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		var next *string
+		if trimmed := strings.TrimSpace(*payload.FrameworkConfig.OpenAPIURL); trimmed != "" {
+			next = &trimmed
+		}
+		stored := ""
+		if frameworkConfig.OpenAPIURL != nil {
+			stored = strings.TrimSpace(*frameworkConfig.OpenAPIURL)
+		}
+		if (next == nil && stored != "") || (next != nil && *next != stored) {
+			frameworkConfig.OpenAPIURL = next
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -1152,6 +1221,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
+				OpenAPIURL:             frameworkConfig.OpenAPIURL,
 			},
 		}
 		// Persist first so a failed store write leaves the runtime config
@@ -1730,6 +1800,9 @@ func validateGlobalToolSyncIntervalMinutes(minutes int) error {
 	}
 	return nil
 }
+
+// maxMCPOpenAPISpecMB bounds mcp_openapi_max_spec_mb; see configstore.MaxMCPOpenAPISpecMB.
+const maxMCPOpenAPISpecMB = configstore.MaxMCPOpenAPISpecMB
 
 // validateMCPInstructionCaps rejects bounds that cannot hold: a negative value, or a per-client
 // cap larger than the total it must fit inside. 0 means "use the built-in default" for either.

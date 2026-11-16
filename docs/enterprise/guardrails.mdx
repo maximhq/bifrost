@@ -240,6 +240,10 @@ Input guardrails still check the request before Bifrost sends it to the LLM prov
   If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. Gray Swan's text-only behavior only skips the Gray Swan call; it does not bypass the other profile.
 </Note>
 
+<Note>
+  Noma Security is a block-capable exception. When the only enforced output rule matching a request has Noma as its only profile, Bifrost releases text progressively as Noma clears it instead of holding the complete stream. See [Noma Security](/integrations/guardrails/noma-security#streaming-responses) for the conditions.
+</Note>
+
 ---
 
 ## Monitor Mode
@@ -1016,106 +1020,25 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Guardrail Response Handling
 
-**Successful Validation (200):**
-```json
-{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "I'd be happy to help you with your task..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "extra_fields": {
-    "guardrails": {
-      "input_validation": {
-        "guardrail_id": "bedrock-prod-guardrail",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 245
-      },
-      "output_validation": {
-        "guardrail_id": "patronus-ai-001",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 312
-      }
-    }
-  }
-}
-```
+An allowed request returns the model's response, with any masking your rules apply.
 
-**Validation Failure - Blocked (446):**
+When a guardrail blocks, Bifrost returns HTTP `400` with `type: "guardrail_intervention"`. The message carries the guardrail's reason. For an input rule, the request is not sent to the model; for an output rule, the model's response is replaced by the error. A blocked stream ends with the same `guardrail_intervention` error.
+
+Trimmed example:
+
 ```json
 {
+  "type": "guardrail_intervention",
+  "is_bifrost_error": false,
+  "status_code": 400,
   "error": {
-    "message": "Request blocked by guardrails",
-    "type": "guardrail_violation",
-    "code": 446,
-    "details": {
-      "guardrail_id": "bedrock-prod-guardrail",
-      "validation_stage": "input",
-      "violations": [
-        {
-          "type": "PII",
-          "category": "SSN",
-          "severity": "HIGH",
-          "action": "block",
-          "text_excerpt": "My SSN is ***-**-****"
-        },
-        {
-          "type": "prompt_injection",
-          "severity": "CRITICAL",
-          "action": "block",
-          "confidence": 0.95
-        }
-      ],
-      "processing_time_ms": 198
-    }
+    "type": "guardrail_intervention",
+    "message": "Blocked by Noma AI-DR policy: Email detected in the user prompt"
+  },
+  "extra_fields": {
+    "request_type": "chat_completion"
   }
 }
 ```
 
-**Validation Warning - Logged (246):**
-```json
-{
-  "id": "chatcmpl-def456",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Response with redacted content..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "bifrost_metadata": {
-    "guardrails": {
-      "output_validation": {
-        "guardrail_id": "azure-content-safety-001",
-        "status": "warning",
-        "violations": [
-          {
-            "type": "profanity",
-            "severity": "LOW",
-            "action": "redact",
-            "modifications": 2
-          }
-        ],
-        "processing_time_ms": 187
-      }
-    }
-  }
-}
-```
+Use `type` (or `error.type`) equal to `guardrail_intervention` to tell guardrail blocks apart from other `400` errors.

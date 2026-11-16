@@ -37,6 +37,12 @@
 		"dumpErrorsHelp": "Se ativado, os detalhes completos dos erros são escritos nos registos da consola do servidor. Útil para depuração, mas pode ser ruidoso em produção.",
 		"asyncJobTtl": "TTL do resultado de tarefas assíncronas (segundos)",
 		"asyncJobTtlHelp": "Tempo de vida predefinido dos resultados de tarefas assíncronas, em segundos. Os resultados são limpos automaticamente após expirarem.",
+		"bifrostUrl": "URL do Bifrost",
+		"bifrostUrlHelp": "A URL pela qual os clientes acessam este gateway, incluindo qualquer caminho base. Obrigatória para <code0>/v1/mcp</code0> e para as ferramentas de configuração do Warp: as chamadas deles agem como se tivessem chegado aqui, então os links nos resultados apontam para ela. Se ficar em branco, ambos ficam desativados; o cabeçalho Host enviado por um pedido nunca é usado em seu lugar.",
+		"bifrostUrlPlaceholder": "https://bifrost.example.com",
+		"openapiUrl": "URL do OpenAPI",
+		"openapiUrlHelp": "A especificação OpenAPI a partir da qual <code0>/v1/mcp</code0> cria suas ferramentas: uma URL http(s) ou um caminho relativo ao diretório da aplicação para instalações isoladas. Deixe vazio para ler a especificação publicada desta versão.",
+		"openapiUrlPlaceholder": "Especificação publicada desta versão",
 		"languageHelp": "Idioma de apresentação do painel. Guardado neste navegador e aplicado de imediato.",
 		"headerForwarding": "Reencaminhamento de cabeçalhos",
 		"headerForwardingHelp": "Controle quais cabeçalhos extra são reencaminhados para os fornecedores LLM.",
@@ -244,11 +250,17 @@
 		"deleteExpiredVirtualKeysHelp": "Quando ativado, uma tarefa de limpeza diária elimina todas as chaves virtuais cuja validade já passou e publica uma notificação com a lista das chaves removidas. Cada chave pode substituir isto através do seu interruptor <b0>Eliminar após expirar</b0>: uma chave definida como desativada é mantida e uma definida como ativada é eliminada mesmo com esta opção desativada.",
 		"enforceVkObjectOwnership": "Restringir objetos do fornecedor à chave virtual criadora",
 		"enforceVkObjectOwnershipHelp": "Quando ativado, os ficheiros, lotes, vídeos, contentores, conteúdos em cache e sessões em direto criados com uma chave virtual só podem ser lidos, listados ou eliminados com essa mesma chave. As outras chaves virtuais recebem um erro de não encontrado e não os veem nas listas. Os pedidos sem chave virtual não são afetados. A chave criadora é registada mesmo com esta opção desativada, pelo que voltar a ativá-la também abrange os objetos criados entretanto, exceto aqueles cuja chave criadora não pôde ser registada.",
+		"bifrostMcpAllowWrites": "Permitir alterações de configuração pelo MCP do Bifrost",
+		"bifrostMcpAllowWritesHelp": "Disponibiliza como ferramentas em <code0>/v1/mcp</code0> as operações /api do gateway que não são GET. As rotas de inferência, lote e arquivos são disponibilizadas em qualquer caso. Ferramentas destrutivas pedem confirmação aos clientes MCP.",
 		"proofRequired": "Introduza a palavra-passe de administrador atual para confirmar esta alteração. A proteção do dashboard está desativada, pelo que esta sessão não tem sessão iniciada. Se não souber a palavra-passe, use antes o token de configuração.",
 		"skipAccessProfileKeyCreation": "Não criar chaves virtuais de usuário para perfis de acesso",
 		"skipAccessProfileKeyCreationHelp": "Quando ativado, o primeiro perfil de acesso de um usuário não cria uma chave virtual para ele. As chaves que o usuário já possui, ou que você adicionar para ele, continuam sendo governadas pelo perfil enquanto ele tiver um.",
 		"skipAccessProfileKeyDeletion": "Não excluir chaves virtuais de usuário ao remover perfis de acesso",
-		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele."
+		"skipAccessProfileKeyDeletionHelp": "Quando ativado, remover o último perfil de acesso de um usuário mantém as chaves virtuais como chaves comuns, sem os provedores nem o acesso do perfil. Excluir o usuário ainda exclui as chaves dele.",
+		"entityAccessProfileMode": "Modo de perfis de acesso de entidades",
+		"entityAccessProfileModeHelp": "Como os perfis de acesso das equipas, unidades de negócio e clientes de um utilizador se combinam com o acesso do próprio utilizador, como a regra de acesso de um projeto. Alargar: cada um deles amplia o que o utilizador pode alcançar. Restringir: limitam-no, pelo que um pedido só é permitido se o perfil próprio ou a chave virtual do utilizador, um dos seus perfis de equipa ou unidade de negócio e um dos seus perfis de cliente o permitirem. Os grupos sem um perfil ativo são ignorados. Orçamentos e limites de taxa são cobrados da mesma forma nos dois modos.",
+		"entityAccessProfileModeExtend": "Alargar",
+		"entityAccessProfileModeRestrict": "Restringir"
 	},
 	"logging": {
 		"title": "Definições de registos",
@@ -387,6 +399,9 @@
 		"allToolsPerServerInASinglePyFile": "Todas as ferramentas por servidor num único ficheiro .py",
 		"individualPyFileForEachTool": "Ficheiro .py individual para cada ferramenta",
 		"externalClientUrlPlaceholder": "https://bifrost.example.com ou env.BIFROST_OAUTH_REDIRECT_URL",
+		"clientMetadataUrl": "URL do documento de metadados do cliente",
+		"clientMetadataUrlHelp": "Onde você hospeda o documento de metadados de ID de cliente do Bifrost, para servidores MCP que não conseguem acessar o Bifrost. O Bifrost entra neles usando esta URL como seu ID de cliente. Depois de salvar, publique <a1>o documento do Bifrost</a1> nesta URL sem alterações: o <code0>client_id</code0> dele deve corresponder exatamente a esta URL, e ele lista o callback sob a URL de cliente externa acima. Deixe em branco para que o Bifrost sirva o documento. Deve ser uma URL HTTPS com um caminho. Aceita a sintaxe de variáveis de ambiente.",
+		"clientMetadataUrlPlaceholder": "https://public.example.com/bifrost/client.json ou env.BIFROST_CLIENT_METADATA_URL",
 		"externalClientUrlWarning": "Alterar este URL pode quebrar clientes MCP existentes",
 		"headers": "Cabeçalhos",
 		"both": "Ambos",
@@ -402,6 +417,7 @@
 		"toastSyncIntervalInvalid": "O intervalo de sincronização de ferramentas tem de ser zero ou um número positivo.",
 		"toastMaxInstructionsPerServerInvalid": "O comprimento máximo das instruções por servidor tem de ser zero ou um número positivo.",
 		"toastMaxInstructionsTotalInvalid": "O comprimento máximo total das instruções tem de ser zero ou um número positivo.",
+		"toastOpenAPIMaxSpecInvalid": "O limite de tamanho da especificação OpenAPI deve ser um número inteiro entre 0 e {{max}} MiB.",
 		"toastIssuerUrlRequired": "O URL do emissor é obrigatório quando o modo de autenticação MCP é OAuth ou Ambos. Defina-o primeiro em Definições > Segurança.",
 		"oauthPrivateAllowlist": "Lista de permissões de rede privada OAuth",
 		"oauthPrivateAllowlistHelp": "Hosts, endereços IP ou intervalos CIDR (sem esquema nem porta) que a descoberta OAuth, o registo de clientes e os pedidos de token para servidores MCP podem alcançar quando resolvem para um endereço loopback ou privado, p. ex., <code0>localhost</code0>, <code1>127.0.0.1</code1> ou <code2>10.20.0.0/16</code2>. Aplica-se a servidores MCP adicionados com a autenticação do dashboard ativada; alterá-lo requer autenticação do dashboard. Os endereços link-local e de metadados cloud são sempre bloqueados.",
@@ -412,6 +428,8 @@
 		"maxProtocolVersionHelp": "Versão mais recente do protocolo MCP que o Bifrost oferece aos servidores MCP. Auto utiliza a mais recente suportada pelo Bifrost. Cada servidor pode substituir este valor.",
 		"maxInstructionsTotal": "Comprimento máximo total das instruções (bytes)",
 		"maxInstructionsTotalHelp": "Limite máximo para todos os servidores que um chamador pode ver. Em <code0>Gateway and LLM requests</code0>, isto acompanha todos os pedidos com MCP, pelo que aumentá-lo aumenta os tokens por pedido. Defina 0 para usar o valor predefinido de 16384.",
+		"maxOpenAPISpecSize": "Tamanho máximo da especificação OpenAPI (MiB)",
+		"maxOpenAPISpecSizeHelp": "Maior documento aceito por um servidor MCP OpenAPI, seja colado, enviado ou obtido de sua URL. A análise ocupa várias vezes esse tamanho na memória. Defina 0 para usar o padrão de 32.",
 		"allowedRedirectUris": "URIs de redirecionamento permitidos",
 		"allowedRedirectUrisHelp": "URIs de callback exatos que os clientes MCP remotos podem usar, p. ex., <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Adicione <code1>*</code1> para permitir qualquer callback https; os carateres universais parciais não são suportados. Os callbacks loopback e <code2>cursor://anysphere.cursor-mcp</code2> são sempre permitidos. Alterar esta lista requer autenticação do dashboard.",
 		"allowedRedirectUrisPlaceholder": "Adicionar URI de callback (Enter)",
@@ -1040,6 +1058,76 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Ferramentas de configuração",
+			"description": "O Warp pode ler como o Bifrost está configurado. Escolha quais tipos de alteração ele também pode fazer; cada um continua aguardando a confirmação do usuário.",
+			"reads": "Ler a configuração",
+			"readsHelp": "Provedores, chaves virtuais, equipes, orçamentos, regras de roteamento e o resto.",
+			"alwaysOn": "Sempre ativo",
+			"size_one": "{{count}} ferramenta · ~{{tokens}} tokens",
+			"size_other": "{{count}} ferramentas · ~{{tokens}} tokens",
+			"kinds": {
+				"create": {
+					"label": "Criar",
+					"help": "Adicionar chaves virtuais, equipes, regras de roteamento e mais."
+				},
+				"update": {
+					"label": "Atualizar",
+					"help": "Alterar recursos existentes, como o orçamento de uma chave virtual."
+				},
+				"delete": {
+					"label": "Excluir",
+					"help": "Remover recursos. Cada exclusão avisa que não pode ser desfeita."
+				},
+				"action": {
+					"label": "Outras ações",
+					"help": "Executar operações como testar um provedor ou limpar um cache."
+				}
+			},
+			"notLoaded": "Os tipos de alteração podem ser escolhidos quando o Bifrost MCP estiver carregado.",
+			"writesOff": "As alterações estão desativadas para todo o Bifrost MCP. Ative <link0>Permitir alterações de configuração pelo Bifrost MCP</link0> nas configurações de segurança para escolhê-las para o Warp.",
+			"contextWarning": "Cada tipo ativado é enviado com cada solicitação do Warp: cerca de {{tokens}} tokens de ferramentas com essas configurações. Modelos com janela de contexto menor podem parar de responder.",
+			"contextReadsOnly": "A leitura adiciona cerca de {{tokens}} tokens de ferramentas a cada solicitação do Warp."
+		},
+		"mcpNotice": {
+			"title": "O Warp agora funciona por meio do Bifrost MCP",
+			"intro": "Veja o que muda e as configurações que controlam isso.",
+			"changeReads": "Lê sua configuração: provedores, chaves virtuais, equipes, orçamentos, regras de roteamento e mais.",
+			"changeWrites": "Faz apenas as alterações que um administrador permite nas configurações do Warp, cada uma após a confirmação do usuário. Por padrão, só lê.",
+			"changeAccess": "Usa as permissões de cada usuário e envia o que lê ao provedor de modelos do Warp, sem os valores das chaves virtuais.",
+			"settingsHeading": "Suas configurações",
+			"loading": "Lendo configurações…",
+			"settingsUnreadable": "Sua função não pode ler as configurações do gateway. Peça a um administrador para revisá-las em Configurações do cliente e Segurança.",
+			"settingsLoadFailed": "Não foi possível ler as configurações do gateway: {{error}}",
+			"bifrostUrl": "URL do Bifrost",
+			"notSet": "Não definido",
+			"bifrostUrlSet": "As ferramentas de configuração são carregadas a partir deste endereço.",
+			"bifrostUrlMissing": "Sem ela, o Bifrost MCP não carrega e o Warp não responde. Defina-a em Configurações do cliente para ativar o Warp.",
+			"openapiUrl": "Especificação OpenAPI",
+			"openapiDefault": "Especificação publicada para esta versão",
+			"openapiDefaultHint": "Obtida do GitHub. Em uma instalação sem acesso à internet, aponte a URL do OpenAPI para uma cópia local, ou as ferramentas de configuração não serão carregadas.",
+			"changes": "Alterações que o Warp pode fazer",
+			"changesReadsOnly": "Somente leitura",
+			"changesHint": "Escolhidas nas <link0>configurações do Warp</link0>, em Ferramentas de configuração. Cada tipo permitido aumenta cada solicitação do Warp.",
+			"changesCeiling": "As alterações estão desativadas para o Bifrost MCP nas configurações de segurança, então o Warp só lê. Os tipos são escolhidos nas <link0>configurações do Warp</link0>.",
+			"outcome": {
+				"off": "Com essas configurações, o Warp não responde. Defina a URL do Bifrost para ativá-lo.",
+				"reads": "Com essas configurações, o Warp responde a perguntas sobre tráfego e configuração e não pode alterar nada.",
+				"reads_and_writes": "Com essas configurações, o Warp responde a perguntas sobre tráfego e configuração e pode fazer as alterações permitidas nas configurações do Warp após o usuário confirmar cada uma."
+			},
+			"docsLink": "Ler as notas de atualização",
+			"docsSetupLink": "Como configurar o Bifrost MCP",
+			"openClientSettings": "Abrir Configurações do cliente",
+			"later": "Lembrar mais tarde",
+			"gotIt": "Entendi",
+			"bannerDescription": "O Warp agora lê sua configuração e pode fazer as alterações que um administrador permite após a confirmação do usuário. Revise as configurações que controlam isso.",
+			"review": "Revisar",
+			"setupTitle": "O Warp precisa do Bifrost MCP",
+			"setupIntro": "O Warp não responderá até que o Bifrost MCP esteja configurado.",
+			"bannerSetupDescription": "O Warp não responde até que o Bifrost MCP esteja configurado.",
+			"setUp": "Configurar",
+			"notLoaded": "A URL do Bifrost está definida, mas o Bifrost MCP não carregou. Normalmente a especificação OpenAPI não pôde ser baixada; o aviso [Bifrost MCP] no log do servidor informa o motivo."
+		},
 		"saved": "Configuração do Warp guardada.",
 		"badRange": "Escolha um intervalo de tempo de backfill válido.",
 		"backfillStarted": "Backfill de embeddings do Warp iniciado.",

@@ -19,6 +19,7 @@
 		"budgetsLimits": "予算と制限",
 		"routingRules": "ルーティングルール",
 		"complexityRouter": "複雑度ルーター",
+		"routers": "ルーター",
 		"circuitBreaker": "サーキットブレーカー",
 		"pricingOverrides": "料金オーバーライド",
 		"modelSettings": "モデル設定",
@@ -431,6 +432,10 @@
 			"indexStatusUnavailable": "インデックスの状態を取得できません",
 			"askAdminTurnOn": "管理者に Warp を有効にするよう依頼してください。",
 			"askAdminSetUp": "管理者に Warp をセットアップするよう依頼してください。",
+			"needsBifrostMCP": "Warp には Bifrost MCP が必要です",
+			"needsBifrostMCPHint": "Warp がこのデプロイの構成を読み取れるように、Bifrost URL を設定してください。",
+			"setUpBifrostMCP": "セットアップ",
+			"askAdminBifrostMCP": "管理者に Warp 用の Bifrost MCP をセットアップするよう依頼してください。",
 			"sendsWhenFinished": "この回答の完了後に送信されます",
 			"remove": "削除"
 		},
@@ -545,6 +550,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "このデプロイでは Warp がセットアップされていません。",
+				"cause": "Warp はこのデプロイの構成を読み取るために Bifrost MCP を必要としますが、読み込まれていません。",
+				"suggestions": ["管理者にクライアント設定で Bifrost URL を設定するよう依頼してください。"]
+			},
 			"not_configured": {
 				"summary": "Warp はまだ設定されていません。",
 				"cause": "プロバイダーとモデルが未設定か、設定で Warp がオフになっています。",

@@ -77,7 +77,8 @@
 		"modelLimits": "模型限额",
 		"agent": "Agent",
 		"relay": "中继",
-		"relays": "中继"
+		"relays": "中继",
+		"modelRouters": "路由器"
 	},
 	"aboutField": "关于{{field}}",
 	"thisField": "此字段",
@@ -121,7 +122,8 @@
 		"searching": "正在搜索…",
 		"loadingMore": "正在加载更多…",
 		"useModel": "使用 <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · 已阻止 {{blocked}}"
+		"grantSummaryBlocked": "{{allowed}} · 已阻止 {{blocked}}",
+		"templateUnknownGroup": "引用了模式中未定义的捕获组 {{group}}"
 	},
 	"providerSelect": {
 		"select": "选择供应商",
@@ -507,6 +509,9 @@
 		"maxNumber": "不得大于 {{maximum}}",
 		"maxChars": "不得超过 {{maximum}} 个字符",
 		"validUrl": "必须是有效的 URL",
+		"publicUrlNoUserinfoQueryOrFragment": "不得包含用户信息、查询参数或片段",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "必须是 http(s) URL 或相对于应用目录的路径",
+		"openapiUrlMustStayInAppDir": "必须是相对于应用目录且不超出该目录的路径",
 		"validEmail": "必须是有效的邮箱",
 		"grpcHostPortFormat": "gRPC 地址必须采用 <host>:<port> 格式（例如 {{example}}）",
 		"invalidInput": "输入无效",
@@ -581,7 +586,8 @@
 		"baseUrlIsRequiredForThisProvider": "此提供商需要填写基础 URL",
 		"baseUrlMustStartWithHttpOrHttps": "基础 URL 必须以 http:// 或 https:// 开头",
 		"atLeastOneApiKeyIsRequired": "至少需要一个 API 密钥",
-		"apiKeyValueCannotBeEmpty": "API 密钥值不能为空"
+		"apiKeyValueCannotBeEmpty": "API 密钥值不能为空",
+		"deploymentPatternInvalid": "部署模式无效，或其模型 ID 使用了模式中未定义的捕获组"
 	},
 	"permissionDenied": {
 		"create": "你没有创建{{entity}}的权限。",

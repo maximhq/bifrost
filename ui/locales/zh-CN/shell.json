@@ -19,6 +19,7 @@
 		"budgetsLimits": "预算与限额",
 		"routingRules": "路由规则",
 		"complexityRouter": "复杂度路由器",
+		"routers": "路由器",
 		"circuitBreaker": "熔断器",
 		"pricingOverrides": "定价覆盖",
 		"modelSettings": "模型设置",
@@ -431,6 +432,10 @@
 			"indexStatusUnavailable": "索引状态不可用",
 			"askAdminTurnOn": "请联系管理员启用 Warp。",
 			"askAdminSetUp": "请联系管理员设置 Warp。",
+			"needsBifrostMCP": "Warp 需要 Bifrost MCP",
+			"needsBifrostMCPHint": "设置 Bifrost URL，以便 Warp 读取此部署的配置。",
+			"setUpBifrostMCP": "设置",
+			"askAdminBifrostMCP": "请联系管理员为 Warp 设置 Bifrost MCP。",
 			"sendsWhenFinished": "此回答完成后发送",
 			"remove": "移除"
 		},
@@ -545,6 +550,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "此部署尚未设置 Warp。",
+				"cause": "Warp 需要 Bifrost MCP 才能读取此部署的配置，但它尚未加载。",
+				"suggestions": ["请联系管理员在客户端设置中设置 Bifrost URL。"]
+			},
 			"not_configured": {
 				"summary": "Warp 尚未配置。",
 				"cause": "未设置供应商和模型，或在设置中关闭了 Warp。",

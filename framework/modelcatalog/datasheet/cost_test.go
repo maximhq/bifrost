@@ -1977,6 +1977,36 @@ func TestComputeSpeechCost_TokenFallback(t *testing.T) {
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
+// A token-billed TTS model (Gemini TTS, gpt-4o-mini-tts) has no per-character rate; the input is the
+// tokens the provider reported, not the character count times a per-token price.
+func TestComputeSpeechCost_ReportedTokensBeatCharactersWithoutPerCharacterRate(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 15*0.0000005+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_PerCharacterRateStillWins(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	p.InputCostPerCharacter = bifrost.Ptr(0.00003)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 15, CompletionTokens: 100, TotalTokens: 115}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.00003+100*0.00001, cost, 1e-12)
+}
+
+func TestComputeSpeechCost_CharactersAreUsedWhenNoTokensAreReported(t *testing.T) {
+	p := chatPricing(0.0000005, 0.00001)
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 100, TotalTokens: 100}
+
+	cost := computeSpeechCostTotal(&p, usage, nil, 77, serviceTier{})
+
+	assert.InDelta(t, 77*0.0000005+100*0.00001, cost, 1e-12)
+}
+
 func TestComputeSpeechCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
 	p.InputCostPerTokenAbove200kTokens = bifrost.Ptr(0.000006)
@@ -3516,6 +3546,59 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
+// TestCalculateCostExcludesExternalGuardrailEstimatedCost verifies an external
+// guardrail service call's estimated cost is display-only: it never reaches the
+// request cost, the guardrail cost, or (through CalculateCost) budgets, while the
+// LLM judge call beside it is still billed.
+func TestCalculateCostExcludesExternalGuardrailEstimatedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKeyNormalized("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	externalCall := schemas.BifrostGuardrailJudgeCall{
+		GuardrailProvider: "vendor",
+		UsageUnits:        map[string]int{"content_policy_units": 3},
+		EstimatedCost:     0.5, // Large on purpose: any leak would dominate the totals.
+	}
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
+			{
+				JudgeProvider:    schemas.Anthropic,
+				JudgeModel:       "claude-judge",
+				PromptTokens:     20,
+				CompletionTokens: 5,
+				TotalTokens:      25,
+			},
+			externalCall,
+		},
+	}
+
+	// Main 0.0002 plus judge 0.00008; the external call adds nothing.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.00008, bd.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.InDelta(t, 0.00008, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00028, bd.TotalCost, 1e-12)
+
+	// The blocked-request path prices guardrail metadata directly.
+	assert.Zero(t, s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{externalCall},
+	}, nil))
+}
+
 // TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
 func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 	pricing := chatPricing(0.00001, 0)
@@ -4330,6 +4413,28 @@ func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "my-deployment"}}, schemas.ChatCompletionRequest, LookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
+}
+
+func TestResolvePricing_PatternAliasPricesExpandedModelID(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("anthropic.claude-opus-5", "bedrock", "chat"):    chatPricing(0.000005, 0.000025),
+		makeKeyNormalized("us.anthropic.claude-opus-5", "bedrock", "chat"): chatPricing(0.0000055, 0.0000275),
+	})
+	aliases := schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "us.anthropic.$1"}}
+	ac := aliases.ResolveConfig("claude-opus-5")
+	require.NotNil(t, ac)
+
+	// The regional row wins over the base row the requested name falls back to.
+	info := schemas.RoutingInfo{Provider: "bedrock", Model: "claude-opus-5", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: ac.ModelID, ModelName: ac.ModelName}}
+	p := s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+
+	// An upstream id with no row of its own is priced from the requested name.
+	info.ResolvedKeyAlias.ModelID = "global.anthropic.claude-opus-5"
+	p = s.resolvePricing(info, schemas.ChatCompletionRequest, LookupScopes{})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {

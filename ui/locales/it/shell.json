@@ -19,6 +19,7 @@
 		"budgetsLimits": "Budget e limiti",
 		"routingRules": "Regole di routing",
 		"complexityRouter": "Router di complessità",
+		"routers": "Router",
 		"circuitBreaker": "Circuit Breaker",
 		"pricingOverrides": "Override dei prezzi",
 		"modelSettings": "Impostazioni modelli",
@@ -431,6 +432,10 @@
 			"indexStatusUnavailable": "Stato dell'indice non disponibile",
 			"askAdminTurnOn": "Chiedi a un amministratore di attivare Warp.",
 			"askAdminSetUp": "Chiedi a un amministratore di configurare Warp.",
+			"needsBifrostMCP": "Warp richiede il Bifrost MCP",
+			"needsBifrostMCPHint": "Imposta l'URL di Bifrost perché Warp possa leggere la configurazione di questo deployment.",
+			"setUpBifrostMCP": "Configura",
+			"askAdminBifrostMCP": "Chiedi a un amministratore di configurare il Bifrost MCP per Warp.",
 			"sendsWhenFinished": "Viene inviato al termine di questa risposta",
 			"remove": "Rimuovi"
 		},
@@ -545,6 +550,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp non è configurato su questo deployment.",
+				"cause": "Warp richiede il Bifrost MCP per leggere la configurazione di questo deployment, e non è caricato.",
+				"suggestions": ["Chiedi a un amministratore di impostare l'URL di Bifrost in Impostazioni client."]
+			},
 			"not_configured": {
 				"summary": "Warp non è ancora configurato.",
 				"cause": "Nessun fornitore e modello impostati, oppure Warp è disattivato nelle impostazioni.",

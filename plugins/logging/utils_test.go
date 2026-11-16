@@ -56,4 +56,20 @@ func TestExtractInputHistoryDecisionInput(t *testing.T) {
 	assert.Equal(t, "[input_audio]", *blocks[2].Text)
 	assert.Equal(t, `{"camera":"r-cam"}`, *blocks[3].Text, "a structured text part is logged as JSON")
 	assert.Equal(t, "data:image/png;base64,iVBORw0KGgpDQU0=", blocks[4].ImageURLStruct.URL, "an image sent by reference is logged as an image")
+
+	files := history(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+		{Type: schemas.DecisionInputPartTypeFile, MimeType: schemas.Ptr("video/mp4"), Name: schemas.Ptr("clip"), Data: schemas.DecisionData{File: []byte("MP4-BYTES")}},
+		{Type: schemas.DecisionInputPartTypeFile, MimeType: schemas.Ptr("audio/mpeg"), URL: schemas.Ptr("https://example.com/call.mp3")},
+		{Type: schemas.DecisionInputPartTypeFile, MimeType: schemas.Ptr("application/pdf"), Data: schemas.DecisionData{File: []byte("%PDF")}},
+	}}}}})
+	require.Len(t, files, 1)
+	fileBlocks := files[0].Content.ContentBlocks
+	require.Len(t, fileBlocks, 3)
+	for _, block := range fileBlocks {
+		assert.Equal(t, schemas.ChatContentBlockTypeFile, block.Type, "a file is logged as a chat file block")
+		require.NotNil(t, block.File)
+	}
+	assert.Equal(t, schemas.ChatInputFile{FileData: schemas.Ptr("TVA0LUJZVEVT"), Filename: schemas.Ptr("clip"), FileType: schemas.Ptr("video/mp4")}, *fileBlocks[0].File, "a multipart file keeps its bytes and part name")
+	assert.Equal(t, schemas.ChatInputFile{FileURL: schemas.Ptr("https://example.com/call.mp3"), FileType: schemas.Ptr("audio/mpeg")}, *fileBlocks[1].File, "a file by URL is logged as its URL")
+	assert.Equal(t, schemas.ChatInputFile{FileData: schemas.Ptr("JVBERg=="), FileType: schemas.Ptr("application/pdf")}, *fileBlocks[2].File)
 }

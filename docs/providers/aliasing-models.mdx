@@ -122,11 +122,77 @@ Bifrost rejects an aliases map that violates any of these:
 - **No empty strings** - both the alias name and `model_id` must be non-empty
 - **No leading or trailing whitespace** on either side
 - **No duplicate alias names** (checked case-insensitively) - `"GPT-4o"` and `"gpt-4o"` cannot both be keys in the same map
+- **Valid patterns** - a `regex:` alias name must compile as RE2, and its `model_id` and `model_name` may only reference capture groups the pattern defines (see [Pattern aliases](#pattern-aliases))
 - **No provider mismatch on sub-configs** - an Azure-specific override (`api_version`, `endpoint`, …) can only appear on an alias whose owning key is an Azure key, and likewise for Vertex / Bedrock / Replicate
 
 ### Case-insensitive matching
 
 Alias lookup is case-insensitive. If your map has `"GPT-4O": "gpt-4o-2024-11-20"` and a request comes in with `model: "gpt-4o"`, it resolves correctly. Aliases are stored as-is but matched without regard to case.
+
+### Pattern aliases
+
+An alias name that starts with `regex:` is a pattern. One row then covers every model name that matches, so you do not add a row for each model. The common case is a Bedrock key where every Claude model goes through a `global.` inference profile:
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-claude",
+          "weight": 1,
+          "models": ["regex:claude-.*"],
+          "aliases": {
+            "regex:(claude-.*)": { "model_id": "global.anthropic.$1" }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+A request for `claude-opus-5` goes to Bedrock as `global.anthropic.claude-opus-5`. The log row records `global.anthropic.claude-opus-5` as the model and `claude-opus-5` as the alias. Cost comes from the `global.anthropic.claude-opus-5` pricing row.
+
+The pattern is RE2, case-insensitive, and has to match the whole requested model name. That is the same rule `regex:` entries follow in `models` and `blacklisted_models`. In `model_id` and `model_name`, `$1` or `${1}` inserts the first capture group and `${name}` inserts a named group `(?P<name>...)`. Write `$$` for a literal dollar sign.
+
+| Behaviour | Rule |
+|-----------|------|
+| Which alias wins | An exact name always beats a pattern. Among patterns, Bifrost tries the longest pattern text first, then alphabetical order. |
+| `model_name` | Empty unless you set it, the same as on an exact alias. Cost lookup then tries the expanded `model_id` first and falls back to the requested name, so a `us.anthropic.$1` template is priced from the `us.` row. Set a template such as `$1` when the upstream ID has no pricing row, for example an opaque deployment name. |
+| Other fields | `model_family`, `region` and the provider overrides apply to every model the pattern matches. |
+| Allow list | A pattern alias does not allow a model by itself. The key's `models` list must also admit the requested name, with `*` or a matching `regex:` entry. |
+| Block list | `blacklisted_models` is checked against the requested name, never the upstream ID. Block `claude-opus-5`, not `global.anthropic.claude-opus-5`. |
+| Model listing | `/v1/models` does not list the names a pattern could match. See [Pattern aliases and model listing](#pattern-aliases-and-model-listing). |
+
+To pin one model to a different target, add an exact row next to the pattern. With `"claude-opus-4-8": "us.anthropic.claude-opus-4-8"` in the same map, that one name uses the `us.` profile and every other Claude model still follows the pattern.
+
+Bifrost rejects a pattern that does not compile, an empty pattern, `regex:*`, and a template that references a capture group the pattern does not define. Watch for `$1x`. Go reads it as a group named `1x`, so write `${1}x`.
+
+#### Pattern aliases and model listing
+
+`/v1/models` lists what the provider returns, filtered by the key's `models` list. Bifrost cannot enumerate the names a pattern could match, so a pattern alias adds nothing to the list and does not rename the entries the provider returns.
+
+For the Bedrock key above, that has a side effect. Bedrock returns `anthropic.claude-opus-5`, and `regex:claude-.*` has to match the whole name, so the key lists no Claude models even though a request for `claude-opus-5` works. What you see depends on the `models` list:
+
+| `models` on the key | Claude entries in `/v1/models` | A request for `anthropic.claude-opus-5` |
+|---------------------|--------------------------------|------------------------------------------|
+| `["regex:claude-.*"]` | None | Refused, the key does not allow that name |
+| `["*"]` | `anthropic.claude-opus-5` | Sent upstream unchanged, because `(claude-.*)` does not match it |
+| `["claude-opus-5"]` | `claude-opus-5` | Refused, the key does not allow that name |
+
+If clients pick model names from `/v1/models`, make the vendor prefix optional in both the allow list and the pattern:
+
+```json
+{
+  "models": ["regex:(?:anthropic\\.)?claude-.*"],
+  "aliases": {
+    "regex:(?:anthropic\\.)?(claude-.*)": { "model_id": "global.anthropic.$1" }
+  }
+}
+```
+
+The key then lists `anthropic.claude-opus-5`. Both `claude-opus-5` and `anthropic.claude-opus-5` go to Bedrock as `global.anthropic.claude-opus-5`.
 
 ### Tracking in responses
 
