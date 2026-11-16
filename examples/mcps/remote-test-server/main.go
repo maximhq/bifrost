@@ -157,6 +157,19 @@ func newMCPServer(instructions string) *server.MCPServer {
 	s.AddTool(chartTool(), chartHandler)
 	s.AddTool(mcp.NewTool("archive", mcp.WithDescription("Return a report, an archive, a text file and a diagram")), archiveHandler)
 
+	// Dedicated provider-harness schema parity probe. This is a read-only,
+	// non-executing tool: the harness uses tool_choice=none and inspects only
+	// the provider-bound request's declaration, never calls this handler.
+	closedSchemaTool := mcp.NewTool(
+		"closed_schema_probe",
+		mcp.WithDescription("Read-only schema parity probe; no execution required"),
+		mcp.WithString("probe", mcp.Required(), mcp.Description("Synthetic probe label")),
+	)
+	closedSchemaTool.InputSchema.AdditionalProperties = false
+	s.AddTool(closedSchemaTool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("schema parity fixture"), nil
+	})
+
 	s.AddTool(mcp.NewTool(
 		"echo",
 		mcp.WithDescription("Echo back the input message"),
