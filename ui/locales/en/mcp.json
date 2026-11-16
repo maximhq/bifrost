@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "The file exceeds the {{size}} limit for OpenAPI documents.",
+			"fileTooLargeBodyCap": "The file is too large to send: requests are capped at {{size}} by client.max_request_body_size_mb. Raise it and restart Bifrost to upload a larger document.",
 			"fileReadFailed": "The file could not be read: {{message}}",
 			"fileEmpty": "The file is empty.",
 			"fetch": "Fetch",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "Bifrost fetches the document once and stores it with the server; the URL is kept as its source.",
 			"chooseFile": "Choose file",
 			"uploadHelp": "JSON or YAML, up to {{size}}. The file is read in your browser and stored with the server.",
+			"uploadHelpBodyCap": "JSON or YAML, up to about {{size}}: requests are capped by client.max_request_body_size_mb, which is below the OpenAPI document limit. The file is read in your browser and stored with the server.",
+			"uploadHelpNoLimit": "JSON or YAML. The file is read in your browser and stored with the server.",
 			"parsing": "Parsing the document…",
 			"staleNotice": "The URL or server name changed since the document was fetched. Fetch it again to refresh the operations below."
 		},

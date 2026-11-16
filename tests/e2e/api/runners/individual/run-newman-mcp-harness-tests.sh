@@ -20,6 +20,11 @@
 # while the run goes on. A test that changes it resets the library server, which
 # restores this catalog.
 #
+# bifrost_url is the server's own address: the Bifrost MCP on /v1/mcp (and Warp's
+# management tools, which reach it in process) take their host from it and do not run without it.
+# The vector store is chromem in memory, in process: Warp cannot be configured without one, and the
+# WMG tests configure it.
+#
 # The openai, anthropic and gemini providers point at the fleet's LLM surface
 # (server llm), which answers model requests with replies each test scripts and
 # records what it was sent, and the pricing and model-parameter datasheets come
@@ -289,10 +294,12 @@ write_config() {
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
-    "max_request_body_size_mb": 100
+    "max_request_body_size_mb": 100,
+    "bifrost_url": "http://127.0.0.1:$PORT"
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
+  "vector_store": { "enabled": true, "type": "chromem", "config": {} },
   "mcp": { "client_configs": [
     { "client_id": "adm30-p", "name": "adm30_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm30/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
     { "client_id": "adm35-p", "name": "adm35_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm35/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
