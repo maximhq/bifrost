@@ -403,6 +403,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeySSEReaderFactory,
 		// The load balancer's record of the attempt that just failed.
 		schemas.BifrostContextKeyLoadBalancerAttempt,
+		// A fallback model decides its own structured-output path.
+		schemas.BifrostContextKeyStructuredOutputGrammarRetry,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{

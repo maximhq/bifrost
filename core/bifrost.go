@@ -7382,6 +7382,12 @@ func executeRequestWithRetries[T any](
 	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
+	// True once the request was re-sent with the synthetic structured-output tool; granted once.
+	forcedStructuredOutputTool := false
+	// True iff the previous attempt was a native structured-output request the provider rejected
+	// and the next one goes out with the synthetic tool; the payload changes, so there is nothing
+	// to wait out.
+	lastWasStructuredOutputForceTool := false
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -7577,7 +7583,7 @@ func executeRequestWithRetries[T any](
 			// credential swap or a stripped replay.
 			ctxEnded := false
 			stage := "before retry dispatch"
-			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip || lastWasStructuredOutputForceTool) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				ctxEnded = waitRetryBackoff(ctx, backoff)
@@ -7932,6 +7938,20 @@ func executeRequestWithRetries[T any](
 				logger.Warn("upstream returned 400 for a request to %s/%s that replays encrypted reasoning; retrying once without it in case the token is the cause: %s", providerKey, model, errMessage)
 			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
+		}
+
+		// A provider marks a native structured-output request whose schema it rejected; the same
+		// request works with the schema as the synthetic tool, so it gets one more attempt on the
+		// same key in that form. Once per request: a body that keeps its native schema cannot loop.
+		lastWasStructuredOutputForceTool = false
+		if !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+			forcedStructuredOutputTool = true
+			lastWasStructuredOutputForceTool = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("%s/%s rejected the native structured-output schema; retrying once with it as a tool: %s", providerKey, model, errMessage)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Native structured-output schema rejected by %s/%s; re-sending once with the schema as a tool", providerKey, model))
 		}
 
 		if !shouldRetry {
