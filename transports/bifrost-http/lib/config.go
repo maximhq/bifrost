@@ -1909,9 +1909,9 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	return nil
 }
 
-// dropDuplicateTelemetryDestinations keeps the first of each Claude Code telemetry collector listed
-// more than once and warns about the rest, so startup neither fails nor persists the duplicates.
-// PUT /api/config still refuses them.
+// dropDuplicateTelemetryDestinations skips every Claude Code telemetry collector listed more than
+// once, with a warning, so startup neither fails nor persists them; forwarding is paused when no
+// collector is left. PUT /api/config still refuses them.
 func dropDuplicateTelemetryDestinations(cc *configstore.ClientConfig) {
 	if cc == nil {
 		return
@@ -1921,7 +1921,11 @@ func dropDuplicateTelemetryDestinations(cc *configstore.ClientConfig) {
 		return
 	}
 	for _, i := range gw.Telemetry.DropDuplicateDestinations() {
-		logger.Warn("skipping oauth2_server_config.gateways.claude_code.telemetry.destinations[%d]: its endpoint repeats an earlier collector; list each collector once", i)
+		logger.Warn("skipping oauth2_server_config.gateways.claude_code.telemetry.destinations[%d]: its endpoint is listed more than once, so every entry for it is skipped; list each collector once", i)
+	}
+	if gw.Telemetry.Enabled && len(gw.Telemetry.Destinations) == 0 {
+		gw.Telemetry.Enabled = false
+		logger.Warn("pausing oauth2_server_config.gateways.claude_code.telemetry: no collector is left after skipping repeated ones")
 	}
 }
 

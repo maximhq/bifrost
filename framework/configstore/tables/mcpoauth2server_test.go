@@ -54,8 +54,8 @@ func TestClientGatewayTelemetryConfig_Validate(t *testing.T) {
 	}
 }
 
-// TestClientGatewayTelemetryConfig_DropDuplicateDestinations pins that startup keeps the first
-// of each repeated collector, matching endpoints the way Validate does.
+// TestClientGatewayTelemetryConfig_DropDuplicateDestinations pins that startup drops every entry
+// of a repeated collector, matching endpoints the way Validate does.
 func TestClientGatewayTelemetryConfig_DropDuplicateDestinations(t *testing.T) {
 	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://a.example.com")
 	dest := func(endpoint string) ClientGatewayTelemetryDestination {
@@ -64,8 +64,8 @@ func TestClientGatewayTelemetryConfig_DropDuplicateDestinations(t *testing.T) {
 	cfg := &ClientGatewayTelemetryConfig{Destinations: []ClientGatewayTelemetryDestination{
 		dest("https://a.example.com"), dest("env.BIFROST_TEST_OTEL_ENDPOINT"), dest("https://a.example.com "), {}, dest("env.BIFROST_TEST_OTEL_ENDPOINT"), {},
 	}}
-	assert.Equal(t, []int{2, 4}, cfg.DropDuplicateDestinations())
-	require.Len(t, cfg.Destinations, 4)
+	assert.Equal(t, []int{0, 1, 2, 4}, cfg.DropDuplicateDestinations())
+	require.Len(t, cfg.Destinations, 2, "only the two entries without an endpoint are left")
 	assert.NoError(t, cfg.Validate("telemetry"), "what is left passes the duplicate check")
 	assert.Nil(t, cfg.DropDuplicateDestinations(), "nothing more to drop")
 	assert.Nil(t, (*ClientGatewayTelemetryConfig)(nil).DropDuplicateDestinations())

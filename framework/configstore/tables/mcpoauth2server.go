@@ -199,23 +199,26 @@ func (c *ClientGatewayTelemetryConfig) Validate(path string) error {
 	return nil
 }
 
-// DropDuplicateDestinations removes each collector whose endpoint repeats an earlier one and
+// DropDuplicateDestinations removes every collector whose endpoint is listed more than once and
 // returns the indexes removed. Startup uses it so a config.json listing a collector twice still
-// boots on the first entry, where Validate would refuse the whole block.
+// boots, where Validate would refuse the whole block; no entry is kept, since which one's headers
+// are meant cannot be told (as duplicate agents are skipped).
 func (c *ClientGatewayTelemetryConfig) DropDuplicateDestinations() []int {
 	if c == nil {
 		return nil
 	}
+	counts := make(map[string]int, len(c.Destinations))
+	for _, d := range c.Destinations {
+		if key, ok := d.endpointKey(); ok {
+			counts[key]++
+		}
+	}
 	var dropped []int
-	seen := make(map[string]struct{}, len(c.Destinations))
 	kept := make([]ClientGatewayTelemetryDestination, 0, len(c.Destinations))
 	for i, d := range c.Destinations {
-		if key, ok := d.endpointKey(); ok {
-			if _, dup := seen[key]; dup {
-				dropped = append(dropped, i)
-				continue
-			}
-			seen[key] = struct{}{}
+		if key, ok := d.endpointKey(); ok && counts[key] > 1 {
+			dropped = append(dropped, i)
+			continue
 		}
 		kept = append(kept, d)
 	}
