@@ -1059,6 +1059,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Herramientas de configuración",
+			"description": "Warp puede leer cómo está configurado Bifrost. Elige qué tipos de cambio puede hacer además; cada uno sigue esperando a que el usuario lo confirme.",
+			"reads": "Leer la configuración",
+			"readsHelp": "Proveedores, claves virtuales, equipos, presupuestos, reglas de enrutamiento y el resto.",
+			"alwaysOn": "Siempre activo",
+			"size_one": "{{count}} herramienta · ~{{tokens}} tokens",
+			"size_other": "{{count}} herramientas · ~{{tokens}} tokens",
+			"kinds": {
+				"create": {
+					"label": "Crear",
+					"help": "Añadir claves virtuales, equipos, reglas de enrutamiento y más."
+				},
+				"update": {
+					"label": "Actualizar",
+					"help": "Cambiar recursos existentes, como el presupuesto de una clave virtual."
+				},
+				"delete": {
+					"label": "Eliminar",
+					"help": "Quitar recursos. Cada eliminación indica que no se puede deshacer."
+				},
+				"action": {
+					"label": "Otras acciones",
+					"help": "Ejecutar operaciones como probar un proveedor o vaciar una caché."
+				}
+			},
+			"notLoaded": "Los tipos de cambio se pueden elegir cuando el Bifrost MCP esté cargado.",
+			"writesOff": "Los cambios están desactivados para todo el Bifrost MCP. Activa <link0>Permitir cambios de configuración a través del Bifrost MCP</link0> en los ajustes de seguridad para elegirlos para Warp.",
+			"contextWarning": "Cada tipo que actives se envía con cada solicitud de Warp: unos {{tokens}} tokens de herramientas con estos ajustes. Los modelos con una ventana de contexto más pequeña pueden dejar de responder.",
+			"contextReadsOnly": "La lectura añade unos {{tokens}} tokens de herramientas a cada solicitud de Warp."
+		},
 		"saved": "Configuración de Warp guardada.",
 		"badRange": "Elige un intervalo de tiempo de backfill válido.",
 		"backfillStarted": "Backfill de embeddings de Warp iniciado.",
