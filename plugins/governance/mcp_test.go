@@ -2,14 +2,15 @@ package governance
 
 import (
 	"context"
-	"math/rand"
-	"slices"
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,32 +23,31 @@ func toolsByClient(permits []schemas.MCPPermit) map[string][]string {
 	return m
 }
 
+// vmcp builds a virtual MCP definition with the given name, enabled flag and tool specs.
 func vmcp(name string, enabled bool, specs ...configstoreTables.MCPToolSpec) configstoreTables.TableVirtualMCP {
 	return configstoreTables.TableVirtualMCP{Name: name, Enabled: enabled, ParsedTools: specs}
 }
 
+// spec builds a virtual MCP tool spec naming one client and its tools.
 func spec(clientID string, tools ...string) configstoreTables.MCPToolSpec {
 	return configstoreTables.MCPToolSpec{MCPClientID: clientID, ToolNames: tools}
 }
 
-// permitFor resolves vk's permit with the given assigned Virtual MCPs cached, the given client-name
-// resolution, and the given allowed-by-default clients.
-func permitFor(vk *configstoreTables.TableVirtualKey, assigned []configstoreTables.TableVirtualMCP, names, allowedByDefault map[string]string) *grant.Permit {
-	gs := &LocalGovernanceStore{
-		inMemoryStore: &mockInMemoryStore{clientNames: names, allowedByDefaultClients: allowedByDefault},
-		logger:        NewMockLogger(),
+// permitFor resolves vk's permit with the given Virtual MCPs assigned to it, the given client-name
+// resolution, and the given allowed-by-default clients. The definitions are written as rows (each
+// under its own name, since names are unique) and the key's record names them.
+func permitFor(t testing.TB, vk *configstoreTables.TableVirtualKey, assigned []configstoreTables.TableVirtualMCP, names, allowedByDefault map[string]string) *grant.Permit {
+	t.Helper()
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, &liveFixture{clientNames: names, allowedByDefaultClients: allowedByDefault})
+	rec := virtualKeyRecord(vk)
+	for i := range assigned {
+		def := assigned[i]
+		def.Name = fmt.Sprintf("%s-%d", def.Name, i)
+		def.EndpointSlug = ""
+		rec.VirtualMCPIDs = append(rec.VirtualMCPIDs, h.putVirtualMCP(&def))
 	}
-	if len(assigned) > 0 {
-		ids := make([]uint, len(assigned))
-		for i := range assigned {
-			def := assigned[i]
-			def.ID = uint(i + 1) // distinct ids; the definitions cache is keyed by id
-			gs.virtualMCPs.Store(def.ID, &def)
-			ids[i] = def.ID
-		}
-		gs.virtualMCPIDsByVK.Store(vk.ID, ids)
-	}
-	return gs.permitForVirtualKey(emptyCtx(), vk)
+	gs := h.mustGovernanceStore(NewMockLogger(), nil)
+	return gs.permitForVirtualKey(emptyCtx(), rec)
 }
 
 // TestPermitForVirtualKey_VirtualMCPsMirrorConfigs pins that an assigned Virtual MCP grants exactly
@@ -58,38 +58,38 @@ func TestPermitForVirtualKey_VirtualMCPsMirrorConfigs(t *testing.T) {
 
 	t.Run("a virtual MCP adds a client the key did not configure", func(t *testing.T) {
 		vk := buildVKWithMCPConfigs("cA", "alpha", []string{"x"}) // vk.ID == "vk-1"
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", "read"))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", "read"))}, names, nil)
 		assert.Equal(t, map[string][]string{"cA": {"x"}, "cB": {"read"}}, toolsByClient(permit.MCPPermits()),
 			"the direct config must survive and the virtual MCP must be added")
 	})
 
 	t.Run("a virtual MCP on the key's own client unions the tools", func(t *testing.T) {
 		vk := buildVKWithMCPConfigs("cA", "alpha", []string{"x"})
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cA", "y"))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cA", "y"))}, names, nil)
 		assert.Equal(t, map[string][]string{"cA": {"x", "y"}}, toolsByClient(permit.MCPPermits()))
 	})
 
 	t.Run("a wildcard tool name grants the whole client", func(t *testing.T) {
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", grant.Wildcard))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", grant.Wildcard))}, names, nil)
 		assert.Equal(t, map[string][]string{"cB": {grant.Wildcard}}, toolsByClient(permit.MCPPermits()))
 	})
 
 	t.Run("empty tool names grant nothing (deny-by-default)", func(t *testing.T) {
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, nil)
 		assert.Empty(t, permit.MCPPermits())
 	})
 
 	t.Run("a disabled virtual MCP contributes nothing", func(t *testing.T) {
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", false, spec("cB", "read"))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", false, spec("cB", "read"))}, names, nil)
 		assert.Empty(t, permit.MCPPermits())
 	})
 
 	t.Run("a virtual MCP client with no configured name is dropped", func(t *testing.T) {
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cX", "read"))}, names, nil)
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cX", "read"))}, names, nil)
 		assert.Empty(t, permit.MCPPermits())
 	})
 
@@ -97,7 +97,7 @@ func TestPermitForVirtualKey_VirtualMCPsMirrorConfigs(t *testing.T) {
 		// cB is open to every key by default, but the virtual MCP names only "read", so the key gets
 		// exactly that, not the wildcard — the same way an explicit config scopes an open client.
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", "read"))}, names, map[string]string{"cB": "beta"})
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB", "read"))}, names, map[string]string{"cB": "beta"})
 		assert.Equal(t, map[string][]string{"cB": {"read"}}, toolsByClient(permit.MCPPermits()),
 			"an assigned virtual MCP scopes an otherwise-open client, mirroring an explicit config")
 	})
@@ -106,7 +106,7 @@ func TestPermitForVirtualKey_VirtualMCPsMirrorConfigs(t *testing.T) {
 		// cB is open to every key by default. An empty-tool spec must still scope it to nothing, not
 		// let the allowed-by-default fallback reopen it — the spec has to register cB as configured.
 		vk := buildVKNoMCPConfigs()
-		permit := permitFor(vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, map[string]string{"cB": "beta"})
+		permit := permitFor(t, vk, []configstoreTables.TableVirtualMCP{vmcp("g", true, spec("cB"))}, names, map[string]string{"cB": "beta"})
 		assert.Empty(t, permit.MCPPermits(), "an empty allow-list blocks the allowed-by-default wildcard")
 	})
 }
@@ -147,10 +147,11 @@ func TestLoadVirtualMCPs_RoundTrip(t *testing.T) {
 		}).Error)
 	}
 
-	gs := &LocalGovernanceStore{configStore: cs, logger: logger}
-	require.NoError(t, gs.loadVirtualMCPs(ctx))
+	h, err := openLiveHarness(t, cs, nil, nil)
+	require.NoError(t, err)
+	gs := h.mustGovernanceStore(logger, nil)
 
-	ids := gs.assignedVirtualMCPIDs("vk-1")
+	ids := storedVirtualKey(t, gs, "vk-1").VirtualMCPIDs
 	require.Len(t, ids, 2, "both assignments load; enabled is filtered at resolution, not at load")
 
 	// Resolution reads each assigned definition and skips the disabled one.
@@ -171,137 +172,101 @@ func TestLoadVirtualMCPs_RoundTrip(t *testing.T) {
 	assert.False(t, gs.virtualMCPByID(disabled.ID).Enabled)
 }
 
-// TestVirtualMCPInMemoryCRUD covers the surgical cache updates that replace a full reload on writes:
-// a definition edit ripples through the shared cache, and attach/detach touch one VK's id slice.
+// TestVirtualMCPInMemoryCRUD covers how definition and assignment writes reach the live store: a
+// definition edit ripples through the shared record, and an assignment change re-reads one key.
 func TestVirtualMCPInMemoryCRUD(t *testing.T) {
-	gs := &LocalGovernanceStore{logger: NewMockLogger()}
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{
+			*buildVirtualKey("vk-1", "sk-bf-vmcp-1", "VK 1", true),
+			*buildVirtualKey("vk-2", "sk-bf-vmcp-2", "VK 2", true),
+		},
+	}, nil)
+	gs := h.mustGovernanceStore(NewMockLogger(), nil)
+	assigned := func(vkID string) []uint { return storedVirtualKey(t, gs, vkID).VirtualMCPIDs }
 
-	// Create caches a copy: mutating the caller's struct (including its tool slices) afterwards does
-	// not change the cache.
+	// Create stores a copy: mutating the caller's struct (including its tool slices) afterwards does
+	// not change the record.
 	def := &configstoreTables.TableVirtualMCP{
 		ID: 7, Name: "eng", Enabled: true,
 		ParsedTools: []configstoreTables.MCPToolSpec{{MCPClientID: "c", ToolNames: []string{"read"}}},
 	}
-	gs.CreateVirtualMCPInMemory(def)
+	h.putVirtualMCP(def)
 	def.Name = "mutated"
 	def.ParsedTools[0].MCPClientID = "mutated"
 	def.ParsedTools[0].ToolNames[0] = "mutated"
 	cached := gs.virtualMCPByID(7)
 	require.NotNil(t, cached)
-	assert.Equal(t, "eng", cached.Name, "the cache holds a copy, not the caller's struct")
+	assert.Equal(t, "eng", cached.Name, "the record holds a copy, not the caller's struct")
 	require.Len(t, cached.ParsedTools, 1)
-	assert.Equal(t, "c", cached.ParsedTools[0].MCPClientID, "cached tool spec is independent of the caller")
-	assert.Equal(t, []string{"read"}, cached.ParsedTools[0].ToolNames, "cached tool names are deep-copied")
+	assert.Equal(t, "c", cached.ParsedTools[0].MCPClientID, "the record's tool spec is independent of the caller")
+	assert.Equal(t, []string{"read"}, cached.ParsedTools[0].ToolNames, "the record's tool names are its own")
+	h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: 3, Name: "three", Enabled: true})
+	h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: 9, Name: "nine", Enabled: true})
 
 	// Attach records the id and is idempotent.
-	gs.AttachVirtualMCPInMemory("vk-1", 7)
-	gs.AttachVirtualMCPInMemory("vk-1", 7)
-	assert.Equal(t, []uint{7}, gs.assignedVirtualMCPIDs("vk-1"))
+	h.attachVirtualMCP("vk-1", 7)
+	h.attachVirtualMCP("vk-1", 7)
+	assert.Equal(t, []uint{7}, assigned("vk-1"))
 
 	// Attach keeps the id list sorted, so resolution order (and the permit) is deterministic.
-	gs.AttachVirtualMCPInMemory("vk-1", 3)
-	assert.Equal(t, []uint{3, 7}, gs.assignedVirtualMCPIDs("vk-1"))
-	gs.DetachVirtualMCPInMemory("vk-1", 3)
+	h.attachVirtualMCP("vk-1", 3)
+	assert.Equal(t, []uint{3, 7}, assigned("vk-1"))
+	h.detachVirtualMCP("vk-1", 3)
 
 	// Update replaces the shared definition; every assigned VK sees the new one via resolution.
-	gs.UpdateVirtualMCPInMemory(&configstoreTables.TableVirtualMCP{ID: 7, Name: "eng-2", Enabled: false})
+	h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: 7, Name: "eng-2", Enabled: false})
 	assert.Equal(t, "eng-2", gs.virtualMCPByID(7).Name)
 	assert.False(t, gs.virtualMCPByID(7).Enabled)
 
-	// Detach removes just that id; emptying the slice drops the VK key entirely.
-	gs.AttachVirtualMCPInMemory("vk-1", 9)
-	gs.DetachVirtualMCPInMemory("vk-1", 7)
-	assert.Equal(t, []uint{9}, gs.assignedVirtualMCPIDs("vk-1"))
-	gs.DetachVirtualMCPInMemory("vk-1", 9)
-	assert.Nil(t, gs.assignedVirtualMCPIDs("vk-1"))
+	// Detach removes just that id; emptying the list leaves the key with none.
+	h.attachVirtualMCP("vk-1", 9)
+	h.detachVirtualMCP("vk-1", 7)
+	assert.Equal(t, []uint{9}, assigned("vk-1"))
+	h.detachVirtualMCP("vk-1", 9)
+	assert.Empty(t, assigned("vk-1"))
 
-	// Delete drops the definition; a lingering assignment id resolves to nil, so it is simply skipped.
-	gs.AttachVirtualMCPInMemory("vk-2", 7)
-	gs.DeleteVirtualMCPInMemory(7)
+	// A key record not yet refreshed after its definition went still names the id, which resolves to
+	// nil, so it is simply skipped. The record alone is dropped here; deleting the row would also
+	// delete the assignment and refresh the key.
+	h.attachVirtualMCP("vk-2", 7)
+	h.refresh(livestore.Ref{Kind: livestore.KindVirtualMCP, ID: registry.VirtualMCPKey(7), Remove: true})
 	assert.Nil(t, gs.virtualMCPByID(7))
-	assert.Equal(t, []uint{7}, gs.assignedVirtualMCPIDs("vk-2"), "stale id remains; resolution skips it via the nil lookup")
+	assert.Equal(t, []uint{7}, assigned("vk-2"), "stale id remains; resolution skips it via the nil lookup")
+
+	// Deleting the definition deletes its assignments and refreshes the keys that held it.
+	h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: 7, Name: "eng-3", Enabled: true})
+	h.deleteVirtualMCP(7)
+	assert.Nil(t, gs.virtualMCPByID(7))
+	assert.Empty(t, assigned("vk-2"), "the key is re-read without the deleted definition")
 }
 
-// TestSetVirtualMCPAssignmentsInMemory pins that a key's assignments can be replaced in one write, the
-// way a key reload converges the index on what the database holds: the new set lands sorted and
-// independent of the caller's slice, an empty set drops the key, and other keys are untouched.
+// TestSetVirtualMCPAssignmentsInMemory pins that a key's assignments can be replaced in one write: the
+// new set lands sorted and independent of the caller's slice, an empty set leaves the key with none,
+// and other keys are untouched.
 func TestSetVirtualMCPAssignmentsInMemory(t *testing.T) {
-	gs := &LocalGovernanceStore{logger: NewMockLogger()}
-	gs.AttachVirtualMCPInMemory("vk-1", 1)
-	gs.AttachVirtualMCPInMemory("vk-1", 2)
-	gs.AttachVirtualMCPInMemory("vk-2", 2)
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{
+			*buildVirtualKey("vk-1", "sk-bf-vmcp-1", "VK 1", true),
+			*buildVirtualKey("vk-2", "sk-bf-vmcp-2", "VK 2", true),
+		},
+	}, nil)
+	gs := h.mustGovernanceStore(NewMockLogger(), nil)
+	assigned := func(vkID string) []uint { return storedVirtualKey(t, gs, vkID).VirtualMCPIDs }
+	for _, id := range []uint{1, 2, 3, 9} {
+		h.putVirtualMCP(&configstoreTables.TableVirtualMCP{ID: id, Name: fmt.Sprintf("vmcp-%d", id), Enabled: true})
+	}
+	h.attachVirtualMCP("vk-1", 1)
+	h.attachVirtualMCP("vk-1", 2)
+	h.attachVirtualMCP("vk-2", 2)
 
 	ids := []uint{9, 3}
-	gs.SetVirtualMCPAssignmentsInMemory("vk-1", ids)
+	h.setVirtualMCPAssignments("vk-1", ids...)
 	ids[0] = 42
-	assert.Equal(t, []uint{3, 9}, gs.assignedVirtualMCPIDs("vk-1"), "replaced, sorted, and copied from the caller")
-	got := gs.VirtualMCPAssignmentsInMemory("vk-1")
-	assert.Equal(t, []uint{3, 9}, got)
-	got[0] = 99
-	assert.Equal(t, []uint{3, 9}, gs.assignedVirtualMCPIDs("vk-1"), "the reader hands out a copy")
-	assert.Equal(t, []uint{2}, gs.assignedVirtualMCPIDs("vk-2"), "other keys are untouched")
+	assert.Equal(t, []uint{3, 9}, assigned("vk-1"), "replaced, sorted, and copied from the caller")
+	assert.Equal(t, []uint{2}, assigned("vk-2"), "other keys are untouched")
 
-	gs.SetVirtualMCPAssignmentsInMemory("vk-1", nil)
-	assert.Nil(t, gs.assignedVirtualMCPIDs("vk-1"), "an empty set drops the key")
-	_, present := gs.virtualMCPIDsByVK.Load("vk-1")
-	assert.False(t, present)
-}
-
-// TestSetVirtualMCPAssignmentsMatchesAttachDetachConvergence pins that replacing a key's set in one
-// write leaves the index exactly where the enterprise key reload used to leave it: walking every
-// Virtual MCP that exists, attaching the ones the database assigns the key and detaching the rest.
-// Randomized over the starting index, the database's assignments and the other keys present.
-func TestSetVirtualMCPAssignmentsMatchesAttachDetachConvergence(t *testing.T) {
-	rng := rand.New(rand.NewSource(1))
-	all := []uint{1, 2, 3, 4, 5, 6, 7, 8}
-	subset := func() []uint {
-		var out []uint
-		for _, id := range all {
-			if rng.Intn(2) == 0 {
-				out = append(out, id)
-			}
-		}
-		rng.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
-		return out
-	}
-	keys := []string{"vk-1", "vk-2", "vk-3"}
-	for iter := 0; iter < 2000; iter++ {
-		before := map[string][]uint{}
-		for _, k := range keys {
-			before[k] = subset()
-		}
-		assigned := subset()
-		if rng.Intn(5) == 0 {
-			assigned = nil // the database assigns nothing (or the key is profile-managed)
-		}
-
-		old := &LocalGovernanceStore{logger: NewMockLogger()}
-		replaced := &LocalGovernanceStore{logger: NewMockLogger()}
-		for _, k := range keys {
-			for _, id := range before[k] {
-				old.AttachVirtualMCPInMemory(k, id)
-				replaced.AttachVirtualMCPInMemory(k, id)
-			}
-		}
-
-		// The previous convergence, verbatim.
-		for _, id := range all {
-			if slices.Contains(assigned, id) {
-				old.AttachVirtualMCPInMemory("vk-1", id)
-			} else {
-				old.DetachVirtualMCPInMemory("vk-1", id)
-			}
-		}
-		replaced.SetVirtualMCPAssignmentsInMemory("vk-1", assigned)
-
-		for _, k := range keys {
-			require.Equal(t, old.assignedVirtualMCPIDs(k), replaced.assignedVirtualMCPIDs(k),
-				"iteration %d key %s: before %v, database %v", iter, k, before[k], assigned)
-			_, oldPresent := old.virtualMCPIDsByVK.Load(k)
-			_, newPresent := replaced.virtualMCPIDsByVK.Load(k)
-			require.Equal(t, oldPresent, newPresent, "iteration %d key %s: an emptied key is dropped either way", iter, k)
-		}
-	}
+	h.setVirtualMCPAssignments("vk-1")
+	assert.Empty(t, assigned("vk-1"), "an empty set leaves the key with none")
 }
 
 // TestPostMCPHook_RecordsAccountedLimitIDs verifies a tool call leaves behind the
@@ -312,13 +277,13 @@ func TestPostMCPHook_RecordsAccountedLimitIDs(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	defer plugin.Cleanup()
 
@@ -348,12 +313,12 @@ func TestPostMCPHook_AccountsPromptAndResourceReads(t *testing.T) {
 			logger := NewMockLogger()
 			rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 			vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 				RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 			}, nil, nil)
 			require.NoError(t, err)
-			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 			require.NoError(t, err)
 			defer plugin.Cleanup()
 

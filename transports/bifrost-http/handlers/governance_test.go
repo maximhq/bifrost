@@ -203,10 +203,7 @@ func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -219,10 +216,7 @@ func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id u
 func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *mockRotateGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *mockRotateGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -235,10 +229,7 @@ func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m pricingOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -251,10 +242,7 @@ func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context
 func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *providerGovernanceAdoptionManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -6209,4 +6197,55 @@ func TestTeamContentLoggingRoundTrip(t *testing.T) {
 
 	putTeam(t, `{"disable_content_logging":null}`)
 	assert.Nil(t, read(t), "null clears the decision back to inherit")
+}
+
+// deleteOrderGovernanceManager records, for each team or customer removed from memory, what
+// reading its row returned at that moment: ErrNotFound once the row is deleted, nil while it is
+// still there, and any other error when the read itself failed.
+type deleteOrderGovernanceManager struct {
+	pricingOverrideTestGovernanceManager
+	store   configstore.ConfigStore
+	readErr map[string]error
+}
+
+// RemoveTeam records what reading the team's row returned.
+func (m *deleteOrderGovernanceManager) RemoveTeam(ctx context.Context, id string) error {
+	_, err := m.store.GetTeam(ctx, id)
+	m.readErr["team:"+id] = err
+	return nil
+}
+
+// RemoveCustomer records what reading the customer's row returned.
+func (m *deleteOrderGovernanceManager) RemoveCustomer(ctx context.Context, id string) error {
+	_, err := m.store.GetCustomer(ctx, id)
+	m.readErr["customer:"+id] = err
+	return nil
+}
+
+// TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord checks that the delete routes
+// delete the row before they remove the record, so the removal re-reads the keys and teams under it
+// with the reference the delete cleared.
+func TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &deleteOrderGovernanceManager{store: store, readErr: map[string]error{}}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	require.NoError(t, store.CreateCustomer(ctx, &configstoreTables.TableCustomer{ID: "cust-1", Name: "Acme"}))
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform"}))
+
+	teamCtx := newGovernanceTeamIDCtx("team-1", "")
+	handler.deleteTeam(teamCtx)
+	require.Equal(t, fasthttp.StatusOK, teamCtx.Response.StatusCode(), string(teamCtx.Response.Body()))
+	readErr, removed := manager.readErr["team:team-1"]
+	require.True(t, removed, "the team is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the team's row is deleted before its record is removed")
+
+	customerCtx := newTestRequestCtx("")
+	customerCtx.SetUserValue("customer_id", "cust-1")
+	handler.deleteCustomer(customerCtx)
+	require.Equal(t, fasthttp.StatusOK, customerCtx.Response.StatusCode(), string(customerCtx.Response.Body()))
+	readErr, removed = manager.readErr["customer:cust-1"]
+	require.True(t, removed, "the customer is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the customer's row is deleted before its record is removed")
 }

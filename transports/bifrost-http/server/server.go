@@ -6,7 +6,6 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"math/rand"
 	"net"
 	"net/http"
@@ -31,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -119,8 +119,7 @@ type ServerCallbacks interface {
 	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
 	ReloadVirtualMCP(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
 	RemoveVirtualMCP(ctx context.Context, id uint) error
-	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
-	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error
 	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
 	// reloads one, from batched reads. Enterprise also propagates it to peers.
 	ReloadVirtualKeys(ctx context.Context, ids []string) error
@@ -293,11 +292,6 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
-	// virtualKeyReloads serializes reloads of one virtual key across its database
-	// read and in-memory install, so an older read cannot install last and restore a
-	// rotated value. Striped by key ID; see lockVirtualKeyReloads.
-	virtualKeyReloads [64]sync.Mutex
-
 	// unsubscribeCaptureDeletes releases the log-delete subscription that
 	// drops complexity request capture's vectors with their logs.
 	unsubscribeCaptureDeletes func()
@@ -417,119 +411,15 @@ func NewBifrostHTTPServer(version string, uiContent embed.FS) *BifrostHTTPServer
 	}
 }
 
-type GovernanceInMemoryStore struct {
-	Config *lib.Config
-}
-
-// LogTimestampPrecision reports the precision ClickHouse uses for request log
-// timestamps. Hybrid mode keeps those timestamps in the same database.
-func (s *GovernanceInMemoryStore) LogTimestampPrecision() time.Duration {
-	if cfg := s.Config.LogsStoreConfig; s.Config.LogsStore != nil && cfg != nil && cfg.Type == logstore.LogStoreTypeClickHouse {
+// GovernanceLogTimestampPrecision reports the precision ClickHouse uses for request log
+// timestamps. Hybrid mode keeps those timestamps in the same database. Governance compares a
+// charge with a usage reset at this precision, so live counters and the logs agree on which side
+// of the reset a request falls.
+func GovernanceLogTimestampPrecision(config *lib.Config) time.Duration {
+	if cfg := config.LogsStoreConfig; config.LogsStore != nil && cfg != nil && cfg.Type == logstore.LogStoreTypeClickHouse {
 		return time.Millisecond
 	}
 	return 0
-}
-
-// GetConfiguredProviders returns every configured provider's configuration with its keys, read
-// from the live store into a new map the caller owns. The configs and their key slices are shared
-// and never modified by readers.
-func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	snapshot := make(map[schemas.ModelProvider]configstore.ProviderConfig)
-	if s.Config.LiveStore == nil {
-		return snapshot
-	}
-	s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-		config := p.Settings.Config()
-		if keys, ok := s.Config.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
-			config.Keys = *keys
-		}
-		snapshot[p.Name] = config
-		return true
-	})
-	return snapshot
-}
-
-// GetConfiguredProvider returns one provider's configuration with its keys from the live store, for
-// the per-request model check that needs only that provider. It reads the records directly, so the
-// check allocates nothing.
-func (s *GovernanceInMemoryStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
-	if s.Config.LiveStore == nil {
-		return configstore.ProviderConfig{}, false
-	}
-	p, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider))
-	if !ok {
-		return configstore.ProviderConfig{}, false
-	}
-	config := p.Settings.Config()
-	if keys, ok := s.Config.LiveStore.Views.ProviderKeyLists.Get(string(provider)); ok {
-		config.Keys = *keys
-	}
-	return config, true
-}
-
-// GetConfiguredProviderNames builds the name slice under the lock, because provider edits write to
-// the map GetConfiguredProviders hands back in place: ranging that map after the lock is released
-// is a concurrent iteration and write, which is fatal rather than merely stale.
-func (s *GovernanceInMemoryStore) GetConfiguredProviderNames() []string {
-	var names []string
-	if s.Config.LiveStore == nil {
-		return names
-	}
-	s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-		names = append(names, string(p.Name))
-		return true
-	})
-	return names
-}
-
-// GetMCPClientsAllowedByDefault returns the name of every MCP client with allow_by_default on,
-// keyed by client ID, read from the live store.
-func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
-	result := make(map[string]string)
-	if s.Config.LiveStore == nil {
-		return result
-	}
-	s.Config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
-		if client.Config.AllowByDefault {
-			result[client.Config.ID] = client.Config.Name
-		}
-		return true
-	})
-	return result
-}
-
-// GetMCPClientNames returns every configured MCP client's name, keyed by client ID, read from the
-// live store. Tool patterns are matched by client name while grants are held by client ID, so
-// anything building a grant from stored client IDs needs the mapping between them.
-func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
-	result := make(map[string]string)
-	if s.Config.LiveStore == nil {
-		return result
-	}
-	s.Config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
-		if client.Config.ID != "" && client.Config.Name != "" {
-			result[client.Config.ID] = client.Config.Name
-		}
-		return true
-	})
-	return result
-}
-
-// GetMCPClientBySlug resolves the MCP client served at /mcp/<slug> to its ID and name. A disabled
-// client is not found, so its endpoint is not served.
-func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
-	if s.Config.LiveStore == nil {
-		return "", "", false
-	}
-	client, ok := s.Config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientBySlug, slug)
-	if !ok || client.Config.Disabled {
-		return "", "", false
-	}
-	return client.Config.ID, client.Config.Name, true
-}
-
-func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
-	return s.Config.GetEnabledAgents()
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
@@ -805,32 +695,122 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 	return lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 }
 
-// virtualKeyReloadSeed makes a key's reload stripe stable for the process lifetime.
-var virtualKeyReloadSeed = maphash.MakeSeed()
-
-// lockVirtualKeyReloads locks the reload stripes of ids and returns their unlock.
-// Stripes are taken in index order so overlapping batches cannot deadlock.
-func (s *BifrostHTTPServer) lockVirtualKeyReloads(ids ...string) func() {
-	stripes := make([]int, 0, len(ids))
-	for _, id := range ids {
-		stripes = append(stripes, int(maphash.String(virtualKeyReloadSeed, id)%uint64(len(s.virtualKeyReloads))))
+// liveStore returns the config's loaded live store, or an error before one is loaded.
+func (s *BifrostHTTPServer) liveStore() (*livestore.Store, error) {
+	if s.Config == nil || s.Config.LiveStore == nil {
+		return nil, livestore.ErrNoLiveStore
 	}
-	slices.Sort(stripes)
-	stripes = slices.Compact(stripes)
-	for _, stripe := range stripes {
-		s.virtualKeyReloads[stripe].Lock()
-	}
-	return func() {
-		for _, stripe := range stripes {
-			s.virtualKeyReloads[stripe].Unlock()
-		}
-	}
+	return s.Config.LiveStore, nil
 }
 
-// ReloadVirtualKey reloads a virtual key from the in-memory store
+// refreshRow brings one row a write changed into the live store, and with it its children: a key's
+// budgets, rate limit and key-scoped model configs, a team's keys, and the limits of a team,
+// customer, model config or provider. Its callers have just read the row, so one that is gone by
+// now was deleted meanwhile and its record is removed.
+func (s *BifrostHTTPServer) refreshRow(ctx context.Context, kind livestore.Kind, id string) error {
+	return s.refreshRows(ctx, []livestore.Ref{{Kind: kind, ID: id}})
+}
+
+// removeRecord drops a deleted row's record from the live store without reading the database, and
+// with it the records that go with it: a key's or model config's limits and key-scoped model
+// configs. Keys and teams under a removed team or customer are re-read with the reference cleared.
+func (s *BifrostHTTPServer) removeRecord(ctx context.Context, kind livestore.Kind, id string) error {
+	return s.refreshRows(ctx, []livestore.Ref{{Kind: kind, ID: id, Remove: true}})
+}
+
+// removeGoverned drops a deleted governance row's record from the live store, returning what a
+// governance removal has always returned: without the governance plugin, its error (the record is
+// still dropped, so the live store follows the database either way); otherwise a failure to read
+// the row other than its absence, with the record kept, since the delete cannot be confirmed.
+// read is nil for rows a removal never read.
+func (s *BifrostHTTPServer) removeGoverned(ctx context.Context, kind livestore.Kind, id string, read func(context.Context) error) error {
+	if _, err := s.getGovernancePlugin(); err != nil {
+		if removeErr := s.removeRecord(ctx, kind, id); removeErr != nil {
+			logger.Warn("failed to drop %s %s from the live store: %v", kind, id, removeErr)
+		}
+		return err
+	}
+	if read != nil && s.Config != nil && s.Config.ConfigStore != nil {
+		if err := read(ctx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			return err
+		}
+	}
+	return s.removeRecord(ctx, kind, id)
+}
+
+// overlayBudgetUsage gives budget, a row just read from the database, the usage, last reset and
+// reset evidence memory counts it from, then re-derives its override cycles from the result: the
+// fields a reload's response carries from memory. It writes nothing.
+func overlayBudgetUsage(ctx context.Context, store governance.GovernanceStore, budget *tables.TableBudget) {
+	if budget == nil {
+		return
+	}
+	if live := store.LoadBudget(ctx, budget.ID); live != nil {
+		budget.CurrentUsage = live.CurrentUsage
+		budget.LastReset = live.LastReset
+		budget.UsageResetEpoch = live.UsageResetEpoch
+	}
+	budget.RefreshOverrideCyclesRemaining()
+}
+
+// overlayRateLimitUsage gives rateLimit, a row just read from the database, the token and request
+// usage, last resets and reset evidence memory counts it from. It writes nothing.
+func overlayRateLimitUsage(ctx context.Context, store governance.GovernanceStore, rateLimit *tables.TableRateLimit) {
+	if rateLimit == nil {
+		return
+	}
+	live := store.LoadRateLimit(ctx, rateLimit.ID)
+	if live == nil {
+		return
+	}
+	rateLimit.TokenCurrentUsage = live.TokenCurrentUsage
+	rateLimit.RequestCurrentUsage = live.RequestCurrentUsage
+	rateLimit.TokenLastReset = live.TokenLastReset
+	rateLimit.RequestLastReset = live.RequestLastReset
+	rateLimit.TokenUsageResetEpoch = live.TokenUsageResetEpoch
+	rateLimit.RequestUsageResetEpoch = live.RequestUsageResetEpoch
+}
+
+// refreshRows runs one live store refresh of refs. A read that fails is retried with
+// lib.AdminRetry, unless opts are given, which then apply instead: its callers answer for a write
+// they just made, so when the retries run out the refresh keeps the previous records and returns
+// the read's error for the caller to report. A *livestore.MissingError it returns also matches
+// configstore.ErrNotFound, the error a reload of a missing row has always returned.
+func (s *BifrostHTTPServer) refreshRows(ctx context.Context, refs []livestore.Ref, opts ...livestore.RefreshOption) error {
+	live, err := s.liveStore()
+	if err != nil {
+		return err
+	}
+	if len(opts) == 0 {
+		opts = lib.AdminRetry()
+	}
+	err = live.Refresh(ctx, refs, opts...)
+	var missing *livestore.MissingError
+	if errors.As(err, &missing) {
+		return fmt.Errorf("%w: %w", configstore.ErrNotFound, err)
+	}
+	return err
+}
+
+// evictVirtualKeyCaches drops the OAuth tokens, header credentials and per-user discoveries bound
+// to a key, after the key changed or was deleted.
+func (s *BifrostHTTPServer) evictVirtualKeyCaches(id string) {
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
+	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
+	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
+}
+
+// ReloadVirtualKey brings a written virtual key into memory and returns its row. The row is read
+// first, retried while it is not yet visible; the key is then refreshed in the live store, which
+// re-reads its budgets, rate limit and key-scoped model configs with it, so a model config the
+// write removed stops enforcing too, and the token, credential and discovery caches bound to the
+// key are dropped. The row returned carries the usage and last resets counted in memory for its
+// limits and its provider configs' limits. The live store is refreshed even without the governance
+// plugin, whose absence is still the error returned.
 func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
-	defer s.lockVirtualKeyReloads(id)()
-	// Load relationships for response
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
 	preloadedVk, err := s.Config.ConfigStore.RetryOnNotFound(ctx, func(ctx context.Context) (any, error) {
 		preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
 		if err != nil {
@@ -846,140 +826,69 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		logger.Error("virtual key not found")
 		return nil, fmt.Errorf("virtual key not found")
 	}
-	// Type assertion (should never happen)
 	virtualKey, ok := preloadedVk.(*tables.TableVirtualKey)
-	if !ok {
+	if !ok || virtualKey == nil {
 		logger.Error("virtual key type assertion failed")
 		return nil, fmt.Errorf("virtual key type assertion failed")
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil, err
+	governancePlugin, pluginErr := s.getGovernancePlugin()
+	refreshErr := s.refreshRow(ctx, livestore.KindVirtualKey, id)
+	if pluginErr != nil {
+		return nil, pluginErr
 	}
-	// Fetch VK-scoped model configs up front, alongside the VK load, so that a DB
-	// failure here aborts before we mutate any in-memory state. Reloading these
-	// reflects governance changes made via the VK sheet (syncVKGovernanceToModelConfigs)
-	// in memory immediately — both on the node that handled the update and on peers
-	// that receive this reload via the cluster gossip broadcast.
-	mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(
-		ctx, tables.ModelConfigScopeVirtualKey, []string{id},
-	)
-	if err != nil {
-		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
+	if refreshErr != nil {
+		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, refreshErr)
 	}
-	s.applyVirtualKeyReload(ctx, governancePlugin.GetGovernanceStore(), virtualKey, mcs)
+	store := governancePlugin.GetGovernanceStore()
+	for i := range virtualKey.Budgets {
+		overlayBudgetUsage(ctx, store, &virtualKey.Budgets[i])
+	}
+	overlayRateLimitUsage(ctx, store, virtualKey.RateLimit)
+	for i := range virtualKey.ProviderConfigs {
+		pc := &virtualKey.ProviderConfigs[i]
+		for j := range pc.Budgets {
+			overlayBudgetUsage(ctx, store, &pc.Budgets[j])
+		}
+		overlayRateLimitUsage(ctx, store, pc.RateLimit)
+	}
+	s.evictVirtualKeyCaches(id)
 	return virtualKey, nil
 }
 
-// applyVirtualKeyReload installs a freshly loaded virtual key and its VK-scoped
-// model configs in memory and drops the caches bound to the key. It is the
-// in-memory half of ReloadVirtualKey, shared with ReloadVirtualKeys so a batched
-// reload leaves each key exactly as a per-key reload would.
-func (s *BifrostHTTPServer) applyVirtualKeyReload(ctx context.Context, store governance.GovernanceStore, virtualKey *tables.TableVirtualKey, mcs []tables.TableModelConfig) {
-	id := virtualKey.ID
-	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
-	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
-	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
-	// an access profile has its VK-scoped governance model configs deleted).
-	// Without this their stale budgets keep enforcing.
-	staleIDs := make(map[string]bool)
-	for _, mcID := range store.ScopedModelConfigIDs(tables.ModelConfigScopeVirtualKey, id) {
-		staleIDs[mcID] = true
-	}
-	for i := range mcs {
-		delete(staleIDs, mcs[i].ID)
-		store.UpdateModelConfigInMemory(ctx, &mcs[i])
-	}
-	for mcID := range staleIDs {
-		store.DeleteModelConfigInMemory(ctx, mcID)
-	}
-	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
-	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
-	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
-}
-
-// virtualKeysByIDs is the batched key read ReloadVirtualKeys needs;
-// RDBConfigStore provides it.
-type virtualKeysByIDs interface {
-	GetVirtualKeysByIDs(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error)
-}
-
-// ReloadVirtualKeys reloads many virtual keys the way ReloadVirtualKey reloads
-// one: each key is re-read with every relation, its VK-scoped model configs
-// are installed and stale ones evicted, and its token and credential caches
-// are dropped. The keys and the model configs are each read once for all ids,
-// in chunks, instead of two reads per key; both reads finish before any
-// in-memory state changes. An id with no row is skipped. It returns an error,
-// changing nothing, when a read fails or the config store has no batched key
-// read, so the caller can fall back to ReloadVirtualKey per key.
+// ReloadVirtualKeys reloads many virtual keys the way ReloadVirtualKey reloads one, in a single
+// live store refresh that reads the keys, and what follows them, once for all ids. Its callers
+// list keys whose rows they have just read, so a key with no row is not waited for: its row was
+// deleted meanwhile, and its record is dropped. It returns an error, having changed nothing, only
+// when a read fails, so the caller can fall back to ReloadVirtualKey per key, and, after
+// refreshing, the governance plugin's error when it is not loaded.
 func (s *BifrostHTTPServer) ReloadVirtualKeys(ctx context.Context, ids []string) error {
 	seen := make(map[string]struct{}, len(ids))
-	unique := make([]string, 0, len(ids))
+	refs := make([]livestore.Ref, 0, len(ids))
 	for _, id := range ids {
 		if _, dup := seen[id]; dup || id == "" {
 			continue
 		}
 		seen[id] = struct{}{}
-		unique = append(unique, id)
+		refs = append(refs, livestore.Ref{Kind: livestore.KindVirtualKey, ID: id})
 	}
-	if len(unique) == 0 {
+	if len(refs) == 0 {
 		return nil
 	}
-	loader, ok := s.Config.ConfigStore.(virtualKeysByIDs)
-	if !ok {
-		return fmt.Errorf("config store does not support batched virtual key reads")
+	_, pluginErr := s.getGovernancePlugin()
+	err := s.refreshRows(ctx, refs)
+	if pluginErr != nil {
+		return pluginErr
 	}
-	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
-		return err
-	}
-	defer s.lockVirtualKeyReloads(unique...)()
-	virtualKeys, err := loader.GetVirtualKeysByIDs(ctx, unique)
-	if err != nil {
-		return fmt.Errorf("failed to load virtual keys: %w", err)
-	}
-	mcs, err := s.Config.ConfigStore.GetModelConfigsByScopeAndScopeIDs(ctx, tables.ModelConfigScopeVirtualKey, unique)
-	if err != nil {
-		return fmt.Errorf("failed to reload VK-scoped model configs: %w", err)
-	}
-	mcsByVK := make(map[string][]tables.TableModelConfig, len(unique))
-	for i := range mcs {
-		if mcs[i].ScopeID != nil {
-			mcsByVK[*mcs[i].ScopeID] = append(mcsByVK[*mcs[i].ScopeID], mcs[i])
-		}
-	}
-	store := governancePlugin.GetGovernanceStore()
-	for i := range virtualKeys {
-		s.applyVirtualKeyReload(ctx, store, &virtualKeys[i], mcsByVK[virtualKeys[i].ID])
-		delete(seen, virtualKeys[i].ID)
+		return fmt.Errorf("failed to reload virtual keys: %w", err)
 	}
 	for id := range seen {
-		logger.Debug("virtual key %s not found during batched reload; skipping", id)
+		s.evictVirtualKeyCaches(id)
 	}
 	return nil
 }
 
-// virtualMCPCache is the governance-store subset the Virtual MCP routes refresh in memory. The store
-// exposes it as a capability (type assertion), not on the shared interface, so a wrapper that has not
-// adopted it no-ops here; its cache still rebuilds at startup.
-type virtualMCPCache interface {
-	UpdateVirtualMCPInMemory(*tables.TableVirtualMCP)
-	DeleteVirtualMCPInMemory(uint)
-	AttachVirtualMCPInMemory(string, uint)
-	DetachVirtualMCPInMemory(string, uint)
-}
-
-// governanceVirtualMCPCache returns the governance store cache when it supports virtual MCP operations.
-func (s *BifrostHTTPServer) governanceVirtualMCPCache() virtualMCPCache {
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil
-	}
-	cache, _ := governancePlugin.GetGovernanceStore().(virtualMCPCache)
-	return cache
-}
-
-// ReloadVirtualMCP re-reads one definition and refreshes its cache entry, after a create or update.
+// ReloadVirtualMCP brings a written Virtual MCP definition into memory and returns its row.
 func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, nil
@@ -988,34 +897,23 @@ func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tab
 	if err != nil {
 		return nil, err
 	}
-	if cache := s.governanceVirtualMCPCache(); cache != nil {
-		cache.UpdateVirtualMCPInMemory(def)
+	if err := s.refreshRow(ctx, livestore.KindVirtualMCP, registry.VirtualMCPKey(id)); err != nil {
+		return nil, err
 	}
 	return def, nil
 }
 
-// RemoveVirtualMCP drops a definition from the cache after a delete.
+// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. Keys that were assigned it
+// keep its ID until they are next refreshed; resolution skips an ID whose definition is gone.
 func (s *BifrostHTTPServer) RemoveVirtualMCP(ctx context.Context, id uint) error {
-	if cache := s.governanceVirtualMCPCache(); cache != nil {
-		cache.DeleteVirtualMCPInMemory(id)
-	}
-	return nil
+	return s.removeRecord(ctx, livestore.KindVirtualMCP, registry.VirtualMCPKey(id))
 }
 
-// AttachVirtualMCPToVirtualKeyInMemory records a VK -> Virtual MCP assignment in the cache.
-func (s *BifrostHTTPServer) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	if cache := s.governanceVirtualMCPCache(); cache != nil {
-		cache.AttachVirtualMCPInMemory(vkID, id)
-	}
-	return nil
-}
-
-// DetachVirtualMCPFromVirtualKeyInMemory removes a VK -> Virtual MCP assignment from the cache.
-func (s *BifrostHTTPServer) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	if cache := s.governanceVirtualMCPCache(); cache != nil {
-		cache.DetachVirtualMCPInMemory(vkID, id)
-	}
-	return nil
+// ReloadVirtualMCPAssignment brings a VK -> Virtual MCP assignment the caller wrote (attached) or
+// removed into memory. Assignments live on the key's record, so the key is refreshed either way;
+// id and attached let an implementation that propagates the change tell which one it was.
+func (s *BifrostHTTPServer) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
+	return s.refreshRow(ctx, livestore.KindVirtualKey, vkID)
 }
 
 // ResetBudgetUsageInMemory clears usage for the given budgets in the governance
@@ -1081,105 +979,102 @@ func (s *BifrostHTTPServer) AdoptCalendarAlignmentInMemory(ctx context.Context, 
 	return nil
 }
 
-// RemoveVirtualKey removes a virtual key from the in-memory store
+// RemoveVirtualKey drops a deleted virtual key from memory, with its budgets, rate limit and
+// key-scoped model configs, and the token, credential and discovery caches bound to it. A failure
+// to read the row, other than its absence, keeps the key; see removeGoverned.
 func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) error {
-	governancePlugin, err := s.getGovernancePlugin()
+	err := s.removeGoverned(ctx, livestore.KindVirtualKey, id, func(ctx context.Context) error {
+		_, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
-	if err != nil {
-		if !errors.Is(err, configstore.ErrNotFound) {
-			return err
-		}
-	}
-	if preloadedVk == nil {
-		// This could be broadcast message from other server, so we will just clean up in-memory store
-		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-		s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
-		s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
-		s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
-		return nil
-	}
-	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
-	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
-	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
-	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
+	s.evictVirtualKeyCaches(id)
 	return nil
 }
 
-// ReloadTeam reloads a team from the in-memory store
+// ReloadTeam brings a written team into memory and returns its row. The team is refreshed in the
+// live store, which re-reads its budgets, rate limit and the keys under it with it. The row
+// returned carries the usage and last resets counted in memory for its limits. The live store is
+// refreshed even without the governance plugin, whose absence is still the error returned.
 func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
-	// Load relationships for response
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
 	preloadedTeam, err := s.Config.ConfigStore.GetTeam(ctx, id)
 	if err != nil {
 		logger.Error("failed to load relationships for created team: %v", err)
 		return nil, err
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil, err
+	governancePlugin, pluginErr := s.getGovernancePlugin()
+	refreshErr := s.refreshRow(ctx, livestore.KindTeam, id)
+	if pluginErr != nil {
+		return nil, pluginErr
 	}
-	// Add to in-memory store
-	governancePlugin.GetGovernanceStore().UpdateTeamInMemory(ctx, preloadedTeam, nil)
+	if refreshErr != nil {
+		logger.Error("failed to reload team %s: %v", id, refreshErr)
+		return nil, refreshErr
+	}
+	if preloadedTeam != nil {
+		store := governancePlugin.GetGovernanceStore()
+		for i := range preloadedTeam.Budgets {
+			overlayBudgetUsage(ctx, store, &preloadedTeam.Budgets[i])
+		}
+		overlayRateLimitUsage(ctx, store, preloadedTeam.RateLimit)
+	}
 	return preloadedTeam, nil
 }
 
-// RemoveTeam removes a team from the in-memory store
+// RemoveTeam drops a deleted team from memory with its budgets and rate limit; the keys under it
+// are re-read with the team cleared. A failure to read the row, other than its absence, keeps the
+// team; see removeGoverned.
 func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
+	return s.removeGoverned(ctx, livestore.KindTeam, id, func(ctx context.Context) error {
+		_, err := s.Config.ConfigStore.GetTeam(ctx, id)
 		return err
-	}
-	preloadedTeam, err := s.Config.ConfigStore.GetTeam(ctx, id)
-	if err != nil {
-		if !errors.Is(err, configstore.ErrNotFound) {
-			return err
-		}
-	}
-	if preloadedTeam == nil {
-		// At-least deleting from in-memory store to avoid conflicts
-		governancePlugin.GetGovernanceStore().DeleteTeamInMemory(ctx, id)
-		return nil
-	}
-	governancePlugin.GetGovernanceStore().DeleteTeamInMemory(ctx, id)
-	return nil
+	})
 }
 
-// ReloadCustomer reloads a customer from the in-memory store
+// ReloadCustomer brings a written customer into memory and returns its row. The customer is
+// refreshed in the live store, which re-reads its budgets and rate limit with it. The row returned
+// carries the usage and last resets counted in memory for its limits. The live store is refreshed
+// even without the governance plugin, whose absence is still the error returned.
 func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
 	preloadedCustomer, err := s.Config.ConfigStore.GetCustomer(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil, err
+	governancePlugin, pluginErr := s.getGovernancePlugin()
+	refreshErr := s.refreshRow(ctx, livestore.KindCustomer, id)
+	if pluginErr != nil {
+		return nil, pluginErr
 	}
-	// Add to in-memory store
-	governancePlugin.GetGovernanceStore().UpdateCustomerInMemory(ctx, preloadedCustomer, nil)
+	if refreshErr != nil {
+		logger.Error("failed to reload customer %s: %v", id, refreshErr)
+		return nil, refreshErr
+	}
+	if preloadedCustomer != nil {
+		store := governancePlugin.GetGovernanceStore()
+		for i := range preloadedCustomer.Budgets {
+			overlayBudgetUsage(ctx, store, &preloadedCustomer.Budgets[i])
+		}
+		overlayRateLimitUsage(ctx, store, preloadedCustomer.RateLimit)
+	}
 	return preloadedCustomer, nil
 }
 
-// RemoveCustomer removes a customer from the in-memory store
+// RemoveCustomer drops a deleted customer from memory with its budgets and rate limit; the teams
+// and keys under it are re-read with the customer cleared. A failure to read the row, other than
+// its absence, keeps the customer; see removeGoverned.
 func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error {
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
+	return s.removeGoverned(ctx, livestore.KindCustomer, id, func(ctx context.Context) error {
+		_, err := s.Config.ConfigStore.GetCustomer(ctx, id)
 		return err
-	}
-	preloadedCustomer, err := s.Config.ConfigStore.GetCustomer(ctx, id)
-	if err != nil {
-		if !errors.Is(err, configstore.ErrNotFound) {
-			return err
-		}
-	}
-	if preloadedCustomer == nil {
-		// At-least deleting from in-memory store to avoid conflicts
-		governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
-		return nil
-	}
-	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(ctx, id)
-	return nil
+	})
 }
 
 // ModelConfigIndexKey reports the spelling the governance store indexes a model config
@@ -1196,9 +1091,14 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 // own context, since it no longer inherits the caller's deadline.
 const modelConfigReloadReadTimeout = 30 * time.Second
 
-// ReloadModelConfig reloads a model config from the database into in-memory store
-// Usage persistence stays with the accounting paths, which guard writes against resets.
+// ReloadModelConfig brings a written model config into memory, with its budgets and rate limit,
+// and returns its row carrying the usage and last resets counted in memory for them.
+// The live store is refreshed even without the governance plugin, whose absence is still the
+// error returned.
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
 	// The reload loads the row it was told to load, whoever triggered it, so it reads on the
 	// server's own context: the caller's row-visibility scope must not stop a config the caller
 	// just wrote (for a target it cannot see) from reaching memory and peers.
@@ -1209,27 +1109,28 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		logger.Error("failed to load model config: %v", err)
 		return nil, err
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil, err
+	governancePlugin, pluginErr := s.getGovernancePlugin()
+	refreshErr := s.refreshRow(readCtx, livestore.KindModelConfig, id)
+	if pluginErr != nil {
+		return nil, pluginErr
 	}
-	// Update in memory and get back the potentially modified model config
-	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(ctx, preloadedMC)
-	if updatedMC == nil {
-		return preloadedMC, nil
+	if refreshErr != nil {
+		logger.Error("failed to reload model config %s: %v", id, refreshErr)
+		return nil, refreshErr
 	}
-
-	return updatedMC, nil
+	if preloadedMC != nil {
+		store := governancePlugin.GetGovernanceStore()
+		for i := range preloadedMC.Budgets {
+			overlayBudgetUsage(ctx, store, &preloadedMC.Budgets[i])
+		}
+		overlayRateLimitUsage(ctx, store, preloadedMC.RateLimit)
+	}
+	return preloadedMC, nil
 }
 
-// RemoveModelConfig removes a model config from the in-memory store
+// RemoveModelConfig drops a deleted model config from memory with its budgets and rate limit.
 func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) error {
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return err
-	}
-	governancePlugin.GetGovernanceStore().DeleteModelConfigInMemory(ctx, id)
-	return nil
+	return s.removeGoverned(ctx, livestore.KindModelConfig, id, nil)
 }
 
 // ReloadProvider reloads persisted provider settings into the live client. isNew says whether the
@@ -1254,22 +1155,32 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		return nil, err
 	}
 
-	// Initialize updatedProvider
-	updatedProvider := providerInfo
-
-	// Refresh provider governance config. Accounting persists usage with reset guards.
+	// Refresh the provider, which re-reads its budget and rate limit with it while keeping the
+	// usage and last resets counted in memory. With governance enabled, answer with them. The live
+	// store follows the database with or without governance, but only governance's answer depends
+	// on the refresh, so only with governance does a failed refresh fail the reload.
+	refreshErr := s.refreshRow(ctx, livestore.KindProvider, string(provider))
+	var governanceStore governance.GovernanceStore
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
 		governancePlugin, err := s.getGovernancePlugin()
 		if err != nil {
 			logger.Warn("governance plugin found but failed to get: %v", err)
 		} else {
-			// Update in memory and get back the potentially modified provider
-			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(ctx, providerInfo)
-			if govUpdated != nil {
-				updatedProvider = govUpdated
-			}
+			governanceStore = governancePlugin.GetGovernanceStore()
 		}
 	}
+	if refreshErr != nil {
+		if governanceStore != nil {
+			logger.Error("failed to reload provider %s: %v", provider, refreshErr)
+			return nil, refreshErr
+		}
+		logger.Warn("failed to refresh provider %s in the live store: %v", provider, refreshErr)
+	}
+	if governanceStore != nil {
+		overlayBudgetUsage(ctx, governanceStore, providerInfo.Budget)
+		overlayRateLimitUsage(ctx, governanceStore, providerInfo.RateLimit)
+	}
+	updatedProvider := providerInfo
 
 	// The live store holds the provider's keys as of the latest write: read them there rather than
 	// re-fetching and re-converting them from the database.
@@ -1345,11 +1256,12 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
 		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
+	// Removing the provider from the config dropped it from the live store, and its budget and rate
+	// limit with it, so governance stops enforcing them. Without the governance plugin the removal
+	// still reports its error, as it always has.
+	if _, err := s.getGovernancePlugin(); err != nil {
 		return err
 	}
-	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(ctx, string(provider))
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
@@ -1467,14 +1379,43 @@ func setKeyConfig(catalog *modelcatalog.ModelCatalog, provider schemas.ModelProv
 	catalog.SetKeyConfigForProvider(provider, keys)
 }
 
-// GetGovernanceData returns the governance data
+// GetGovernanceData returns the governance snapshot admin reads serve: every key, team, customer,
+// model config and provider row as the config store holds it, with live budget and rate-limit usage,
+// plus what the governance store adds. Without a config store, or if the rows cannot be read, it is
+// the governance store's own snapshot.
 func (s *BifrostHTTPServer) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	// Use type-safe finder from Config
 	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 	if err != nil {
 		return nil
 	}
-	return governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
+	data := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
+	if data == nil || s.Config.ConfigStore == nil {
+		return data
+	}
+	rows, err := governance.GovernanceDataFromRows(ctx, s.Config.ConfigStore, data.Budgets, data.RateLimits)
+	if err != nil {
+		logger.Warn("failed to read governance rows for the governance snapshot: %v", err)
+		return data
+	}
+	rows.Users = data.Users
+	return rows
+}
+
+// GetVirtualKey answers the async job executor's key lookups: it resolves a presented key value
+// the way governance resolves it for a request, rotation grace period included. The executor
+// only ties a job to the key that submitted it, so the row carries the key's ID and name and
+// nothing else. It reports false when the governance plugin is not loaded or the key is unknown.
+func (s *BifrostHTTPServer) GetVirtualKey(ctx context.Context, value string) (*tables.TableVirtualKey, bool) {
+	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+	if err != nil || governancePlugin == nil {
+		return nil, false
+	}
+	vk, ok := governancePlugin.GetGovernanceStore().GetVirtualKey(ctx, value)
+	if !ok || vk == nil {
+		return nil, false
+	}
+	return &tables.TableVirtualKey{ID: vk.ID, Name: vk.Name}, true
 }
 
 // getRoutingPlugin safely retrieves the routing plugin, or an error.
@@ -3000,20 +2941,15 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	return nil
 }
 
-// virtualKeyCache serves by-ID virtual key lookups from the governance in-memory
-// store (avoiding a per-request DB read) for the handlers that resolve an
-// identity to a virtual key. Best-effort: any governance store that exposes
-// GetVirtualKeyByID qualifies; otherwise those handlers fall back to a store read.
-func (s *BifrostHTTPServer) virtualKeyCache() handlers.VirtualKeyCache {
-	// s.Ctx is nil until Bootstrap runs; plugin lookup reads it, so callers that
-	// initialize handlers earlier simply get no cache and fall back to a store read.
+// virtualKeyValidator resolves presented virtual keys by value for the agent gateway, from the
+// governance store; nil without the governance plugin, or before Bootstrap runs.
+func (s *BifrostHTTPServer) virtualKeyValidator() handlers.AgentGatewayVirtualKeyValidator {
+	// s.Ctx is nil until Bootstrap runs; plugin lookup reads it.
 	if s.Ctx == nil {
 		return nil
 	}
 	if gp, gerr := s.getGovernancePlugin(); gerr == nil && gp != nil {
-		if c, ok := gp.GetGovernanceStore().(handlers.VirtualKeyCache); ok {
-			return c
-		}
+		return gp.GetGovernanceStore()
 	}
 	return nil
 }
@@ -3037,8 +2973,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	// governance in-memory store (avoiding a per-request DB read). Best-effort:
 	// any store that exposes GetVirtualKeyByID qualifies; otherwise the handler
 	// falls back to the config store.
-	vkCache := s.virtualKeyCache()
-	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s, s.OAuth2IdentityResolver, vkCache)
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s, s, s.OAuth2IdentityResolver)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
@@ -3058,7 +2993,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	}
 	if s.AgentGatewayHandler != nil {
 		protocolMiddlewares := append([]schemas.BifrostHTTPMiddleware{}, middlewares...)
-		validator, _ := s.virtualKeyCache().(handlers.AgentGatewayVirtualKeyValidator)
+		validator := s.virtualKeyValidator()
 		protocolMiddlewares = append(protocolMiddlewares, handlers.AgentGatewayAuthenticationMiddleware(s.Config, validator, s.AgentGatewayIdentityResolver))
 		s.AgentGatewayHandler.RegisterProtocolRoutes(s.Router, protocolMiddlewares...)
 		// The push ingress deliberately skips the Agent Gateway authentication
@@ -3094,10 +3029,10 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	}
 	// One client gateway handler serves every client gateway (Claude Code, ...),
 	// so the sign-in limiters, poll tracker and verified-token cache are shared,
-	// and every bearer check uses the governance virtual-key cache. The sign-in,
+	// and every bearer check resolves its virtual key from the live store. The sign-in,
 	// settings and telemetry routes are public by protocol or bearer-authenticated
 	// by the handler itself, so they take no middleware.
-	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache)
+	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
 	clientGateways.RegisterRoutes(s.Router)
 	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, s.InferenceAuthStart, middlewares...)
 	s.ClientGateways = clientGateways
@@ -3227,14 +3162,13 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, s.Config.LiveStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
 		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
 	}, handlers.WarpResolvers{
 		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
 		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
-		VirtualKeys:          s.virtualKeyCache,
 	})
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
@@ -3796,7 +3730,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Initialize async job executor (requires LogsStore + governance plugin)
 	if s.Config.LogsStore != nil {
-		governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+		_, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 		if govErr == nil {
 			// The dispatcher interface value must stay nil when no dispatcher
 			// exists — a typed-nil pointer would defeat the executor's nil check.
@@ -3804,7 +3738,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			if s.WebhookDispatcher != nil {
 				jobDispatcher = s.WebhookDispatcher
 			}
-			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), jobDispatcher, s.Config, logger)
+			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, s, jobDispatcher, s.Config, logger)
 			logger.Info("async job executor initialized")
 		}
 	}
@@ -3869,18 +3803,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// live models for every provider concurrently.
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
-		providers := (&GovernanceInMemoryStore{Config: s.Config}).GetConfiguredProviders()
-		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+		snapshot := make(map[schemas.ModelProvider][]schemas.Key)
 		var ignoreProviderCost, keyless []schemas.ModelProvider
-		for provider, providerConfig := range providers {
-			snapshot[provider] = providerConfig.Keys
-			if providerConfig.IgnoreProviderCost {
-				ignoreProviderCost = append(ignoreProviderCost, provider)
+		s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+			snapshot[p.Name] = s.Config.GetProviderKeys(p.Name)
+			if p.Settings.IgnoreProviderCost {
+				ignoreProviderCost = append(ignoreProviderCost, p.Name)
 			}
-			if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
-				keyless = append(keyless, provider)
+			if p.Settings.CustomProviderConfig != nil && p.Settings.CustomProviderConfig.IsKeyLess {
+				keyless = append(keyless, p.Name)
 			}
-		}
+			return true
+		})
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot, keyless...)
 		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
 

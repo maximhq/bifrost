@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -42,9 +43,8 @@ type WarpHandler struct {
 	// log rather than once at startup, so toggling the flag takes effect
 	// without a restart. Nil means ungated.
 	enabled func() bool
-	// virtualKeyCache and virtualKeyStore resolve Warp's own virtual key; see warpVirtualKey.
-	virtualKeyCache func() VirtualKeyCache
-	virtualKeyStore virtualKeyByIDStore
+	// live resolves Warp's own virtual key; see warpVirtualKey.
+	live *livestore.Store
 }
 
 // NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
@@ -73,10 +73,6 @@ type WarpResolvers struct {
 	// caller's reads. Nil leaves Warp reading that off the request's own
 	// query scope, which is all an OSS deployment has.
 	CallerRestriction warp.CallerRestrictionResolver
-	// VirtualKeys serves the by-ID lookup of Warp's own virtual key from
-	// governance's in-memory store. A func because that store exists only once
-	// the server has bootstrapped; nil, or a nil result, falls back to a store read.
-	VirtualKeys func() VirtualKeyCache
 }
 
 // warpVirtualKeyDecorator builds the overlay describe_virtual_key applies to a
@@ -124,7 +120,8 @@ func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers)
 	}
 }
 
-// NewWarpHandler builds the handler and the service behind it.
+// NewWarpHandler builds the handler and the service behind it. live is where
+// Warp resolves the virtual key its settings name.
 //
 // A nil loggerPlugin is a supported deployment (logging disabled): Warp then
 // serves only its configuration routes, because its tools would have nothing to
@@ -138,7 +135,7 @@ func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers)
 // because the flag can be switched on at runtime and routes are only
 // registered once; what the flag withholds is every route and the indexing of
 // new logs.
-func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
+func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if store != nil {
 		opts = append(opts, warp.WithVirtualKeyDecorator(warpVirtualKeyDecorator(store, resolvers)))
@@ -158,10 +155,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled, virtualKeyCache: resolvers.VirtualKeys}
-	if store != nil {
-		handler.virtualKeyStore = store
-	}
+	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled, live: live}
 	handler.backfillStore, _ = store.(warpBackfillJobStore)
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {

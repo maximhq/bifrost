@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 // Provider objects (batches, videos, files, containers and the files inside them, cached contents) are created through the
@@ -715,10 +716,11 @@ func inferenceFileIDs(req *schemas.BifrostRequest) []string {
 // happens to match there is not the OpenAI object.
 func (p *GovernancePlugin) equivalentProviders(provider string) []string {
 	names := []string{provider}
-	if p.inMemoryStore == nil {
-		return names
-	}
-	configured := p.inMemoryStore.GetConfiguredProviders()
+	configured := make(map[schemas.ModelProvider]configstore.ProviderConfig)
+	p.live.Collections.Providers.Range(func(rec *registry.Provider) bool {
+		configured[rec.Name] = rec.Settings.Config()
+		return true
+	})
 	if len(configured) == 0 {
 		return names
 	}
@@ -1039,7 +1041,7 @@ func resourceNameSuffix(kind, id string) (string, bool) {
 // builtOnVertex reports whether a provider name reaches Vertex: Vertex itself, or a custom
 // provider built on it.
 func (p *GovernancePlugin) builtOnVertex(provider string) bool {
-	return configuredBaseProvider(p.inMemoryStore, schemas.ModelProvider(provider)) == schemas.Vertex
+	return configuredBaseProvider(p.live, schemas.ModelProvider(provider)) == schemas.Vertex
 }
 
 // enforceProviderObjectOwnership refuses a request for a provider object whose recorded creator

@@ -473,10 +473,8 @@ type ConfigStore interface {
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
 	// GetVirtualMCPs returns every Virtual MCP definition (enabled and disabled), tools decoded, for
-	// the governance cache. GetVirtualMCPAssignments returns each VK's assigned definition IDs, keyed
-	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
+	// the governance cache. It is not scoped to the caller: holder grant data, not an admin catalog view.
 	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
-	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
 
 	// Virtual MCP CRUD. CreateVirtualMCP fills endpoint_slug from the name when unset and enforces
 	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
@@ -551,7 +549,6 @@ type ConfigStore interface {
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
 	DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error
-	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error
 
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)

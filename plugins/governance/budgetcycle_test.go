@@ -345,8 +345,16 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 	rateLimit.RequestLastReset = anchor
 	require.NoError(t, configStore.CreateRateLimit(ctx, rateLimit))
 
-	store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
+	// The live store loads the limits something holds, so a key holds this one.
+	holder := buildVirtualKey("traffic-vk", "sk-bf-traffic", "traffic", true)
+	holder.RateLimitID = &rateLimit.ID
+	h, err := openLiveHarness(t, configStore, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*holder},
+	}, nil)
 	require.NoError(t, err)
+	store, err := NewLocalGovernanceStore(ctx, logger, configStore, h.live, nil)
+	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	boundary := anchor.Add(cycleTestWindow)
 	reset, ok := store.ResetRateLimitAt(ctx, rateLimit.ID, &boundary, &boundary)
@@ -381,12 +389,12 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 func TestVirtualKeyReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 	ctx := context.Background()
 	anchor := cycleTestAnchor()
-	store := newStandaloneStore(t)
 
 	budget := newCycleTestBudget("vk-reload-budget", 100, 0)
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 3))
 	vk := buildVirtualKeyWithMultiBudgets("vk-reload", "sk-bf-vk-reload", "VK Reload", []configstoreTables.TableBudget{*budget})
-	store.CreateVirtualKeyInMemory(ctx, vk)
+	h := newLiveHarness(t, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
 
 	// The snapshot a reload carries: the row as the database holds it before the
 	// leader has flushed the spent cycle.
@@ -397,7 +405,7 @@ func TestVirtualKeyReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 	require.Equal(t, 2, reset.OverrideCyclesRemaining, "one window closed, so one cycle should be spent")
 
 	// A virtual-key reload lands, replaying the pristine grant.
-	store.UpdateVirtualKeyInMemory(ctx, pristine, nil, nil, nil)
+	h.putVirtualKey(pristine)
 
 	got := store.LoadBudget(ctx, budget.ID)
 	require.NotNil(t, got)
@@ -412,7 +420,7 @@ func TestVirtualKeyReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 //
 // Both first-write branches used to refresh the caller's struct in place and then
 // store that same pointer. Callers legitimately pass a pointer into a slice they keep
-// using (BulkLoadUserAccessProfiles passes &p.Budgets[j]), so the caller's copy would
+// using (a bulk loader passing &p.Budgets[j] did), so the caller's copy would
 // be silently rewritten and any later write through it would race BumpBudgetUsage's
 // clone-and-CAS. sync.Map makes the map operation atomic, not the pointed-to struct.
 func TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig(t *testing.T) {
@@ -487,9 +495,15 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		}, logger)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
-		require.NoError(t, configStore.CreateBudget(ctx, seeded))
-		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
+		// The live store loads the budgets something holds, so a key holds this one.
+		holder := buildVirtualKeyWithMultiBudgets("vk-"+seeded.ID, "sk-bf-"+seeded.ID, seeded.ID, []configstoreTables.TableBudget{*seeded})
+		h, err := openLiveHarness(t, configStore, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*holder},
+		}, nil)
 		require.NoError(t, err)
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, h.live, nil)
+		require.NoError(t, err)
+		t.Cleanup(store.Close)
 		return store, configStore
 	}
 
@@ -655,8 +669,7 @@ func TestQuarterlyBudgetResetsExactlyOncePerQuarter(t *testing.T) {
 // A quarterly budget's fiscal calendar never travels over the wire. The gossip
 // payload carries usage only, and a config change broadcasts nothing but an
 // entity ID and action; each peer answers it by calling ReloadVirtualKey, which
-// re-reads the row with Preload("Budgets") and hands the result to
-// UpdateVirtualKeyInMemory. Two links in that chain are already covered - the
+// re-reads the key's row and its budgets into the live store. Two links in that chain are already covered - the
 // AfterFind hook firing on a nested preload, and the migration persisting the
 // column - and this covers the third: the in-memory store keeping the
 // definition rather than rebuilding budgets from a field list.
@@ -691,11 +704,12 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 		assert.Equal(t, wantUsage, loaded.CurrentUsage)
 	}
 
-	// A node seeing the virtual key for the first time: UpdateVirtualKeyInMemory
-	// delegates to CreateVirtualKeyInMemory when nothing is cached yet.
+	// A node seeing the virtual key for the first time: the reload installs a key
+	// nothing held yet.
 	t.Run("first load", func(t *testing.T) {
-		store := newStandaloneStore(t)
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 250), nil, nil, nil)
+		h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+		store := h.mustGovernanceStore(NewMockLogger(), nil)
+		h.putVirtualKey(newQuarterlyVK(time.February, 250))
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
 	})
 
@@ -705,8 +719,9 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 	// usage from the cached row, so it has to be exercised separately - a
 	// definition dropped only here would survive every first-load test.
 	t.Run("reload over an existing virtual key", func(t *testing.T) {
-		store := newStandaloneStore(t)
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.January, 0), nil, nil, nil)
+		h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+		store := h.mustGovernanceStore(NewMockLogger(), nil)
+		h.putVirtualKey(newQuarterlyVK(time.January, 0))
 
 		// Simulate accrued spend on the cached copy, then reload with an edited
 		// fiscal calendar, exactly as a peer would after the operator changes it.
@@ -715,7 +730,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 		cached.CurrentUsage = 250
 		store.storeBudget(cached.ID, cached)
 
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 0), nil, nil, nil)
+		h.putVirtualKey(newQuarterlyVK(time.February, 0))
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
 	})
 }
@@ -794,9 +809,15 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 		}, logger)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
-		require.NoError(t, configStore.CreateBudget(ctx, seeded))
-		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
+		// The live store loads the budgets something holds, so a key holds this one.
+		holder := buildVirtualKeyWithMultiBudgets("vk-"+seeded.ID, "sk-bf-"+seeded.ID, seeded.ID, []configstoreTables.TableBudget{*seeded})
+		h, err := openLiveHarness(t, configStore, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*holder},
+		}, nil)
 		require.NoError(t, err)
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, h.live, nil)
+		require.NoError(t, err)
+		t.Cleanup(store.Close)
 		return store, configStore
 	}
 

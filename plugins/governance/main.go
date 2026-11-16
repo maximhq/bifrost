@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -88,52 +89,13 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
-}
-
-// InMemoryStore is the deployment's live configuration as governance reads it.
-//
-// A provider configuration it hands out is published, not lent: its Keys slice, and each key's
-// Aliases map, are never written after they are returned. A change publishes a new Keys slice (and a
-// new map for any key whose aliases change). The key-alias rules depend on this: the alias-name index
-// (modelcatalog.MayBeKeyAlias) is reused while the slice and its maps are the same, and only detects
-// in-place edits that change a map's length.
-type InMemoryStore interface {
-	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
-	GetConfiguredProviderNames() []string
-	GetMCPClientsAllowedByDefault() map[string]string // clientID → clientName
-	GetMCPClientNames() map[string]string             // clientID → clientName, every client
-	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
-	GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool)
-	GetEnabledAgents() map[string]bool // agent name → allow by default
-}
-
-// singleProviderStore is an InMemoryStore that can hand back one provider's configuration without
-// building the whole map, so a per-request model check stays free of allocations.
-type singleProviderStore interface {
-	GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool)
-}
-
-// configuredProvider returns one provider's configuration from store, read alone when the store
-// supports it.
-func configuredProvider(store InMemoryStore, provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
-	if single, ok := store.(singleProviderStore); ok {
-		return single.GetConfiguredProvider(provider)
-	}
-	config, ok := store.GetConfiguredProviders()[provider]
-	return config, ok
-}
-
-// configuredBaseProvider is the provider whose implementation runs provider's requests: the base
-// type of a custom provider, otherwise provider itself. It reads that one provider's configuration.
-func configuredBaseProvider(store InMemoryStore, provider schemas.ModelProvider) schemas.ModelProvider {
-	if store == nil {
-		return provider
-	}
-	config, ok := configuredProvider(store, provider)
-	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
-		return provider
-	}
-	return config.CustomProviderConfig.BaseProviderType
+	// EnabledAgents reports the enabled agents, each with whether it is allowed by default; nil
+	// means none is enabled.
+	EnabledAgents func() map[string]bool `json:"-"`
+	// LogTimestampPrecision is the precision the log store keeps request timestamps at; zero keeps
+	// them exact. Usage counted around a reset compares the request's start at this precision, so
+	// live counters and the logs put a request on the same side of the reset.
+	LogTimestampPrecision time.Duration `json:"-"`
 }
 
 type BaseGovernancePlugin interface {
@@ -188,8 +150,11 @@ type GovernancePlugin struct {
 	mcpCatalog   *mcpcatalog.MCPCatalog
 	logger       schemas.Logger
 
-	// Transport dependencies
-	inMemoryStore InMemoryStore
+	// live holds the configuration records the plugin reads: providers, MCP clients, keys and the
+	// teams and customers they sit under.
+	live *livestore.Store
+	// enabledAgents reports the enabled agents; nil means none is enabled.
+	enabledAgents func() map[string]bool
 
 	cfgMutex sync.RWMutex
 
@@ -209,25 +174,18 @@ type GovernancePlugin struct {
 //
 // Behavior and defaults:
 //   - Enables all governance features with optimized defaults.
-//   - If `configStore` is nil, the plugin will use an in-memory LocalGovernanceStore
-//     (no persistence). Init constructs a LocalGovernanceStore internally when
-//     configStore is nil.
+//   - If `configStore` is nil, usage is kept in memory only (no persistence).
 //   - If `modelCatalog` is nil, cost calculation is skipped.
 //   - `config.IsVkMandatory` controls whether `x-bf-vk` is required in PreLLMHook.
-//   - `inMemoryStore` is used by TransportInterceptor to validate configured providers
-//     and build provider-prefixed models; it may be nil. When nil, transport-level
-//     provider validation/routing is skipped and existing model strings are left
-//     unchanged. This is safe and recommended when using the plugin directly from
-//     the Go SDK without the HTTP transport.
 //
 // Parameters:
 //   - ctx: base context for the plugin; a child context with cancel is created.
 //   - config: plugin flags; may be nil.
 //   - logger: logger used by all subcomponents.
 //   - configStore: configuration store used for persistence; may be nil.
-//   - governanceConfig: initial/seed governance configuration for the store.
+//   - live: the loaded live store the plugin reads keys, teams, customers, limits, model configs,
+//     providers and MCP clients from; required.
 //   - modelCatalog: optional model catalog to compute request cost.
-//   - inMemoryStore: provider registry used for routing/validation in transports.
 //
 // Returns:
 //   - *GovernancePlugin on success.
@@ -245,10 +203,9 @@ func Init(
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
-	governanceConfig *configstore.GovernanceConfig,
+	live *livestore.Store,
 	modelCatalog *modelcatalog.ModelCatalog,
 	mcpCatalog *mcpcatalog.MCPCatalog,
-	inMemoryStore InMemoryStore,
 ) (*GovernancePlugin, error) {
 	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
@@ -273,15 +230,22 @@ func Init(
 	}
 
 	newStoreStart := time.Now()
-	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog, inMemoryStore)
+	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, live, modelCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
 	logger.Info("[startup-timing] NewLocalGovernanceStore took %v", time.Since(newStoreStart))
+	if config != nil {
+		// Set before the tracker exists, so no charge reads it while it is written.
+		governanceStore.SetLogTimestampPrecision(config.LogTimestampPrecision)
+	}
 
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
+	resolver, err := NewBudgetResolver(governanceStore, modelCatalog, live, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -302,11 +266,20 @@ func Init(
 		requiredHeaders:       requiredHeaders,
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
-		inMemoryStore:         inMemoryStore,
+		live:                  live,
+		enabledAgents:         enabledAgentsOf(config),
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
+}
+
+// enabledAgentsOf is config's report of the enabled agents, nil when config has none.
+func enabledAgentsOf(config *Config) func() map[string]bool {
+	if config == nil {
+		return nil
+	}
+	return config.EnabledAgents
 }
 
 // InitFromStore initializes and returns a governance plugin instance with a custom store.
@@ -317,8 +290,8 @@ func Init(
 //   - Use a pre-configured store instance
 //   - Integrate with non-standard storage backends
 //
-// Parameters are the same as Init, except governanceConfig is replaced by governanceStore.
-// The governanceStore must not be nil, or an error is returned.
+// Parameters are the same as Init, plus governanceStore, which must not be nil, or an error is
+// returned. The plugin takes the store over: Cleanup closes it.
 //
 // See Init documentation for details on other parameters and behavior.
 func InitFromStore(
@@ -329,7 +302,7 @@ func InitFromStore(
 	configStore configstore.ConfigStore,
 	modelCatalog *modelcatalog.ModelCatalog,
 	mcpCatalog *mcpcatalog.MCPCatalog,
-	inMemoryStore InMemoryStore,
+	live *livestore.Store,
 ) (*GovernancePlugin, error) {
 	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
@@ -343,6 +316,9 @@ func InitFromStore(
 	if governanceStore == nil {
 		return nil, fmt.Errorf("governance store is nil")
 	}
+	if live == nil {
+		return nil, fmt.Errorf("governance plugin: %w", livestore.ErrNoLiveStore)
+	}
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
@@ -354,7 +330,17 @@ func InitFromStore(
 		disableAutoToolInject = config.DisableAutoToolInject
 		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
+	if config != nil {
+		// Set before the tracker exists, so no charge reads it while it is written. A store that
+		// keeps no precision of its own has no setter and is left as it is.
+		if precise, ok := governanceStore.(interface{ SetLogTimestampPrecision(time.Duration) }); ok {
+			precise.SetLogTimestampPrecision(config.LogTimestampPrecision)
+		}
+	}
+	resolver, err := NewBudgetResolver(governanceStore, modelCatalog, live, logger)
+	if err != nil {
+		return nil, err
+	}
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
@@ -367,7 +353,8 @@ func InitFromStore(
 		modelCatalog:          modelCatalog,
 		mcpCatalog:            mcpCatalog,
 		logger:                logger,
-		inMemoryStore:         inMemoryStore,
+		live:                  live,
+		enabledAgents:         enabledAgentsOf(config),
 		isVkMandatory:         isVkMandatory,
 		cfgMutex:              sync.RWMutex{},
 		requiredHeaders:       requiredHeaders,
@@ -788,7 +775,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 		}
 		access := g.Access()
 		if access != nil && runsAsWritten(ctx) {
-			access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+			access = literalAccessFor(access, p.modelCatalog, p.live)
 		}
 		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
 	}()
@@ -1104,12 +1091,15 @@ func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeySc
 	}
 	return func(provider, model string, allowed, keyIDs []string) bool {
 		var providerConfig *configstore.ProviderConfig
-		if p.inMemoryStore != nil {
-			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
-				providerConfig = &config
+		var keys []schemas.Key
+		if stored, ok := p.live.Collections.Providers.Get(provider); ok {
+			config := stored.Settings.Config()
+			providerConfig = &config
+			if list, ok := p.live.Views.ProviderKeyLists.Get(provider); ok {
+				keys = *list
 			}
 		}
-		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, allowed, keyIDs)
+		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, keys, allowed, keyIDs)
 	}
 }
 
@@ -1124,7 +1114,9 @@ func contextOf(ctx *schemas.BifrostContext) context.Context {
 
 // allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
 // selection can pick for this request: only keys the permit's key restriction allows, and the pinned
-// key when the request pins one. providerConfig must be the caller's own copy.
+// key when the request pins one. providerConfig holds the provider's settings and no keys, so the
+// catalog's own check is the direct match only; keys is the provider's key list, shared and read
+// only.
 //
 // The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
 // all map the name to an allowed model can only turn the answer into a refusal where the pin names
@@ -1132,12 +1124,10 @@ func contextOf(ctx *schemas.BifrostContext) context.Context {
 // common alias request reads nothing from the context. A request that runs as written (a direct key,
 // skip key selection) never has an alias resolved, but is admitted on the literal access (see
 // literalAccessFor), so this access only widens what such a request may be told it reaches.
-func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowed, keyIDs []string) bool {
-	if providerConfig == nil || !modelcatalog.HasKeyAliases(providerConfig.Keys) {
+func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, keys []schemas.Key, allowed, keyIDs []string) bool {
+	if providerConfig == nil || !modelcatalog.HasKeyAliases(keys) {
 		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
 	}
-	keys := providerConfig.Keys
-	providerConfig.Keys = nil // the direct match only; the alias rule runs below over the servable keys
 	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
 		return true
 	}
@@ -1159,14 +1149,15 @@ func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog,
 // one, and over the keys the permit allows. A request that runs as written becomes nothing else.
 func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.AliasTargets {
 	return func(provider, model string, keyIDs []string, visit func(target string)) {
-		if p.inMemoryStore == nil {
+		list, ok := p.live.Views.ProviderKeyLists.Get(provider)
+		if !ok {
 			return
 		}
-		cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
-		if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, cfg.Keys) || runsAsWritten(contextOf(ctx)) {
+		all := *list // shared, read only
+		if !modelcatalog.HasKeyAliases(all) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, all) || runsAsWritten(contextOf(ctx)) {
 			return
 		}
-		keys, ok := pinnedKeys(contextOf(ctx), cfg.Keys)
+		keys, ok := pinnedKeys(contextOf(ctx), all)
 		if !ok {
 			return
 		}
@@ -1604,13 +1595,13 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 // bodyNamesModels reports whether a passthrough body's "model" is a Bifrost model. SageMaker's is the
 // container's own served name: the endpoint in the path is the model, and the router already set it.
 func (p *GovernancePlugin) bodyNamesModels(provider schemas.ModelProvider) bool {
-	return configuredBaseProvider(p.inMemoryStore, provider) != schemas.SageMaker
+	return configuredBaseProvider(p.live, provider) != schemas.SageMaker
 }
 
 // namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies
 // name a model by its resource name rather than its bare id.
 func (p *GovernancePlugin) namesModelsAsResources(provider schemas.ModelProvider) bool {
-	base := configuredBaseProvider(p.inMemoryStore, provider)
+	base := configuredBaseProvider(p.live, provider)
 	return base == schemas.Gemini || base == schemas.Vertex
 }
 
@@ -2064,12 +2055,14 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// defaultAgentPermit is the permit to the enabled agents allowed by default, for a caller identified
+// by a user or a key; nil when there is no such caller or no agent is enabled.
 func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas.Permit {
-	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) || p.inMemoryStore == nil {
+	if identity == nil || (identity.User() == nil && identity.VirtualKey() == nil) || p.enabledAgents == nil {
 		return nil
 	}
 	allowedByDefault := make([]string, 0)
-	for agentName, allowByDefault := range p.inMemoryStore.GetEnabledAgents() {
+	for agentName, allowByDefault := range p.enabledAgents() {
 		if allowByDefault {
 			allowedByDefault = append(allowedByDefault, agentName)
 		}
@@ -2105,8 +2098,8 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	enabledAgents := map[string]bool(nil)
-	if p.inMemoryStore != nil {
-		enabledAgents = p.inMemoryStore.GetEnabledAgents()
+	if p.enabledAgents != nil {
+		enabledAgents = p.enabledAgents()
 	}
 	if _, enabled := enabledAgents[req.AgentName]; !enabled {
 		return deny(DecisionAgentBlocked, fmt.Sprintf("Agent '%s' is disabled or unknown", req.AgentName))
@@ -2153,7 +2146,7 @@ func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schema
 }
 
 // teamContentLoggingStamper is a store that can stamp a team's content-logging decision from its
-// live team map. The connect path uses it when the store offers it; GovernanceStore does not
+// team records. The connect path uses it when the store offers it; GovernanceStore does not
 // require it, so a store without teams stamps no team layer.
 type teamContentLoggingStamper interface {
 	StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string)
@@ -2200,22 +2193,11 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	if _, resolved := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); !resolved {
 		stampVirtualKeyContentLogging(ctx, vk)
 	}
-	if stamper, ok := p.store.(teamContentLoggingStamper); ok && vk.TeamID != nil {
-		stamper.StampTeamContentLogging(ctx, *vk.TeamID)
+	if stamper, ok := p.store.(teamContentLoggingStamper); ok && vk.TeamID != "" {
+		stamper.StampTeamContentLogging(ctx, vk.TeamID)
 	}
 	stampVirtualKeyMetadata(ctx, vk)
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-		}
-	}
-	if vk.Customer != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-	}
+	keyOrganizationOf(p.live, vk).stamp(ctx)
 	return req, nil, nil
 }
 
@@ -2242,6 +2224,8 @@ func (p *GovernancePlugin) Cleanup() error {
 		if err := p.tracker.Cleanup(); err != nil {
 			cleanupErr = err
 		}
+		// The store stops following the live store only after the tracker's final flush above.
+		p.store.Close()
 	})
 	return cleanupErr
 }

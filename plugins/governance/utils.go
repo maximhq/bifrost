@@ -10,6 +10,8 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/valyala/fasthttp"
 )
 
@@ -80,19 +82,13 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 // own model, so the request's model is at most a pricing hint there. A custom provider runs its
 // base provider's batch API under its own name, so it is judged by the base type the configured
 // providers record for it; a provider the store does not know is judged by its name.
-func batchModelBoundByProvider(provider schemas.ModelProvider, configured InMemoryStore) bool {
-	switch batchBaseProvider(provider, configured) {
+func batchModelBoundByProvider(provider schemas.ModelProvider, configured *livestore.Store) bool {
+	switch configuredBaseProvider(configured, provider) {
 	case schemas.OpenAI, schemas.Azure:
 		return false
 	default:
 		return true
 	}
-}
-
-// batchBaseProvider is the provider whose implementation runs provider's requests: the base type
-// of a custom provider, otherwise provider itself.
-func batchBaseProvider(provider schemas.ModelProvider, configured InMemoryStore) schemas.ModelProvider {
-	return configuredBaseProvider(configured, provider)
 }
 
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional
@@ -417,4 +413,51 @@ func isLiveSessionContinuation(ctx context.Context) bool {
 	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
 	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
 	return continuation && requestType == schemas.LiveRequest
+}
+
+// configuredBaseProvider is the provider whose implementation runs provider's requests: the base
+// type of a custom provider, otherwise provider itself. It reads that one provider's configuration.
+func configuredBaseProvider(live *livestore.Store, provider schemas.ModelProvider) schemas.ModelProvider {
+	p, ok := live.Collections.Providers.Get(string(provider))
+	if !ok || p.Settings.CustomProviderConfig == nil || p.Settings.CustomProviderConfig.BaseProviderType == "" {
+		return provider
+	}
+	return p.Settings.CustomProviderConfig.BaseProviderType
+}
+
+// ConfiguredProviderNames lists the providers configured in live, for holders allowed every
+// provider.
+func ConfiguredProviderNames(live *livestore.Store) []string {
+	var names []string
+	live.Collections.Providers.Range(func(p *registry.Provider) bool {
+		names = append(names, string(p.Name))
+		return true
+	})
+	return names
+}
+
+// MCPClientNames maps the ID of every MCP client configured in live to its name, so permits can
+// name the clients they reach.
+func MCPClientNames(live *livestore.Store) map[string]string {
+	names := make(map[string]string)
+	live.Collections.MCPClients.Range(func(c *registry.MCPClient) bool {
+		if c.Config.ID != "" && c.Config.Name != "" {
+			names[c.Config.ID] = c.Config.Name
+		}
+		return true
+	})
+	return names
+}
+
+// MCPClientsAllowedByDefault maps the ID of every MCP client in live open to every holder without
+// an assignment to its name.
+func MCPClientsAllowedByDefault(live *livestore.Store) map[string]string {
+	open := make(map[string]string)
+	live.Collections.MCPClients.Range(func(c *registry.MCPClient) bool {
+		if c.Config.AllowByDefault {
+			open[c.Config.ID] = c.Config.Name
+		}
+		return true
+	})
+	return open
 }

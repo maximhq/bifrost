@@ -33,33 +33,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-type scribeInMemoryStore struct{ *lib.Config }
-
-// GetConfiguredProviders returns the fixture providers from the live store.
-func (s scribeInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	return libtest.Providers(s.Config)
-}
-
-// GetMCPClientsAllowedByDefault lists no MCP clients: the fixture configures none.
-func (s scribeInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string { return nil }
-
-// GetMCPClientNames lists no MCP clients: the fixture configures none.
-func (s scribeInMemoryStore) GetMCPClientNames() map[string]string { return nil }
-
-// GetMCPClientBySlug finds no MCP client: the fixture configures none.
-func (s scribeInMemoryStore) GetMCPClientBySlug(string) (string, string, bool) {
-	return "", "", false
-}
-
-// GetConfiguredProviderNames lists the fixture provider names.
-func (s scribeInMemoryStore) GetConfiguredProviderNames() []string {
-	names := make([]string, 0)
-	for provider := range libtest.Providers(s.Config) {
-		names = append(names, string(provider))
-	}
-	return names
-}
-
 // Real catalog, governance and provider code; only ElevenLabs' HTTP responses
 // are mocked. The live model response deliberately omits all Scribe models.
 func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys []configtables.TableVirtualKey) (*CompletionHandler, *modelcatalog.ModelCatalog, *atomic.Int32) {
@@ -128,7 +101,7 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 	tb.Cleanup(upstream.Close)
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
-	config := libtest.FileOnly(tb, &lib.Config{
+	config := libtest.FileOnlyGovernance(tb, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog,
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Elevenlabs: {
@@ -141,10 +114,9 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
 			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
 		},
-	})
+	}, &configstore.GovernanceConfig{VirtualKeys: virtualKeys})
 	catalog.SetKeyConfigForProvider(schemas.OpenAI, libtest.Providers(config)[schemas.OpenAI].Keys)
-	plugin, err := governance.Init(tb.Context(), nil, log, nil,
-		&configstore.GovernanceConfig{VirtualKeys: virtualKeys}, catalog, nil, scribeInMemoryStore{config})
+	plugin, err := governance.Init(tb.Context(), nil, log, nil, config.LiveStore, catalog, nil)
 	require.NoError(tb, err)
 	client, err := bifrost.Init(tb.Context(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(config), Logger: log, ModelCatalog: catalog,

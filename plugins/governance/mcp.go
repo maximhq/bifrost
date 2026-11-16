@@ -145,14 +145,6 @@ func (acc *MCPToolAccumulator) ConfiguredClients() map[string]struct{} {
 	return configured
 }
 
-// mcpClientNames resolves client id → display name from the in-memory store, or nil.
-func (gs *LocalGovernanceStore) mcpClientNames() map[string]string {
-	if gs.inMemoryStore == nil {
-		return nil
-	}
-	return gs.inMemoryStore.GetMCPClientNames()
-}
-
 // MCPPermitsFromAccumulator emits one permit per client, naming unnamed clients from clientNames. A
 // client that reaches no tool is dropped (allowed-by-default stays blocked via ConfiguredClients, not a
 // permit); an unresolvable name is dropped and logged. A free function so any store passes its own deps.

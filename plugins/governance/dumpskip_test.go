@@ -4,17 +4,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
-	"log"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
 )
 
 // failingTxConfigStore wraps a real store so a test can make the next dump
@@ -68,24 +70,31 @@ func newDumpSkipFixture(t *testing.T) *dumpSkipFixture {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	hour := "1h"
-	for _, id := range []string{"b1", "b2", "b3"} {
+	// The live store loads the limits something holds, so key i holds budget i and rate limit i.
+	var holders []configstoreTables.TableVirtualKey
+	for i, id := range []string{"b1", "b2", "b3"} {
 		b := buildBudgetWithUsage(id, 1000, 10, "24h")
 		b.CreatedAt, b.UpdatedAt, b.LastReset = now, now, now
-		require.NoError(t, inner.CreateBudget(ctx, b))
+		holders = append(holders, *buildVirtualKeyWithMultiBudgets(fmt.Sprintf("vk-%d", i+1), fmt.Sprintf("sk-bf-dumpskip-%d", i+1), fmt.Sprintf("dumpskip %d", i+1), []configstoreTables.TableBudget{*b}))
 	}
-	for _, id := range []string{"r1", "r2", "r3"} {
+	for i, id := range []string{"r1", "r2", "r3"} {
 		rl := buildRateLimitWithUsage(id, 1_000_000, 5, 1_000, 1)
 		rl.TokenResetDuration, rl.RequestResetDuration = &hour, &hour
 		rl.TokenLastReset, rl.RequestLastReset = now, now
 		require.NoError(t, inner.CreateRateLimit(ctx, rl))
+		rateLimitID := id
+		holders[i].RateLimitID = &rateLimitID
 	}
+	h, err := openLiveHarness(t, inner, &configstore.GovernanceConfig{VirtualKeys: holders}, nil)
+	require.NoError(t, err)
 
 	f := &dumpSkipFixture{configStore: &failingTxConfigStore{ConfigStore: inner}}
 	require.NoError(t, inner.DB().Callback().Update().After("gorm:update").Register("dumpskip:count", func(*gorm.DB) {
 		f.updates.Add(1)
 	}))
-	f.store, err = NewLocalGovernanceStore(ctx, logger, f.configStore, nil, nil, nil)
+	f.store, err = NewLocalGovernanceStore(ctx, logger, f.configStore, h.live, nil)
 	require.NoError(t, err)
+	t.Cleanup(f.store.Close)
 	require.NotNil(t, f.store.LoadBudget(ctx, "b1"))
 	require.NotNil(t, f.store.LoadRateLimit(ctx, "r1"))
 	return f
@@ -348,8 +357,7 @@ func TestDurableResetEvidenceRestart(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, store.ResetExpiredBudgets(ctx, []*configstoreTables.TableBudget{resetBudget}))
 	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{resetRate}))
-	restarted, err := NewLocalGovernanceStore(ctx, NewMockLogger(), fixture.configStore, nil, nil, nil)
-	require.NoError(t, err)
+	restarted := restartedStore(t, ctx, fixture.configStore)
 	require.Equal(t, budgetBoundary.UnixNano(), restarted.LoadBudget(ctx, budget.ID).UsageResetEpoch)
 	tokenEpoch, requestEpoch := restarted.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, restarted.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
 	require.Equal(t, tokenBoundary.UnixNano(), tokenEpoch)
@@ -362,8 +370,7 @@ func TestDurableResetEvidenceRestart(t *testing.T) {
 	adoptedRate := restarted.LoadRateLimit(ctx, rate.ID)
 	require.NoError(t, restarted.GetBudgetDumper(ctx, nil)(ctx))
 	require.NoError(t, restarted.GetRateLimitDumper(ctx, nil, nil)(ctx))
-	afterAdoption, err := NewLocalGovernanceStore(ctx, NewMockLogger(), fixture.configStore, nil, nil, nil)
-	require.NoError(t, err)
+	afterAdoption := restartedStore(t, ctx, fixture.configStore)
 	require.True(t, afterAdoption.LoadBudget(ctx, budget.ID).LastReset.After(budgetBoundary))
 	require.Equal(t, budgetBoundary.UnixNano(), afterAdoption.LoadBudget(ctx, budget.ID).UsageResetEpoch)
 	require.True(t, afterAdoption.LoadRateLimit(ctx, rate.ID).TokenLastReset.Equal(adoptedRate.TokenLastReset))
@@ -371,6 +378,18 @@ func TestDurableResetEvidenceRestart(t *testing.T) {
 	tokenEpoch, requestEpoch = afterAdoption.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, afterAdoption.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
 	require.Equal(t, tokenBoundary.UnixNano(), tokenEpoch)
 	require.Zero(t, requestEpoch)
+}
+
+// restartedStore opens a governance store over a live store freshly loaded from configStore's
+// database, the way a restarted node starts from what the previous one persisted.
+func restartedStore(t *testing.T, ctx context.Context, configStore configstore.ConfigStore) *LocalGovernanceStore {
+	t.Helper()
+	h, err := openLiveHarness(t, configStore, nil, nil)
+	require.NoError(t, err)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), configStore, h.live, nil)
+	require.NoError(t, err)
+	t.Cleanup(store.Close)
+	return store
 }
 
 // TestDurableResetEvidenceBaselineInstallation verifies baseline evidence is

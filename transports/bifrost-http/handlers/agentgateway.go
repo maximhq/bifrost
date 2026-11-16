@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -67,8 +68,7 @@ type AgentGatewayIdentityResolver func(context.Context, string) (string, bool)
 // AgentGatewayVirtualKeyValidator is the narrow governance-cache contract used
 // by Agent Gateway authentication middleware. Authentication remains DB-free.
 type AgentGatewayVirtualKeyValidator interface {
-	VirtualKeyCache
-	GetVirtualKey(ctx context.Context, value string) (*tables.TableVirtualKey, bool)
+	GetVirtualKey(ctx context.Context, value string) (*registry.VirtualKey, bool)
 }
 
 // VirtualKeyReloader refreshes one virtual key in the governance plugin's
@@ -1157,11 +1157,11 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 					return
 				}
 				vk, ok := validator.GetVirtualKey(ctx, rawVirtualKey)
-				if !ok || vk == nil || !vk.IsActiveValue() {
+				if !ok || vk == nil || !vk.Active {
 					writeProtocolDenial(ctx, binding)
 					return
 				}
-				authentication := agentAuthenticationResult{credentialSource: source, rawVirtualKey: vk.Value.GetValue()}
+				authentication := agentAuthenticationResult{credentialSource: source, rawVirtualKey: vk.Value}
 				if header := source.HeaderName(); header != "" {
 					authentication.acceptedCredential = &schemas.AcceptedBifrostCredential{
 						Header: header,

@@ -41,6 +41,7 @@ func TestReportUsage_IdempotentPerAggregateAndTarget(t *testing.T) {
 	assert.Equal(t, int64(1), f.requests())
 }
 
+// newAccountingFixture builds a store holding one key with a budget and a rate limit, and a tracker over it.
 func newAccountingFixture(t *testing.T) *accountingFixture {
 	t.Helper()
 	logger := NewMockLogger()
@@ -52,14 +53,14 @@ func newAccountingFixture(t *testing.T) *accountingFixture {
 	rlID := rl.ID
 	vk.RateLimitID = &rlID
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 		RateLimits:  []configstoreTables.TableRateLimit{*rl},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	t.Cleanup(func() { _ = tracker.Cleanup() })
 
@@ -196,12 +197,12 @@ func TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled(t *testing.T) 
 	logger := NewMockLogger()
 	rl := buildRateLimitWithUsage("rl-fallback", 1_000_000, 0, 1_000_000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-fallback", "Fallback VK", rl)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rl},
 	}, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -317,6 +318,7 @@ type modelScopedFixture struct {
 	tracker *UsageTracker
 }
 
+// newModelScopedFixture builds a store holding a key with key-scoped model configs for one model and for every model, and a tracker over it.
 func newModelScopedFixture(t *testing.T) *modelScopedFixture {
 	t.Helper()
 	logger := NewMockLogger()
@@ -334,14 +336,14 @@ func newModelScopedFixture(t *testing.T) *modelScopedFixture {
 	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
 	wildcardMC.ScopeID = &vkID
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
 		Budgets:      []configstoreTables.TableBudget{*perModel, *wildcard},
 		RateLimits:   []configstoreTables.TableRateLimit{*perModelRL},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	t.Cleanup(func() { _ = tracker.Cleanup() })
 
@@ -406,12 +408,14 @@ func TestReportUsage_BatchModelUsageIsChargedWithoutAliasExpansion(t *testing.T)
 	const aliased, target = "claude-opus-4-6", "claude-sonnet-4-6"
 	targetCfg := buildModelConfig("target-cfg", target, &provider, buildBudget("target-budget", 100.0, "1d"), nil)
 	aliasCfg := buildModelConfig("alias-cfg", aliased, &provider, buildBudget("alias-budget", 100.0, "1d"), nil)
-	store := modelKeyStore(t, targetCfg, aliasCfg)
-	store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store, h := modelKeyStore(t, targetCfg, aliasCfg)
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Anthropic: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{aliased: {ModelID: target}}}}},
-	}}
+	})
 	logger := NewMockLogger()
-	tracker := NewUsageTracker(context.Background(), store, NewBudgetResolver(store, nil, logger, nil), nil, logger)
+	resolver, err := NewBudgetResolver(store, nil, h.live, logger)
+	require.NoError(t, err)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	t.Cleanup(func() { _ = tracker.Cleanup() })
 	plugin := &GovernancePlugin{store: store, tracker: tracker}
 	usage := func(id string) float64 {
@@ -453,7 +457,7 @@ func TestAccounting_ChargesExactlyWhatWasChecked(t *testing.T) {
 		buildProviderConfigWithRateLimit("bedrock", []string{"*"}, bedrockRL),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 		Teams:        []configstoreTables.TableTeam{*team},
 		Providers:    []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", nil, providerRL)},
@@ -464,7 +468,7 @@ func TestAccounting_ChargesExactlyWhatWasChecked(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -531,14 +535,14 @@ func governedPassthroughFixture(t *testing.T) (*GovernancePlugin, GovernanceStor
 	vk := buildVirtualKeyWithRateLimit("vk-pt", "sk-bf-pt", "Passthrough VK", rl)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rl},
 	}, nil, nil)
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
-		logger, store, nil, nil, nil, nil)
+		logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin, store
@@ -866,12 +870,12 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1, 1) // request limit already spent
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-live", "Live VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	admission := resolverCtx(store, "sk-bf-live")
@@ -1006,6 +1010,30 @@ func TestAccountingUsesLogTimestampPrecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInitAppliesLogTimestampPrecision checks that Init hands the configured log
+// timestamp precision to the store it builds, which compares charges with resets at it.
+func TestInitAppliesLogTimestampPrecision(t *testing.T) {
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+	plugin, err := Init(t.Context(), &Config{LogTimestampPrecision: time.Millisecond}, NewMockLogger(), nil, h.live, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	store, ok := plugin.store.(*LocalGovernanceStore)
+	require.True(t, ok)
+	require.Equal(t, time.Millisecond, store.logTimestampPrecision)
+}
+
+// TestInitFromStoreAppliesLogTimestampPrecision checks that InitFromStore hands the configured log
+// timestamp precision to a store built outside it, as Init does for the store it builds.
+func TestInitFromStoreAppliesLogTimestampPrecision(t *testing.T) {
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(t.Context(), NewMockLogger(), nil, h.live, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(t.Context(), &Config{LogTimestampPrecision: time.Millisecond}, NewMockLogger(), store, nil, nil, nil, h.live)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	require.Equal(t, time.Millisecond, store.logTimestampPrecision)
 }
 
 // TestAccountingUsesRequestStartWhenChargeTriggersReset checks the lazy reset

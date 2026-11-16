@@ -90,8 +90,8 @@ func (ep *clientGatewayEndpoint) telemetryIdentity(ctx *fasthttp.RequestCtx) *cl
 	id := &clientGatewayIdentity{Mode: claims.BfMode, Subject: claims.Subject}
 	if claims.BfMode == "vk" {
 		id.VKID = claims.Subject
-		if vk, err := ep.virtualKeyByID(ctx, claims.Subject); err == nil && vk != nil {
-			id.VKName, id.TeamID, id.CustomerID = vk.Name, derefString(vk.TeamID), derefString(vk.CustomerID)
+		if vk, err := ep.virtualKeyByID(claims.Subject); err == nil && vk != nil {
+			id.VKName, id.TeamID, id.CustomerID = vk.Name, vk.TeamID, vk.CustomerID
 		}
 	}
 	return id
@@ -598,12 +598,4 @@ func newTelemetryMetrics() *telemetryMetrics {
 	}
 	m.registry.MustRegister(m.exports, m.forwards, m.queueDepth, m.queueBytes)
 	return m
-}
-
-// derefString returns *s, or "" for nil.
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

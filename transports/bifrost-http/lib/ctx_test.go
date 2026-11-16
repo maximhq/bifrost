@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -1764,37 +1765,95 @@ func gwKey(name string, weight float64) schemas.Key {
 	return schemas.Key{ID: name, Name: name, Value: *schemas.NewSecretVar("sk-" + name), Models: schemas.WhiteList{"*"}, Weight: weight}
 }
 
-// gwProviders reports the gateway's configured providers to governance, as the server's
-// GovernanceInMemoryStore does, with no MCP clients or agents.
-type gwProviders struct {
-	config *Config
-}
-
-// GetConfiguredProviders implements governance.InMemoryStore.
-func (p gwProviders) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	return providersOf(p.config)
-}
-
-// GetConfiguredProviderNames implements governance.InMemoryStore.
-func (p gwProviders) GetConfiguredProviderNames() []string {
-	names := make([]string, 0)
-	for provider := range providersOf(p.config) {
-		names = append(names, string(provider))
+// storeGovernance writes gov's rate limits, customers, teams, virtual keys (with their provider
+// configs, allowed keys resolved by key ID) and budgets to c's config store, as the governance API
+// would, and refreshes the keys, teams and customers into c's live store, which reads their limits
+// with them. Limits nested under a key, team or customer are written once, by ID.
+func storeGovernance(t *testing.T, c *Config, gov configstore.GovernanceConfig) {
+	t.Helper()
+	must := func(err error, what string) {
+		if err != nil {
+			t.Fatalf("storeGovernance: %s: %v", what, err)
+		}
 	}
-	return names
+	if len(gov.ModelConfigs) > 0 || len(gov.Providers) > 0 {
+		t.Fatal("storeGovernance writes no model configs or providers")
+	}
+	ctx := context.Background()
+	store := c.ConfigStore
+	rateLimits := map[string]configstoreTables.TableRateLimit{}
+	budgets := map[string]configstoreTables.TableBudget{}
+	for _, rl := range gov.RateLimits {
+		rateLimits[rl.ID] = rl
+	}
+	for _, b := range gov.Budgets {
+		budgets[b.ID] = b
+	}
+	for _, vk := range gov.VirtualKeys {
+		if vk.RateLimit != nil {
+			rateLimits[vk.RateLimit.ID] = *vk.RateLimit
+		}
+		for _, b := range vk.Budgets {
+			b.VirtualKeyID = &vk.ID
+			budgets[b.ID] = b
+		}
+	}
+	for _, rl := range rateLimits {
+		must(store.CreateRateLimit(ctx, &rl), "rate limit "+rl.ID)
+	}
+	var refs []livestore.Ref
+	for _, customer := range gov.Customers {
+		customer.Teams, customer.VirtualKeys, customer.Budgets, customer.RateLimit = nil, nil, nil, nil
+		must(store.CreateCustomer(ctx, &customer), "customer "+customer.ID)
+		refs = append(refs, livestore.Ref{Kind: livestore.KindCustomer, ID: customer.ID})
+	}
+	for _, team := range gov.Teams {
+		team.Customer, team.Budgets, team.RateLimit = nil, nil, nil
+		must(store.CreateTeam(ctx, &team), "team "+team.ID)
+		refs = append(refs, livestore.Ref{Kind: livestore.KindTeam, ID: team.ID})
+	}
+	for _, vk := range gov.VirtualKeys {
+		configs := vk.ProviderConfigs
+		vk.Team, vk.Customer, vk.RateLimit, vk.Budgets, vk.ProviderConfigs = nil, nil, nil, nil, nil
+		must(store.CreateVirtualKey(ctx, &vk), "virtual key "+vk.ID)
+		for _, pc := range configs {
+			pc.VirtualKeyID = vk.ID
+			must(store.CreateVirtualKeyProviderConfig(ctx, &pc), "provider config of "+vk.ID)
+		}
+		refs = append(refs, livestore.Ref{Kind: livestore.KindVirtualKey, ID: vk.ID})
+	}
+	for _, b := range budgets {
+		must(store.CreateBudget(ctx, &b), "budget "+b.ID)
+	}
+	must(c.LiveStore.Refresh(ctx, refs), "refresh")
 }
 
-// GetMCPClientsAllowedByDefault implements governance.InMemoryStore.
-func (gwProviders) GetMCPClientsAllowedByDefault() map[string]string { return nil }
-
-// GetMCPClientNames implements governance.InMemoryStore.
-func (gwProviders) GetMCPClientNames() map[string]string { return nil }
-
-// GetMCPClientBySlug implements governance.InMemoryStore.
-func (gwProviders) GetMCPClientBySlug(string) (string, string, bool) { return "", "", false }
-
-// GetEnabledAgents implements governance.InMemoryStore.
-func (gwProviders) GetEnabledAgents() map[string]bool { return nil }
+// editVirtualKey replaces a stored key's provider configs with edited's and refreshes the key, the
+// way the virtual key API applies an edit.
+func (g *gateway) editVirtualKey(edited configstoreTables.TableVirtualKey) {
+	g.t.Helper()
+	ctx := context.Background()
+	store := g.config.ConfigStore
+	existing, err := store.GetVirtualKeyProviderConfigs(ctx, edited.ID)
+	if err != nil {
+		g.t.Fatalf("reading %s's provider configs: %v", edited.ID, err)
+	}
+	for _, pc := range existing {
+		if err := store.DeleteVirtualKeyProviderConfig(ctx, pc.ID); err != nil {
+			g.t.Fatalf("deleting a provider config of %s: %v", edited.ID, err)
+		}
+	}
+	for _, pc := range edited.ProviderConfigs {
+		pc.ID = 0
+		pc.VirtualKeyID = edited.ID
+		if err := store.CreateVirtualKeyProviderConfig(ctx, &pc); err != nil {
+			g.t.Fatalf("writing a provider config of %s: %v", edited.ID, err)
+		}
+	}
+	if err := g.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: edited.ID}}); err != nil {
+		g.t.Fatalf("refreshing %s: %v", edited.ID, err)
+	}
+}
 
 // gateway is one in-process gateway: the transport's provider config and account, the governance
 // and routing plugins over their stores, core, and the session store.
@@ -1853,8 +1912,8 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 	}
 	config := providerStore(t, providers)
 	config.ClientConfig = &configstore.ClientConfig{AllowDirectKeys: setup.allowDirectKeys}
-	governanceConfig := setup.governance
-	governancePlugin, err := governance.Init(ctx, &governance.Config{}, logger, nil, &governanceConfig, setup.catalog, nil, gwProviders{config: config})
+	storeGovernance(t, config, setup.governance)
+	governancePlugin, err := governance.Init(ctx, &governance.Config{}, logger, nil, config.LiveStore, setup.catalog, nil)
 	if err != nil {
 		t.Fatalf("governance.Init: %v", err)
 	}
@@ -2745,8 +2804,7 @@ func TestGatewayWeightChangeShiftsTheSplit(t *testing.T) {
 	if counts := split(); chiSquare(counts, map[schemas.ModelProvider]float64{gwA: 0.5, gwB: 0.5}) >= chiSquareCritical[1] {
 		t.Fatalf("before the edit the picks %v do not fit 50/50", counts)
 	}
-	edited := gwVK("vk1", gwVKProvider(gwA, schemas.Ptr(0.9)), gwVKProvider(gwB, schemas.Ptr(0.1)))
-	g.governance.GetGovernanceStore().UpdateVirtualKeyInMemory(t.Context(), &edited, nil, nil, nil)
+	g.editVirtualKey(gwVK("vk1", gwVKProvider(gwA, schemas.Ptr(0.9)), gwVKProvider(gwB, schemas.Ptr(0.1))))
 	if counts := split(); chiSquare(counts, map[schemas.ModelProvider]float64{gwA: 0.9, gwB: 0.1}) >= chiSquareCritical[1] {
 		t.Fatalf("after the edit the picks %v do not fit 90/10", counts)
 	}
@@ -2926,8 +2984,7 @@ func TestGatewayKeyIDsShrunkToOneKeyDropsTheSessionsKey(t *testing.T) {
 	requireServedBy(t, r, gwA)
 	g.requireBinding(r, bifrost.SessionStateKindKey, gwA, "m", "a2")
 
-	edited := gwVK("vk1", onlyKeys(gwVKProvider(gwA, schemas.Ptr(1.0)), "a1"))
-	g.governance.GetGovernanceStore().UpdateVirtualKeyInMemory(t.Context(), &edited, nil, nil, nil)
+	g.editVirtualKey(gwVK("vk1", onlyKeys(gwVKProvider(gwA, schemas.Ptr(1.0)), "a1")))
 	u.clearHits()
 	for turn := 1; turn <= 2; turn++ {
 		r = g.send(gwCall{model: "gw-a/m", headers: vkHeaders("vk1", "s")})
@@ -2970,7 +3027,7 @@ func TestGatewayGovernanceRefusalDropsTheBinding(t *testing.T) {
 
 	edited := vk
 	edited.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{gwVKProvider(gwA, schemas.Ptr(0.0)), gwVKProvider(gwB, schemas.Ptr(1.0))}
-	store.UpdateVirtualKeyInMemory(t.Context(), &edited, nil, nil, nil)
+	g.editVirtualKey(edited)
 	r = g.send(gwCall{model: "m", headers: vkHeaders("vk1", "s")})
 	requireServedBy(t, r, gwA)
 	if !strings.Contains(r.trail(), "Session stays on gw-a/m for m; routing proposed gw-b/m") {

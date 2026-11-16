@@ -1773,10 +1773,6 @@ func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curr
 	return nil
 }
 
-func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
-	return nil
-}
-
 // Distributed locks
 func (m *MockConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
 	return true, nil
@@ -10003,11 +9999,11 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	}
 
 	// Verify virtual key is in memory config
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
+	if len(storedGovernance(t, config).VirtualKeys) == 0 {
 		t.Fatal("Expected virtual key in governance config")
 	}
-	if config.GovernanceConfig.VirtualKeys[0].Name != "test-vk" {
-		t.Errorf("Expected VK name 'test-vk', got '%s'", config.GovernanceConfig.VirtualKeys[0].Name)
+	if storedGovernance(t, config).VirtualKeys[0].Name != "test-vk" {
+		t.Errorf("Expected VK name 'test-vk', got '%s'", storedGovernance(t, config).VirtualKeys[0].Name)
 	}
 }
 
@@ -10124,9 +10120,10 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected API-set metadata to survive the sync in the store, got %v", dbVK2.Metadata)
 	}
 	var memVK *tables.TableVirtualKey
-	for i := range config2.GovernanceConfig.VirtualKeys {
-		if config2.GovernanceConfig.VirtualKeys[i].ID == "vk-1" {
-			memVK = &config2.GovernanceConfig.VirtualKeys[i]
+	stored := storedGovernance(t, config2)
+	for i := range stored.VirtualKeys {
+		if stored.VirtualKeys[i].ID == "vk-1" {
+			memVK = &stored.VirtualKeys[i]
 		}
 	}
 	if memVK == nil || memVK.Metadata["cost_center"] != "cc-42" {
@@ -10185,7 +10182,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 
 	// Verify dashboard VK is in governance config
 	found := false
-	for _, vk := range config2.GovernanceConfig.VirtualKeys {
+	for _, vk := range storedGovernance(t, config2).VirtualKeys {
 		if vk.ID == "vk-dashboard" {
 			found = true
 			break
@@ -11064,14 +11061,14 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	if len(providersOf(config)) != 2 {
 		t.Errorf("Expected 2 providers in memory, got %d", len(providersOf(config)))
 	}
-	if len(config.GovernanceConfig.VirtualKeys) != 2 {
-		t.Errorf("Expected 2 virtual keys in memory, got %d", len(config.GovernanceConfig.VirtualKeys))
+	if len(storedGovernance(t, config).VirtualKeys) != 2 {
+		t.Errorf("Expected 2 virtual keys in memory, got %d", len(storedGovernance(t, config).VirtualKeys))
 	}
-	if len(config.GovernanceConfig.Budgets) != 1 {
-		t.Errorf("Expected 1 budget in memory, got %d", len(config.GovernanceConfig.Budgets))
+	if len(storedGovernance(t, config).Budgets) != 1 {
+		t.Errorf("Expected 1 budget in memory, got %d", len(storedGovernance(t, config).Budgets))
 	}
-	if len(config.GovernanceConfig.RateLimits) != 1 {
-		t.Errorf("Expected 1 rate limit in memory, got %d", len(config.GovernanceConfig.RateLimits))
+	if len(storedGovernance(t, config).RateLimits) != 1 {
+		t.Errorf("Expected 1 rate limit in memory, got %d", len(storedGovernance(t, config).RateLimits))
 	}
 
 	// Verify hashes are set
@@ -11316,7 +11313,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Check VKs in memory
 	vkNames := make(map[string]bool)
-	for _, vk := range config2.GovernanceConfig.VirtualKeys {
+	for _, vk := range storedGovernance(t, config2).VirtualKeys {
 		vkNames[vk.Name] = true
 	}
 	if !vkNames["test-vk"] {
@@ -13412,10 +13409,10 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify budget in memory
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.Budgets) != 1 {
+	if len(storedGovernance(t, config).Budgets) != 1 {
 		t.Fatal("Expected 1 budget in governance config")
 	}
-	if config.GovernanceConfig.Budgets[0].ID != "budget-1" {
+	if storedGovernance(t, config).Budgets[0].ID != "budget-1" {
 		t.Error("Budget ID mismatch")
 	}
 
@@ -16275,17 +16272,20 @@ func TestSQLite_Governance_FileCannotSetUsageResetEpochs(t *testing.T) {
 	assert.EqualValues(t, 51, storedRate.TokenUsageResetEpoch)
 	assert.EqualValues(t, 52, storedRate.RequestUsageResetEpoch)
 
-	budgetIndex := slices.IndexFunc(second.GovernanceConfig.Budgets, func(row tables.TableBudget) bool {
+	// Governance content is not kept on the config after boot, so the reconciled epochs are read
+	// from the stored governance.
+	stored2 := storedGovernance(t, second)
+	budgetIndex := slices.IndexFunc(stored2.Budgets, func(row tables.TableBudget) bool {
 		return row.ID == "existing"
 	})
 	require.NotEqual(t, -1, budgetIndex)
-	assert.Equal(t, persistedEpoch, second.GovernanceConfig.Budgets[budgetIndex].UsageResetEpoch)
-	rateIndex := slices.IndexFunc(second.GovernanceConfig.RateLimits, func(row tables.TableRateLimit) bool {
+	assert.Equal(t, persistedEpoch, stored2.Budgets[budgetIndex].UsageResetEpoch)
+	rateIndex := slices.IndexFunc(stored2.RateLimits, func(row tables.TableRateLimit) bool {
 		return row.ID == "existing-rate"
 	})
 	require.NotEqual(t, -1, rateIndex)
-	assert.EqualValues(t, 51, second.GovernanceConfig.RateLimits[rateIndex].TokenUsageResetEpoch)
-	assert.EqualValues(t, 52, second.GovernanceConfig.RateLimits[rateIndex].RequestUsageResetEpoch)
+	assert.EqualValues(t, 51, stored2.RateLimits[rateIndex].TokenUsageResetEpoch)
+	assert.EqualValues(t, 52, stored2.RateLimits[rateIndex].RequestUsageResetEpoch)
 }
 
 // TestSQLite_Governance_FullReconciliation tests full governance reconciliation
@@ -16566,7 +16566,7 @@ func TestSQLite_SourceOfTruthConfigJSON_KeepsModelConfigsOfScopesTheFileCannotDe
 	assert.True(t, ids["model:file-model"])
 
 	inMemory := map[string]bool{}
-	for _, mc := range config2.GovernanceConfig.ModelConfigs {
+	for _, mc := range storedGovernance(t, config2).ModelConfigs {
 		inMemory[mc.ID] = true
 	}
 	assert.True(t, inMemory["profile-model"], "what survives in the store survives in memory")
@@ -18641,11 +18641,11 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify virtual key exists and has provider config with weight=0
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
+	if len(storedGovernance(t, config).VirtualKeys) == 0 {
 		t.Fatal("Expected virtual key in governance config")
 	}
 
-	vkFromConfig := config.GovernanceConfig.VirtualKeys[0]
+	vkFromConfig := storedGovernance(t, config).VirtualKeys[0]
 	if len(vkFromConfig.ProviderConfigs) == 0 {
 		t.Fatal("Expected provider config in virtual key")
 	}
@@ -18701,7 +18701,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
 
-	vk1 := config1.GovernanceConfig.VirtualKeys[0]
+	vk1 := storedGovernance(t, config1).VirtualKeys[0]
 	if len(vk1.ProviderConfigs) == 0 {
 		t.Fatal("First load: Expected provider configs")
 	}
@@ -18720,7 +18720,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	}
 	defer config2.Close(ctx)
 
-	vk2 := config2.GovernanceConfig.VirtualKeys[0]
+	vk2 := storedGovernance(t, config2).VirtualKeys[0]
 	if len(vk2.ProviderConfigs) == 0 {
 		t.Fatal("Second load: Expected provider configs")
 	}
@@ -22538,7 +22538,7 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 
 	// Verify governance loaded from DB
 	require.NotNil(t, config2.GovernanceConfig, "GovernanceConfig should be loaded from DB")
-	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget from DB should be preserved")
+	require.Len(t, storedGovernance(t, config2).Budgets, 1, "Budget from DB should be preserved")
 }
 
 // TestLoadConfig_FullConfigFile_FreshDB tests LoadConfig with all sections in config.json
@@ -22594,8 +22594,8 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	require.Equal(t, 20, config.ClientConfig.InitialPoolSize, "Client config InitialPoolSize from file")
 	require.Len(t, providersOf(config), 2, "Should have 2 providers")
 	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
-	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
-	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
+	require.Len(t, storedGovernance(t, config).Budgets, 1, "Should have 1 budget")
+	require.Len(t, storedGovernance(t, config).VirtualKeys, 1, "Should have 1 virtual key")
 	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
 	require.Len(t, mcpClientsOf(config), 1, "Should have 1 MCP client")
 	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
@@ -22697,8 +22697,8 @@ func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
 
 	// Verify governance loaded from file
 	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
-	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
-	require.Equal(t, 500.0, config.GovernanceConfig.Budgets[0].MaxLimit)
+	require.Len(t, storedGovernance(t, config).Budgets, 1, "Should have 1 budget")
+	require.Equal(t, 500.0, storedGovernance(t, config).Budgets[0].MaxLimit)
 
 	// Verify client config gets defaults
 	assertDefaultClientConfigValues(t, *config.ClientConfig)
@@ -22946,7 +22946,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 
 	// Verify governance preserved from DB (not wiped by missing section in file)
 	require.NotNil(t, config2.GovernanceConfig, "Governance should be preserved from DB")
-	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget should be preserved from DB")
+	require.Len(t, storedGovernance(t, config2).Budgets, 1, "Budget should be preserved from DB")
 
 	_, hasAnthropic := providersOf(config2)[schemas.Anthropic]
 	require.True(t, hasAnthropic, "Anthropic should be preserved from DB")
@@ -28176,4 +28176,19 @@ func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
 	assert.Equal(t, []uint{jiraOnly.ID}, ids, "the unique declaration still re-links")
 	require.Len(t, jiraOnly.ParsedTools, 1)
 	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
+}
+
+// storedGovernance reads the governance entities boot left in the config store. The live store
+// loads from those rows, and LoadConfig drops its own boot copy once the live store holds them, so
+// this is where a test checks what boot kept.
+func storedGovernance(t *testing.T, config *Config) *configstore.GovernanceConfig {
+	t.Helper()
+	gov, err := config.ConfigStore.GetGovernanceConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read stored governance: %v", err)
+	}
+	if gov == nil {
+		return &configstore.GovernanceConfig{}
+	}
+	return gov
 }

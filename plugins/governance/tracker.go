@@ -232,7 +232,7 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	start := time.Now()
 
 	// ==== PART 1: Reset Rate Limits ====
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
@@ -244,7 +244,7 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 
 	// ==== PART 2: Reset Budgets ====
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
@@ -376,7 +376,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	// Reuse the shared in-memory reset path so startup, ticker, and request-time
 	// resets all apply the same LastDB baseline and reset-hook side effects.
 	rateLimitResetStart := time.Now()
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d rate limits took %v", len(resetRateLimits), time.Since(rateLimitResetStart))
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired rate limits: %s", err.Error()))
@@ -384,7 +384,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 	// DB reset is also handled by this function
 	budgetResetStart := time.Now()
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d budgets took %v", len(resetBudgets), time.Since(budgetResetStart))
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
