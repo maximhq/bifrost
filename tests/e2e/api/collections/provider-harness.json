@@ -330555,6 +330555,59 @@
       ]
     },
     {
+      "name": "301. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /me/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/me/limits"
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/{user_id}/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /{user_id}/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/u-harness/limits"
+          }
+        }
+      ]
+    },
+    {
       "name": "352. MachGen Provider Coverage (list models, image, image edit, video)",
       "description": "MachGen serves video and image models behind one task-based API: POST /api/v0/generate submits a task, GET /api/v0/tasks/{id} reports it, and GET /api/v0/assets/{id} serves the output behind the same API key. Bifrost maps /v1/videos onto that flow (T2V, I2V or R2V inferred from the inputs), and /v1/images/generations and /v1/images/edits onto T2I and I2I, waiting for the task and returning the image as b64_json. /v1/models comes from GET /api/v0/models, which is scoped to the key's account.\n\nThese rows pin the list-models mapping (task types as supported_methods), both image routes, the size -> height + aspect ratio mapping on video, retrieve by the suffixed id, and two caller errors that must stay 4xx: n > 1 and video delete.\n\nMachGen model ids often carry the original vendor (machgen/MiniMax-H3, machgen/FLUX.2-dev), so filter-collection.mjs routes these rows exclusively to the machgen partition.",
       "item": [
