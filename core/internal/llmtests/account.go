@@ -413,7 +413,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004", "multimodalembedding@001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -444,7 +443,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"veo-3.1-generate-preview"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -455,7 +453,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
