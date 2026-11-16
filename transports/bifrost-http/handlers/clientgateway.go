@@ -188,6 +188,11 @@ func (h *ClientGatewayHandler) Close(ctx context.Context) {
 	h.telemetry.Close(ctx)
 }
 
+// Closed reports whether Close has run.
+func (h *ClientGatewayHandler) Closed() bool {
+	return h.telemetry.closing.Load()
+}
+
 // MetricsGatherer exposes the client gateway metrics (telemetry forwarding) for
 // the server's /metrics endpoint.
 func (h *ClientGatewayHandler) MetricsGatherer() prometheus.Gatherer {
